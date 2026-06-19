@@ -78,3 +78,23 @@ that this work supersedes the "finer granularity is `2670`" pointer.
 ## Out of scope
 
 - The implementation itself (`2730`/`2740`).
+
+## Status: DONE (2720)
+
+Docs re-keyed to (instance, wrapper): security.md ("Which UID" + "Mandatory
+dedicated target UID" sections describe per-pair keying, distinctness, and the
+selector-not-uid trust posture; removed the now-false "Per-wrapper target UIDs
+... rejected" row), architecture.md (runtime dir is per pair), testing.md
+(per-pair coverage + distinctness). examples/config.yaml left as-is.
+
+VM test: reused existing fixtures that already share a binary (local/test-echo
++ local/test-locked on `env`; tunnel/remote-echo on `env`).
+local_target_uid_authority() parses the 4-column table and asserts: same binary
+within an instance -> distinct uids; same binary across instances -> distinct
+uids; no uid shared across pairs. local_debug_subcommand() asserts the Debug
+variant runs under test-echo's sandbox uid (980), not a host-wide debug uid.
+
+nix build .#checks.x86_64-linux.vm-test GREEN: 105 PASS lines, 0 AssertionError,
+confirmed by scanning the driver log (the exit code was masked by a tee/`; echo`
+pipeline on the first run, which surfaced a test-only wrong-instance bug:
+remote -> tunnel).

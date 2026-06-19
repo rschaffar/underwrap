@@ -219,8 +219,9 @@ this.
 
 ## Runtime directory for isolated targets
 
-Every wrapped target runs as a dedicated `underwrap-target-*` uid X (see the
-target-UID isolation work). A runtime directory (`XDG_RUNTIME_DIR`) is a
+Every wrapped target runs as a dedicated `underwrap-target-*` uid X — one per
+`(instance, wrapper)` pair (see the target-UID isolation work). A runtime
+directory (`XDG_RUNTIME_DIR`) is a
 **per-uid** resource — the kernel/desktop convention is one `0700` dir owned by
 the uid using it — so the honest reflection of running as X is that **X gets
 X's own runtime directory**, not the caller's. This is not sandboxing; it is

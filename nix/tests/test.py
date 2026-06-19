@@ -1508,25 +1508,59 @@ def local_target_uid_authority():
     )
     machine.log(f"PASS: {table} is root:root {mode} (sole, unforgeable uid authority)")
 
-    # Each row maps an absolute target path to a dedicated sandbox user/group
-    # ("<path>\t<user>\t<group>"), never to root.
+    # Each row maps an (instance, wrapper) pair to a dedicated sandbox
+    # user/group ("<instance>\t<wrapper>\t<user>\t<group>"), never to root
+    # (story 2720). Keying on the pair — not the target binary path — means the
+    # uid itself separates the secrets distinct wrappers broker.
     contents = machine.succeed(f"cat {table}")
     iso_rows = [l for l in contents.splitlines() if l.strip()]
     assert iso_rows, f"FAIL: {table} is empty but wrappers exist"
+    pair_to_user = {}
     for row in iso_rows:
         fields = row.split("\t")
-        assert len(fields) == 3, f"FAIL: malformed authority row: {row!r}"
-        path, user, group = fields
-        assert path.startswith("/"), f"FAIL: non-absolute target path in table: {row!r}"
+        assert len(fields) == 4, f"FAIL: malformed authority row: {row!r}"
+        instance, wrapper, user, group = fields
+        assert instance and wrapper, f"FAIL: empty instance/wrapper in table: {row!r}"
         assert user.startswith("underwrap-target-"), (
-            f"FAIL: authority row maps {path} to non-sandbox user {user!r}"
+            f"FAIL: authority row maps {instance}/{wrapper} to non-sandbox user {user!r}"
         )
         assert user != "root" and group != "root", (
-            f"FAIL: authority row maps {path} to root: {row!r}"
+            f"FAIL: authority row maps {instance}/{wrapper} to root: {row!r}"
         )
+        pair_to_user[(instance, wrapper)] = user
     machine.log(
-        f"PASS: target-uid table maps {len(iso_rows)} target path(s) to dedicated "
-        f"underwrap-target-* users (never root)"
+        f"PASS: target-uid table maps {len(iso_rows)} (instance,wrapper) pair(s) to "
+        f"dedicated underwrap-target-* users (never root)"
+    )
+
+    # DISTINCTNESS (the point of story 2720). test-echo and test-locked (local
+    # instance) both target ${coreutils}/bin/env; remote-echo (remote instance)
+    # also targets env. Under the old path-keyed scheme all three shared one uid.
+    # Now each (instance, wrapper) pair must resolve to its OWN sandbox user.
+    same_binary_same_instance = (
+        pair_to_user.get(("local", "test-echo")),
+        pair_to_user.get(("local", "test-locked")),
+    )
+    assert all(same_binary_same_instance) and len(set(same_binary_same_instance)) == 2, (
+        f"FAIL: two local wrappers sharing the 'env' binary must get distinct uids, "
+        f"got {same_binary_same_instance}"
+    )
+    cross_instance = (
+        pair_to_user.get(("local", "test-echo")),
+        pair_to_user.get(("tunnel", "remote-echo")),
+    )
+    assert all(cross_instance) and len(set(cross_instance)) == 2, (
+        f"FAIL: the same 'env' binary across two instances (local, tunnel) must get "
+        f"distinct uids, got {cross_instance}"
+    )
+    # No sandbox user is shared by more than one pair.
+    users = list(pair_to_user.values())
+    assert len(users) == len(set(users)), (
+        f"FAIL: a sandbox uid is shared across (instance,wrapper) pairs: {pair_to_user}"
+    )
+    machine.log(
+        "PASS: distinct sandbox uids per (instance,wrapper) — same binary within an "
+        "instance and across instances both resolve to different uids; no uid shared"
     )
 
 
@@ -2881,6 +2915,30 @@ def local_debug_subcommand():
     assert "MY_TOKEN=overwrite" in out, \
         f"debug summary must include the projected env, got: {out}"
     machine.log("PASS: debug variant allowed under UnsafeDebugUntil; projects env")
+
+    # The Debug variant must run under the SAME sandbox uid as test-echo's Real
+    # target — the uid is keyed on (instance, wrapper), not the binary, so debug
+    # (which brokers the same secret) shares the wrapper's uid and never a
+    # host-wide debug-tool uid (story 2720). The debug tool prints "uid: <n>".
+    debug_uid = next(
+        (l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("uid:")),
+        None,
+    )
+    assert debug_uid is not None, f"debug summary must report its uid, got: {out}"
+    sandbox_user = machine.succeed(
+        "awk -F'\\t' '$1==\"local\" && $2==\"test-echo\"{print $3}' "
+        "/etc/underwrap/target-uids"
+    ).strip()
+    expected_uid = machine.succeed(f"id -u {sandbox_user}").strip()
+    assert debug_uid == expected_uid, (
+        f"debug ran as uid {debug_uid}, expected test-echo's sandbox uid "
+        f"{expected_uid} ({sandbox_user})"
+    )
+    assert debug_uid != "0", "debug must not run as root"
+    machine.log(
+        f"PASS: Debug runs under test-echo's sandbox uid {expected_uid} "
+        f"({sandbox_user}), not a shared debug-tool uid"
+    )
 
     # ---- 3. Real STAYS Real under UnsafeDebugUntil ---------------------
     # The same permission allows Debug, but a Real invocation must still

@@ -65,15 +65,19 @@ It boots a NixOS VM with real underwrap services and then checks properties such
 - spoofing resistance
 - lock and unlock behavior
 - target process isolation properties
-- mandatory per-target UID isolation: a full matrix proving that a caller-owned
-  peer **and** ancestor cannot inspect a target or its descendants —
-  `environ`/`maps`/`smaps`/`auxv`/`mem`, `ptrace(PTRACE_ATTACH)`,
+- mandatory per-`(instance, wrapper)` UID isolation: a full matrix proving that
+  a caller-owned peer **and** ancestor cannot inspect a target or its
+  descendants — `environ`/`maps`/`smaps`/`auxv`/`mem`, `ptrace(PTRACE_ATTACH)`,
   `process_vm_readv`, and `/proc/<pid>/{fd,cwd,root,exe}` re-open are all denied;
   the world-readable `/proc` residue is secret-free; **root** can still read
   (documented limitation); the target runs as a dedicated `underwrap-target-*`
   uid (never `0`/caller) with zero capabilities; and the dedicated uid comes
-  only from the root-owned `/etc/underwrap/target-uids` table (`underwrap-ns`
-  holds `cap_setuid`/`cap_setgid`; the table is `root:root 0644`).
+  only from the root-owned `/etc/underwrap/target-uids` table, keyed on the
+  `(instance, wrapper)` pair (`underwrap-ns` holds `cap_setuid`/`cap_setgid`;
+  the table is `root:root 0644`, one 4-column `<instance>\t<wrapper>\t<user>\t<group>`
+  row per wrapper). Distinctness is asserted: two wrappers sharing a target
+  binary, and the same binary across two instances, resolve to **different**
+  uids, and a `Debug` invocation runs under its wrapper's uid.
   Files/libsecret projection and read-only-grant writeback are also exercised
   under the same mandatory target UID model.
 - core dump prevention

@@ -216,14 +216,20 @@ invocation, and only after the backend's policy has authorized that
 **Which UID does the target run as?** The same authority shape applies to the
 mandatory target UID switch. The dedicated sandbox uid/gid a target is switched
 to come **only** from the root-owned `/etc/underwrap/target-uids` table, read
-directly by `underwrap-ns` and keyed on the daemon-chosen target path. They never travel on
-the wire — the `ExecBundle` carries no target id (pinned by the protocol test
-`exec_bundle_carries_no_target_identity`), and the uid is never derived from a
-credential, env var, argv, or the daemon response. So a compromised
+directly by `underwrap-ns` and keyed on the `(instance, wrapper)` pair. That
+pair is a *selector*, not the uid: `underwrap-exec` derives the instance from
+the kernel-enforced effective-GID gate and carries the daemon-validated wrapper
+name, and passes both to `underwrap-ns` as internal env vars; `underwrap-ns`
+resolves the pair against the root-owned table to get the uid/gid. The uid/gid
+itself never travels on the wire — the `ExecBundle` carries no target id (pinned
+by the protocol test `exec_bundle_carries_no_target_identity`), and is never
+derived from a credential or the daemon response. So a compromised
 `underwrap-exec` cannot redirect the `cap_setuid` switch to root or another
 service's uid: the only uids reachable are the sandbox uids that trusted root
-config assigned. This is the confused-deputy guard for the uid switch, mirroring
-"the daemon, not the wrapper, chooses the target binary."
+config assigned, and the worst a compromised stage can do is select a *different
+legitimate sandbox uid* (the floor check rejects uid 0 regardless). This is the
+confused-deputy guard for the uid switch, mirroring "the daemon, not the
+wrapper, chooses the target binary."
 
 The wrapper binaries are world-executable; any local user can invoke
 any wrapper. Access control lives in the policy layer, not the
@@ -561,6 +567,15 @@ every descendant it spawns therefore have different real/effective/saved/fs uids
 from the original caller. That is the primary target-process confidentiality
 boundary.
 
+The uid is dedicated **per `(instance, wrapper)` pair**, not per target binary.
+Each `(instance, wrapper)` maps to exactly one resource, so the uid itself
+separates the secrets that distinct wrappers broker: two wrappers pointed at the
+same binary — and the same binary used by two different instances — get
+**distinct** uids. The "fully isolated instances" property therefore holds at
+the uid layer too. The `Debug` variant of a wrapper runs under that same
+wrapper's uid (it brokers the same secret — the same trust domain), so there is
+no separate debug-tool identity and no uid shared host-wide.
+
 This matters because Linux exposes different `/proc/<pid>` entries through
 different ptrace access classes. Yama `ptrace_scope` gates only ATTACH-mode
 access (`/proc/<pid>/mem`, `ptrace`, `process_vm_readv`). It does **not** gate
@@ -576,7 +591,8 @@ Three mechanisms together cover the target inspection surface.
 
 #### 1. Dedicated target UID (READ and ATTACH classes)
 
-`underwrap-ns` resolves the target path in `/etc/underwrap/target-uids`, switches
+`underwrap-ns` resolves the `(instance, wrapper)` pair in
+`/etc/underwrap/target-uids`, switches
 to the assigned uid/gid with `setresuid`/`setresgid`, restricts supplementary
 groups to the target's own group, and verifies before exec that the switch is
 complete and capabilities are gone. A missing table row is a hard error: there
@@ -1370,7 +1386,6 @@ These ideas were considered and rejected for the current design.
 | Combine setgid and namespace capability in one wrapper stage | Poor fit for the NixOS wrapper model used here |
 | Rely on `PR_SET_DUMPABLE=0` alone for the final target | Exec resets the relevant state for ordinary targets |
 | Fall back to weaker execution when isolation fails | Silent security degradation |
-| Per-wrapper target UIDs independent of target path | Too fine-grained for the first-release trust model; wrappers that execute the same target binary share one per-target UID, and caller-owned filesystem access is granted explicitly with `accessPaths` |
 | User-namespace-based redesign | In tension with the current setgid-based identity model |
 
 ---
