@@ -451,54 +451,64 @@ let
       || (dev.encrypted.enable or false)
     ) config.swapDevices;
 
-  # --- Per-target uid isolation (story 2600 / 2670) ---
-  # Distinct absolute target binary paths used by wrappers across every
-  # instance. Each gets its own dedicated system user/group (a sandbox uid X,
-  # distinct from any caller); underwrap-ns switches the target (and thus its
-  # whole subtree) to X. Wrappers sharing a target binary share its uid (same
-  # tool = same trust domain); finer granularity is future work.
-  targetPaths = lib.unique (
-    (lib.concatMap (inst:
-      map (w: w.target) (lib.attrValues inst.wrappers)
-    ) (lib.attrValues cfg.instances))
-    ++ lib.optional (lib.any (inst: inst.wrappers != {}) (lib.attrValues cfg.instances))
-      "${cfg.package}/bin/underwrap-debug-tool"
-  );
+  # --- Per-(instance, wrapper) uid isolation (story 2600, re-keyed in 2720) ---
+  # One dedicated system user/group per configured (instance, wrapper) pair (a
+  # sandbox uid X, distinct from any caller); underwrap-ns switches the target
+  # (and thus its whole subtree) to X. The authorization unit is the wrapper, not
+  # the target binary: each (instance, wrapper) maps to exactly one resource, so
+  # keying the uid here means two wrappers sharing a binary — and the same binary
+  # across two instances — get DISTINCT uids, and the secret each brokers is
+  # separated by the uid itself. The Debug variant of a wrapper runs under that
+  # same wrapper's uid (it brokers the same secret), so there is no separate
+  # debug-tool identity and no host-wide shared debug uid.
+  #
+  # (instance, wrapper) pairs are attrset keys, hence inherently unique — no
+  # lib.unique needed. Non-empty iff any instance has any wrapper.
+  targetPairs = lib.concatLists (lib.mapAttrsToList (iname: inst:
+    lib.mapAttrsToList (wname: w: {
+      instance = iname;
+      wrapper = wname;
+      target = w.target;
+    }) inst.wrappers
+  ) cfg.instances);
 
-  # Stable, collision-free sandbox user name per target path: a hash of the
-  # absolute path (NOT a sequential index, so adding/removing isolated targets
-  # never reshuffles which uid a path maps to — NixOS persists uids by name).
+  # Stable, collision-free sandbox user name per pair: a hash of
+  # "<instance>/<wrapper>" (NOT a sequential index, so adding/removing pairs
+  # never reshuffles which uid a pair maps to — NixOS persists uids by name).
   # "underwrap-target-" (17) + 12 hex = 29 chars, under the 32-char limit.
-  targetUserName = path:
-    "underwrap-target-" + builtins.substring 0 12 (builtins.hashString "sha256" path);
+  targetUserName = instance: wrapper:
+    "underwrap-target-"
+    + builtins.substring 0 12 (builtins.hashString "sha256" "${instance}/${wrapper}");
 
-  # Per-target sandbox users/groups. isSystemUser => /sbin/nologin, no home. Each
+  # Per-pair sandbox users/groups. isSystemUser => /sbin/nologin, no home. Each
   # is a member of ONLY its own primary group — NEVER an instance group — so a
   # uid-X target cannot satisfy a wrapper-socket egid gate and pull further
   # secrets.
-  targetUsers = lib.listToAttrs (map (path:
-    let n = targetUserName path; in lib.nameValuePair n {
+  targetUsers = lib.listToAttrs (map (p:
+    let n = targetUserName p.instance p.wrapper; in lib.nameValuePair n {
       isSystemUser = true;
       group = n;
-      description = "underwrap target sandbox uid for ${path}";
-    }) targetPaths);
-  targetGroups = lib.listToAttrs (map (path:
-    lib.nameValuePair (targetUserName path) {}) targetPaths);
+      description = "underwrap sandbox uid for ${p.instance}/${p.wrapper} (${p.target})";
+    }) targetPairs);
+  targetGroups = lib.listToAttrs (map (p:
+    lib.nameValuePair (targetUserName p.instance p.wrapper) {}) targetPairs);
 
-  # Root-owned authority table: one row per target,
-  # "<abs target path>\t<user>\t<group>". underwrap-ns reads this directly (keyed
-  # on the path it is about to exec) and resolves the names to a numeric uid/gid
-  # via getpwnam/getgrnam at runtime, then validates (reject 0). Line-based TSV
-  # (not JSON) so the privileged, cap_setuid-holding parser needs no JSON library
-  # — minimal attack surface. Storing NAMES (not numbers) keeps the table fully
+  # Root-owned authority table: one row per pair,
+  # "<instance>\t<wrapper>\t<user>\t<group>". underwrap-ns reads this directly
+  # (keyed on the daemon-validated (instance, wrapper) selector it receives, NOT
+  # on the target path) and resolves the names to a numeric uid/gid via
+  # getpwnam/getgrnam at runtime, then validates (reject 0). Line-based TSV (not
+  # JSON) so the privileged, cap_setuid-holding parser needs no JSON library —
+  # minimal attack surface. Storing NAMES (not numbers) keeps the table fully
   # declarative and lets NixOS auto-allocate + persist the uids stably by name;
   # root-ownership is the trust anchor — a compromised unprivileged stage cannot
-  # influence it, so there is no uid-0 injection and no confused deputy. Absolute
-  # / nix-store paths contain no tab, so a split on '\t' is unambiguous. See
-  # docs/security.md and story 2600 "Authority for the uid".
-  targetUidTableText = lib.concatMapStrings (path:
-    "${path}\t${targetUserName path}\t${targetUserName path}\n"
-  ) targetPaths;
+  # influence it, so there is no uid-0 injection and no confused deputy. Instance
+  # and wrapper names are NixOS attribute keys (no tabs), so a split on '\t' is
+  # unambiguous. See docs/security.md and story 2600 "Authority for the uid".
+  targetUidTableText = lib.concatMapStrings (p:
+    let n = targetUserName p.instance p.wrapper; in
+    "${p.instance}\t${p.wrapper}\t${n}\t${n}\n"
+  ) targetPairs;
 
   # Provision each isolated target its OWN runtime directory. A target runs as a
   # dedicated nologin uid X with no logind session, so logind never makes it a
@@ -510,12 +520,12 @@ let
   # wrapper invocation. The base is 0755 root-owned; each per-target dir is 0700
   # and self-owned (mode mirrors logind's /run/user/<uid>).
   targetRuntimeTmpfiles =
-    lib.optionals (targetPaths != [])
+    lib.optionals (targetPairs != [])
       ([ "d ${cfg.targetRuntimeDirBase} 0755 root root -" ]
-       ++ map (path:
-         let n = targetUserName path; in
+       ++ map (p:
+         let n = targetUserName p.instance p.wrapper; in
          "d ${cfg.targetRuntimeDirBase}/${n} 0700 ${n} ${n} -"
-       ) targetPaths);
+       ) targetPairs);
 
 in {
   options.services.underwrap = {
@@ -715,13 +725,14 @@ in {
       '')
     ];
 
-    # Sidecar configs, plus the root-owned target->uid authority table (story
-    # 2600). The table is non-secret (absolute paths + system user/group names),
-    # root:root 0644, and is the SOLE source of truth for which uid a target
-    # runs as — read directly by underwrap-ns, never relayed over the wire.
+    # Sidecar configs, plus the root-owned (instance,wrapper)->uid authority
+    # table (story 2600, re-keyed 2720). The table is non-secret (instance +
+    # wrapper names + system user/group names), root:root 0644, and is the SOLE
+    # source of truth for which uid a target runs as — read directly by
+    # underwrap-ns, never relayed over the wire.
     environment.etc = lib.mkMerge (
       (lib.mapAttrsToList (_: i: i.etcFiles) instances)
-      ++ lib.optional (targetPaths != []) {
+      ++ lib.optional (targetPairs != []) {
         "underwrap/target-uids" = {
           text = targetUidTableText;
           mode = "0644";
