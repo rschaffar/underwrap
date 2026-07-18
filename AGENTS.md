@@ -276,6 +276,90 @@ Validation by area:
 - NixOS module, identities, namespaces, capabilities, mounts, peer auth:
   `nix build .#checks.x86_64-linux.vm-test`
 
+## Accepted code-review program workflow
+
+For the accepted whole-codebase review in
+`tickets/_review/codebase_2026-07-18.md`, maintain the durable program state in
+`tickets/_handover/codebase_2026-07-18.md`. Read the report and handover before
+planning or resuming any review-derived work. Record ticket mappings, approvals,
+decisions, ordered cleanup and fix commits, outcomes, validation, dependencies,
+exceptions, affected findings, and accumulated lessons there so later work is
+informed by earlier results.
+
+The parent/controller remains the sole agent/controller decision-maker, subject
+to the user approvals and conditions below, and controls all repository writes.
+Process findings by severity in the order critical, high, medium, low.
+The program starts directly in the critical band; there is no separate initial
+band gate. Before transitioning critical → high, high → medium, or medium → low,
+the controller must use `ask_user` with comment entry enabled and record the
+result. A lower-severity prerequisite may be advanced only when necessary and
+must be recorded as an exception in the handover.
+
+Create exactly one ticket file at a time—normally one task-only ticket, with no
+simultaneous parent/child hierarchy—then stop and ask the user to approve that
+specific ticket with comment entry enabled before implementation. Do not infer
+implementation approval from report acceptance, band-transition approval, or
+ticket creation. Rejection or requested changes permit only revision and
+re-presentation of that same ticket, or stopping. The first committed work after
+approval must also durably move the ticket to in-progress and update the
+handover.
+
+Before an approved ticket's actual finding fix, run a simplification-cleanup
+phase. Explicitly incentivize workers to find concrete repository-wide as well
+as ticket-local behavior-preserving simplifications. Do not perform a one-time
+broad refactor ahead of the review; keep sequencing fix-led by severity, with
+cleanup immediately before each approved ticket's fix. Accept only cleanup that
+has a clear net reduction in complexity, duplication, or dead structure, is
+independently reversible, and does not chase optional formatting or renaming.
+Cleanup is always behavior-preserving: user approval does not convert a
+behavior-changing or boundary-weakening change into cleanup; handle that only as
+separately approved fix or Opportunity scope. Cleanup must not add a dependency,
+change the `underwrap-exec → underwrap-ns` chain, expose secrets, or absorb an
+unresolved decision without `ask_user`.
+
+Every accepted simplification is its own coherent commit before any actual fix
+commit for that ticket. Give each cleanup its own fresh independent review,
+separate fix pass when needed, focused and boundary-required validation,
+controller sanity/scope/diff check, and handover update. A ticket may have
+multiple cleanup commits and multiple fix commits. Apply the same independent
+review/fix and controller checks to each coherent fix unit. The final fix commit
+moves the ticket to `tickets/03_done/` and records final outcome and validation
+in the handover. The ticket registry records the ordered implementation sequence
+and labels each implementation commit `cleanup` or `fix`.
+
+After the final fix commit, the controller presents the completed outcome,
+ordered commits, validation, reviewer result, controller sanity check, handover
+decisions, and effects on later findings, then uses `ask_user` with comment entry
+enabled for completion review. If changes are requested, return the same ticket
+to in-progress for another coherent fix/review/validation/commit cycle; do not
+prepare another ticket. Record completion-review and severity-transition
+responses in exact-allowlist handover-only `control` commits outside the ticket's
+cleanup/fix sequence. Do not derive or prepare the next ticket until the user
+explicitly accepts the completed ticket and authorizes continuation. If
+continuation would cross a severity band, the separate transition gate follows
+this completion-review gate.
+
+If cleanup changes or resolves evidence for another F-id, immediately record the
+affected finding and cleanup commit in the handover. When that finding is
+reached, revalidate it and link the completed work rather than duplicate a
+ticket. Opportunities and U-items still require their own explicit approval.
+Use one implementation writer, separate fresh reviewer subagent(s), and a
+separate fix-worker subagent for accepted review fixes. The controller
+synthesizes reviews and independently checks scope, the actual diff, sanity,
+security invariants, and required validation.
+
+On resume, inspect Git state, read the report and handover, locate the sole
+current ticket and its recorded approval, then continue from the next incomplete
+protocol step; never recreate state from memory or assume approval. Use
+`.pi/skills/underwrap-ticket-workflow/SKILL.md` for ticket mechanics, preflight,
+content, validation, moves, and exact staging. For this named program only,
+materialization may write exactly the single new todo ticket and this handover;
+the report, source, tests, configuration, and published docs remain read-only.
+An approval-pending todo ticket may remain untracked; after approval, stage its
+old todo path only if tracked, otherwise stage the new in-progress path. This
+section also supersedes the skill's single-commit per-task loop with the approved
+cleanup-first multi-commit and handover-only control-commit protocol.
+
 ## Ticket board
 
 Tickets move through:
