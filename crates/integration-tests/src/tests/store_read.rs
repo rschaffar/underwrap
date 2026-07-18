@@ -59,8 +59,9 @@ async fn read_validates_client_supplied_wrapper_name() {
     // (the name is now a client-supplied selector validated against the
     // instance config, not bound to a per-wrapper socket). Connect to
     // the shared instance socket and send a bogus name.
-    let sock = daemon.wrapper_sockets["gh-authorized"].clone();
-    let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    let mut stream = tokio::net::UnixStream::connect(&daemon.instance_socket)
+        .await
+        .unwrap();
     underwrap_protocol::ipc::write_frame_async(
         &mut stream,
         &WrapperRequest::Read {
@@ -114,7 +115,7 @@ async fn concurrent_reads() {
 
     let mut handles = Vec::new();
     for _ in 0..20 {
-        let sock = daemon.wrapper_sockets["gh-authorized"].clone();
+        let sock = daemon.instance_socket.clone();
         handles.push(tokio::spawn(async move {
             let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
             let req = WrapperRequest::Read {

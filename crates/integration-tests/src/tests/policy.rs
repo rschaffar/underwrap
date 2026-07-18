@@ -16,7 +16,7 @@ async fn admin_api_rejects_missing_or_invalid_session_cookie() {
         .unwrap();
 
     let missing_cookie = client
-        .get(format!("{}/v1/admin/stores", daemon.admin_url))
+        .get(format!("{}/v1/admin/stores", daemon.service_url))
         .send()
         .await
         .unwrap();
@@ -27,7 +27,7 @@ async fn admin_api_rejects_missing_or_invalid_session_cookie() {
     );
 
     let invalid_cookie = client
-        .get(format!("{}/v1/admin/stores", daemon.admin_url))
+        .get(format!("{}/v1/admin/stores", daemon.service_url))
         .header(
             reqwest::header::COOKIE,
             "__Host-underwrap-session=not-a-session",

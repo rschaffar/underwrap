@@ -173,7 +173,7 @@ async fn clean_run_only_sends_usage_signal() {
         .await
         .unwrap();
 
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     // All sync channel I/O happens inside spawn_blocking so it
     // doesn't block the current-thread tokio runtime the daemon
     // tasks are running on.
@@ -220,7 +220,7 @@ async fn writable_grant_persists_checkin() {
     let mutated = blob_with_files_entry(".config/gh/hosts.yml", b"github.com:\n  user: bob\n");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
 
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let (blob, writable) = send_checkout(&mut channel);
@@ -263,7 +263,7 @@ async fn readonly_grant_rejects_checkin() {
     let mutated = blob_with_env("GH_TOKEN", b"ghp_attempted_rewrite");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
 
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let (_blob, writable) = send_checkout(&mut channel);
@@ -315,7 +315,7 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     // thread flips the grant, so the Checkout reliably observes
     // writable=true and the Checkin reliably observes the flipped
     // grant.
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     let (checkout_done_tx, checkout_done_rx) = std::sync::mpsc::channel::<()>();
     let (flip_tx, flip_rx) = std::sync::mpsc::channel::<()>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<WrapperResourceResponse>();
@@ -393,7 +393,7 @@ async fn noncanonical_checkin_rejected() {
         br#"{"schema_version":1,"libsecret":{"aliases":{},"collections":{}},"files":{},"env":{}}"#
             .to_vec();
 
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let (_blob, _writable) = send_checkout(&mut channel);
@@ -479,7 +479,7 @@ async fn checkout_bumps_last_used() {
             .is_none()
     );
 
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let _ = send_checkout(&mut channel);
@@ -505,7 +505,7 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
 
     let mutated = blob_with_files_entry(".config/gh/hosts.yml", b"host: example");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let _ = send_checkout(&mut channel);
@@ -530,7 +530,7 @@ async fn usage_signal_bumps_last_used() {
     let resource_id = seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
     seed_writable_permission(&daemon, "gh-writeback", &resource_id).await;
 
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         // Skip Checkout — drive UsageSignal directly to isolate the
@@ -557,7 +557,7 @@ async fn rejected_checkin_still_bumps_last_used() {
     let resource_id = seed_resource_and_pair(&daemon, "gh-writeback", "github/token").await;
     seed_writable_permission(&daemon, "gh-writeback", &resource_id).await;
 
-    let socket = daemon.wrapper_sockets["gh-writeback"].clone();
+    let socket = daemon.instance_socket.clone();
     let (checkout_done_tx, checkout_done_rx) = std::sync::mpsc::channel::<()>();
     let (flip_tx, flip_rx) = std::sync::mpsc::channel::<()>();
     let mutated = blob_with_env("GH_TOKEN", b"ghp_rejected_mutation");

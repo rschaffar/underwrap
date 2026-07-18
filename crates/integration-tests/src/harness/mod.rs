@@ -56,8 +56,7 @@ pub(crate) use readiness::{
 /// A running test daemon with temp dirs and sockets.
 #[allow(dead_code)]
 pub struct TestDaemon {
-    pub wrapper_sockets: HashMap<String, PathBuf>,
-    pub admin_url: String,
+    pub instance_socket: PathBuf,
     pub service_url: String,
     pub storage_dir: PathBuf,
     /// Root directory under which the backend's admin-created stores
@@ -117,20 +116,12 @@ impl TestDaemon {
 
         let storage_dir = base.join("secrets");
 
-        // One socket per instance now. Every wrapper name maps to the
-        // same instance socket; the wrapper name travels in the IPC
-        // request, not the socket path. The map is kept so existing
-        // test call sites (`daemon.wrapper_sockets["name"]`) resolve to
-        // the instance socket unchanged.
+        // One socket per instance. The wrapper name travels in the IPC
+        // request and the daemon validates it against the instance config.
         let instance_socket = base.join("instance.sock");
-        let mut wrapper_sockets = HashMap::new();
-        for name in wrappers.keys().cloned().collect::<Vec<_>>() {
-            wrapper_sockets.insert(name, instance_socket.clone());
-        }
 
         let https_port = pick_unused_port()?;
         let service_url = format!("https://127.0.0.1:{https_port}");
-        let admin_url = service_url.clone();
         let pki = test_pki_paths(base, client_name)?;
         let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
@@ -191,12 +182,12 @@ impl TestDaemon {
             })
         });
 
-        wait_for_admin(&admin_url, &pki.ca_cert).await?;
+        wait_for_admin(&service_url, &pki.ca_cert).await?;
         let AdminCredentials {
             session_cookie: admin_session_cookie,
             csrf_cookie: admin_csrf_cookie,
             csrf_token: admin_csrf_token,
-        } = bootstrap_admin(&admin_url, &pki.ca_cert, "tester", "hunter2-long").await?;
+        } = bootstrap_admin(&service_url, &pki.ca_cert, "tester", "hunter2-long").await?;
         let admin_client = reqwest::Client::builder()
             .use_rustls_tls()
             .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
@@ -238,13 +229,10 @@ impl TestDaemon {
                 async move { underwrapd::server::run(config, Some(shutdown_clone)).await },
             );
 
-        for socket in wrapper_sockets.values() {
-            wait_for_path(socket).await?;
-        }
+        wait_for_path(&instance_socket).await?;
 
         Ok(Self {
-            wrapper_sockets,
-            admin_url,
+            instance_socket,
             service_url: service_url.clone(),
             storage_dir,
             stores_data_root,
@@ -264,15 +252,9 @@ impl TestDaemon {
         })
     }
 
-    fn wrapper_socket(&self, wrapper: &str) -> Result<&PathBuf> {
-        self.wrapper_sockets
-            .get(wrapper)
-            .with_context(|| format!("unknown wrapper socket for '{wrapper}'"))
-    }
-
     /// Send a read request and return the response.
     pub async fn read_request(&self, wrapper: &str) -> Result<WrapperResponse> {
-        let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
+        let mut stream = UnixStream::connect(&self.instance_socket).await?;
         let req = WrapperRequest::Read {
             wrapper_name: wrapper.to_string(),
             variant: underwrap_protocol::variant::WrapperVariant::Real,
@@ -289,7 +271,7 @@ impl TestDaemon {
         wrapper: &str,
         variant: underwrap_protocol::variant::WrapperVariant,
     ) -> Result<WrapperResponse> {
-        let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
+        let mut stream = UnixStream::connect(&self.instance_socket).await?;
         let req = WrapperRequest::Read {
             wrapper_name: wrapper.to_string(),
             variant,
@@ -311,7 +293,7 @@ impl TestDaemon {
         );
         let builder = self
             .admin_client
-            .request(method.clone(), format!("{}{}", self.admin_url, path))
+            .request(method.clone(), format!("{}{}", self.service_url, path))
             .header(
                 reqwest::header::COOKIE,
                 csrf_cookie_header(&self.admin_session_cookie, &self.admin_csrf_cookie),
