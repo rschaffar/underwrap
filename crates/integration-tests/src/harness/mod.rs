@@ -300,30 +300,6 @@ impl TestDaemon {
         Ok(resp)
     }
 
-    /// Get a raw connection to a wrapper socket for multi-message tests.
-    #[allow(dead_code)]
-    pub async fn connect_wrapper(&self, wrapper: &str) -> Result<UnixStream> {
-        Ok(UnixStream::connect(self.wrapper_socket(wrapper)?).await?)
-    }
-
-    /// Send a read request with a scope.
-    #[allow(dead_code)]
-    pub async fn read_request_with_scope(
-        &self,
-        wrapper: &str,
-        scope: &str,
-    ) -> Result<WrapperResponse> {
-        let mut stream = UnixStream::connect(self.wrapper_socket(wrapper)?).await?;
-        let req = WrapperRequest::Read {
-            wrapper_name: wrapper.to_string(),
-            variant: underwrap_protocol::variant::WrapperVariant::Real,
-            scope: Some(scope.to_string()),
-        };
-        write_frame_async(&mut stream, &req).await?;
-        let resp: WrapperResponse = read_frame_async(&mut stream).await?;
-        Ok(resp)
-    }
-
     pub(crate) fn admin_request(
         &self,
         method: reqwest::Method,
