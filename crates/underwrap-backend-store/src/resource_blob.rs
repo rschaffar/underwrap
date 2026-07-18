@@ -90,31 +90,5 @@ pub fn expand_blob_to_entries(
     Ok(out)
 }
 
-/// Inverse of [`expand_blob_to_entries`]: rebuild a `ResourceBlob`
-/// from the flat-KV entries the admin `env` / `files` endpoints
-/// produce. Only entries matching `<resource_id>/{env,files}/...` are
-/// considered; libsecret entries never enter this path.
-///
-/// The returned blob has an empty `libsecret` section; callers that
-/// need to combine flat-KV writes with libsecret content must load
-/// the existing blob first and graft the libsecret section across.
-pub fn blob_from_resource_entries(
-    resource_id: &str,
-    entries: &HashMap<String, SecretBytes>,
-) -> Result<ResourceBlob> {
-    let env_prefix = format!("{resource_id}/env/");
-    let files_prefix = format!("{resource_id}/files/");
-
-    let mut blob = ResourceBlob::empty();
-    for (full_id, value) in entries {
-        if let Some(name) = full_id.strip_prefix(&env_prefix) {
-            blob.env.insert(name.to_string(), value.clone());
-        } else if let Some(path) = full_id.strip_prefix(&files_prefix) {
-            blob.files.insert(path.to_string(), value.clone());
-        }
-    }
-    Ok(blob)
-}
-
 #[cfg(test)]
 mod tests;

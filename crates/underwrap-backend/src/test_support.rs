@@ -15,6 +15,7 @@ use hyper::StatusCode;
 use underwrap_backend_store::{StorageBackend, save_resource_blob};
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::policy::PolicyDocument;
+use underwrap_protocol::resource_blob::{Collection, Item, LibsecretSection, ResourceBlob};
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
 
 use crate::admin_api::stores::crud::handle_admin_store_create;
@@ -145,6 +146,57 @@ impl StorageBackend for TestStore {
         self.should_fail("delete")?;
         Ok(self.data.lock().unwrap().remove(secret_id).is_some())
     }
+}
+
+/// Mixed resource fixture used by flat-mutation regression tests.
+///
+/// Every section contains multiple values, and libsecret includes aliases,
+/// collection/item metadata, attributes, and non-text bytes so equality checks
+/// prove that a selected flat mutation preserved the entire structured slot.
+pub(crate) fn mixed_resource_blob_for_test() -> ResourceBlob {
+    let mut blob = ResourceBlob::empty();
+    blob.env
+        .insert("PRIMARY_TOKEN".into(), SecretBytes::from("primary-v1"));
+    blob.env
+        .insert("KEEP_TOKEN".into(), SecretBytes::from("keep-env"));
+    blob.files.insert(
+        "config/primary.toml".into(),
+        SecretBytes::from("primary = 1\n"),
+    );
+    blob.files.insert(
+        "config/keep.toml".into(),
+        SecretBytes::from("keep = true\n"),
+    );
+
+    let mut attributes = std::collections::BTreeMap::new();
+    attributes.insert("server".into(), "example.test".into());
+    attributes.insert("account".into(), "operator".into());
+    let item = Item {
+        label: "CLI credential".into(),
+        content_type: "application/octet-stream".into(),
+        created: 101,
+        modified: 202,
+        attributes,
+        secret: SecretBytes::from(vec![0, 1, 2, 0xff]),
+    };
+    let mut items = std::collections::BTreeMap::new();
+    items.insert("cli-item".into(), item);
+    let collection = Collection {
+        label: "Default collection".into(),
+        created: 11,
+        modified: 22,
+        items,
+    };
+    let mut collections = std::collections::BTreeMap::new();
+    collections.insert("default".into(), collection);
+    let mut aliases = std::collections::BTreeMap::new();
+    aliases.insert("default".into(), "default".into());
+    aliases.insert("login".into(), "default".into());
+    blob.libsecret = LibsecretSection {
+        aliases,
+        collections,
+    };
+    blob
 }
 
 // ===== Misc helpers =====

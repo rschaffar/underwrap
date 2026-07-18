@@ -273,39 +273,3 @@ fn expand_emits_only_env_and_files_entries() {
         "libsecret content leaked into flat-KV projection: {libsecret_keys:?}",
     );
 }
-
-#[test]
-fn blob_from_resource_entries_ignores_other_resources_and_libsecret() {
-    let mut entries = HashMap::new();
-    entries.insert("a/env/X".to_string(), SecretBytes::from("a"));
-    entries.insert("b/env/Y".to_string(), SecretBytes::from("b"));
-    // Stray libsecret-shaped keys must not be parsed: the flat-KV projection
-    // does not handle that slot, regardless of caller-supplied key shape.
-    entries.insert(
-        "a/libsecret/_aliases".to_string(),
-        SecretBytes::from("ignored"),
-    );
-
-    let blob = blob_from_resource_entries("a", &entries).unwrap();
-    assert_eq!(blob.env.len(), 1);
-    assert_eq!(blob.env.get("X").unwrap(), &SecretBytes::from("a"));
-    assert!(
-        blob.libsecret.aliases.is_empty(),
-        "libsecret content must not be reconstructed from flat entries",
-    );
-    assert!(blob.libsecret.collections.is_empty());
-}
-
-#[test]
-fn blob_from_resource_entries_yields_empty_libsecret() {
-    // Even when the input map carries no libsecret-shaped keys at all,
-    // the returned blob's libsecret section is empty. Callers that
-    // want to preserve libsecret content across a flat-KV mutation
-    // must load the existing blob and merge — see the admin
-    // libsecret endpoints.
-    let mut entries = HashMap::new();
-    entries.insert("r/env/X".to_string(), SecretBytes::from("a"));
-    let blob = blob_from_resource_entries("r", &entries).unwrap();
-    assert!(blob.libsecret.aliases.is_empty());
-    assert!(blob.libsecret.collections.is_empty());
-}

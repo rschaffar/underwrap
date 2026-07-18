@@ -5,17 +5,19 @@
 //! The on-disk shape is one blob per resource at
 //! `resources/<resource_id>`. These helpers expand a blob to its
 //! flat `<resource>/<slot>/<inner>` entry map for per-key reads /
-//! writes / lists, and recompose the blob on each write so the file
-//! flip stays atomic.
+//! writes / lists. Mutations update the selected map in the loaded
+//! typed blob so the file flip stays atomic without discarding another slot.
 
-use anyhow::Result;
+use std::collections::BTreeMap;
+
+use anyhow::{Result, bail};
 
 use underwrap_backend_store::{
-    StorageBackend, blob_from_resource_entries, expand_blob_to_entries, load_resource_blob,
-    save_resource_blob,
+    StorageBackend, expand_blob_to_entries, load_resource_blob, save_resource_blob,
 };
 use underwrap_protocol::message::SecretBytes;
-use underwrap_protocol::resource::parse_secret_id;
+use underwrap_protocol::resource::{ResourceSlot, parse_secret_id};
+use underwrap_protocol::resource_blob::ResourceBlob;
 
 use crate::admin_api::AdminError;
 
@@ -34,6 +36,22 @@ pub(crate) fn read_resource_entry(
     Ok(entries.get(secret_id).cloned())
 }
 
+/// Select one flat-KV map in a loaded resource blob.
+///
+/// Flat admin mutations must never route structured libsecret state through the
+/// env/files projection. Reject it here too, even though the HTTP layer already
+/// rejects that slot, so future internal callers cannot cross the boundary.
+pub(crate) fn flat_slot_entries_mut(
+    blob: &mut ResourceBlob,
+    slot: ResourceSlot,
+) -> Result<&mut BTreeMap<String, SecretBytes>> {
+    match slot {
+        ResourceSlot::Env => Ok(&mut blob.env),
+        ResourceSlot::Files => Ok(&mut blob.files),
+        ResourceSlot::Libsecret => bail!("libsecret is not a flat resource slot"),
+    }
+}
+
 /// Write a single per-key entry by load-modify-save against the
 /// resource blob.
 pub(crate) fn write_resource_entry(
@@ -44,11 +62,12 @@ pub(crate) fn write_resource_entry(
     let Some(parsed) = parse_secret_id(secret_id) else {
         return store.write(secret_id, material);
     };
-    let blob = load_resource_blob(store, parsed.resource_id)?;
-    let mut entries = expand_blob_to_entries(parsed.resource_id, &blob)?;
-    entries.insert(secret_id.to_string(), SecretBytes::from(material.to_vec()));
-    let new_blob = blob_from_resource_entries(parsed.resource_id, &entries)?;
-    save_resource_blob(store, parsed.resource_id, &new_blob)
+    let mut blob = load_resource_blob(store, parsed.resource_id)?;
+    flat_slot_entries_mut(&mut blob, parsed.slot)?.insert(
+        parsed.inner.to_string(),
+        SecretBytes::from(material.to_vec()),
+    );
+    save_resource_blob(store, parsed.resource_id, &blob)
 }
 
 /// Delete a single per-key entry. Returns the existed flag.
@@ -56,12 +75,12 @@ pub(crate) fn delete_resource_entry(store: &dyn StorageBackend, secret_id: &str)
     let Some(parsed) = parse_secret_id(secret_id) else {
         return store.delete(secret_id);
     };
-    let blob = load_resource_blob(store, parsed.resource_id)?;
-    let mut entries = expand_blob_to_entries(parsed.resource_id, &blob)?;
-    let existed = entries.remove(secret_id).is_some();
+    let mut blob = load_resource_blob(store, parsed.resource_id)?;
+    let existed = flat_slot_entries_mut(&mut blob, parsed.slot)?
+        .remove(parsed.inner)
+        .is_some();
     if existed {
-        let new_blob = blob_from_resource_entries(parsed.resource_id, &entries)?;
-        save_resource_blob(store, parsed.resource_id, &new_blob)?;
+        save_resource_blob(store, parsed.resource_id, &blob)?;
     }
     Ok(existed)
 }
@@ -154,3 +173,6 @@ pub(crate) fn validate_and_compose_secret_id(
         key,
     ))
 }
+
+#[cfg(test)]
+mod tests;

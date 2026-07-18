@@ -1,5 +1,55 @@
-use super::*;
+use base64::Engine;
+use underwrap_backend_store::{PlainBackend, load_resource_blob, save_resource_blob};
+use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::policy::PolicyDocument;
+use underwrap_protocol::resource_blob::{Collection, Item, LibsecretSection, ResourceBlob};
+use underwrap_protocol::service::{
+    AdminSecretDeleteResponse, AdminSecretRenameRequest, AdminSecretWriteRequest,
+};
+
+use super::*;
+
+fn mixed_resource_blob() -> ResourceBlob {
+    let mut blob = ResourceBlob::empty();
+    blob.env
+        .insert("PRIMARY_TOKEN".into(), SecretBytes::from("primary-v1"));
+    blob.env
+        .insert("KEEP_TOKEN".into(), SecretBytes::from("keep-env"));
+    blob.files
+        .insert("primary.toml".into(), SecretBytes::from("primary = 1\n"));
+    blob.files
+        .insert("keep.toml".into(), SecretBytes::from("keep = true\n"));
+
+    let mut attributes = std::collections::BTreeMap::new();
+    attributes.insert("server".into(), "example.test".into());
+    attributes.insert("account".into(), "operator".into());
+    let item = Item {
+        label: "CLI credential".into(),
+        content_type: "application/octet-stream".into(),
+        created: 101,
+        modified: 202,
+        attributes,
+        secret: SecretBytes::from(vec![0, 1, 2, 0xff]),
+    };
+    let mut items = std::collections::BTreeMap::new();
+    items.insert("cli-item".into(), item);
+    let collection = Collection {
+        label: "Default collection".into(),
+        created: 11,
+        modified: 22,
+        items,
+    };
+    let mut collections = std::collections::BTreeMap::new();
+    collections.insert("default".into(), collection);
+    let mut aliases = std::collections::BTreeMap::new();
+    aliases.insert("default".into(), "default".into());
+    aliases.insert("login".into(), "default".into());
+    blob.libsecret = LibsecretSection {
+        aliases,
+        collections,
+    };
+    blob
+}
 
 #[tokio::test]
 async fn service_mode_roundtrip_reads_secret() {
@@ -24,6 +74,100 @@ async fn service_mode_roundtrip_reads_secret() {
 
     let resp = daemon.read_request("gh-authorized").await.unwrap();
     assert_eq!(expect_single_env_string(resp), "ghp_service");
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn flat_secret_mutations_preserve_libsecret() {
+    let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
+        .await
+        .unwrap();
+    let resource = daemon
+        .create_resource("test", "mixed/resource")
+        .await
+        .unwrap()
+        .resource;
+    let store = PlainBackend::open(&daemon.store_dir_for("test")).unwrap();
+    let mut expected = mixed_resource_blob();
+    save_resource_blob(&store, &resource.id, &expected).unwrap();
+
+    let response = daemon
+        .admin_request(
+            reqwest::Method::PUT,
+            &format!(
+                "/v1/admin/stores/test/secrets/{}/env/NEW_TOKEN",
+                resource.id
+            ),
+        )
+        .json(&AdminSecretWriteRequest {
+            material_b64: base64::engine::general_purpose::STANDARD.encode(b"new-env"),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    expected
+        .env
+        .insert("NEW_TOKEN".into(), SecretBytes::from("new-env"));
+    assert_eq!(load_resource_blob(&store, &resource.id).unwrap(), expected);
+
+    let response = daemon
+        .admin_request(
+            reqwest::Method::PUT,
+            &format!(
+                "/v1/admin/stores/test/secrets/{}/files/primary.toml",
+                resource.id
+            ),
+        )
+        .json(&AdminSecretWriteRequest {
+            material_b64: base64::engine::general_purpose::STANDARD.encode(b"primary = 2\n"),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    expected
+        .files
+        .insert("primary.toml".into(), SecretBytes::from("primary = 2\n"));
+    assert_eq!(load_resource_blob(&store, &resource.id).unwrap(), expected);
+
+    let response = daemon
+        .admin_request(
+            reqwest::Method::DELETE,
+            &format!(
+                "/v1/admin/stores/test/secrets/{}/files/keep.toml",
+                resource.id
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let deleted: AdminSecretDeleteResponse = response.json().await.unwrap();
+    assert!(deleted.existed);
+    expected.files.remove("keep.toml");
+    assert_eq!(load_resource_blob(&store, &resource.id).unwrap(), expected);
+
+    let response = daemon
+        .admin_request(
+            reqwest::Method::POST,
+            &format!(
+                "/v1/admin/stores/test/secrets/{}/env/PRIMARY_TOKEN/rename",
+                resource.id
+            ),
+        )
+        .json(&AdminSecretRenameRequest {
+            to_key: "RENAMED_TOKEN".into(),
+            material_b64: None,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let material = expected.env.remove("PRIMARY_TOKEN").unwrap();
+    expected.env.insert("RENAMED_TOKEN".into(), material);
+    assert_eq!(load_resource_blob(&store, &resource.id).unwrap(), expected);
 
     daemon.stop().await.unwrap();
 }

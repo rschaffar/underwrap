@@ -16,8 +16,7 @@ mod resource_blob;
 pub use encrypted::EncryptedBackend;
 pub use plain::PlainBackend;
 pub use resource_blob::{
-    blob_from_resource_entries, delete_resource_blob, expand_blob_to_entries, load_resource_blob,
-    save_resource_blob,
+    delete_resource_blob, expand_blob_to_entries, load_resource_blob, save_resource_blob,
 };
 
 use anyhow::{Context, Result};

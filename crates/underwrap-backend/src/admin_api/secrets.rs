@@ -21,9 +21,7 @@ use serde::Deserialize;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use underwrap_backend_store::{
-    blob_from_resource_entries, expand_blob_to_entries, load_resource_blob, save_resource_blob,
-};
+use underwrap_backend_store::{load_resource_blob, save_resource_blob};
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource::ResourceSlot;
 use underwrap_protocol::service::{
@@ -39,7 +37,7 @@ use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
 use crate::http::responses::Body;
 use crate::runtime_state::ListenerState;
 use crate::storage::secret_entries::{
-    delete_resource_entry, list_secret_entries, read_resource_entry,
+    delete_resource_entry, flat_slot_entries_mut, list_secret_entries, read_resource_entry,
     validate_and_compose_secret_id, write_resource_entry,
 };
 
@@ -297,18 +295,18 @@ async fn rename_inner(
     let from_id = validate_and_compose_secret_id(resource_id, slot, from_key)?;
     let to_id = validate_and_compose_secret_id(resource_id, slot, &body.to_key)?;
     let store = admin_store(state, store_id)?;
-    let blob =
+    let mut blob =
         load_resource_blob(store.as_ref(), resource_id).into_internal("loading resource blob")?;
-    let mut entries =
-        expand_blob_to_entries(resource_id, &blob).into_internal("expanding resource blob")?;
+    let entries =
+        flat_slot_entries_mut(&mut blob, slot).into_internal("selecting flat resource slot")?;
 
     // The from-entry must exist; the to-entry must not (unless this
     // is a same-key rename, which collapses to a pure material write).
     let same_key = from_id == to_id;
-    let Some(existing) = entries.get(&from_id).cloned() else {
+    let Some(existing) = entries.get(from_key).cloned() else {
         return Err(AdminError::not_found(format!("no entry under {from_id}")));
     };
-    if !same_key && entries.contains_key(&to_id) {
+    if !same_key && entries.contains_key(&body.to_key) {
         return Err(AdminError::conflict(
             "target_key_exists",
             format!("target key {to_id} already exists; delete it first"),
@@ -323,14 +321,11 @@ async fn rename_inner(
     };
 
     if !same_key {
-        entries.remove(&from_id);
+        entries.remove(from_key);
     }
-    entries.insert(to_id.clone(), new_material);
+    entries.insert(body.to_key.clone(), new_material);
 
-    let new_blob = blob_from_resource_entries(resource_id, &entries)
-        .into_internal("building resource blob")?;
-    save_resource_blob(store.as_ref(), resource_id, &new_blob)
-        .into_internal("saving resource blob")?;
+    save_resource_blob(store.as_ref(), resource_id, &blob).into_internal("saving resource blob")?;
     Ok(AdminOkResponse { ok: true })
 }
 
