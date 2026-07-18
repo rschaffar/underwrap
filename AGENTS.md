@@ -112,6 +112,7 @@ tickets/                     project work board
 - `crates/underwrap-exec/src/main.rs` — wrapper invocation, peer request,
   privilege drop, fd handoff
 - `crates/underwrap-ns/src/main.rs` — namespace lifecycle and target execution
+- `crates/underwrap-ns/src/handoff.rs` — fixed-fd daemon peer authentication
 - `crates/underwrap-ns/src/target_uid.rs` — root-owned target-UID authority and
   identity switch
 - `crates/underwrap-ns/src/idmap.rs` — explicit caller-directory access
@@ -210,6 +211,11 @@ test.
 - Set `RLIMIT_CORE=0` before the target exec.
 - Launch the target with `env_clear()` and the documented allowlist. Never
   propagate `LD_*` variables or wrapper-control variables.
+- `underwrap-ns` is a world-executable capability wrapper. Before reading fd 3,
+  trusting selectors or target argv, or doing privileged setup, require fixed
+  fd 20 to be an `AF_UNIX` stream socket whose `SO_PEERCRED` UID/GID matches the
+  root-provisioned `underwrap-<instance>` daemon account. Never accept a
+  bundle-selected channel fd or fall back after handoff-auth failure.
 - Close or mark close-on-exec every fd above stderr before the target exec. In
   particular, the target must never inherit fd 20, the resource channel.
 - Synchronize dbus-daemon readiness with `--print-address=<fd>` and a pipe; a

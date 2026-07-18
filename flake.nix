@@ -264,6 +264,9 @@
           peerProbeScript = pkgs.writeScript "peer-probe.py"
             (builtins.readFile ./nix/tests/peer-probe.py);
 
+          directNsAttackScript = pkgs.writeScript "direct-ns-attack.py"
+            (builtins.readFile ./nix/tests/direct-ns-attack.py);
+
           # The main test script is large (>128 KB). Embedding it inline in the
           # `testScript` attribute pushes that attribute past the kernel's
           # single-argument/env-string limit (MAX_ARG_STRLEN = 128 KB), so the
@@ -290,6 +293,7 @@
                 os.environ["SPOOF_SCRIPT"] = "${spoofScript}"
                 os.environ["ANCESTOR_ATTACK_SCRIPT"] = "${ancestorAttackScript}"
                 os.environ["PEER_PROBE_SCRIPT"] = "${peerProbeScript}"
+                os.environ["DIRECT_NS_ATTACK_SCRIPT"] = "${directNsAttackScript}"
                 os.environ["PYTHON3"] = "${pkgs.python3}/bin/python3"
                 exec(compile(open("${mainTestScript}").read(), "${mainTestScript}", "exec"), globals())
               '';

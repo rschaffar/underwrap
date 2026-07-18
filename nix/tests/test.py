@@ -21,6 +21,7 @@ def su(cmd):
 import os
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PEER_PROBE_SCRIPT = os.environ.get("PEER_PROBE_SCRIPT", "/dev/null")
+DIRECT_NS_ATTACK_SCRIPT = os.environ.get("DIRECT_NS_ATTACK_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
 
 # Each daemon now runs a single HTTPS listener that serves both the
@@ -1475,12 +1476,9 @@ def local_target_uid_authority():
     # LOCAL INSTANCE: root-owned target-UID authority
     # ============================================================
     # The dedicated sandbox uid is chosen by underwrap-ns from a ROOT-OWNED
-    # target-path -> uid table, NEVER from anything the caller or underwrap-exec
-    # supplies (the ExecBundle carries no uid field — see the protocol round-trip
-    # test exec_bundle_carries_no_target_identity). This mirrors "the daemon, not
-    # the wrapper, chooses the target binary": a compromised unprivileged stage
-    # cannot redirect the cap_setuid switch to root or another service. These are
-    # the static authority gates.
+    # (instance, wrapper) -> uid table; the ExecBundle carries no uid field. The
+    # separate handoff test proves that these selectors are accepted only with a
+    # fixed fd-20 socket created by the selected instance daemon.
 
     # underwrap-ns carries cap_setuid + cap_setgid (to perform the mandatory
     # target uid switch) on top of cap_sys_admin.
@@ -1555,6 +1553,36 @@ def local_target_uid_authority():
         "PASS: distinct sandbox uids per (instance,wrapper) — same binary within an "
         "instance and across instances both resolve to different uids; no uid shared"
     )
+
+
+def local_ns_handoff_authentication():
+    # ============================================================
+    # LOCAL INSTANCE: direct underwrap-ns handoff forgery is rejected
+    # ============================================================
+    # underwrap-ns is necessarily a system-wide capability wrapper. A caller
+    # must not be able to pair forged selectors and fd-3 metadata with its own
+    # socketpair, then execute arbitrary code as a configured target uid.
+    marker = "/tmp/underwrap-direct-ns-attack-succeeded"
+    machine.succeed(f"rm -f {marker}")
+    command = (
+        f"{PYTHON3} {DIRECT_NS_ATTACK_SCRIPT} "
+        f"/run/wrappers/bin/underwrap-ns local test-echo {marker} 2>&1"
+    )
+    status, output = machine.execute(su(command))
+    assert status != 0, (
+        f"FAIL: direct underwrap-ns invocation accepted a forged handoff: {output}"
+    )
+    assert "does not match selected instance daemon" in output, (
+        f"FAIL: direct underwrap-ns invocation did not fail at fd-20 peer auth: {output}"
+    )
+    machine.fail(f"test -e {marker}")
+    machine.log("PASS: attacker-created fd-20 socketpair rejected before target execution")
+
+    # The legitimate daemon-created socket transferred through underwrap-exec
+    # must still authenticate and complete normally.
+    output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
+    assert "MY_TOKEN=" in output, f"legitimate handoff failed after attack: {output}"
+    machine.log("PASS: daemon-created fd-20 handoff still succeeds")
 
 
 def local_target_uid_readonly_writeback():
@@ -3217,6 +3245,7 @@ local_spoofing_resistance()
 local_daemon_restart_persistence()
 local_pid_namespace_proc_isolation()
 local_target_uid_authority()
+local_ns_handoff_authentication()
 local_target_uid_isolation()
 local_target_uid_idmapped_home()
 local_target_uid_runtime_dir()

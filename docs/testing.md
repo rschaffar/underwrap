@@ -146,8 +146,10 @@ It checks:
 
 It checks:
 
-- effective-GID peer authentication;
+- effective-GID wrapper-socket peer authentication;
 - spoofing and direct-socket rejection;
+- rejection of a complete forged fd-3/fd-20 direct `underwrap-ns` handoff,
+  followed by a successful daemon-created handoff;
 - daemon validation of wrapper selectors;
 - daemon-chosen real/debug targets;
 - locked, unlocked, expiring, unsafe-debug, missing, and read-only permission

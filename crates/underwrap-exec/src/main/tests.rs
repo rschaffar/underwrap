@@ -97,3 +97,48 @@ target: /usr/bin/gh
     .to_string();
     assert!(err.contains("unknown field"), "got: {err}");
 }
+
+#[test]
+fn relocate_resource_channel_fd_preserves_socket_and_closes_source() {
+    let mut fds = [-1; 2];
+    assert_eq!(
+        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) },
+        0
+    );
+    let source = fds[0];
+    let peer = fds[1];
+
+    let relocated = relocate_resource_channel_fd(source).unwrap();
+    assert!(relocated >= 21);
+    assert_eq!(unsafe { libc::fcntl(source, libc::F_GETFD) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EBADF)
+    );
+    let flags = unsafe { libc::fcntl(relocated, libc::F_GETFD) };
+    assert_ne!(flags, -1);
+    assert_ne!(flags & libc::FD_CLOEXEC, 0);
+
+    let byte = [0x5a_u8];
+    assert_eq!(
+        unsafe { libc::write(peer, byte.as_ptr().cast(), byte.len()) },
+        1
+    );
+    let mut received = [0_u8; 1];
+    assert_eq!(
+        unsafe { libc::read(relocated, received.as_mut_ptr().cast(), received.len()) },
+        1
+    );
+    assert_eq!(received, byte);
+
+    unsafe {
+        libc::close(relocated);
+        libc::close(peer);
+    }
+}
+
+#[test]
+fn relocate_resource_channel_fd_rejects_invalid_source() {
+    let err = relocate_resource_channel_fd(-1).unwrap_err().to_string();
+    assert!(err.contains("relocating wrapper-resource channel"), "{err}");
+}

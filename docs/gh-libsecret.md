@@ -23,7 +23,8 @@ actually speaks Secret Service or a compatible keyring API.
 
 For a libsecret-enabled wrapper, `underwrap-ns`:
 
-1. checks out the resource over its scoped fd 20 channel;
+1. authenticates fixed fd 20 against the selected instance daemon's
+   creation-time Unix peer credentials, then checks out the resource;
 2. extracts the resource's libsecret section;
 3. creates a private bus tmpfs and starts dbus-daemon;
 4. passes the initial canonical section to `underwrap-secretsd` through a

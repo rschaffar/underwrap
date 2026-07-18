@@ -11,7 +11,6 @@ fn sample_binding() -> ExecResourceBinding {
         resource_id: "res_x_y".to_string(),
         resource_name: "x/y".to_string(),
         access: AccessMode::ReadOnly,
-        channel_fd: 20,
         libsecret: false,
         files_target_paths: Vec::new(),
     }

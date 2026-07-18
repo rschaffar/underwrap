@@ -14,7 +14,7 @@
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 
-use underwrap_protocol::exec::ExecResourceBinding;
+use underwrap_protocol::exec::{ExecResourceBinding, WRAPPER_RESOURCE_CHANNEL_FD};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{WrapperResourceRequest, WrapperResourceResponse};
 
@@ -39,16 +39,17 @@ pub struct ResourceChannel {
 /// Failure is fatal — security model is no fallback. The error message
 /// names the resource.
 pub fn checkout(binding: &ExecResourceBinding) -> Result<ResourceChannel, String> {
-    let (original_canonical, writable) = send_checkout(binding.channel_fd as i32).map_err(|e| {
-        format!(
-            "wrapper-resource Checkout for '{}' failed: {e}",
-            binding.resource_id
-        )
-    })?;
+    let (original_canonical, writable) =
+        send_checkout(WRAPPER_RESOURCE_CHANNEL_FD).map_err(|e| {
+            format!(
+                "wrapper-resource Checkout for '{}' failed: {e}",
+                binding.resource_id
+            )
+        })?;
     Ok(ResourceChannel {
         resource_id: binding.resource_id.clone(),
         resource_name: binding.resource_name.clone(),
-        channel_fd: binding.channel_fd as i32,
+        channel_fd: WRAPPER_RESOURCE_CHANNEL_FD,
         original_canonical,
         writable,
         libsecret: binding.libsecret,

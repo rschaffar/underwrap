@@ -184,17 +184,30 @@ the caller's UID or root.
 
 ### 4. Secret-bearing channels are authenticated before use
 
-The local resource socketpair is created only after peer authentication,
-wrapper validation, and backend authorization. Anonymous pipes and inherited
-fds carry the capability forward; no bearer token in argv or environment
-re-authenticates later stages.
+The local resource socketpair is created by `underwrapd` only after wrapper-peer
+authentication, wrapper validation, and backend authorization. Linux records the
+creator's credentials on an `AF_UNIX` socketpair and preserves them when an
+endpoint crosses `SCM_RIGHTS`, `dup2`, fork, and exec.
+
+`underwrap-ns` is a system-wide capability wrapper. Its first trust decision is
+therefore to require fixed fd 20 to be an `AF_UNIX` `SOCK_STREAM` endpoint whose
+`SO_PEERCRED` UID/GID matches the root-provisioned
+`underwrap-<instance>` daemon account. A mismatch, malformed descriptor, missing
+account, root identity, or daemon/target identity overlap aborts before fd 3 is
+read, the wrapper selector or target argv is trusted, or privileged namespace
+setup begins.
+
+The fd number is not carried in `ExecBundle`; fd 20 is part of the fixed local
+ABI. No bearer token in argv or environment re-authenticates later stages. A
+process holding a legitimate fd 20 already holds the scoped resource capability,
+so descriptor confidentiality remains load-bearing.
 
 ### 5. Descriptors do not cross into the target
 
-- fd 3 carries the execution bundle from `underwrap-exec` to `underwrap-ns` and
-  is consumed before target exec;
-- fd 20 is the scoped resource channel between `underwrap-ns` and
-  `underwrapd`;
+- fd 3 carries descriptor-free execution metadata from `underwrap-exec` to
+  `underwrap-ns` and is read only after fd-20 peer authentication;
+- fixed fd 20 is the scoped resource channel between `underwrap-ns` and
+  `underwrapd`; its number cannot be redirected through bundle data;
 - dbus-daemon and secretsd close fd 20;
 - the final target closes or receives close-on-exec for every fd above stderr.
 
@@ -203,8 +216,9 @@ and is a security defect.
 
 ### 6. Active security posture fails closed
 
-Namespace creation, mount setup, target-UID switching, capability drop,
-credential checks, and descriptor cleanup abort on failure.
+Handoff peer authentication, namespace creation, mount setup, target-UID
+switching, capability drop, credential checks, and descriptor cleanup abort on
+failure.
 
 The older-kernel `SO_PEERCRED + /proc` peer-auth path is available only when an
 operator disables the default hardened posture. A failure while taking the
@@ -471,6 +485,13 @@ The named directory's filesystem must support idmapped mounts. Nested submounts
 are handled independently: supported submounts are idmapped, and unsupported
 ones are skipped with a warning. The mounts exist only in the private mount
 namespace.
+
+Creating the idmap user namespace requires a short-lived helper whose proc map
+files the parent can write. After fd-20 authentication, `underwrap-exec`'s
+caller-sanitized hint causes this helper to be forked **before** fd 3 or Checkout
+is read. The helper closes fd 3 and fd 20 before briefly making itself dumpable;
+the secret-bearing parent remains non-dumpable. The decoded bundle must agree
+with the hint or the invocation aborts.
 
 Grant only the directories the target needs. An access path is host access, not
 backend-managed secret storage.

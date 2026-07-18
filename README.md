@@ -60,10 +60,11 @@ For each invocation:
    the invocation.
 4. The daemon chooses the configured target. The caller never supplies a target
    path.
-5. `underwrap-ns` creates PID, mount, IPC, and UTS namespaces; switches to the
-   dedicated UID for the `(instance, wrapper)` pair; projects the requested
-   resource slots; drops capabilities; and executes the target with a cleared
-   environment.
+5. `underwrap-ns` verifies that fixed fd 20 is an `AF_UNIX` stream socket
+   created by the selected instance daemon, then reads the fd 3 bundle. It
+   creates PID, mount, IPC, and UTS namespaces; switches to the dedicated UID
+   for the `(instance, wrapper)` pair; projects the requested resource slots;
+   drops capabilities; and executes the target with a cleared environment.
 6. Files or libsecret changes are canonicalized and submitted for backend
    writeback. The backend re-checks policy and writability before persisting
    them.

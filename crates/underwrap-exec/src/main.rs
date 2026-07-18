@@ -18,8 +18,12 @@
 //!    variant, scope }`; receives the env bindings, the daemon-chosen
 //!    target binary, and one wrapper-resource channel fd via SCM_RIGHTS
 //! 5. Drops all elevated privileges
-//! 6. Forks: parent writes the `ExecBundle` to fd 3; child execs
-//!    `underwrap-ns`, which sets up the namespace and execs the target
+//! 6. Relocates the received socket away from reserved descriptors, then
+//!    forks: the parent writes the descriptor-free `ExecBundle` to fd 3 and the
+//!    child maps the daemon-created socket to fixed fd 20 before execing
+//!    `underwrap-ns`
+//! 7. `underwrap-ns` authenticates fd 20's creation-time daemon credentials
+//!    before reading fd 3, setting up namespaces, or trusting target metadata
 //!
 //! The wrapper never chooses the target binary: it execs whatever path
 //! the daemon returned in `ReadOk`. Secret material flows through the
@@ -29,7 +33,10 @@ use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 
 use underwrap_protocol::config::AccessMode;
-use underwrap_protocol::exec::{ExecBundle, ExecResourceBinding};
+use underwrap_protocol::exec::{
+    EXEC_BUNDLE_FD, ExecBundle, ExecResourceBinding, IDMAP_REQUIRED_ENV,
+    WRAPPER_RESOURCE_CHANNEL_FD,
+};
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
 use underwrap_protocol::variant::WrapperVariant;
@@ -47,10 +54,6 @@ const GROUP_PREFIX: &str = "underwrap-";
 
 /// Debug subcommand token: `underwrap-<instance> debug <wrapper>`.
 const DEBUG_SUBCOMMAND: &str = "debug";
-
-/// Fd used to pass the wrapper-resource channel into underwrap-ns.
-/// The exec bundle pipe takes fd 3; the channel is mapped to fd 20.
-const RESOURCE_CHANNEL_FD: i32 = 20;
 
 /// One parsed invocation: which wrapper, which variant, and the residual
 /// argv to hand the target.
@@ -320,6 +323,27 @@ fn request_secret(
     })
 }
 
+/// Move the received resource channel away from both reserved handoff slots
+/// before creating the fd-3 pipe. This prevents descriptor-allocation order
+/// from letting the first `dup2` clobber the channel. `F_DUPFD_CLOEXEC` keeps the
+/// temporary copy out of an accidental exec; the deliberate `dup2` to fd 20
+/// clears close-on-exec on the fixed destination.
+fn relocate_resource_channel_fd(fd: i32) -> Result<i32> {
+    let relocated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 21) };
+    if relocated < 0 {
+        bail!(
+            "relocating wrapper-resource channel fd {fd}: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    if unsafe { libc::close(fd) } != 0 {
+        let err = std::io::Error::last_os_error();
+        unsafe { libc::close(relocated) };
+        bail!("closing original wrapper-resource channel fd {fd}: {err}");
+    }
+    Ok(relocated)
+}
+
 /// Fork, pipe ExecBundle to the child, child execs underwrap-ns.
 fn exec_via_ns(
     ns_binary: &str,
@@ -347,7 +371,10 @@ fn exec_via_ns(
         );
     }
 
-    // Create pipe for the ExecBundle transfer.
+    let mut resource_binding = read.resource_binding;
+    resource_binding.channel_fd = relocate_resource_channel_fd(resource_binding.channel_fd)?;
+
+    // Create the fd-3 ExecBundle pipe only after relocating the channel.
     let mut pipe_fds = [0i32; 2];
     let ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
     if ret != 0 {
@@ -356,17 +383,16 @@ fn exec_via_ns(
     }
     let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
 
-    let resource_binding = read.resource_binding;
     let exec_resource = ExecResourceBinding {
         resource_id: resource_binding.resource_id.clone(),
         resource_name: resource_binding.resource_name.clone(),
         access: resource_binding.access,
-        channel_fd: RESOURCE_CHANNEL_FD as u32,
         libsecret: resource_binding.libsecret,
         files_target_paths: resource_binding.files_target_paths.clone(),
     };
 
     let libsecret_in_scope = exec_resource.libsecret;
+    let idmap_required = !read.access_paths.is_empty();
     let target = read.target;
 
     let pid = unsafe { libc::fork() };
@@ -382,8 +408,8 @@ fn exec_via_ns(
         unsafe { libc::close(pipe_write) };
 
         // Move read end to fd 3 (the expected fd for underwrap-ns).
-        if pipe_read != 3 {
-            let ret = unsafe { libc::dup2(pipe_read, 3) };
+        if pipe_read != EXEC_BUNDLE_FD {
+            let ret = unsafe { libc::dup2(pipe_read, EXEC_BUNDLE_FD) };
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 eprintln!("underwrap-exec: dup2 failed: {err}");
@@ -392,17 +418,15 @@ fn exec_via_ns(
             unsafe { libc::close(pipe_read) };
         }
 
-        // Map the wrapper-resource fd to its agreed slot.
-        let target_fd = exec_resource.channel_fd as i32;
-        if resource_binding.channel_fd != target_fd {
-            let ret = unsafe { libc::dup2(resource_binding.channel_fd, target_fd) };
-            if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                eprintln!("underwrap-exec: dup2 wrapper-resource channel fd failed: {err}");
-                std::process::exit(1);
-            }
-            unsafe { libc::close(resource_binding.channel_fd) };
+        // Map the daemon-created wrapper-resource socket to the one fixed slot
+        // that underwrap-ns authenticates before trusting this handoff.
+        let ret = unsafe { libc::dup2(resource_binding.channel_fd, WRAPPER_RESOURCE_CHANNEL_FD) };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            eprintln!("underwrap-exec: dup2 wrapper-resource channel fd failed: {err}");
+            std::process::exit(1);
         }
+        unsafe { libc::close(resource_binding.channel_fd) };
 
         // Build argv for underwrap-ns: <ns_binary> <target> [args...].
         // The target is the daemon-chosen path, never a local choice.
@@ -417,6 +441,7 @@ fn exec_via_ns(
         cmd.env_remove("UNDERWRAP_SECRETSD");
         cmd.env_remove("UNDERWRAP_ISOLATION_INSTANCE");
         cmd.env_remove("UNDERWRAP_ISOLATION_WRAPPER");
+        cmd.env_remove(IDMAP_REQUIRED_ENV);
 
         // underwrap-ns resolves the dedicated UID from the `(instance, wrapper)`
         // selector. The instance comes from the effective-GID gate and the daemon
@@ -425,6 +450,9 @@ fn exec_via_ns(
         // internal variables before target exec.
         cmd.env("UNDERWRAP_ISOLATION_INSTANCE", instance);
         cmd.env("UNDERWRAP_ISOLATION_WRAPPER", wrapper);
+        if idmap_required {
+            cmd.env(IDMAP_REQUIRED_ENV, "1");
+        }
 
         if libsecret_in_scope {
             cmd.env("UNDERWRAP_LIBSECRET", "1");

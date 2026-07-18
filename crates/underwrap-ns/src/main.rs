@@ -1,8 +1,9 @@
 //! underwrap-ns — PID namespace isolation stage.
 //!
-//! Reads the `ExecBundle` on fd 3, opens the wrapper-resource channel
-//! handed to it by `underwrap-exec` (fd 20), drives `Checkout`,
-//! materializes any `files` slot into a tmpfs staging dir, starts a
+//! First authenticates the fixed fd-20 wrapper-resource channel as a
+//! socketpair created by the selected instance daemon. Only then does it read
+//! the `ExecBundle` on fd 3, drive `Checkout`, materialize any `files` slot into
+//! a tmpfs staging dir, and start a
 //! private dbus-daemon + secretsd in the namespace when the resource
 //! has the libsecret slot enabled, then forks into a fresh PID
 //! namespace to exec the target.
@@ -20,6 +21,7 @@ mod boundary;
 mod caps;
 mod directory_credential;
 mod env;
+mod handoff;
 mod idmap;
 mod journal;
 mod libsecret;
@@ -40,11 +42,8 @@ use mounts::{
     setup_mount_namespace,
 };
 use resource_channel::ResourceChannel;
-use underwrap_protocol::exec::ExecBundle;
+use underwrap_protocol::exec::{EXEC_BUNDLE_FD, ExecBundle, IDMAP_REQUIRED_ENV};
 use writeback::{WritebackInput, WritebackOutcome};
-
-/// The fd number used to pass the exec bundle from underwrap-exec.
-const SECRET_FD: i32 = 3;
 
 pub(crate) const DIRECTORY_STAGING_ROOT: &str = "/tmp/.underwrap-ns-directories";
 const LIBSECRET_BUS_DIR: &str = "/tmp/.underwrap-ns-bus";
@@ -63,25 +62,70 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    // Executing a file-capability wrapper resets dumpability. Close that window
+    // before reading selectors, argv, or secret-bearing handoff bytes.
+    make_process_non_dumpable()?;
+
+    // fd 20 is the bearer capability for this invocation. `underwrap-ns` is
+    // world-executable, so authenticate the socketpair's immutable creation-time
+    // peer credentials before trusting fd 3, the wrapper selector, target argv,
+    // or any privileged namespace input.
+    let iso_instance = require_isolation_selector("UNDERWRAP_ISOLATION_INSTANCE")?;
+    let daemon_identity = handoff::authenticate_instance_channel(&iso_instance)
+        .map_err(|e| format!("authenticating exec handoff: {e}"))?;
+
+    // The root-owned table must assign this `(instance, wrapper)` pair a
+    // dedicated UID. Only the instance has been used before channel
+    // authentication, and solely to resolve the trusted daemon account.
+    let iso_wrapper = require_isolation_selector("UNDERWRAP_ISOLATION_WRAPPER")?;
+    let isolation = target_uid::resolve_isolation(&iso_instance, &iso_wrapper)
+        .map_err(|e| format!("resolving target isolation: {e}"))?;
+    handoff::require_distinct_target(&daemon_identity, isolation.uid, isolation.gid)?;
+
+    let target_identity =
+        resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
+    if target_identity.uid == isolation.uid {
+        return Err(format!(
+            "caller uid {} overlaps selected target uid {}; refusing handoff",
+            target_identity.uid, isolation.uid
+        ));
+    }
+
+    // Idmap creation forks a helper that must briefly be dumpable so this
+    // non-dumpable parent can write its uid/gid maps. The authenticated exec
+    // stage supplies a boolean hint, allowing that helper to be created before
+    // either process reads fd 3 or Checkout copies secret bytes. The decoded
+    // bundle is checked against the hint immediately afterward.
+    let idmap_required = idmap_required_hint()?;
+    let idmap_userns = if idmap_required {
+        let caller_gid = unsafe { libc::getgid() };
+        Some(
+            idmap::create_idmap_userns(target_identity.uid, caller_gid, isolation)
+                .map_err(|e| format!("creating idmap user namespace: {e}"))?,
+        )
+    } else {
+        None
+    };
+
     let (target, target_args) = parse_target_invocation(std::env::args().collect())?;
-    let exec_bundle =
-        read_secret_fd().map_err(|e| format!("reading exec bundle from fd {SECRET_FD}: {e}"))?;
+    let exec_bundle = read_secret_fd()
+        .map_err(|e| format!("reading exec bundle from fd {EXEC_BUNDLE_FD}: {e}"))?;
+    let has_access_paths = !exec_bundle.access_paths.is_empty();
+    if idmap_required != has_access_paths {
+        return Err(
+            "authenticated idmap hint does not match ExecBundle access_paths; refusing handoff"
+                .to_string(),
+        );
+    }
+
+    // Checkout authenticates the resource protocol before namespace changes,
+    // mounts, or a target-identity switch.
+    let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
 
     let libsecret_requested = std::env::var("UNDERWRAP_LIBSECRET").is_ok();
     let libsecret_resource_present = exec_bundle.resource.libsecret;
     let libsecret_enabled = libsecret_requested && libsecret_resource_present;
     let has_files = !exec_bundle.resource.files_target_paths.is_empty();
-    let target_identity =
-        resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
-
-    // The root-owned table must assign this `(instance, wrapper)` pair a
-    // dedicated UID. underwrap-exec passes only the gate-backed, daemon-validated
-    // selector; root-owned state supplies the identity. A missing selector,
-    // table, or row is fatal.
-    let iso_instance = require_isolation_selector("UNDERWRAP_ISOLATION_INSTANCE")?;
-    let iso_wrapper = require_isolation_selector("UNDERWRAP_ISOLATION_WRAPPER")?;
-    let isolation = target_uid::resolve_isolation(&iso_instance, &iso_wrapper)
-        .map_err(|e| format!("resolving target isolation: {e}"))?;
 
     // Runtime-dir policy. An isolated target gets its OWN dedicated-uid runtime
     // dir (`<base>/<target-user-name>`, provisioned by the system) — a runtime
@@ -89,25 +133,24 @@ fn run() -> Result<(), String> {
     // comes from the root-owned table (never the wire).
     let xdg_runtime_dir = target_runtime_dir(&exec_bundle.target_runtime_dir_base, isolation.uid)?;
 
-    // The caller-owned directories to idmap caller<->X into the target's mount
-    // namespace (`~`/`~/rel`/absolute), straight from the wrapper config.
-    let idmap_paths = exec_bundle.access_paths.clone();
+    // Compute the deterministic files-slot layout before privileged mount work.
+    // The parent keeps it to drive the end-of-run writeback walk; the child
+    // realizes it after switching to its dedicated uid X.
+    let directory_layout = plan_files_mounts(&resource_channel)?;
 
-    // Build the caller↔target idmap user namespace before unsharing the PID
-    // namespace. A helper fork after CLONE_NEWPID would become PID 1 and consume
-    // the slot intended for the target fork. Mounts are applied after the private
-    // mount namespace exists.
-    let idmap_userns = if idmap_paths.is_empty() {
-        None
+    let libsecret_state_path = if libsecret_enabled {
+        Some(PathBuf::from(format!(
+            "{LIBSECRET_BUS_DIR}/{LIBSECRET_STATE_FILENAME}"
+        )))
     } else {
-        let caller_gid = unsafe { libc::getgid() };
-        Some(
-            idmap::create_idmap_userns(target_identity.uid, caller_gid, isolation)
-                .map_err(|e| format!("creating idmap user namespace: {e}"))?,
-        )
+        None
     };
 
-    make_process_non_dumpable()?;
+    // The caller-owned directories to idmap caller<->X into the target's mount
+    // namespace (`~`/`~/rel`/absolute), straight from authenticated wrapper
+    // configuration in the exec bundle.
+    let idmap_paths = exec_bundle.access_paths.clone();
+
     prepare_namespace()?;
 
     // Apply the idmapped bind mounts now: fsuid is still the caller (so open_tree
@@ -118,22 +161,6 @@ fn run() -> Result<(), String> {
         idmap::mount_idmapped_dirs(&idmap_paths, &target_identity.home, userns)
             .map_err(|e| format!("setting up idmapped directories: {e}"))?;
     }
-
-    let resource_channel = resource_channel::checkout(&exec_bundle.resource)?;
-
-    // Compute the deterministic files-slot layout (pure — no filesystem side
-    // effects). The parent keeps it to drive the end-of-run writeback walk; the
-    // child realizes it after switching to its dedicated uid X, where fsuid is
-    // naturally X and the staging is readable/writable by the target.
-    let directory_layout = plan_files_mounts(&resource_channel)?;
-
-    let libsecret_state_path = if libsecret_enabled {
-        Some(PathBuf::from(format!(
-            "{LIBSECRET_BUS_DIR}/{LIBSECRET_STATE_FILENAME}"
-        )))
-    } else {
-        None
-    };
 
     let pid = fork_into_namespace()?;
     if pid == 0 {
@@ -191,6 +218,19 @@ fn require_isolation_selector(var: &str) -> Result<String, String> {
         Err(_) => Err(format!(
             "isolation selector {var} is not set (underwrap-exec must provide it); \
              refusing to run the target as the caller"
+        )),
+    }
+}
+
+fn idmap_required_hint() -> Result<bool, String> {
+    match std::env::var(IDMAP_REQUIRED_ENV) {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) if value == "1" => Ok(true),
+        Ok(value) => Err(format!(
+            "invalid authenticated idmap hint {IDMAP_REQUIRED_ENV}={value:?}"
+        )),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+            "authenticated idmap hint {IDMAP_REQUIRED_ENV} is not valid UTF-8"
         )),
     }
 }
@@ -379,7 +419,7 @@ fn run_child(
                 .collect();
         setup_libsecret(
             &mut cmd,
-            SECRET_FD,
+            EXEC_BUNDLE_FD,
             resource_channel.channel_fd,
             &helper_env,
             &section_bytes,
@@ -619,6 +659,6 @@ fn read_secret_fd() -> Result<ExecBundle, std::io::Error> {
     use std::os::unix::io::FromRawFd;
 
     // SAFETY: fd 3 is expected to be a valid pipe read-end passed by underwrap-exec.
-    let mut file = unsafe { std::fs::File::from_raw_fd(SECRET_FD) };
+    let mut file = unsafe { std::fs::File::from_raw_fd(EXEC_BUNDLE_FD) };
     underwrap_protocol::ipc::read_frame_sync(&mut file).map_err(std::io::Error::other)
 }

@@ -4,11 +4,24 @@ use crate::message::SecretBytes;
 use anyhow::Result;
 use std::collections::HashMap;
 
+/// Fixed descriptor on which `underwrap-ns` receives the execution bundle.
+pub const EXEC_BUNDLE_FD: i32 = 3;
+
+/// Fixed descriptor on which `underwrap-ns` receives the daemon-created
+/// wrapper-resource socket. The descriptor number is part of the trusted local
+/// ABI, not data carried in the untrusted exec bundle.
+pub const WRAPPER_RESOURCE_CHANNEL_FD: i32 = 20;
+
+/// Trusted exec-stage hint that tells `underwrap-ns` to create its idmap helper
+/// before reading the secret-bearing fd-3 bundle. `underwrap-exec` always
+/// removes caller input under this name and sets exactly `1` when access paths
+/// are configured; `underwrap-ns` verifies the hint against the decoded bundle.
+pub const IDMAP_REQUIRED_ENV: &str = "UNDERWRAP_IDMAP_REQUIRED";
+
 /// The wrapper-resource binding flowing through the exec → ns handoff.
-/// `channel_fd` is the ns-side fd number that backs the authenticated
-/// socketpair to the daemon for this resource; ns drives `Checkout` /
-/// `Checkin` / `UsageSignal` over that fd. Each wrapper run has
-/// exactly one resource, so the bundle carries exactly one binding.
+/// `underwrap-ns` drives `Checkout` / `Checkin` / `UsageSignal` over the fixed,
+/// separately authenticated [`WRAPPER_RESOURCE_CHANNEL_FD`]. Each wrapper run
+/// has exactly one resource, so the bundle carries exactly one binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecResourceBinding {
     pub resource_id: String,
@@ -16,7 +29,6 @@ pub struct ExecResourceBinding {
     /// can name the resource in journal and stderr diagnostics.
     pub resource_name: String,
     pub access: AccessMode,
-    pub channel_fd: u32,
     /// Whether secretsd should be launched for this resource.
     pub libsecret: bool,
     /// Target-home-relative paths at which the files staging dir for
@@ -30,7 +42,6 @@ impl WireEncode for ExecResourceBinding {
         self.resource_id.encode(out)?;
         self.resource_name.encode(out)?;
         self.access.encode(out)?;
-        self.channel_fd.encode(out)?;
         self.libsecret.encode(out)?;
         self.files_target_paths.encode(out)
     }
@@ -42,7 +53,6 @@ impl WireDecode for ExecResourceBinding {
             resource_id: String::decode(reader)?,
             resource_name: String::decode(reader)?,
             access: AccessMode::decode(reader)?,
-            channel_fd: u32::decode(reader)?,
             libsecret: bool::decode(reader)?,
             files_target_paths: Vec::<String>::decode(reader)?,
         })
@@ -67,9 +77,9 @@ pub struct ExecBundle {
     /// `XDG_RUNTIME_DIR` as `<target_runtime_dir_base>/<target-user-name>`
     /// — the executing dedicated uid's own dir, not the caller's.
     pub target_runtime_dir_base: String,
-    /// The wrapper-resource binding for this run's single resource,
-    /// carrying the fd for the bulk-blob IPC channel
-    /// (`Checkout` / `Checkin` / `UsageSignal`).
+    /// Metadata for this run's single resource. The bulk-blob IPC descriptor
+    /// is fixed and authenticated out of band; it is deliberately absent from
+    /// the bundle.
     pub resource: ExecResourceBinding,
     /// Caller-owned directories to idmap (caller<->dedicated uid) into the
     /// target's mount namespace (`~`/`~/rel`/absolute).

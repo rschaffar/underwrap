@@ -26,7 +26,9 @@ underwrap-ns
    └──────────────────── reads final state after target exit ◄─┘
 ```
 
-1. `underwrap-ns` checks out the complete canonical resource blob over fd 20.
+1. `underwrap-ns` authenticates fixed fd 20 against the selected instance
+   daemon's creation-time Unix peer credentials, then checks out the complete
+   canonical resource blob.
 2. It extracts the libsecret section and sends those canonical bytes to
    secretsd through a one-shot anonymous pipe.
 3. secretsd loads the section into memory and writes an initial canonical state

@@ -11,7 +11,7 @@ resource into a short-lived target process.
 | `underwrap-backend` | HTTPS runtime API, admin API, embedded SPA, policy, resources, and persistent storage |
 | `underwrapd` | Per-instance local broker; authenticates wrapper peers and relays the three runtime API calls |
 | `underwrap-exec` | Setgid entry stage; requests an invocation, drops the instance-group identity, and hands execution state to `underwrap-ns` |
-| `underwrap-ns` | Namespace supervisor; checks out the resource, switches target identity, projects slots, executes the target, and finalizes usage/writeback |
+| `underwrap-ns` | Namespace supervisor; authenticates the fixed daemon channel, checks out the resource, switches target identity, projects slots, executes the target, and finalizes usage/writeback |
 | `underwrap-secretsd` | Private Secret Service provider used inside a libsecret-enabled invocation |
 | `underwrap-debug-tool` | Explicitly unsafe target selected only for an authorized debug variant |
 | Admin SPA | Vite/React operator interface embedded in `underwrap-backend` |
@@ -96,17 +96,24 @@ The detailed sequence is:
 5. `underwrapd` chooses the target path: the configured target for `Real`, or
    `underwrap-debug-tool` for an authorized `Debug` invocation. It creates one
    scoped resource socketpair and sends the wrapper end with `SCM_RIGHTS`.
-6. `underwrap-exec` permanently drops its setgid identity, maps the resource
-   channel to fd 20, and sends the execution bundle to `underwrap-ns` over fd 3.
-7. `underwrap-ns` resolves the dedicated target UID/GID from the root-owned
+6. `underwrap-exec` permanently drops its setgid identity, relocates the
+   received channel away from reserved descriptors, maps it to fixed fd 20, and
+   sends the descriptor-free execution bundle to `underwrap-ns` over fd 3.
+7. Because the capability-bearing `underwrap-ns` entry point is system-wide, it
+   first resolves the selected instance's root-provisioned daemon account and
+   requires fd 20 to be an `AF_UNIX` stream socket whose immutable
+   `SO_PEERCRED` UID/GID matches that account. It rejects before reading fd 3 or
+   trusting the wrapper selector and target argv on any mismatch.
+8. `underwrap-ns` resolves the dedicated target UID/GID from the root-owned
    `(instance, wrapper)` table. The UID/GID never comes from IPC or the daemon.
-8. `underwrap-ns` creates PID, mount, IPC, and UTS namespaces, checks out the
-   resource over fd 20, prepares projections, switches the target child to its
-   dedicated UID, clears capabilities, and executes the daemon-chosen target.
-9. After the target exits, the namespace supervisor compares the canonical
-   post-run resource with the Checkout bytes. It sends either `UsageSignal` or
-   `Checkin` over fd 20.
-10. `underwrapd` translates that request into the finalize API. The backend
+9. `underwrap-ns` checks out the resource over authenticated fd 20, then creates
+   PID, mount, IPC, and UTS namespaces, prepares projections, switches the
+   target child to its dedicated UID, clears capabilities, and executes the
+   daemon-chosen target.
+10. After the target exits, the namespace supervisor compares the canonical
+    post-run resource with the Checkout bytes. It sends either `UsageSignal` or
+    `Checkin` over fd 20.
+11. `underwrapd` translates that request into the finalize API. The backend
     re-evaluates policy and, for a writeback, re-checks writability and env
     immutability before persisting.
 
@@ -155,6 +162,12 @@ does not raise it into the ambient set.
 
 `underwrap-ns`:
 
+- makes itself non-dumpable before reading secret-bearing handoff state;
+- authenticates fixed fd 20 from its socket domain/type and creation-time
+  `SO_PEERCRED`, using the selected instance only to resolve the expected
+  root-provisioned daemon UID/GID;
+- rejects direct invocation before reading fd 3, trusting the wrapper selector
+  or target argv, or performing namespace/mount/idmap work;
 - creates fresh PID, mount, IPC, and UTS namespaces;
 - makes mount propagation private and remounts `/proc` for the new PID
   namespace;

@@ -687,15 +687,19 @@ in {
       ++ [ targetGroups ]
     );
 
-    # Shared underwrap-ns (one binary for all instances). CAP_SETUID and
-    # CAP_SETGID are needed transiently for the dedicated target-ID switch and
-    # single-entry idmap; they are dropped before target exec. The root-owned
-    # table, not a credential held by underwrap-ns, selects the target identity.
+    # Shared underwrap-ns (one world-executable capability wrapper for all
+    # instances). CAP_SETUID and CAP_SETGID are needed transiently for the
+    # dedicated target-ID switch and single-entry idmap; they are dropped before
+    # target exec. Because direct execution is possible, underwrap-ns
+    # authenticates fixed fd 20 against the selected instance daemon's
+    # creation-time SO_PEERCRED before reading fd 3 or using the root-owned
+    # target-identity table.
     security.wrappers = lib.mkMerge ([{
       underwrap-ns = {
         source = "${cfg.package}/bin/underwrap-ns";
         owner = "root";
         group = "root";
+        permissions = "u+rx,g+rx,o+rx";
         capabilities = "cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid+ep";
       };
     }] ++ lib.mapAttrsToList (_: i: i.securityWrappers) instances);

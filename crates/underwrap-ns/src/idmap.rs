@@ -20,6 +20,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 
 use crate::target_uid::Isolation;
+use underwrap_protocol::exec::{EXEC_BUNDLE_FD, WRAPPER_RESOURCE_CHANNEL_FD};
 
 /// `open_tree(2)` flag: set close-on-exec on the returned fd.
 const OPEN_TREE_CLOEXEC: libc::c_uint = libc::O_CLOEXEC as libc::c_uint;
@@ -91,9 +92,12 @@ pub(crate) fn mount_idmapped_dirs(
 /// through the idmapped mount, and a file `X` creates lands on disk owned by
 /// `caller` (`make_vfsuid` = `map_id_down`: first->lower_first).
 ///
-/// **Call this BEFORE unsharing the PID namespace.** The helper fork would
-/// otherwise become PID 1 of the new PID namespace and, once reaped, leave that
-/// namespace unable to host the real target fork.
+/// **Call this after fd-20 authentication but before reading fd 3, Checkout,
+/// or unsharing the PID namespace.** The helper briefly makes itself dumpable
+/// so the parent can write its map files; it first closes fd 3 and fd 20 and is
+/// forked before either process has copied secret bytes into memory. Forking
+/// after `CLONE_NEWPID` would also consume the PID-1 slot intended for the
+/// target.
 pub(crate) fn create_idmap_userns(
     caller_uid: libc::uid_t,
     caller_gid: libc::gid_t,
@@ -130,11 +134,18 @@ pub(crate) fn create_idmap_userns(
         return Err(format!("fork failed: {}", std::io::Error::last_os_error()));
     }
     if pid == 0 {
-        // SAFETY: async-signal-safe path only — unshare + write + read.
+        // SAFETY: async-signal-safe path only. The parent is non-dumpable before
+        // handoff authentication. This helper is forked before fd 3 is read or
+        // Checkout obtains secret bytes; close both capability-bearing handoff
+        // descriptors before making only the secret-free helper dumpable so the
+        // parent may write its user-namespace maps.
         unsafe {
             libc::close(ready[0]);
             libc::close(release[1]);
-            let ok = libc::unshare(libc::CLONE_NEWUSER) == 0;
+            libc::close(EXEC_BUNDLE_FD);
+            libc::close(WRAPPER_RESOURCE_CHANNEL_FD);
+            let dumpable = libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) == 0;
+            let ok = dumpable && libc::unshare(libc::CLONE_NEWUSER) == 0;
             let msg = [u8::from(ok)];
             libc::write(ready[1], msg.as_ptr() as *const libc::c_void, 1);
             // Block until the parent has written the maps + opened the ns fd.

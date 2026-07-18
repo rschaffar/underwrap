@@ -7,7 +7,6 @@ fn exec_resource_binding_roundtrip() {
         resource_id: "res_gws_state".to_string(),
         resource_name: "gws/state".to_string(),
         access: AccessMode::ReadWrite,
-        channel_fd: 20,
         libsecret: false,
         files_target_paths: vec![".config/gh".to_string()],
     };
@@ -17,12 +16,27 @@ fn exec_resource_binding_roundtrip() {
     assert_eq!(decoded, binding);
 }
 
+#[test]
+fn resource_binding_encoding_carries_no_descriptor_selector() {
+    let binding = sample_binding();
+    let encoded = encode_to_vec(&binding).unwrap();
+
+    let mut expected = Vec::new();
+    binding.resource_id.encode(&mut expected).unwrap();
+    binding.resource_name.encode(&mut expected).unwrap();
+    binding.access.encode(&mut expected).unwrap();
+    binding.libsecret.encode(&mut expected).unwrap();
+    binding.files_target_paths.encode(&mut expected).unwrap();
+
+    assert_eq!(encoded, expected);
+    assert_eq!(WRAPPER_RESOURCE_CHANNEL_FD, 20);
+}
+
 fn sample_binding() -> ExecResourceBinding {
     ExecResourceBinding {
         resource_id: "res_gws_state".to_string(),
         resource_name: "gws/state".to_string(),
         access: AccessMode::ReadWrite,
-        channel_fd: 20,
         libsecret: false,
         files_target_paths: vec![".config/gh".to_string()],
     }
@@ -39,7 +53,6 @@ fn exec_bundle_roundtrip_minimal() {
             resource_id: "res_x_y".to_string(),
             resource_name: "x/y".to_string(),
             access: AccessMode::ReadOnly,
-            channel_fd: 20,
             libsecret: false,
             files_target_paths: Vec::new(),
         },
