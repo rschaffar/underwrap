@@ -1,97 +1,71 @@
-# Documentation overview
+# Documentation
 
-If you are new to underwrap, start here.
+underwrap's documentation is organized by task and audience.
 
-underwrap's docs are organized by question:
+## Evaluate underwrap
 
-- **Should I use this?** → [Choosing underwrap](comparison.md)
-- **How do I get one wrapper working?** → [Getting started](getting-started.md)
-- **How should I design agent-facing wrappers?** → [Agent-facing wrappers](agents.md)
-- **What should I check before I call a wrapper design done?** → [Wrapper author checklist](wrapper-author-checklist.md)
-- **How do the advanced workflows work?**
-  - [GitHub via libsecret](gh-libsecret.md)
-  - [Deploying the central backend](remote-backend.md)
-  - [The underwrap backend](backend.md)
-  - [Admin UI](admin-ui.md)
-- **How do I configure it?** → [Configuration reference](configuration.md)
-- **How does the system fit together?** → [Architecture](architecture.md)
-- **What are the security goals, mechanisms, and limits?** → [Security](security.md)
-- **How is it tested?** → [Testing](testing.md)
+- [Project overview](../README.md) — purpose, boundaries, maturity, and a short
+  architecture summary.
+- [Choosing underwrap](comparison.md) — where the wrapper-oriented model fits
+  and where simpler tools are preferable.
+- [Security](security.md) — threat model, hardened-posture claim, assumptions,
+  mechanisms, and limitations.
 
-## Recommended reading path
+## Complete the first deployment
 
-### If you are evaluating underwrap
+1. [Getting started](getting-started.md) — a deterministic local tutorial with
+   one backend, one frontend instance, and one stateless wrapper.
+2. [Admin UI](admin-ui.md) — bootstrap, stores, client enrollment, resources,
+   permissions, users, and encrypted-store operations.
+3. [Configuration](configuration.md) — NixOS and backend configuration
+   reference.
+4. [Deploying the backend](remote-backend.md) — separate backend and target
+   hosts, TLS, runtime client enrollment, and operational hardening.
 
-1. [README](../README.md)
-2. [Choosing underwrap](comparison.md)
-3. [Getting started](getting-started.md)
-4. [Security](security.md)
+## Design wrappers
 
-### If you want the agent-facing pattern
+- [Agent-facing wrappers](agent-facing-wrappers.md) — expose a narrow command
+  rather than a reusable token or broad CLI.
+- [Wrapper author checklist](wrapper-author-checklist.md) — target, arguments,
+  environment, helper lookup, token scope, projections, and local-user model.
+- [GitHub via libsecret](gh-libsecret.md) — share a private Secret Service
+  resource between an authentication wrapper and narrower action wrappers.
 
-1. [README](../README.md)
-2. [Agent-facing wrappers](agents.md)
-3. [Wrapper author checklist](wrapper-author-checklist.md)
-4. [Getting started](getting-started.md)
-5. [Security](security.md)
+## Reference
 
-### If you want to deploy it seriously
+- [Architecture](architecture.md) — components, identities, request flow,
+  projections, and crate layout.
+- [Backend](backend.md) — configuration, runtime API, admin API, policy model,
+  entities, and resource blob storage.
+- [Admin UI](admin-ui.md) — operator tasks and browser authentication model.
+- [Configuration](configuration.md) — NixOS options and backend YAML.
+- [Testing](testing.md) — validation commands and the properties exercised by
+  each test layer.
 
-1. [Getting started](getting-started.md)
-2. [The underwrap backend](backend.md)
-3. [Deploying the central backend](remote-backend.md)
-4. [Admin UI](admin-ui.md)
-5. [Configuration reference](configuration.md)
-6. [Testing](testing.md)
-7. [Security](security.md)
+The generated OpenAPI document at
+`crates/underwrap-backend/openapi.json` is the normative admin HTTP contract.
+The runtime API is internal and documented in [Backend](backend.md).
 
-A good default verification command once you are set up is:
+## Security review
 
-```bash
-nix flake check
-```
-
-### If you are reviewing the security model
+Read these in order when reviewing a trust boundary:
 
 1. [Architecture](architecture.md)
 2. [Security](security.md)
-3. [Testing](testing.md)
+3. [secretsd security](secretsd-security.md) for the target-facing D-Bus
+   boundary
+4. [Testing](testing.md)
 
-## The three main usage levels
+The security documentation describes a pre-release design, not a formal proof
+or independent audit.
 
-### 1. Simple token injection
+## Contributors and coding agents
 
-This is the easiest way to adopt underwrap.
+- [`AGENTS.md`](../AGENTS.md) — canonical engineering and security instructions
+- [Testing](testing.md) — command and coverage reference
+- `.pi/skills/underwrap-ticket-workflow/SKILL.md` — ticket execution workflow
+- `.pi/skills/underwrap-component-refine/SKILL.md` — review-and-ticket-plan
+  workflow
 
-Example:
-- wrap `jira-cli`
-- inject `JIRA_API_TOKEN`
-- keep the token out of the caller's shell session
-
-Start here if you mainly want to stop exporting secrets globally.
-
-### 2. Narrow agent-facing wrappers
-
-This is the most opinionated use case.
-
-Example:
-- expose `agent-gh-comment`
-- inject `GH_TOKEN` only for that one command
-- point underwrap at your own narrow helper instead of the full `gh` CLI
-
-This is where underwrap is most compelling.
-
-### 3. Stateful credential workflows
-
-This is where underwrap moves beyond simple env-var injection.
-
-Examples:
-- `gh` storing credentials via a private Secret Service in libsecret mode
-- central backend mode where secrets remain on a trusted workstation or
-  server and target hosts only see them through authenticated HTTPS
-
-## A note on the security docs
-
-The [Security](security.md) document is intentionally detailed and technical.
-
-That is by design. underwrap is trying to make strong guarantees about secret handling in a tricky part of the stack: local CLI execution on multi-process systems. The high-level docs keep things approachable; the security doc explains the reasoning in depth.
+`CLAUDE.md` is a symlink to `AGENTS.md`, so agent-specific entry points cannot
+drift from the canonical project contract.

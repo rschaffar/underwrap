@@ -3,11 +3,13 @@
 //!
 //! Mirrors the Secret Service spec hierarchy directly: a Service-level
 //! alias table plus a set of Collections, each holding Items. Every
-//! mutating handler runs through `with_blob`, which performs one atomic
+//! mutating handler runs through `with_blob`, which performs one
 //! load → mutate → save cycle against the structured `LibsecretSection`
-//! in the resource blob and saves only when the closure reports the
-//! blob actually changed. None of these endpoints go through the legacy
-//! flat-KV bridge.
+//! and saves only when the closure reports a change. The final resource-file
+//! replacement is atomic; the cycle is not transactional, and concurrent
+//! whole-blob writers are last-writer-wins.
+//! Libsecret state remains structured and does not use the env/files flat-entry
+//! projection.
 //!
 //! `created` is set on POST; `modified` is bumped server-side on every
 //! successful mutation. Clients never supply either field. Item secret

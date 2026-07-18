@@ -1,46 +1,43 @@
 # GitHub via libsecret
 
-This guide shows the clean first-release pattern for `gh` with underwrap:
+GitHub CLI can store credentials through Secret Service instead of receiving a
+static `GH_TOKEN`. underwrap provides a private Secret Service for one wrapper
+invocation and persists its canonical state in a backend resource.
 
-- declare one reusable libsecret credential namespace
-- bind it read-write to an auth/login wrapper
-- bind it read-only to narrower execution wrappers
+A clean wrapper design separates credential management from routine actions:
 
-That lets multiple wrappers share one `gh` credential store inside the same instance while keeping write authority explicit.
+- one writable authentication wrapper;
+- one or more read-only action wrappers;
+- one shared libsecret resource.
 
-## Why this mode exists
+## Why use libsecret
 
-Some tools want a Secret Service provider rather than a single env token.
+`gh auth login` manages structured credential state rather than one fixed env
+value. Later `gh` commands need to discover and read that state through Secret
+Service.
 
-`gh auth login` is the clearest example:
+Use env projection for a simple fixed token. Use libsecret only when the target
+actually speaks Secret Service or a compatible keyring API.
 
-- it wants to store and retrieve credentials through Secret Service
-- the stored data is not a single token value
-- later `gh` executions should be able to reuse that state
+## Invocation flow
 
-underwrap provides a private Secret Service namespace for that workflow.
+For a libsecret-enabled wrapper, `underwrap-ns`:
 
-## What happens in libsecret mode
+1. checks out the resource over its scoped fd 20 channel;
+2. extracts the resource's libsecret section;
+3. creates a private bus tmpfs and starts dbus-daemon;
+4. passes the initial canonical section to `underwrap-secretsd` through a
+   one-shot pipe;
+5. points the target at the private bus with `DBUS_SESSION_BUS_ADDRESS`;
+6. waits for the target;
+7. reads secretsd's canonical tmpfs state file;
+8. sends UsageSignal or Checkin over fd 20.
 
-When a wrapper enables libsecret projection:
+secretsd has no direct daemon channel. It keeps the keyring in memory and
+atomically updates the tmpfs state file before acknowledging each successful
+D-Bus mutation. The target never inherits fd 20.
 
-```nix
-libsecret = true;
-```
-
-underwrap:
-
-1. authenticates the wrapper over its wrapper socket
-2. creates a scoped daemon channel for that credential namespace
-3. launches a private D-Bus session bus inside the wrapper namespace
-4. launches `underwrap-secretsd` on that private bus
-5. points the target at that private bus via `DBUS_SESSION_BUS_ADDRESS`
-
-The target then sees a normal Secret Service provider, but all storage flows through underwrap's backend.
-
-## Recommended pattern: split auth and action wrappers
-
-Example:
+## Split authentication and action wrappers
 
 ```nix
 services.underwrap.instances.work = {
@@ -51,66 +48,88 @@ services.underwrap.instances.work = {
   };
 
   wrappers.gh-pr = {
-    target = "/nix/store/...-gh-pr-helper/bin/gh-pr-helper";
+    target = "${ghPrHelper}/bin/gh-pr-helper";
     resource = "github/gh";
     libsecret = true;
   };
 };
 ```
 
-Read/write authority is decided per `(client_instance, wrapper, resource)`
-grant in the backend policy, not in the NixOS module — the same `github/gh`
-resource can be writable for `gh-auth` and read-only for `gh-pr`.
+Both wrappers address the same resource but remain distinct
+wrapper/resource pairs. In the backend:
 
-This is a good first-release shape because it keeps the credential
-namespace reusable while separating:
+- give `gh-auth → github/gh` a writable permission when it must run
+  `gh auth login` or mutate credentials;
+- give `gh-pr → github/gh` a non-writable permission for routine reads;
+- choose an appropriate permission mode independently for each row.
 
-- the wrapper that may mutate the store
-- the wrappers that may only read from it
+The action helper should fix the repository, subcommand, and allowed argument
+surface instead of exposing the full `gh` CLI to automation.
 
-Wrapper availability (`Locked` / `Unlocked` / `UnlockedUntil` /
-`UnsafeDebugUntil`) is set on the backend side; the local wrapper config
-stays minimal. See [The underwrap backend](backend.md) and
-[Admin UI](admin-ui.md) for the modes and how to set them.
+## Initialize credentials
 
-## Read vs write
+1. Enroll the frontend runtime client and register both pairs.
+2. Create or confirm resource `github/gh`.
+3. Give `gh-auth` an active writable permission.
+4. Run:
 
-Write authority is **not** declared in the NixOS module. It is decided
-per `(client_instance, wrapper, resource)` permission in the backend
-policy via the per-row `writable` flag, re-checked on every finalize.
-That means you can give `gh-auth` a writable permission so `gh auth
-login` can store credentials, and give `gh-pr` a non-writable
-permission on the same `github/gh` resource — both wrappers see the
-same Secret Service contents, but only one can mutate it.
+   ```bash
+   gh-auth auth login
+   ```
 
-## Why this is cleaner than a bootstrap secret
+5. Complete GitHub's login flow.
+6. Confirm that the libsecret collection/item tree appears under the
+   `github/gh` resource in **Secrets**.
+7. Set the `gh-pr` permission to an active non-writable mode and test the narrow
+   helper.
+8. Return `gh-auth` to `Locked` when routine credential mutation is not needed.
 
-There is no separate bootstrap secret in the user-facing model.
+Exact command arguments depend on the GitHub CLI version and authentication
+method. Never place a token directly on the command line.
 
-The declared credential itself is the namespace root.
+## Read-only behavior
 
-That means the config stays honest:
+The target-facing Secret Service remains writable so normal keyring clients do
+not fail during local mutation. When the permission is non-writable:
 
-- one credential ref
-- one shared libsecret store
-- one or more wrappers with explicit permissions
+- secretsd records mutations in invocation-local tmpfs state;
+- `underwrap-ns` discards the changed state at teardown;
+- one structured writeback-rejected event is emitted;
+- one stderr warning is emitted unless the caller set
+  `UNDERWRAP_SUPPRESS_READONLY_WARNING=1`.
 
-## When to use libsecret mode
+The backend is still the persistence authority. If a permission becomes
+read-only during a writable invocation, finalize rejects the submitted
+writeback.
 
-Use it when the target genuinely expects Secret Service behavior, such as:
+## Compatible client patterns
 
-- `gh auth login`
-- tools using the C `libsecret` library directly (`secret-tool`, GNOME apps)
-- tools using Go's `99designs/keyring` Secret Service backend (`gog`,
-  `aws-sso`, `aws-vault`, `chamber`) — these locate their collection by
-  object path, which underwrap derives from the collection name
-- tools that already integrate with libsecret/keyring APIs
+Libsecret mode is suitable for:
 
-Do not use it for simple token injection. If the target only needs a fixed token in an env var, env mode is simpler and easier to reason about.
+- `gh` and `secret-tool`;
+- applications using the C libsecret API;
+- GNOME Secret Service clients;
+- Go applications using the `99designs/keyring` Secret Service backend.
 
-## Related docs
+Some Go clients locate a collection by stable object path. secretsd validates a
+target-chosen collection name and uses it as the path segment so those clients
+can reopen the same collection. See [secretsd security](secretsd-security.md)
+for validation and state limits.
 
-- [Getting started](getting-started.md)
-- [Configuration reference](configuration.md)
-- [Agent-facing wrappers](agents.md)
-- [Security](security.md)
+## Security boundaries
+
+- The libsecret resource is shared only because both wrapper configs name it.
+- Permission rows remain per runtime client, wrapper, and resource.
+- The target can ask its private Secret Service to reveal any item in that
+  projected resource; wrapper narrowness still matters.
+- A non-writable permission prevents persistence, not local D-Bus mutation.
+- The private bus is filesystem-backed inside the mount namespace. Abstract host
+  D-Bus sockets are a documented defense-in-depth limitation.
+
+## Related documentation
+
+- [Agent-facing wrappers](agent-facing-wrappers.md)
+- [Wrapper author checklist](wrapper-author-checklist.md)
+- [Architecture](architecture.md#libsecret-projection)
+- [Security](security.md#libsecret)
+- [Admin UI](admin-ui.md)

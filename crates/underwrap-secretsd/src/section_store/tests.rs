@@ -76,11 +76,9 @@ fn client_named_collection_survives_checkout_roundtrip() {
 
 #[test]
 fn reload_then_create_item_does_not_overwrite_existing() {
-    // The exact scenario that destroyed the gog OAuth client secret:
-    // invocation A stores item X; invocation B reloads that state and
-    // writes a *different* item Y. With the old reset-on-startup counter,
-    // Y was minted the same id as X and silently clobbered it. Random ids
-    // make a collision impossible, so X must survive.
+    // Invocation A stores item X; invocation B reloads that state and writes a
+    // different item Y. Persisted and newly generated ids must remain distinct,
+    // so X survives the second write.
     let mut store_a = store_from_section(&LibsecretSection::default());
     store_a.create_collection("gogcli", None);
     let mut x_attrs = std::collections::HashMap::new();

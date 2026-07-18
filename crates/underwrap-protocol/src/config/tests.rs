@@ -192,22 +192,18 @@ wrappers:
 }
 
 #[test]
-fn shipped_examples_config_yaml_parses() {
+fn shipped_daemon_config_example_parses() {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let repo_root = std::path::Path::new(manifest)
         .parent()
         .unwrap()
         .parent()
         .unwrap();
-    let example = repo_root.join("examples").join("config.yaml");
-    let Ok(yaml) = std::fs::read_to_string(&example) else {
-        eprintln!(
-            "skipping: {} not reachable from this build sandbox",
-            example.display()
-        );
-        return;
-    };
+    let example = repo_root.join("examples").join("daemon-config.yaml");
+    let yaml = std::fs::read_to_string(&example).unwrap_or_else(|error| {
+        panic!("cannot read shipped example {}: {error}", example.display())
+    });
     let _: DaemonConfig = serde_yaml::from_str(&yaml).unwrap_or_else(|e| {
-        panic!("examples/config.yaml does not parse against DaemonConfig: {e}")
+        panic!("examples/daemon-config.yaml does not parse against DaemonConfig: {e}")
     });
 }

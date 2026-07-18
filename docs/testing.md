@@ -1,150 +1,48 @@
 # Testing
 
-underwrap has two main layers of automated validation:
+underwrap uses four complementary validation layers:
 
-- regular Rust tests across the workspace
-- a NixOS VM test that exercises the real deployment model
+1. Rust unit and integration tests;
+2. SPA unit/build/browser tests;
+3. workspace lint, formatting, audit, dependency-policy, and coverage checks;
+4. a NixOS VM test of the deployed privilege and namespace model.
 
-For a project like this, both matter. Unit and integration tests catch protocol and logic regressions; the VM test gives confidence that the NixOS wrapper chain actually behaves the way the design expects.
+No layer is a security proof. Together they detect regressions in code paths,
+wire contracts, packaging, and the real NixOS wrapper chain.
 
-## Recommended commands
+## Fast local loop
 
-The easiest "run everything that matters" command is now:
+For one Rust crate:
 
 ```bash
-nix flake check
+cargo test -p <crate>
 ```
 
-That runs the workspace checks defined in `flake.nix`, including:
-
-- Rust tests
-- `cargo nextest`
-- `cargo fmt -- --check`
-- `cargo clippy --all-targets --workspace -- -D warnings`
-- `cargo-audit`
-- `cargo-deny`
-- `cargo-llvm-cov`
-- the NixOS VM test
-
-If you prefer running the layers manually before a larger change, use:
+For cross-component daemon/backend behavior:
 
 ```bash
-cargo test --workspace
+cargo test -p integration-tests
+```
+
+For the SPA:
+
+```bash
+cd web
+npm ci                  # first run or after lockfile changes
+npm test
+npm run build
+```
+
+Run formatting and lint before committing Rust changes:
+
+```bash
 cargo fmt -- --check
 cargo clippy --all-targets --workspace -- -D warnings
-nix build .#checks.x86_64-linux.vm-test
 ```
 
-## What the Rust tests cover
+## Complete repository checks
 
-The workspace tests cover things such as:
-
-- config parsing and protocol serialization
-- IPC framing
-- storage backends
-- daemon control and wrapper request behavior
-- unlock and lock state handling
-- fd passing and scoped libsecret channel behavior
-- scoped directory channel behavior
-- Secret Service data model behavior
-- CLI request construction and integration flows
-- wrapper and namespace helper logic
-
-These tests are fast and good at catching mistakes in individual components.
-
-## What the VM test covers
-
-The VM test is where the deployment story gets exercised end to end.
-
-It boots a NixOS VM with real underwrap services and then checks properties such as:
-
-- wrapper installation and permissions
-- daemon/socket layout
-- setgid-based wrapper identity
-- successful secret delivery through the wrapper chain
-- spoofing resistance
-- lock and unlock behavior
-- target process isolation properties
-- mandatory per-`(instance, wrapper)` UID isolation: a full matrix proving that
-  a caller-owned peer **and** ancestor cannot inspect a target or its
-  descendants — `environ`/`maps`/`smaps`/`auxv`/`mem`, `ptrace(PTRACE_ATTACH)`,
-  `process_vm_readv`, and `/proc/<pid>/{fd,cwd,root,exe}` re-open are all denied;
-  the world-readable `/proc` residue is secret-free; **root** can still read
-  (documented limitation); the target runs as a dedicated `underwrap-target-*`
-  uid (never `0`/caller) with zero capabilities; and the dedicated uid comes
-  only from the root-owned `/etc/underwrap/target-uids` table, keyed on the
-  `(instance, wrapper)` pair (`underwrap-ns` holds `cap_setuid`/`cap_setgid`;
-  the table is `root:root 0644`, one 4-column `<instance>\t<wrapper>\t<user>\t<group>`
-  row per wrapper). Distinctness is asserted: two wrappers sharing a target
-  binary, and the same binary across two instances, resolve to **different**
-  uids, and a `Debug` invocation runs under its wrapper's uid.
-  Files/libsecret projection and read-only-grant writeback are also exercised
-  under the same mandatory target UID model.
-- core dump prevention
-- libsecret mode end to end
-- directory credential staging and sync
-- caller-owned host-namespace inability to list mounted directory credential paths or read files from them
-- caller-owned host-namespace inability to list private libsecret runtime mountpoints or reach private sockets
-- remote-style instance lifecycle (a second daemon talking to the backend over mTLS)
-- absence of secret values in logs
-
-That is much closer to the actual security story underwrap is trying to tell.
-
-## What the tests do **not** prove
-
-Even a strong automated test suite does not equal a security proof.
-
-The tests do not replace:
-
-- careful code review
-- threat-model review
-- scrutiny of assumptions about Linux kernel behavior
-- real-world deployment feedback
-
-This is especially important for a project that makes ambitious claims about local secret handling.
-
-## A useful way to think about confidence
-
-The tests can give you confidence that:
-
-- the intended mechanisms are present
-- known regressions are caught
-- important deployment details are exercised regularly
-
-They cannot give you absolute confidence that:
-
-- every claim is perfectly worded
-- every kernel edge case has been explored
-- there are no design mistakes left
-
-That is why the [Security](security.md) document is detailed and why deeper review is still welcome.
-
-## If you change the NixOS module
-
-If your change touches any of these, the VM test should be considered mandatory:
-
-- users / groups / wrapper generation
-- socket locations or permissions
-- systemd services
-- the daemon's outbound mTLS connection layout
-- anything related to the wrapper chain
-
-## If you change security-sensitive wrapper behavior
-
-In addition to the VM test, pay close attention to:
-
-- privilege drops
-- environment handling
-- fd inheritance and closure
-- logging
-- libsecret channel scoping
-- namespace setup
-
-Those are the areas where small mistakes can undermine the intended model.
-
-## Running individual flake checks
-
-If you want one specific gate instead of the whole flake, the main checks are:
+The flake declares these checks:
 
 ```bash
 nix build .#checks.x86_64-linux.workspace-test
@@ -154,10 +52,172 @@ nix build .#checks.x86_64-linux.workspace-fmt
 nix build .#checks.x86_64-linux.workspace-audit
 nix build .#checks.x86_64-linux.workspace-deny
 nix build .#checks.x86_64-linux.workspace-llvm-cov
+nix build .#checks.x86_64-linux.examples-nix-parse
 nix build .#checks.x86_64-linux.vm-test
 ```
 
-## Related docs
+Run all flake checks for the current system with:
+
+```bash
+nix flake check
+```
+
+SPA unit tests are not a separate flake check, so run them explicitly:
+
+```bash
+cd web && npm test && npm run build
+```
+
+## Rust coverage
+
+Workspace tests cover:
+
+- config parsing and validation;
+- IPC framing and SCM_RIGHTS transfer;
+- runtime/admin DTO serialization;
+- permission mode evaluation;
+- canonical resource blob handling;
+- plain and encrypted storage;
+- daemon peer authentication and wrapper intake;
+- backend runtime policy and writeback validation;
+- target environment, capability, UID, idmap, mount, and writeback helpers;
+- Secret Service data model and D-Bus handler behavior;
+- real daemon/backend integration flows.
+
+Some integration tests skip when the host cannot supply the required Linux
+capabilities. The VM test covers the deployed privileged path independently.
+
+## OpenAPI drift
+
+The backend admin API is generated from `utoipa` annotations. A workspace test
+compares the generated document with:
+
+```text
+crates/underwrap-backend/openapi.json
+```
+
+When handlers or DTOs change, run:
+
+```bash
+cargo test --workspace
+cd web && npm run generate:api && npm run build
+```
+
+Review and commit the OpenAPI change with the implementation. The generated
+TypeScript schema under `web/src/api/schema.ts` is local build output and is not
+committed.
+
+## SPA browser tests
+
+Playwright exercises protected routing, authentication, CSRF, stores, secrets,
+permissions, client instances, and user workflows.
+
+Run it inside the Nix development shell so Playwright uses the NixOS-compatible
+browser:
+
+```bash
+nix develop
+cd web
+npm run test:e2e
+```
+
+For an interactive browser runner:
+
+```bash
+npm run test:e2e:ui
+```
+
+## NixOS VM test
+
+The VM test boots a real NixOS system with the module, backend processes,
+frontend instances, wrappers, unprivileged callers, and target programs.
+
+### Packaging and service layout
+
+It checks:
+
+- users, groups, state/runtime directories, and systemd units;
+- setgid and capability wrappers;
+- socket path, owner, group, and mode;
+- generated daemon and entry-stage config;
+- local and remote-style runtime client enrollment.
+
+### Wrapper identity and policy
+
+It checks:
+
+- effective-GID peer authentication;
+- spoofing and direct-socket rejection;
+- daemon validation of wrapper selectors;
+- daemon-chosen real/debug targets;
+- locked, unlocked, expiring, unsafe-debug, missing, and read-only permission
+  behavior;
+- per-wrapper/resource registration and usage timestamps.
+
+### Target isolation
+
+It checks that each `(instance, wrapper)` has a distinct dedicated target UID,
+including wrappers that share a target binary and wrappers across instances.
+It verifies real and debug variants use the intended identity and execute with
+zero capabilities.
+
+Against the target and a descendant, caller-owned peers and ancestors are denied
+access to:
+
+- `/proc/<pid>/{environ,maps,smaps,auxv,mem}`;
+- descriptor and executable links under `/proc/<pid>`;
+- `ptrace(PTRACE_ATTACH)`;
+- `process_vm_readv`.
+
+It also confirms that world-readable process metadata remains secret-free and
+that root retains its documented visibility.
+
+### Namespace and projection behavior
+
+It checks:
+
+- fresh PID and `/proc` views;
+- files projection, routing, staging, and writeback;
+- private D-Bus and Secret Service operation;
+- target-owned runtime directories;
+- idmapped caller access paths and resulting file ownership;
+- host-namespace inability to see private projection mounts or sockets;
+- read-only mutation discard and warning/audit behavior;
+- core-dump prevention and descriptor hygiene.
+
+### Secret hygiene
+
+It checks successful delivery while asserting that configured secret values do
+not appear in service logs.
+
+## Validation by change type
+
+| Change | Required validation |
+| --- | --- |
+| Pure Rust logic in one crate | crate tests, fmt, clippy |
+| Runtime DTO or policy | protocol + backend + daemon tests, integration tests |
+| Admin handler or DTO | backend tests, OpenAPI drift, SPA test/build |
+| SPA behavior | Vitest, build; Playwright for user flows |
+| Storage or encryption | store/backend tests, integration tests |
+| NixOS module | VM test |
+| setgid, peer auth, UID, namespace, capabilities, mounts, fd lifecycle | integration tests and VM test |
+| Documentation/examples only | link/path checks, example parse/evaluation tests, relevant generated-schema checks |
+
+## What tests do not establish
+
+Automated tests do not establish:
+
+- absence of kernel or dependency vulnerabilities;
+- correctness on every Linux filesystem and desktop environment;
+- safety of a broad or malicious target;
+- protection after root or backend compromise;
+- formal noninterference or a complete security proof.
+
+Security-sensitive changes still require human review against
+[Security](security.md).
+
+## Related documentation
 
 - [Architecture](architecture.md)
 - [Security](security.md)
+- [`AGENTS.md`](../AGENTS.md)

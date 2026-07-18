@@ -24,16 +24,10 @@ let
   wrapperHasProjection = wrapper:
     wrapper.env || wrapper.files != null || wrapper.libsecret;
 
-  # Per-instance helper functions. All names are prefixed with the instance name
-  # to ensure full isolation between instances.
-  #
-  # Single-instance wrapper model: ONE setgid binary (`underwrap-<instance>`), ONE
-  # gate group (`underwrap-<instance>`), and ONE wrapper socket per instance.
-  # The wrapper name is a client-supplied selector carried over IPC and
-  # validated by the daemon — it is no longer encoded in a per-wrapper binary,
-  # group, or socket. The debug tool is reached via the `debug` subcommand
-  # (`underwrap-<instance> debug <wrapper>`), gated by the backend policy, not by a
-  # separate binary or NixOS opt-in.
+  # Per-instance helper functions. Every instance has one setgid entry point,
+  # one gate group, and one wrapper socket. The daemon validates the
+  # client-supplied wrapper selector. The backend policy gates the `debug`
+  # subcommand (`underwrap-<instance> debug <wrapper>`).
   mkInstance = instName: inst: let
     daemonUser = "underwrap-${instName}";
     # The daemon's primary group doubles as the wrapper gate group: the
@@ -50,11 +44,9 @@ let
     socketPath = "${runDir}/wrapper.sock";
     runDir = "/run/underwrap-${instName}";
     stateDir = "/var/lib/underwrap-${instName}";
-    # Per-instance mTLS client credential. Generated locally by
-    # `underwrap-keygen --instance-config /etc/underwrap/daemon/${instName}.yaml`;
-    # never wired in via the module (so two instances on the same host can't
-    # collide, and the operator can't paste a stale cert from one host into
-    # another's enrollment).
+    # Per-instance mTLS client credential, generated locally with
+    # `underwrap-keygen --instance-config /etc/underwrap/daemon/${instName}.yaml`.
+    # Fixed per-instance paths prevent credential-file collisions on one host.
     clientCertPath = "${stateDir}/client-${instName}.pem";
     clientKeyPath = "${stateDir}/client-${instName}.key";
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
@@ -118,8 +110,8 @@ let
       };
     };
 
-    # One group per instance, doubling as the daemon group and the wrapper
-    # gate group. No per-wrapper groups any more.
+    # One group per instance, used as both daemon primary group and wrapper
+    # socket gate.
     groups = { "${instanceGroup}" = {}; };
 
     # One setgid entrypoint per instance. Identity comes from this group's
@@ -207,9 +199,6 @@ let
       };
     };
 
-    sshSettings = {
-      StreamLocalBindUnlink = "yes";
-    };
   };
 
   # Build all instance configs.
@@ -253,11 +242,8 @@ let
   #
   # Naming collisions across instances (two instances declaring the same
   # wrapper name, or a `debug-`-prefixed name clashing with another wrapper)
-  # are the OPERATOR's responsibility — exactly as in the previous design,
-  # where each wrapper already produced a binary literally named `<wrapper>`
-  # on PATH. The module adds no collision-avoidance logic; a genuine clash
-  # surfaces as a linkFarm build error, which the operator resolves by
-  # renaming a wrapper or splitting the user across instances.
+  # surface as a linkFarm build error. Resolve the collision by renaming a
+  # wrapper or assigning the users to separate instances.
   userBinEntries = lib.genAttrs allAuthorizedUsers (user:
     lib.concatMap (instName:
       let inst = cfg.instances.${instName}; in
@@ -391,8 +377,8 @@ let
         description = ''
           CA certificate file used to verify the backend service
           certificate. Leave as `null` when the backend uses a
-          publicly-trusted (WebPKI) certificate; the system root
-          store will be used in that case.
+          publicly-trusted certificate covered by reqwest's bundled WebPKI
+          root set.
         '';
       };
     };
@@ -451,7 +437,7 @@ let
       || (dev.encrypted.enable or false)
     ) config.swapDevices;
 
-  # --- Per-(instance, wrapper) uid isolation (story 2600, re-keyed in 2720) ---
+  # --- Per-(instance, wrapper) target UID isolation ---
   # One dedicated system user/group per configured (instance, wrapper) pair (a
   # sandbox uid X, distinct from any caller); underwrap-ns switches the target
   # (and thus its whole subtree) to X. The authorization unit is the wrapper, not
@@ -472,18 +458,20 @@ let
     }) inst.wrappers
   ) cfg.instances);
 
-  # Stable, collision-free sandbox user name per pair: a hash of
+  # Stable sandbox user name per pair: a 48-bit hash prefix of
   # "<instance>/<wrapper>" (NOT a sequential index, so adding/removing pairs
   # never reshuffles which uid a pair maps to — NixOS persists uids by name).
-  # "underwrap-target-" (17) + 12 hex = 29 chars, under the 32-char limit.
+  # "underwrap-target-" (17) + 12 hex = 29 chars, under the 32-char limit. An
+  # evaluation assertion below rejects the configuration if two prefixes ever
+  # collide.
   targetUserName = instance: wrapper:
     "underwrap-target-"
     + builtins.substring 0 12 (builtins.hashString "sha256" "${instance}/${wrapper}");
+  targetUserNames = map (p: targetUserName p.instance p.wrapper) targetPairs;
 
-  # Per-pair sandbox users/groups. isSystemUser => /sbin/nologin, no home. Each
-  # is a member of ONLY its own primary group — NEVER an instance group — so a
-  # uid-X target cannot satisfy a wrapper-socket egid gate and pull further
-  # secrets.
+  # Per-pair target users/groups. isSystemUser gives each one a nologin account
+  # with only its own primary group. A target does not retain an instance-group
+  # identity from the invoking wrapper.
   targetUsers = lib.listToAttrs (map (p:
     let n = targetUserName p.instance p.wrapper; in lib.nameValuePair n {
       isSystemUser = true;
@@ -501,10 +489,9 @@ let
   # JSON) so the privileged, cap_setuid-holding parser needs no JSON library —
   # minimal attack surface. Storing NAMES (not numbers) keeps the table fully
   # declarative and lets NixOS auto-allocate + persist the uids stably by name;
-  # root-ownership is the trust anchor — a compromised unprivileged stage cannot
-  # influence it, so there is no uid-0 injection and no confused deputy. Instance
-  # and wrapper names are NixOS attribute keys (no tabs), so a split on '\t' is
-  # unambiguous. See docs/security.md and story 2600 "Authority for the uid".
+  # root ownership is the trust anchor, preventing uid-0 injection through an
+  # unprivileged stage. Instance and wrapper names are NixOS attribute keys (no
+  # tabs), so splitting on '\t' is unambiguous. See docs/security.md.
   targetUidTableText = lib.concatMapStrings (p:
     let n = targetUserName p.instance p.wrapper; in
     "${p.instance}\t${p.wrapper}\t${n}\t${n}\n"
@@ -549,9 +536,8 @@ in {
         <literal>XDG_RUNTIME_DIR</literal>
         (<literal>&lt;base&gt;/&lt;target-user-name&gt;</literal>). Must be an
         absolute path, and must NOT be <literal>/run/user</literal> (that is
-        logind's per-login-session tree). This is system-wide rather than
-        per-instance because the target sandbox users are shared across
-        instances (keyed by target binary path).
+        logind's per-login-session tree). The base is system-wide; each target
+        user name is unique to its instance/wrapper pair.
       '';
     };
 
@@ -562,11 +548,13 @@ in {
         Apply the target-host hardening posture underwrap relies on. When
         enabled:
 
-        - `kernel.yama.ptrace_scope` is pinned to `2`. This gates the
+        - `kernel.yama.ptrace_scope` defaults to `2` through
+          <literal>lib.mkDefault</literal>. An operator can override it, but a
+          lower value weakens the stated posture. The value `2` gates the
           **ATTACH-mode** inspection vectors — `/proc/<pid>/mem`,
           `ptrace(PTRACE_ATTACH)`, and `process_vm_readv` — behind
-          `CAP_SYS_PTRACE`, blocking `strace`/`gdb`/`perf` and direct memory
-          reads from same-UID callers. It does **not** gate the **READ-mode**
+          `CAP_SYS_PTRACE`, blocking `strace`/`gdb` and direct memory reads
+          from same-UID callers. It does **not** gate the **READ-mode**
           files `/proc/<pid>/{environ,maps,smaps,auxv}`: Yama acts only on
           `PTRACE_MODE_ATTACH`, never on `PTRACE_MODE_READ`. Those READ-mode
           files are protected by underwrap's mandatory dedicated per-target UID:
@@ -603,6 +591,10 @@ in {
           assertion = cfg.targetRuntimeDirBase != "/run/user"
             && !(lib.hasPrefix "/run/user/" cfg.targetRuntimeDirBase);
           message = "services.underwrap.targetRuntimeDirBase: must not be under /run/user (that is logind's per-login-session tree); use a dedicated base such as the default /run/underwrap-runtime";
+        }
+        {
+          assertion = lib.length targetUserNames == lib.length (lib.unique targetUserNames);
+          message = "services.underwrap.instances: two (instance, wrapper) pairs produced the same truncated target-user hash; rename one pair so every target UID remains distinct";
         }
       ]
       ++ (lib.flatten (lib.mapAttrsToList (instName: inst:
@@ -681,8 +673,7 @@ in {
         }
       ];
 
-    # Merge all instance users, plus per-user wrapper bin packages, plus the
-    # per-target sandbox users (story 2600).
+    # Merge instance users, per-user wrapper bin packages, and target users.
     users.users = lib.mkMerge (
       (lib.mapAttrsToList (_: i: i.users) instances)
       ++ (lib.mapAttrsToList (user: entries:
@@ -696,13 +687,10 @@ in {
       ++ [ targetGroups ]
     );
 
-    # Shared underwrap-ns (one binary, all instances use it). Targets are always
-    # switched to dedicated per-target uids, so cap_setuid/cap_setgid are part of
-    # the mandatory execution model. They are needed transiently to switch the
-    # target to its dedicated uid (cap_setuid: setresuid; cap_setgid:
-    # setresgid+setgroups, and the idmap gid_map write in 2640) and are dropped
-    # before the target exec. The authority for *which* uid comes from the
-    # root-owned table, never from a credential underwrap-ns holds.
+    # Shared underwrap-ns (one binary for all instances). CAP_SETUID and
+    # CAP_SETGID are needed transiently for the dedicated target-ID switch and
+    # single-entry idmap; they are dropped before target exec. The root-owned
+    # table, not a credential held by underwrap-ns, selects the target identity.
     security.wrappers = lib.mkMerge ([{
       underwrap-ns = {
         source = "${cfg.package}/bin/underwrap-ns";
@@ -725,11 +713,10 @@ in {
       '')
     ];
 
-    # Sidecar configs, plus the root-owned (instance,wrapper)->uid authority
-    # table (story 2600, re-keyed 2720). The table is non-secret (instance +
-    # wrapper names + system user/group names), root:root 0644, and is the SOLE
-    # source of truth for which uid a target runs as — read directly by
-    # underwrap-ns, never relayed over the wire.
+    # Sidecar configs plus the root-owned (instance, wrapper) target-identity
+    # table. The table is non-secret (instance/wrapper and system user/group
+    # names), root:root 0644, and is the sole source of the target UID/GID.
+    # underwrap-ns reads it directly; the identity never travels over IPC.
     environment.etc = lib.mkMerge (
       (lib.mapAttrsToList (_: i: i.etcFiles) instances)
       ++ lib.optional (targetPairs != []) {
@@ -742,8 +729,8 @@ in {
       }
     );
 
-    # Tmpfiles: per-instance run/state dirs, plus each isolated target's own
-    # provisioned runtime directory (story 1000).
+    # Per-instance run/state directories and one runtime directory for each
+    # target UID.
     systemd.tmpfiles.rules = lib.mkMerge (
       (lib.mapAttrsToList (_: i: i.tmpfiles) instances)
       ++ [ targetRuntimeTmpfiles ]
@@ -754,16 +741,12 @@ in {
       lib.nameValuePair "underwrapd-${name}" instances.${name}.service
     ) cfg.instances;
 
-    # SSH settings.
-    services.openssh.settings = lib.mkMerge (lib.mapAttrsToList (_: i: i.sshSettings) instances);
-
-    # Target-host hardening: pin kernel.yama.ptrace_scope=2. NOTE this gates
+    # Target-host hardening: default kernel.yama.ptrace_scope to 2. This gates
     # only the ATTACH-mode vectors (/proc/<pid>/mem, ptrace, process_vm_readv);
     # Yama never consults PTRACE_MODE_READ, so it does NOT gate the READ-mode
     # files /proc/<pid>/{environ,maps,smaps,auxv}. Those are protected by the
-    # mandatory per-target UID boundary instead. The pin stays as
-    # defense-in-depth for ATTACH-mode reads. mkDefault so operators who
-    # genuinely need scope=1 for debugging workflows can lower it explicitly.
+    # mandatory per-target UID boundary instead. mkDefault lets operators lower
+    # the value explicitly for debugging, which weakens the ATTACH-mode claim.
     boot.kernel.sysctl = lib.mkIf cfg.hardenTargetHost {
       "kernel.yama.ptrace_scope" = lib.mkDefault 2;
     };

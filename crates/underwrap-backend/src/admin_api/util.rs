@@ -1,7 +1,6 @@
 //! Cross-cutting helpers shared by admin handlers.
 //!
-//! Each helper is here because at least two `admin_api::*` modules
-//! used to open-code the same shape. The conventions they enforce:
+//! These helpers keep shared admin-handler conventions in one place:
 //!
 //! - Password validation surfaces the canonical
 //!   `password_empty` / `password_too_short` error codes.

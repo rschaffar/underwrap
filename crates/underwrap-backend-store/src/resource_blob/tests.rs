@@ -262,9 +262,8 @@ fn expand_emits_only_env_and_files_entries() {
         &SecretBytes::from("x=1\n")
     );
 
-    // Libsecret content must NOT appear in the flat-KV projection
-    // anymore — that bridge was retired with the introduction of the
-    // structured /libsecret/* admin endpoints.
+    // Libsecret content is intentionally absent from the flat-KV projection;
+    // structured /libsecret/* admin endpoints own that slot.
     let libsecret_keys: Vec<&String> = entries
         .keys()
         .filter(|k| k.contains("/libsecret/"))
@@ -280,9 +279,8 @@ fn blob_from_resource_entries_ignores_other_resources_and_libsecret() {
     let mut entries = HashMap::new();
     entries.insert("a/env/X".to_string(), SecretBytes::from("a"));
     entries.insert("b/env/Y".to_string(), SecretBytes::from("b"));
-    // Stray libsecret-shaped keys must not be parsed — the flat-KV
-    // bridge no longer handles that slot. A misbehaving caller can't
-    // resurrect the old shape just by sending the keys.
+    // Stray libsecret-shaped keys must not be parsed: the flat-KV projection
+    // does not handle that slot, regardless of caller-supplied key shape.
     entries.insert(
         "a/libsecret/_aliases".to_string(),
         SecretBytes::from("ignored"),

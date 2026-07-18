@@ -36,8 +36,8 @@ pub(crate) enum InvocationLookup<'a> {
 
 /// Resolve `(principal, wrapper_name, resource_name)` to either an
 /// allow-with-permission or a structured denial. Used by the open and
-/// finalize handlers; both must reach the same conclusion from the
-/// same inputs (stateless re-evaluation per the redesign).
+/// finalize handlers; both must reach the same conclusion from the same inputs
+/// through stateless re-evaluation.
 pub(crate) fn resolve_invocation<'a>(
     store: &dyn StorageBackend,
     principal: &str,
@@ -133,10 +133,9 @@ pub(crate) fn bump_pair_last_used(
         .iter_mut()
         .find(|p| p.wrapper == wrapper && p.resource_id == resource_id)
     else {
-        // No pair record means nothing to bump. This can happen if
-        // the pair was deleted while a wrapper invocation was in
-        // flight, or in the greenfield case where no entities have
-        // been created yet.
+        // No pair record means nothing to bump. This can happen if the pair
+        // was deleted while a wrapper invocation was in flight or the store's
+        // asset documents are still empty.
         return Ok(());
     };
     if pair.last_used_at == Some(now) {

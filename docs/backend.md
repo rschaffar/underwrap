@@ -11,6 +11,16 @@ underwrap splits its secret-handling responsibilities across two processes:
 Operators manage the backend through the admin UI served directly by
 `underwrap-backend` on the same HTTPS listener as the runtime API.
 
+## Contents
+
+- [Architecture](#architecture)
+- [Backend configuration](#backend-configuration)
+- [Runtime API](#runtime-api)
+- [Admin API](#admin-api)
+- [Policy model](#policy-model)
+- [Resources and wrapper/resource pairs](#resources-and-wrapperresource-pairs)
+- [Resource blob storage](#resource-blob-storage)
+
 ## Architecture
 
 ```text
@@ -45,18 +55,20 @@ Operators manage the backend through the admin UI served directly by
   `underwrap-keygen` helper on the target host and registered with the
   backend manually by an admin pasting the cert PEM into the admin UI.
   The backend authenticates connections by SHA-256 fingerprint lookup
-  against the runtime-client registry (no CA chain). The server cert is
-  verified by the daemon against a pinned CA. The backend maps each
-  authenticated client instance to one store and only serves that
+  against the runtime-client registry (no CA chain). The daemon verifies the
+  server certificate against a configured CA bundle or, when none is supplied,
+  reqwest's bundled WebPKI root set. The backend maps each authenticated client
+  instance to one store and only serves that
   store's view.
 - **operator browser ↔ `underwrap-backend`**: the same HTTPS listener,
   but without a client certificate. Admin routes authenticate via username +
-  argon2id password hash + an opaque `tower-sessions` session cookie (session
+  Argon2id password hash + an opaque `tower-sessions` session cookie (session
   state held server-side in a `MemoryStore`) + a synchronizer-token CSRF
-  check on every POST.
+  check on every state-changing request.
 
-The wrapped target process is outside every trust boundary. It receives
-only the secret material that the authorized read flow exposes.
+The configured target is the authorized recipient of the selected projection.
+It is trusted not to disclose that material; underwrap does not sandbox a
+malicious target.
 
 ## Backend configuration
 
@@ -86,11 +98,11 @@ admin:
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Encrypted stores no longer have a `keys_dir` knob: the 32-byte master
-key is generated in memory at store-creation time, displayed once in
-the create-store response, and never written to disk. After a backend
-restart every encrypted store boots locked until an operator submits
-the key via `POST /v1/admin/stores/{id}/unlock`.
+An encrypted store's 32-byte master key is generated in memory at
+store-creation time, displayed once in the create-store response, and never
+written to disk by underwrap. After a backend restart, every encrypted store
+starts locked until an operator submits the key via
+`POST /v1/admin/stores/{id}/unlock`.
 
 ### Store registry
 
@@ -118,9 +130,9 @@ file stem):
 `POST /v1/admin/stores` updates this registry atomically via
 `tempfile::persist()`. Runtime client access is resolved dynamically
 from the backend-managed client-instance registry. The presented client
-certificate fingerprint must map to an active enrolled instance.
-Operator login state is resolved dynamically from the backend-managed
-operator-state file plus the session cookie.
+certificate fingerprint must map to an active enrolled instance. Operator
+identity is resolved from the per-user registry under `users_dir` and the
+server-side in-memory session addressed by the opaque cookie.
 
 ## Runtime API
 
@@ -230,11 +242,18 @@ open), then:
   `writable` flag (deny `not-writable` if false), decodes the blob,
   re-canonicalizes it (deny `noncanonical-blob` if it doesn't match
   the submitted bytes), rejects unknown `schema_version` values, then
-  enforces **env immutability**: the new blob's `env` section must
-  byte-equal the stored blob's `env` section. Any change to `env`
-  rejects with `InvalidBlob { reason: "env-section-immutable" }`.
-- On a clean write the blob is atomically replaced; `last_used_at`
-  is bumped on the pair regardless of which branch ran.
+  compares the submitted `env` section with the resource blob loaded during
+  finalize. A difference rejects with
+  `InvalidBlob { reason: "env-section-immutable" }`.
+- On an accepted write, the resource file is atomically replaced and
+  `last_used_at` is bumped. Policy denials and invalid blobs do not count as a
+  successful finalize and do not bump it.
+
+The compare and replacement are not a transaction or compare-and-swap.
+Concurrent whole-resource writers are last-writer-wins; in particular, a stale
+runtime writeback can overwrite an admin env edit that lands between finalize's
+load and save. Serialize edits to one resource operationally. See
+[Concurrency semantics](#concurrency-semantics).
 
 Tagged response variants:
 
@@ -278,10 +297,9 @@ The SPA's API client (`web/src/api/client.ts`, built on
 `openapi-fetch`) consumes the same spec: `npm run generate:api`
 re-runs `openapi-typescript` against `openapi.json` to produce the
 ignored local file `web/src/api/schema.ts`. The `predev`, `prebuild`,
-and `pretest` npm hooks fire this automatically, so a stale spec
-breaks the SPA build at the earliest possible point. There is no
-separate ts-rs binding step — the OpenAPI schema is the single source
-of typed truth.
+and `pretest` npm hooks run this automatically, so a stale spec
+breaks the SPA build at the earliest possible point. The OpenAPI schema is the
+single source of typed admin-API truth.
 
 Two SecuritySchemes are referenced from individual operations:
 `session_cookie` (the opaque `__Host-underwrap-session` cookie issued by
@@ -349,11 +367,14 @@ libsecret collection, `{iid}` a libsecret item.
   `403 key_mismatch`, `409 already_unlocked`.
 - `POST   /v1/admin/stores/{id}/lock` — drop the in-memory backend so
   subsequent runtime requests fail `store_locked`. Idempotent.
-- `POST   /v1/admin/stores/{id}/rotate-key` — re-encrypt every resource
-  under a fresh master key, swap the data directory atomically, and
-  return the new `key_hex` **exactly once**. Writes serialize behind a
-  per-store rotation mutex; reads continue throughout. `503 store_locked`
-  if locked, `409 not_encrypted` on plain stores.
+- `POST   /v1/admin/stores/{id}/rotate-key` — stage a copy re-encrypted under
+  a fresh master key, move the live directory aside, promote the staged
+  directory, and return the new `key_hex` **exactly once**. Each filesystem
+  rename is atomic, but the two-rename swap is not one atomic operation. The
+  per-store mutex serializes rotation requests only; ordinary reads and writes
+  do not acquire it. Quiesce wrapper traffic and admin mutations for the store
+  before rotating. `503 store_locked` if locked, `409 not_encrypted` on plain
+  stores.
 
 ### Resources
 
@@ -372,8 +393,9 @@ First-class `ResourceRecord`s that own name provenance.
 - `POST   /v1/admin/stores/{id}/pairs` — create against an existing
   resource; refuses if the resource doesn't exist or `(wrapper,
   resource)` is already taken.
-- `POST   /v1/admin/stores/{id}/pairs/with-new-resource` — create a pair
-  and its resource in one atomic call.
+- `POST   /v1/admin/stores/{id}/pairs/with-new-resource` — create a resource
+  and pair in one API call. Their two control documents are saved separately;
+  failure of the second save triggers best-effort rollback of the first.
 - `DELETE /v1/admin/stores/{id}/pairs/{wrapper}/{rid}` — delete; refuses
   while any wrapper permission references the pair.
 
@@ -390,8 +412,9 @@ toggle (see [No global write lock](#no-global-write-lock)).
 - `PUT    /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}` — create or
   overwrite one entry.
 - `DELETE /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}` — delete.
-- `POST   /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename` —
-  atomically rename one entry.
+- `POST   /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename` — rename one
+  entry in one in-memory mutation followed by an atomic resource-file
+  replacement.
 
 ### Libsecret slot (Secret Service data model)
 
@@ -424,8 +447,9 @@ Scoped under `/v1/admin/stores/{sid}/resources/{rid}/libsecret`:
 - `GET /v1/admin/stores/{id}/wrapper-permissions-view` — permissions
   joined with resolved wrapper / resource / client-instance names.
 
-Every admin write is an atomic replacement of the affected document or of
-the single addressed entry.
+Each low-level storage write atomically replaces the affected document or
+resource file. Multi-document operations and higher-level load-modify-save
+cycles are not transactions; see [Concurrency semantics](#concurrency-semantics).
 
 ## Policy model
 
@@ -452,7 +476,7 @@ permissions:
     mode:
       kind: locked
     writable: false
-    reason: "ops approval required"
+    reason: "maintenance window closed"
   - client_instance: ci
     wrapper: jira-readonly
     resource_id: res_ccc444ddd555
@@ -582,12 +606,12 @@ counts plus a small sample so the SPA can render a clear "fix this
 first" message).
 
 `last_used_at` (unix seconds, `None` until first use) is bumped
-server-side on **both** the open and the finalize handler — i.e.
-once at the start of a wrapper invocation and again at every
-finalize (writeback or usage signal). The bump is idempotent at
-one-second resolution and never blocks the request. Mount paths
-are a daemon-local concern derived from the wrapper config; they
-never travel on the wire and the pair record does not store them.
+server-side after a successful open and after a successful finalize
+(writeback or usage signal). Policy denials and invalid writeback blobs do not
+bump it. The bump is idempotent at one-second resolution and a failure to update
+it does not fail the otherwise successful request. Mount paths are a
+daemon-local concern derived from wrapper config; they never travel on the wire
+and the pair record does not store them.
 
 ## Resource blob storage
 
@@ -620,11 +644,11 @@ three slots inline:
 }
 ```
 
-`BTreeMap` everywhere keeps key order deterministic; combined with
-`serde_jcs` the canonical bytes are byte-identical for any two
-logically-equal blobs. Change detection at the wrapper end-of-run
-will be a byte comparison once the wrapper-side rewrite lands;
-today the daemon still re-serializes on every flush.
+`BTreeMap` keeps key order deterministic; combined with `serde_jcs`, the
+canonical bytes are byte-identical for any two logically equal blobs. At the
+end of a wrapper run, `underwrap-ns` canonicalizes the composed resource and
+compares it byte-for-byte with the Checkout bytes. Equal bytes produce a
+`UsageSignal`; changed bytes produce a `Checkin` when writable.
 
 Keys in the `files` section are full relative paths inside the
 target's home view (e.g. `.config/gh/hosts.yml`). The backend treats
@@ -641,6 +665,25 @@ nonce per resource. The operator-facing per-secret admin endpoints
 `<resource>/<slot>/<key>` address space but route through the blob
 via a load-modify-save shim. **No runtime endpoint accepts a storage
 key on the wire.**
+
+### Concurrency semantics
+
+`PlainBackend` and `EncryptedBackend` atomically replace one stored value, so a
+reader does not observe a partially written file or ciphertext. The backend
+does not currently provide a transaction, version, compare-and-swap primitive,
+or per-resource mutation lock above that storage operation.
+
+Consequently, concurrent load-modify-save operations against the same resource
+or control document are last-writer-wins. This includes runtime finalize racing
+an admin secret edit, two admin edits, registration racing policy changes, and
+an admin env edit racing a stale runtime writeback. The finalize env comparison
+protects against a submitted env change relative to the snapshot it loads; it
+does not protect an edit that lands between that load and the whole-blob save.
+Operators and API clients must serialize mutations to the same object.
+
+Key rotation has the stronger operational requirement described under
+[Stores](#stores): quiesce all reads and writes for that store while rotation is
+in progress.
 
 Alongside the resource blobs, each store holds a small reserved
 **control-plane** namespace. Resource ids are server-generated `res_*`

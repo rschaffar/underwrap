@@ -15,9 +15,8 @@ pub enum WrapperRequest {
     /// its config, asks the backend to authorise the invocation for the
     /// given `variant`, and answers with `ReadOk` (or `Error`).
     Read {
-        /// Client-supplied wrapper name; validated against config. The
-        /// kernel no longer binds identity to a per-wrapper group, so the
-        /// daemon must check this against its known wrappers.
+        /// Client-supplied wrapper selector. The daemon validates it against
+        /// the instance's configured wrappers.
         wrapper_name: String,
         /// Real target or debug tool. The daemon, not the client, picks
         /// the binary based on the variant the backend authorised.

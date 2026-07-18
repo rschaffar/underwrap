@@ -1,18 +1,10 @@
-//! Per-(instance, wrapper) uid isolation (story 2600, re-keyed in 2720).
+//! Per-(instance, wrapper) target-UID isolation.
 //!
-//! Reads the root-owned authority table and resolves the dedicated sandbox
-//! identity for the `(instance, wrapper)` pair `underwrap-ns` is about to run,
-//! then performs (and verifies) the switch to it.
-//!
-//! The uid is taken **only** from the root-owned table — never from the
-//! `ExecBundle`, the daemon response, or the target path. The lookup *key* is
-//! the `(instance, wrapper)` selector underwrap-exec passes via env (the
-//! kernel-enforced instance gate + the daemon-validated wrapper name); the
-//! resolved uid/gid is never relayed. This removes the escalation /
-//! confused-deputy vector structurally: the only uids reachable are the sandbox
-//! uids trusted root config assigned, and the worst a compromised exec stage can
-//! do is select a *different* legitimate sandbox uid (never root, never an
-//! arbitrary number — see the floor / `gid != 0` checks below).
+//! Resolves the dedicated target identity from the root-owned authority table
+//! and performs the verified switch. The UID/GID never comes from `ExecBundle`,
+//! the daemon response, or the target path. underwrap-exec supplies only the
+//! gate-backed `(instance, wrapper)` selector. Consequently, the reachable
+//! identities are limited to non-root target users assigned by trusted config.
 
 use std::ffi::CString;
 
@@ -27,7 +19,7 @@ const TARGET_UID_TABLE: &str = "/etc/underwrap/target-uids";
 /// the load-bearing check; the floor is defense-in-depth.
 const MIN_TARGET_UID: libc::uid_t = 1;
 
-/// The dedicated sandbox identity a target is isolated to.
+/// The dedicated identity under which a target executes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Isolation {
     pub uid: libc::uid_t,
@@ -179,12 +171,10 @@ pub(crate) fn switch_to(iso: Isolation) -> Result<(), String> {
     Ok(())
 }
 
-/// Verify the identity switch + capability drop are real before exec (the
-/// "Setuid Demystified" check). Asserts the **userns-invariant** properties so
-/// it stays correct if a user namespace is added later (2650): all three uids
-/// equal and non-zero, all three gids equal, and a regain attempt fails. The
-/// literal "real uid == X, never 0/caller" check is the VM test's job (root
-/// reads `/proc/<pid>/status` from outside).
+/// Verify the identity switch and capability drop before exec: all real,
+/// effective, and saved IDs agree; the UID is non-zero; and regaining root
+/// fails. The VM test independently verifies the selected UID against the
+/// root-owned table from outside the namespace.
 pub(crate) fn verify_switched() -> Result<(), String> {
     let (mut r, mut e, mut s): (libc::uid_t, libc::uid_t, libc::uid_t) = (0, 0, 0);
     if unsafe { libc::getresuid(&mut r, &mut e, &mut s) } != 0 {
@@ -226,9 +216,9 @@ pub(crate) fn verify_switched() -> Result<(), String> {
 }
 
 /// Run `f` with the process's **filesystem** uid/gid temporarily set to the
-/// isolated target's `iso`, then restore them — the single `setfsuid(X)` window
-/// the supervisor uses to read back an isolated target's X-owned staging /
-/// libsecret state at writeback (story 2600 / 2635).
+/// isolated target's `iso`, then restore them. The supervisor uses this one
+/// bounded fsuid window to read target-owned staging and libsecret state during
+/// writeback.
 ///
 /// `setfsuid`/`setfsgid` change only the credentials used for filesystem access
 /// checks; they do not affect process ownership, signal permissions, or the

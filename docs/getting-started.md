@@ -1,56 +1,134 @@
 # Getting started
 
-This guide walks through the simplest useful underwrap setup:
+This tutorial builds the smallest deterministic underwrap deployment:
 
-- a central `underwrap-backend` (here on the same machine, for
-  simplicity — the same steps work when it lives on a separate host),
-- one frontend instance with one wrapper,
-- one static secret,
-- one familiar CLI: [`jira-cli`](https://github.com/ankitpokhrel/jira-cli).
+- one `underwrap-backend` on the NixOS frontend host;
+- one frontend instance;
+- one plain store;
+- one stateless helper that verifies an env projection without printing it.
 
-The goal is not to show every feature. It's the smallest path to a
-first working wrapper and a working operator UI.
+The tutorial uses a plain store to keep the first run focused. Use an encrypted
+store after the complete flow works.
 
-After this, move on to:
+## Result
 
-- [Agent-facing wrappers](agents.md)
-- [GitHub via libsecret](gh-libsecret.md)
-- [Deploying the central backend](remote-backend.md)
-- [Admin UI](admin-ui.md)
+The caller runs:
 
-## What you will build
-
-```text
-operator browser ─► underwrap-backend
-                         ▲
-                         │ HTTPS + runtime client certs
-                         │
-user@console ─► underwrap-work jira (setgid) ─► underwrapd-work ─┘
+```bash
+secret-check
 ```
 
-When a user runs `jira` (the per-user shim) — equivalently
-`underwrap-work jira` — underwrap injects `JIRA_API_TOKEN` just for that
-invocation and then executes the configured `jira` target. The secret is
-fetched from the backend the operator configured.
+The target prints:
+
+```text
+DEMO_TOKEN is available to the target
+```
+
+The caller's shell never receives `DEMO_TOKEN`, and the helper never prints its
+value.
 
 ## Prerequisites
 
-- A flake-based NixOS system configuration on the target host.
-- The underwrap flake added as an input:
+- A flake-based NixOS configuration.
+- An existing local user; the examples use `alice`.
+- The underwrap flake input:
 
   ```nix
   inputs.underwrap.url = "github:rschaffar/underwrap";
   ```
 
-- A server CA + server certificate for the backend's HTTPS listener (used
-  by the frontend daemon to verify the backend). Runtime client certs do
-  **not** need a CA — `underwrap-keygen` generates a self-signed leaf
-  on the target host and an admin pastes the cert PEM into the backend
-  admin UI; the backend authenticates connections by fingerprint
-  pinning. See [Deploying the central backend](remote-backend.md) for
-  one-liner recipes with `step-ca`.
+- A server CA and server certificate for `127.0.0.1` or the hostname used by
+  the daemon and browser. [Deploying the backend](remote-backend.md#server-tls)
+  includes a `step` recipe.
 
-## 1. Start the backend
+The browser must trust the server CA. Runtime client certificates use a
+separate model: `underwrap-keygen` creates a self-signed leaf and the operator
+registers its fingerprint through the admin UI.
+
+## 1. Configure the NixOS frontend
+
+Add the module and a stateless target helper:
+
+```nix
+{ pkgs, underwrap, ... }:
+
+let
+  secretCheck = pkgs.writeShellApplication {
+    name = "underwrap-secret-check";
+    text = ''
+      set -euo pipefail
+      if [[ -z "''${DEMO_TOKEN:-}" ]]; then
+        echo "DEMO_TOKEN is missing" >&2
+        exit 1
+      fi
+      echo "DEMO_TOKEN is available to the target"
+    '';
+  };
+in
+{
+  imports = [ underwrap.nixosModules.default ];
+
+  # Installs the backend command used by this local tutorial.
+  environment.systemPackages = [
+    underwrap.packages.${pkgs.stdenv.hostPlatform.system}.underwrap-backend
+  ];
+
+  services.underwrap = {
+    enable = true;
+    package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
+
+    instances.demo = {
+      # Replace alice with an existing local user. This installs the
+      # `secret-check` and `debug-secret-check` PATH shims; it is not an ACL.
+      allowedUsers = [ "alice" ];
+
+      backend = {
+        url = "https://127.0.0.1:18443";
+        caFile = "/etc/underwrap/ca.pem";
+      };
+
+      wrappers.secret-check = {
+        target = "${secretCheck}/bin/underwrap-secret-check";
+        resource = "demo/token";
+        env = true;
+      };
+    };
+  };
+}
+```
+
+Rebuild:
+
+```bash
+sudo nixos-rebuild switch
+```
+
+The module creates:
+
+- `underwrapd-demo.service`;
+- `/run/wrappers/bin/underwrap-demo`;
+- `/run/underwrap-demo/wrapper.sock`;
+- `/etc/underwrap/daemon/demo.yaml`;
+- `/etc/underwrap/instances/demo.yaml`;
+- `/var/lib/underwrap-demo/` for the runtime client credential;
+- one dedicated target UID/GID and runtime directory for `secret-check`;
+- the `secret-check` and `debug-secret-check` shims in Alice's per-user
+  profile.
+
+The daemon can start before its client credential or backend is available. It
+retries backend initialization on each wrapper request.
+
+## 2. Start the backend
+
+Create backend state directories:
+
+```bash
+sudo install -d -m 0700 \
+  /var/lib/underwrap-backend/stores \
+  /var/lib/underwrap-backend/clients \
+  /var/lib/underwrap-backend/users \
+  /var/lib/underwrap-backend/data
+```
 
 Write `/etc/underwrap-backend/config.yaml`:
 
@@ -67,181 +145,191 @@ https:
     key_file: /etc/underwrap-backend/server.key
 
 admin:
+  allowed_origins:
+    - https://127.0.0.1:18443
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Start the daemon:
+Start it in a dedicated terminal for the tutorial:
 
 ```bash
-underwrap-backend --config /etc/underwrap-backend/config.yaml
+sudo underwrap-backend --config /etc/underwrap-backend/config.yaml
 ```
 
-## 2. Define the frontend instance
+A production deployment should run the backend as a dedicated service account
+with a hardened service unit; see [Deploying the backend](remote-backend.md).
 
-In your NixOS configuration:
+## 3. Bootstrap an operator and create the store
 
-```nix
-{ pkgs, underwrap, ... }:
-{
-  imports = [ underwrap.nixosModules.default ];
+Open:
 
-  services.underwrap = {
-    enable = true;
-    package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
-
-    instances.work = {
-      allowedUsers = [ "alice" ];
-      backend = {
-        url = "https://127.0.0.1:18443";
-        caFile = "/etc/underwrap/ca.pem";
-      };
-
-      wrappers.jira = {
-        target = "${pkgs.jira-cli-go}/bin/jira";
-        resource = "jira/api-token";
-        env = true;
-      };
-    };
-  };
-}
+```text
+https://127.0.0.1:18443/
 ```
 
-Rebuild:
+The SPA routes an empty backend to the bootstrap page. Create the first operator,
+then open **Stores** and create a **plain** store named `demo`.
+
+The store must exist before a runtime client instance can select it.
+
+## 4. Generate and enroll the runtime client
+
+Generate the per-instance credential on the frontend host:
 
 ```bash
-sudo nixos-rebuild switch
+sudo underwrap-keygen \
+  --instance-config /etc/underwrap/daemon/demo.yaml
 ```
 
-The module creates:
+The command atomically writes:
 
-- daemon user and instance group: `underwrap-work`
-- daemon service: `underwrapd-work.service`
-- the single instance socket: `/run/underwrap-work/wrapper.sock` (0660,
-  group `underwrap-work`)
-- the one setgid entry point: `/run/wrappers/bin/underwrap-work`
-- per-user shims on the `PATH` of each `allowedUsers` member: `jira` and
-  `debug-jira`
-- daemon config: `/etc/underwrap/daemon/work.yaml`
-- underwrap-exec sidecar: `/etc/underwrap/instances/work.yaml`
-- expected client credential paths: `/var/lib/underwrap-work/client-work.{pem,key}`
-  (generated in the next step)
+- `/var/lib/underwrap-demo/client-demo.key` with mode `0400`;
+- `/var/lib/underwrap-demo/client-demo.pem` with mode `0600`;
 
-## 3. Enroll the instance
+and prints the certificate PEM.
 
-Until `underwrap-keygen` has populated the per-instance client credential,
-the daemon comes up in "unenrolled" mode and prints an enrollment URL on
-every wrapper invocation. Generate the credential and register it once:
+In **Client instances**, choose **Create client instance** and set:
+
+- display name: `demo-host`;
+- target store: `demo`;
+- status: `Active`;
+- certificate PEM: the complete output certificate;
+- **Automatically create wrapper resources and pairs:** enabled.
+
+Auto-create is convenient for this tutorial. In a tightly controlled deployment,
+leave it disabled and create each resource and wrapper/resource pair manually.
+
+Restart the frontend daemon so it authenticates and registers its configured
+pair:
 
 ```bash
-sudo underwrap-keygen --instance-config /etc/underwrap/daemon/work.yaml
+sudo systemctl restart underwrapd-demo.service
 ```
 
-The helper writes `/var/lib/underwrap-work/client-work.pem` and
-`/var/lib/underwrap-work/client-work.key` (owned by the per-instance
-daemon user), then prints the cert PEM to stdout. Open the admin UI,
-create a runtime client instance, and paste the PEM. Restart the daemon:
+Registration creates the resource `demo/token`, the pair
+`secret-check → demo/token`, and a `Locked` permission row for this runtime
+client instance.
 
-```bash
-sudo systemctl restart underwrapd-work
-```
+## 5. Add the env entry and unlock the wrapper
 
-## 4. Create the store, store the secret, and authorize the wrapper
+In **Secrets**:
 
-The backend starts empty. Open the admin UI in a browser, bootstrap the
-first admin operator, create a store named `work`, then:
+1. select the `demo` store;
+2. open resource `demo/token`;
+3. add an **env** entry named `DEMO_TOKEN`;
+4. enter a non-production value for the tutorial.
 
-- add the secret `jira/api-token`
-- add a permission allowing wrapper `jira` for the client instance that
-  will run it (mode `Unlocked`)
+In **Wrapper permissions**:
 
-The admin UI is now the canonical way to perform this setup.
+1. select the `demo` store;
+2. find wrapper `secret-check` and the `demo-host` client instance;
+3. change the permission mode from `Locked` to `Unlocked`;
+4. leave **writable** off; env entries have no runtime write path.
 
-## 5. Initialize `jira-cli`
+The exact data model is:
 
-underwrap only delivers the secret. `jira-cli` still needs its usual
-client-side configuration:
-
-```bash
-jira init
+```text
+store: demo
+resource: demo/token
+slot/key: env/DEMO_TOKEN
+pair: secret-check → demo/token
+permission: (demo-host, secret-check, demo/token) = Unlocked, writable=false
 ```
 
 ## 6. Run the wrapper
 
-```bash
-jira issue list          # via the per-user shim
-# or, explicitly:
-underwrap-work jira issue list
-```
-
-This should feel like running `jira issue list`, except the token came
-from underwrap. To inspect the projected environment during an incident,
-an operator can set the permission to `UnsafeDebugUntil` and run
-`underwrap-work debug jira` (or `debug-jira`).
-
-## Verify the setup
-
-Daemon up?
+As Alice:
 
 ```bash
-systemctl status underwrapd-work.service
+secret-check
 ```
 
-Wrapper setgid bit?
+The explicit instance form is equivalent:
 
 ```bash
-ls -l /run/wrappers/bin/underwrap-work
-# → -rwxr-sr-x ... root underwrap-work ...
+underwrap-demo secret-check
 ```
 
-Policy and secret stored?
+Do not use `debug-secret-check` for routine verification. The debug variant is
+available only under a time-bounded `UnsafeDebugUntil` permission and exposes
+the projection to an incident-debug session.
 
-Open the admin UI and inspect the `work` store's policy and secrets.
+## Verify the deployment
 
-## Common next steps
+Frontend daemon:
 
-- **Narrower wrappers for agents** — see
-  [Agent-facing wrappers](agents.md) and the
-  [wrapper author checklist](wrapper-author-checklist.md).
-- **`gh auth login` with stored credentials** — see
-  [GitHub via libsecret](gh-libsecret.md).
-- **Human-in-the-loop confirmation for high-privilege wrappers** —
-  underwrap deliberately does not ship a per-invocation prompt.
-  Layer it at the OS level: install the wrapper behind `sudo` (or a
-  polkit rule) and rely on the existing audit trail. Pair this with
-  a `Locked` permission you flip to `Unlocked` (or `UnlockedUntil`)
-  out-of-band for time-bound access windows.
+```bash
+systemctl status underwrapd-demo.service
+```
+
+Setgid entry point:
+
+```bash
+ls -l /run/wrappers/bin/underwrap-demo
+```
+
+Credential ownership and modes:
+
+```bash
+sudo ls -ld /var/lib/underwrap-demo
+sudo ls -l /var/lib/underwrap-demo/client-demo.{pem,key}
+```
+
+The admin UI should show:
+
+- one active client instance mapped to `demo`;
+- resource `demo/token` with one env entry;
+- pair `secret-check → demo/token`;
+- one unlocked, non-writable permission row.
 
 ## Troubleshooting
 
+### The `secret-check` command is missing
+
+Confirm that the local username appears in `allowedUsers`, then rebuild. This
+option installs shims only; the explicit `underwrap-demo secret-check` form is
+system-wide.
+
 ### `peer egid ... does not match instance group gid`
 
-The process did not reach the daemon through the setgid entry point.
-Check that `/run/wrappers/bin/underwrap-work` exists, is setgid, and is
-group-owned by `underwrap-work` (the instance group that gates the
-socket).
+The request did not traverse the setgid entry point. Verify the mode and group
+of `/run/wrappers/bin/underwrap-demo` and do not connect directly to the socket.
 
-### `connecting to backend at https://127.0.0.1:18443` fails
+### The wrapper says the instance is not enrolled
 
-The daemon cannot reach the backend, or the mTLS material is wrong.
-Check:
+Check that both credential files exist with the expected owner/mode and that the
+certificate PEM was registered on an active client instance. A rotated or
+disabled credential produces the same enrollment guidance.
+
+### The resource or wrapper pair is missing
+
+Confirm that auto-create is enabled for the client instance and restart
+`underwrapd-demo`. Otherwise create resource `demo/token` and its
+`secret-check` pair manually in the admin UI.
+
+### The permission is locked or missing
+
+Registration seeds a locked permission. Open **Wrapper permissions** and set the
+cell for the correct client, wrapper, and resource to `Unlocked`.
+
+### TLS connection fails
+
+Check the backend process, URL, server certificate SAN, and CA file:
 
 ```bash
-systemctl status underwrap-backend.service
+systemctl status underwrapd-demo.service
 openssl s_client -connect 127.0.0.1:18443 \
-  -CAfile /etc/underwrap/ca.pem \
-  -cert   /var/lib/underwrap-work/client-work.pem \
-  -key    /var/lib/underwrap-work/client-work.key
+  -CAfile /etc/underwrap/ca.pem
 ```
 
-### The wrapper runs but Jira still fails to authenticate
+## Next steps
 
-underwrap is probably working; `jira-cli` may still be uninitialized or
-pointed at the wrong Jira instance. Re-run `jira init`.
-
-## Keep reading
-
-- [Documentation overview](index.md)
-- [The underwrap backend](backend.md)
-- [Configuration reference](configuration.md)
-- [Wrapper author checklist](wrapper-author-checklist.md)
-- [Security](security.md)
+- [Admin UI](admin-ui.md) for encrypted stores, manual pair creation, users,
+  and debug permissions.
+- [Configuration](configuration.md) for wrapper projections and host access.
+- [Agent-facing wrappers](agent-facing-wrappers.md) before exposing a wrapper to
+  automation.
+- [GitHub via libsecret](gh-libsecret.md) for mutable Secret Service state.
+- [Deploying the backend](remote-backend.md) to separate backend and target
+  hosts.
+- [Security](security.md) before using production credentials.

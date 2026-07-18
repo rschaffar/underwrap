@@ -1,37 +1,37 @@
-# Deploying the central backend
+# Deploying the backend
 
-underwrap splits its storage from its local enforcement. On the target
-host, `underwrapd` brokers wrapper identity locally; it reads and writes
-secrets by talking to a central `underwrap-backend` over HTTPS with
-mutual TLS.
+A central deployment separates persistent secret storage from the NixOS hosts
+that execute wrappers:
 
-This page walks through a two-machine deployment:
+- **backend host** — runs `underwrap-backend`, stores resources and policy, and
+  serves the admin UI;
+- **frontend host** — runs one or more `underwrapd` instances and the NixOS
+  wrapper chain;
+- **operator browser** — connects to the backend's HTTPS origin.
 
-- **backend host** — runs `underwrap-backend`. Holds the real secret
-  state and the policy document.
-- **target host** — runs `underwrapd` and the wrappers. Connects
-  outbound to the backend host.
+The frontend makes outbound HTTPS connections only. There is no SSH tunnel or
+backend Unix-socket transport.
 
-For the local-only shape, run both on the same machine and point
-`underwrapd` at `127.0.0.1`. Everything below still applies.
+## Network and trust plan
 
-## Preparing the PKI
+Before installation, choose:
 
-You only need a **server-side** CA:
+- the backend hostname and HTTPS port;
+- a server CA trusted by every frontend and operator browser;
+- the backend service account and state paths;
+- plain or encrypted stores;
+- which frontend runtime client instance maps to each store;
+- whether each client may auto-create missing wrapper resources/pairs.
 
-- a CA certificate used to sign the backend's server certificate,
-- a server certificate whose SANs include the address operators and the
-  target host will use (`localhost`, an internal hostname, or an IP).
+Expose the HTTPS port only to intended frontend hosts and operator networks.
+TLS authentication does not replace ordinary firewalling and host hardening.
 
-Client certificates are **not** CA-signed. The `underwrap-keygen`
-helper generates a self-signed leaf locally on the target host; an
-admin pastes the resulting cert PEM into the backend admin UI to
-register the runtime client instance. The backend authenticates later
-mTLS connections by SHA-256 fingerprint lookup against its
-runtime-client registry. There is no enrollment CA, no CSR signing, and
-no `client_ca_file` to manage.
+## Server TLS
 
-A minimal `step-ca` recipe:
+underwrap uses a conventional server certificate for the backend endpoint. Its
+SANs must include every hostname or IP used by frontends and browsers.
+
+A minimal `step` recipe is:
 
 ```bash
 step certificate create \
@@ -41,18 +41,41 @@ step certificate create \
 step certificate create \
   "backend.example.internal" server.pem server.key \
   --profile leaf --ca ca.pem --ca-key ca.key \
-  --san backend.example.internal --san 127.0.0.1 \
+  --san backend.example.internal \
+  --san 127.0.0.1 \
   --not-after 8760h --insecure --no-password
 ```
 
-Copy `ca.pem`, `server.pem`, and `server.key` to the backend host. Copy
-`ca.pem` to each target host so its `underwrapd` can verify the backend's
-server cert.
+Protect `ca.key` as a CA private key; it does not need to remain on the backend
+host after issuing the server certificate.
+
+Install:
+
+- `server.pem` and `server.key` on the backend host;
+- `ca.pem` on each frontend host;
+- CA trust in operator browsers or their operating systems.
+
+Runtime client certificates are not signed by this CA. Each frontend generates
+a self-signed leaf, and the backend pins its fingerprint after operator
+enrollment.
 
 ## Backend host
 
-Install `underwrap-backend` (it builds with plain `cargo build -p
-underwrap-backend`, no NixOS wrapper machinery required) and write
+`underwrap-backend` runs on Linux without the NixOS frontend module. A local
+source build prepares the embedded SPA first:
+
+```bash
+cd web
+npm ci
+npm run build
+cd ..
+cargo build -p underwrap-backend
+```
+
+For a packaged deployment, install the `underwrap-backend` flake package; the
+Nix build compiles and embeds the SPA automatically.
+
+Create service-owned state directories and write
 `/etc/underwrap-backend/config.yaml`:
 
 ```yaml
@@ -68,65 +91,52 @@ https:
     key_file: /etc/underwrap-backend/server.key
 
 admin:
+  allowed_origins:
+    - https://backend.example.internal:18443
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-The `admin:` block must be present (even if otherwise empty) for the
-admin API and embedded SPA to be mounted — with no `admin:` key the
-backend serves only the mTLS runtime API. `stores_data_root` is required
-for the "create store" admin action used below.
+Run the process as a dedicated account that can read the TLS key and owns the
+registry/data directories. A service unit should apply at least:
 
-Start the daemon with whichever init system suits you. A minimal systemd
-unit is in the VM test (`nix/tests/node.nix`) — copy its
-`ProtectSystem`, `PrivateTmp`, `RestrictAddressFamilies`, and
-`NoNewPrivileges` flags.
+- `NoNewPrivileges=true`;
+- `PrivateTmp=true`;
+- `ProtectSystem=strict` with narrowly scoped writable state paths;
+- `ProtectHome=true`;
+- an empty capability set;
+- restricted address families and syscall classes appropriate to an HTTPS
+  service;
+- `LimitCORE=0`;
+- a restrictive umask.
 
-## Generating a client credential with `underwrap-keygen`
+The backend configuration and full data model are documented in
+[Backend](backend.md). The annotated YAML is
+[`examples/backend.yaml`](../examples/backend.yaml).
 
-`underwrap-keygen` runs on the target host and never talks to the
-backend. It generates a fresh keypair, writes the private key and a
-self-signed certificate to disk under the daemon user, and prints the
-certificate PEM to stdout. The operator pastes that PEM into the admin
-UI on the backend to register the runtime client instance.
+## Bootstrap the backend
 
-On NixOS, the `services.underwrap` module writes each instance's daemon
-config to `/etc/underwrap/daemon/<instance>.yaml` — the file that carries
-the `backend` section with the client cert/key paths. Point
-`underwrap-keygen` at it and the helper reads those output paths plus the
-daemon user from that file:
+Open the backend origin in a trusted browser and:
 
-```bash
-sudo underwrap-keygen \
-  --instance-config /etc/underwrap/daemon/work.yaml
-```
+1. bootstrap the first operator;
+2. create the target store;
+3. for an encrypted store, record the one-time master key in an external vault;
+4. leave the encrypted store unlocked while enrolling and testing its frontend.
 
-Off NixOS (or if you want to override the paths), pass the targets
-explicitly instead:
+A runtime client instance must select an existing store, so store creation comes
+before client enrollment.
 
-```bash
-sudo underwrap-keygen \
-  --client-cert-out /etc/underwrap/client-work.pem \
-  --client-key-out /etc/underwrap/client-work.key
-```
+## Frontend host
 
-The helper writes the key file with mode `0400` and the cert file with
-`0600`, and chowns both to the `underwrap-<instance>` user/group when it
-can resolve them.
-Copy the PEM that lands on stdout into the admin UI's **Create client
-instance** form on the backend; the backend stores the SHA-256
-fingerprint and authorises later mTLS connections by it.
-
-## Target host
-
-Configure `services.underwrap` to connect outbound to the backend:
+Configure the NixOS module with the remote URL and server CA:
 
 ```nix
 services.underwrap = {
   enable = true;
-  package = pkgs.underwrap;
+  package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
   instances.work = {
     allowedUsers = [ "alice" ];
+
     backend = {
       url = "https://backend.example.internal:18443";
       caFile = "/etc/underwrap/ca.pem";
@@ -134,65 +144,136 @@ services.underwrap = {
 
     wrappers.gh = {
       target = "${pkgs.gh}/bin/gh";
-      resource = "github/token";
-      env = true;
+      resource = "github/gh";
+      libsecret = true;
     };
   };
 };
 ```
 
-The module installs the single setgid entry point at
-`/run/wrappers/bin/underwrap-work`, group-owned by `underwrap-work`, and a
-per-user `gh` shim on each authorized user's `PATH`. The user invokes
-`gh` (or `underwrap-work gh`); `underwrapd` verifies the peer's effective GID
-against the instance group (race-free via `SO_PEERPIDFD`), validates the
-wrapper name against config, and forwards the invocation to the
-backend.
+Rebuild the host. The daemon starts even when its runtime client credential does
+not exist. Wrapper requests retry loading the credential and opening the backend
+client, but wrapper-asset registration runs only at daemon startup. Restart the
+daemon after enrollment, as shown below.
 
-Restart the frontend instance service:
+`allowedUsers` installs shims; it is not an ACL. Any local user can execute the
+system-wide `underwrap-work` entry point. Add an OS-level gate when the host
+requires local-user authorization.
+
+## Generate the runtime client credential
+
+On the frontend host:
 
 ```bash
-systemctl restart underwrapd-work.service
+sudo underwrap-keygen \
+  --instance-config /etc/underwrap/daemon/work.yaml
 ```
 
-## Putting a wrapper under policy
+The helper:
 
-Out of the box, the backend's policy document is empty. An empty
-document means **every request with no matching rule is denied**, so new
-wrappers always need at least one allow-rule before they can do
-anything.
+- generates a private key and self-signed client certificate locally;
+- writes the key `0400` and certificate `0600` under
+  `/var/lib/underwrap-work/`;
+- assigns them to the per-instance daemon user;
+- prints the certificate PEM.
 
-The short way is now the admin UI in the browser:
+It does not contact the backend. Paste the certificate into **Client instances**
+in the admin UI, choose the existing target store, and set the instance to
+`Active`.
 
-- bootstrap the first admin operator
-- create the `work` store
-- run `underwrap-keygen` on the target host and paste its cert PEM into
-  the **Create client instance** form on the **Client Instances** page
-- add the wrapper grant and secret material through the UI
+For a non-NixOS frontend configuration tool, explicit output paths are also
+available:
 
-## Wrapper approval modes
+```bash
+sudo underwrap-keygen \
+  --client-cert-out /etc/underwrap/client-work.pem \
+  --client-key-out /etc/underwrap/client-work.key
+```
 
-Permissions default to `Locked` when the backend auto-seeds them on
-register. Operators flip them centrally any time:
+The frontend wrapper chain itself remains NixOS-supported; explicit paths are
+useful for credential generation and development tooling.
 
-- **`locked`** — deny everything. Use for wrappers under maintenance or
-  compromise investigation; the operator-supplied `reason` field is
-  surfaced verbatim to the caller.
-- **`unlocked`** — allow every `Real` invocation through this permission.
-- **`unlocked-until { until_epoch }`** — allow `Real` invocations until
-  the given epoch (unix seconds); the deadline is checked lazily on each
-  request, there is no background sweeper.
-- **`unsafe-debug-until { until_epoch }`** — allow both `Real` and
-  `Debug` invocations until the given epoch. `Debug` runs the debug tool
-  instead of the configured target and prints the projected secret
-  material to the operator's terminal. Every other mode denies `Debug`
-  with `not-unsafe-debug`.
+## Register wrapper assets
 
-Per-invocation approval is intentionally not a feature of this product —
-use `sudo` or polkit in front of the wrapper for human-in-the-loop
-confirmation.
+Choose one of two enrollment policies.
 
-The wrapper-side behavior is identical across modes; only the backend
-policy changes. Read access through an active permission is
-unconditional; write access is decided per-permission via the
-`writable: bool` flag and re-checked on every finalize.
+### Automatic asset creation
+
+Enable **Automatically create wrapper resources and pairs** on the client
+instance, then restart the daemon:
+
+```bash
+sudo systemctl restart underwrapd-work.service
+```
+
+The startup registration creates missing resource records and wrapper/resource
+pairs and seeds locked permission rows. Existing records are never modified or
+removed by registration.
+
+### Manual asset creation
+
+Leave auto-create disabled and use the admin UI to create:
+
+1. each resource named by frontend config;
+2. each wrapper/resource pair.
+
+Restarting the daemon reports any missing records but does not create them.
+Manual creation gives operators explicit control over backend assets.
+
+## Add resource values and permissions
+
+For each wrapper:
+
+1. add env/files/libsecret entries to its resource through **Secrets**;
+2. open **Wrapper permissions**;
+3. create or edit the permission row for the runtime client, wrapper, and
+   resource;
+4. choose the permission mode;
+5. enable writable only when files/libsecret changes should persist.
+
+Newly registered rows are locked. The canonical permission modes and evaluation
+order are in [Backend](backend.md#policy-model). `UnsafeDebugUntil` is the only
+mode that permits the debug target and should use a short deadline.
+
+## Verify the deployment
+
+On the frontend host:
+
+```bash
+systemctl status underwrapd-work.service
+journalctl -u underwrapd-work.service
+openssl s_client \
+  -connect backend.example.internal:18443 \
+  -servername backend.example.internal \
+  -CAfile /etc/underwrap/ca.pem
+```
+
+Then run one narrow wrapper and confirm:
+
+- the target succeeds;
+- the admin UI updates `last_used_at` for its pair;
+- the target runs under its dedicated `underwrap-target-*` UID;
+- no secret value appears in daemon/backend logs;
+- a read-only files/libsecret modification is discarded and audited;
+- a writable modification persists only after finalize.
+
+## Encrypted-store restart procedure
+
+After every backend restart, encrypted stores are locked because their master
+keys are not stored on disk.
+
+1. Sign in to the admin UI.
+2. Open **Stores**.
+3. Unlock each required store with its externally held key.
+4. Verify the store is unlocked before expecting wrapper invocations to work.
+
+A locked store returns a structured runtime error, which the wrapper reports as
+an operator-actionable message.
+
+## Related documentation
+
+- [Getting started](getting-started.md)
+- [Admin UI](admin-ui.md)
+- [Configuration](configuration.md)
+- [Backend](backend.md)
+- [Security](security.md)

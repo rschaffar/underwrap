@@ -27,8 +27,8 @@
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-          # Common source filtering — Rust/Cargo files plus per-crate src/assets/
-          # so any bundled static assets survive the sandboxed build.
+          # Common source filtering — Rust/Cargo files, per-crate src/assets/,
+          # the committed API schema, and shipped examples exercised by tests.
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: type:
@@ -39,14 +39,16 @@
               # by the `openapi_export` drift test and rewritten +
               # panicked on any mismatch; without it in the sandbox
               # source the test sees "expected … actual <empty>".
-              || (pkgs.lib.hasSuffix "/openapi.json" path);
+              || (pkgs.lib.hasSuffix "/openapi.json" path)
+              || (pkgs.lib.hasSuffix "/examples" path)
+              || (pkgs.lib.hasInfix "/examples/" path);
             name = "source";
           };
 
           # RustSec advisory database for cargo-audit.
           advisoryDb = pkgs.fetchzip {
-            url = "https://github.com/RustSec/advisory-db/archive/refs/heads/main.tar.gz";
-            hash = "sha256-ehYI2+TnkdX86YRk+38K8ulZTDyifBbUTFub7IQ9vSk=";
+            url = "https://github.com/RustSec/advisory-db/archive/b5fc89b8be99e96f79194d8a6f11e9b4143b99f0.tar.gz";
+            hash = "sha256-BOqD2VjHKAjJB8uAltrYfjhci1JoiusWsHryUTup9FM=";
           };
 
           # Common build inputs.
@@ -56,15 +58,9 @@
             strictDeps = true;
             buildInputs = [ ];
             nativeBuildInputs = [ ];
-            # Belt-and-suspenders cap on integration-test
-            # parallelism. The real fix for the readiness flake was
-            # making `ensure_package_built` a no-op when the binary
-            # is already on disk (which it always is in a crane
-            # build), so the daemon test no longer fires a recursive
-            # `cargo build` that CPU-starves sibling TestDaemon
-            # startups. The cap stays because it's a sensible
-            # default for a contended sandbox and protects against
-            # future regressions of the same shape.
+            # Bound integration-test parallelism so concurrent daemon/backend
+            # fixtures remain within their readiness budget on contended build
+            # hosts.
             cargoTestExtraArgs = "-- --test-threads=4";
           };
 
@@ -124,6 +120,14 @@
             cargoExtraArgs = "--package ${name}";
           });
 
+          # The integration-test crate launches these real executables. `cargo
+          # test` otherwise exposes only test-harness binaries in its target
+          # directory, so point the harness at the packaged workspace binaries.
+          workspaceTestBinaries = {
+            "CARGO_BIN_EXE_underwrapd" = "${workspace}/bin/underwrapd";
+            "CARGO_BIN_EXE_underwrap-backend" = "${workspace}/bin/underwrap-backend";
+          };
+
         in {
           packages = {
             default = workspace;
@@ -142,19 +146,19 @@
           checks = {
             # Workspace-wide cargo test.
             # Binary-dependent integration tests skip gracefully in sandbox.
-            workspace-test = craneLib.cargoTest (commonArgs // {
+            workspace-test = craneLib.cargoTest (commonArgsWithWeb // workspaceTestBinaries // {
               inherit cargoArtifacts;
             });
 
             # Faster, better test runner for local/CI use.
-            workspace-nextest = craneLib.cargoNextest (commonArgs // {
+            workspace-nextest = craneLib.cargoNextest (commonArgsWithWeb // workspaceTestBinaries // {
               inherit cargoArtifacts;
               partitions = 1;
               partitionType = "count";
             });
 
             # Clippy.
-            workspace-clippy = craneLib.cargoClippy (commonArgs // {
+            workspace-clippy = craneLib.cargoClippy (commonArgsWithWeb // {
               inherit cargoArtifacts;
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
             });
@@ -170,11 +174,6 @@
             workspace-audit = craneLib.cargoAudit {
               inherit src;
               advisory-db = advisoryDb;
-              # RUSTSEC-2023-0071 affects RSA decryption timing. underwrap uses
-              # ssh-key for unlock-key signature verification with public keys,
-              # not RSA private-key decryption. Keep the audit gate enabled but
-              # suppress this specific advisory until the dependency graph moves.
-              cargoAuditExtraArgs = "--ignore yanked --ignore RUSTSEC-2023-0071";
             };
 
             # Supply-chain policy checks.
@@ -188,9 +187,28 @@
             };
 
             # Coverage summary / report generation.
-            workspace-llvm-cov = craneLib.cargoLlvmCov (commonArgs // {
+            workspace-llvm-cov = craneLib.cargoLlvmCov (commonArgsWithWeb // workspaceTestBinaries // {
               inherit cargoArtifacts;
             });
+
+            # Parse and evaluate the relevant wrapper definitions in both
+            # complete NixOS examples. The assertions run during flake
+            # evaluation; the derivation records the gate as a normal check.
+            examples-nix-parse =
+              let
+                fakeUnderwrap = {
+                  nixosModules.default = { };
+                  packages.${system}.default = pkgs.hello;
+                };
+                exampleArgs = { inherit pkgs; underwrap = fakeUnderwrap; };
+                nixosExample = import ./examples/nixos.nix exampleArgs;
+                agentExample = import ./examples/agent-github-comment.nix exampleArgs;
+              in
+              assert nixosExample.services.underwrap.instances.demo.wrappers.secret-check.target != "";
+              assert agentExample.services.underwrap.instances.agent.wrappers.agent-gh-comment.target != "";
+              pkgs.runCommand "underwrap-examples-nix-parse" { } ''
+                touch "$out"
+              '';
           };
 
           devShells.default = craneLib.devShell {

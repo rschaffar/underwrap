@@ -43,7 +43,7 @@ use crate::admin_api::audit::{AuditEntity, log_admin_event};
     security(("session_cookie" = []), ("csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     responses(
-        (status = 200, description = "Key rotated; old material persisted alongside the new one.", body = AdminStoreRotateKeyResponse),
+        (status = 200, description = "Key rotated and the replacement key returned once.", body = AdminStoreRotateKeyResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
         (status = 500, description = "Rotation failed mid-flight.", body = ServiceErrorResponse),
@@ -81,10 +81,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
     let new_key_bytes = generate_master_key_bytes();
     let key_hex = master_key_hex(&new_key_bytes);
 
-    // Stage the re-encrypted blobs in a sibling temp directory and
-    // swap into place once every resource has migrated. The temp dir
-    // is colocated with the data dir so `rename` is atomic on the
-    // same filesystem.
+    // Stage the re-encrypted blobs in a sibling temp directory before the
+    // two-rename replacement. The temp dir is colocated with the data dir so
+    // each rename is atomic on the same filesystem. Ordinary store I/O does
+    // not acquire `rotate_lock`; operators must quiesce it during rotation.
     let parent = dir
         .parent()
         .ok_or_else(|| {

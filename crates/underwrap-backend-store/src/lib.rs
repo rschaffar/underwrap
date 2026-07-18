@@ -4,10 +4,9 @@
 //! - [`PlainBackend`]: plaintext files in a directory
 //! - [`EncryptedBackend`]: ChaCha20-Poly1305 encrypted files with a master key
 //!
-//! The frontend daemon `underwrapd` no longer goes through this trait
-//! to reach the central backend. It speaks the resource-vocabulary
-//! runtime API via `underwrapd::backend_client::BackendClient`
-//! and never holds a `StorageBackend` itself.
+//! Only `underwrap-backend` owns a `StorageBackend`. The frontend daemon uses
+//! the resource-oriented HTTPS runtime API and never receives this storage
+//! interface.
 
 mod encrypted;
 mod path;

@@ -1,4 +1,4 @@
-//! Idmapped bind mounts (story 2600 / 2640).
+//! Idmapped bind mounts for explicit caller-owned path access.
 //!
 //! Give an isolated (dedicated-uid X) target access to a configured set of the
 //! caller's directories by over-mounting each with an idmapped clone whose

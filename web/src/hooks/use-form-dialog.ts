@@ -48,7 +48,7 @@ export interface UseFormDialogResult<TValues extends FieldValues> {
 }
 
 /**
- * Wraps the boilerplate every form-bearing admin dialog used to repeat:
+ * Centralizes the shared lifecycle for form-bearing admin dialogs:
  * `useForm` + zod resolver + a `useMutation` whose `onSuccess`
  * invalidates a list of query keys and whose `onError` writes to the
  * form's "root" error so a single `<Alert>` driven by

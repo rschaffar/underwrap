@@ -134,8 +134,7 @@ fn item_ids_are_random_hex() {
             "id should be lowercase hex: {id}"
         );
     }
-    // Two creates with the same (empty) attributes still get distinct ids —
-    // the old counter would have collided after a reload.
+    // Two creates with the same (empty) attributes still get distinct ids.
     assert_ne!(id1, id2);
 }
 

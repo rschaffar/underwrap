@@ -74,13 +74,10 @@ fn run() -> Result<(), String> {
     let target_identity =
         resolve_target_identity().map_err(|e| format!("resolving target identity: {e}"))?;
 
-    // Story 2600 (re-keyed 2720): the root-owned table must assign this
-    // (instance, wrapper) pair a dedicated uid. The selector is the
-    // kernel-enforced instance gate + the daemon-validated wrapper name, passed
-    // by underwrap-exec as internal env vars; the uid itself is read directly
-    // from root state (no escalation / confused-deputy path). Missing
-    // selector/table/row is a hard error: never fall back to running as the
-    // caller.
+    // The root-owned table must assign this `(instance, wrapper)` pair a
+    // dedicated UID. underwrap-exec passes only the gate-backed, daemon-validated
+    // selector; root-owned state supplies the identity. A missing selector,
+    // table, or row is fatal.
     let iso_instance = require_isolation_selector("UNDERWRAP_ISOLATION_INSTANCE")?;
     let iso_wrapper = require_isolation_selector("UNDERWRAP_ISOLATION_WRAPPER")?;
     let isolation = target_uid::resolve_isolation(&iso_instance, &iso_wrapper)
@@ -96,10 +93,10 @@ fn run() -> Result<(), String> {
     // namespace (`~`/`~/rel`/absolute), straight from the wrapper config.
     let idmap_paths = exec_bundle.access_paths.clone();
 
-    // Story 2640: build the caller<->X idmap user namespace BEFORE unsharing the
-    // PID namespace — a helper fork after CLONE_NEWPID would become PID 1 of the
-    // new namespace and break the real target fork. The idmapped mounts are
-    // applied below, after the private mount namespace exists.
+    // Build the caller↔target idmap user namespace before unsharing the PID
+    // namespace. A helper fork after CLONE_NEWPID would become PID 1 and consume
+    // the slot intended for the target fork. Mounts are applied after the private
+    // mount namespace exists.
     let idmap_userns = if idmap_paths.is_empty() {
         None
     } else {
@@ -223,10 +220,9 @@ fn prepare_namespace() -> Result<(), String> {
     // Always create a fresh PID + mount namespace. The mount namespace is
     // unconditional so every mode can remount /proc against the new PID
     // namespace (see remount_proc), limiting process discovery uniformly. The
-    // mandatory uid-X boundary cuts both ways (story 2600/2645): a target
-    // sharing the caller's IPC namespace could read the caller's SysV IPC /
-    // POSIX mqueues, so add CLONE_NEWIPC (and CLONE_NEWUTS as cheap
-    // defense-in-depth). These need CAP_SYS_ADMIN, which we still hold here.
+    // A target sharing the caller's IPC namespace could reach caller SysV IPC
+    // and POSIX message queues, so create IPC and UTS namespaces as well. This
+    // setup still holds CAP_SYS_ADMIN.
     let flags = libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
     let ret = unsafe { libc::unshare(flags) };
     if ret != 0 {
@@ -312,12 +308,10 @@ fn run_child(
     // target only sees namespace-local PIDs.
     remount_proc().map_err(|e| format!("remounting /proc failed: {e}"))?;
 
-    // Story 2600: switch the target (and thus its whole subtree) to its dedicated
-    // uid X BEFORE dropping caps — the switch needs CAP_SETUID/CAP_SETGID, which
-    // are retained across it (no uid 0 on either side) and cleared by drop_caps
-    // below. A failed switch aborts the run (switch_to bails): never exec a target
-    // that did not drop to X. The switch must precede every X-facing mount step
-    // below so they run at the natural fsuid X.
+    // Switch the target subtree to its dedicated UID before dropping
+    // CAP_SETUID/CAP_SETGID. The switch precedes target-facing mount setup so
+    // those files are created under the target's natural fsuid. Any failure
+    // aborts the run.
     target_uid::switch_to(isolation)
         .map_err(|e| format!("switching to dedicated target uid: {e}"))?;
 
@@ -340,8 +334,7 @@ fn run_child(
 
     set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
 
-    // Boundary hardening (2645): the uid-X target must not reach the caller's
-    // session keyring.
+    // Give the target a fresh session keyring rather than the caller's.
     boundary::join_session_keyring().map_err(|e| format!("joining session keyring: {e}"))?;
 
     drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;

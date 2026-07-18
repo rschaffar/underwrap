@@ -1,10 +1,8 @@
-//! Central policy model shared by backend and frontend.
+//! Backend-owned wrapper permission model and shared policy wire types.
 //!
-//! A wrapper permission is keyed on `(client_instance, wrapper, resource)`
-//! — the only client-side identifier the backend actually authenticates is
-//! the mTLS-bound runtime client instance id. Everything else the daemon
-//! would have self-reported (host, local user, instance name from the
-//! YAML config) is gone.
+//! A permission is keyed on `(client_instance, wrapper, resource)`. The backend
+//! authenticates the runtime client instance through mTLS; host names, local
+//! users, and frontend-config instance labels are not backend principals.
 //!
 //! Each permission carries:
 //!
@@ -43,7 +41,7 @@ pub enum PolicyDecision {
 pub enum WrapperApprovalMode {
     /// Deny every invocation through this permission.
     Locked,
-    /// Allow every invocation through this permission.
+    /// Allow real invocations; debug remains denied.
     #[default]
     Unlocked,
     /// Allow invocations until `until_epoch`; deny afterwards. The expiry is
@@ -94,9 +92,9 @@ pub struct PolicyDocument {
     pub permissions: Vec<WrapperPermission>,
 }
 
-/// The three secret "slots" a wrapper resource carries. The first two
-/// have a wrapper-side write path and honour the per-permission `writable`
-/// flag; `Env` is daemon→target only.
+/// The three resource slots. `Files` and `Libsecret` have wrapper-side
+/// writeback paths governed by the permission's `writable` flag; `Env` is
+/// backend-to-target only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretSlot {
     Env,

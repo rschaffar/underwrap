@@ -62,7 +62,7 @@ export function RotateStoreKeyDialog({
       open
       onClose={onClose}
       title={`Rotate master key: ${store.name}`}
-      description="Mints a fresh 32-byte master key and re-encrypts every resource in this store under it. Writes are briefly blocked while the data directory is swapped; reads continue throughout. The new key is shown once after the rotation completes — save it before closing the dialog."
+      description="Quiesce wrapper traffic and other admin access to this store first: rotation is serialized only against another rotation, so concurrent reads may fail and concurrent writes may be lost. The operation mints a fresh 32-byte key, re-encrypts the store, and shows the new key once — save it before closing the dialog."
     >
       {store.locked ? (
         <Alert variant="warning">

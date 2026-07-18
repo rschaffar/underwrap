@@ -35,10 +35,9 @@ pub(crate) fn user_list_item(record: &crate::users::UserRecord) -> AdminUserList
     }
 }
 
-/// What [`mutate_collection`] should persist after the closure
-/// finishes. Each handler mutates exactly one record; this avoids
-/// the diff scan the old API needed when the closure returned just
-/// `T`.
+/// What [`mutate_collection`] should persist after the closure finishes.
+/// Each handler names the one record it mutated, so persistence never needs to
+/// infer the change by diffing the collection.
 pub(crate) enum CollectionWrite {
     /// Persist the user record with this id (the closure just added
     /// or updated it).
@@ -48,10 +47,9 @@ pub(crate) enum CollectionWrite {
     Delete(String),
 }
 
-/// Errors raised inside [`mutate_collection`]. Split so handlers map
-/// the user-level invariant violations to typed 4xx responses and
-/// any disk / serialization failure to a 500 — instead of the old
-/// `anyhow` + downcast dance which surfaced IO errors as 400s.
+/// Errors raised inside [`mutate_collection`]. The split lets handlers map
+/// user-level invariant violations to typed 4xx responses and disk or
+/// serialization failures to 500 responses.
 #[derive(Debug)]
 pub(crate) enum MutateCollectionError {
     User(UserMutationError),

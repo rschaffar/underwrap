@@ -5,14 +5,10 @@
 //! id is a server-generated `res_*` token (see the backend's `ids`
 //! module) and therefore can never collide with the names below.
 //!
-//! Everything in the store that is *not* user secret material — the
-//! policy / resources / pairs control-plane documents and the
-//! encrypted-store unlock canary — lives under the single reserved
-//! [`CONTROL_PREFIX`]. There is exactly one reserved namespace and one
-//! rule: a key is user secret material iff it is **not**
-//! [`is_control_key`]. This replaces the earlier split between a
-//! `__underwrap/` document prefix and a separate `__underwrap__/`
-//! canary id, each of which used its own ad-hoc filtering.
+//! Everything in the store that is *not* user secret material — policy,
+//! resource and pair documents, plus the encrypted-store unlock canary — lives
+//! under [`CONTROL_PREFIX`]. A key is user secret material exactly when
+//! [`is_control_key`] is false.
 
 /// Reserved top-level namespace for non-secret, store-internal keys.
 /// The control-plane document ids and the encrypted-store canary id

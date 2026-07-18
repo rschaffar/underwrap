@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adversarial ancestor attack test (story 2600).
+"""Adversarial ancestor attack against the target-UID boundary.
 
 This script runs as a PARENT (ancestor) process that spawns wrapper
 `test-iso`. The wrapped target and the descendant it backgrounds (`sleep 5252`)

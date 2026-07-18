@@ -1,237 +1,258 @@
 # Wrapper author checklist
 
-This checklist is for designing a wrapper that should be good enough for underwrap's first release.
+Use this checklist before exposing a wrapper to humans, automation, or agents.
+The goal is an explicit, reviewable capability boundary.
 
-It is intentionally opinionated.
+## 1. Is the action narrow enough?
 
-The goal is not merely to “make it work”. The goal is to produce a wrapper that has a clean trust boundary, looks good in a first release, and does not accidentally widen the secret exposure surface.
-
-## 1. Is the wrapped action narrow enough?
-
-Prefer a narrow helper over a broad CLI.
-
-Better:
+Prefer one named action:
 
 ```text
-agent-gh-comment <pr> <body-file>
+printf '%s\n' 'reviewed' | agent-gh-comment <pr>
 ```
 
-Worse:
+over a broad passthrough:
 
 ```text
 gh <anything>
 ```
 
-Ask:
+Check:
 
-- is the action surface intentionally small?
-- are the allowed subcommands fixed?
-- are the allowed flags fixed or tightly validated?
-- does the token scope match that action surface?
+- subcommands and verbs are fixed;
+- flags are fixed or explicitly enumerated;
+- the service/repository/account scope is fixed where possible;
+- the token scope matches the action;
+- callers cannot turn the helper into a general shell or transport.
 
-If the answer is “this wrapper can do almost anything the token can do”, the wrapper is probably too broad for an agent-facing use case.
+## 2. Is the target absolute and trusted?
 
-## 2. Is the top-level target path absolute and trusted?
+`target` must be an absolute root-controlled path. Prefer a Nix store path.
 
-The target should be a fixed absolute path from trusted configuration.
+Check:
 
-Ask:
+- the daemon config names the intended helper, not a mutable user path;
+- the target is not selected through caller input, symlinks, `PATH`, or a
+  helper environment variable;
+- the helper package and source are part of the review.
 
-- is the wrapper target an absolute path?
-- is it a store path or another root-controlled path?
-- can the caller swap it out indirectly?
+The daemon protects only the top-level target choice. The helper remains
+responsible for descendants.
 
-The whole point is to distinguish:
+## 3. Are downstream executables pinned?
 
-- “run this approved helper”
-- from
-- “run an arbitrary caller-chosen binary with my secret”
+Inspect every subprocess:
 
-## 3. Does the target or helper rely on PATH lookups?
+- `git`, `ssh`, `gh`, `curl`, `jq`, shells;
+- pagers, editors, browsers;
+- credential helpers and plugins.
 
-By default, underwrap does **not** inherit `PATH`.
+Use absolute paths. If a target genuinely needs `PATH`, set a fixed trusted
+`envSet.PATH` built from the exact packages it requires.
 
-That is deliberate.
+Do not pass through caller `PATH`.
 
-Ask:
+## 4. Are helper-selection variables controlled?
 
-- does the target shell out to `git`, `ssh`, `less`, `xdg-open`, or similar by bare name?
-- can I replace those lookups with absolute paths?
-- if not, can I set a trusted fixed `PATH` via `envSet.PATH`?
+Treat these as executable-selection or behavior surfaces:
 
-Prefer:
+- `EDITOR`, `VISUAL`, `PAGER`, `BROWSER`;
+- language/plugin paths;
+- Git/SSH helper configuration;
+- service-specific hook variables.
 
-- absolute Nix store paths
-- or an explicit trusted `envSet.PATH`
+Prefer a fixed `envSet` value or absence. Do not add a variable to
+`envPassthrough` without explaining what it can select.
 
-Avoid:
+## 5. Is the built-in environment acceptable?
 
-- caller-controlled PATH
-- hidden helper lookup assumptions
+The built-in passthrough set includes locale/terminal values and
+caller-controlled values such as:
 
-## 4. Are helper-selection environment variables controlled?
+- `TMPDIR`;
+- `SSH_AUTH_SOCK`;
+- `DISPLAY` and `WAYLAND_DISPLAY`;
+- HTTP/HTTPS proxy variables.
 
-Treat these as risky helper-selection surfaces:
+`envPassthrough` adds names; it cannot remove built-ins per wrapper in this
+release. Passing a path does not bypass DAC, but a reachable path/socket can
+steer behavior or provide an exfiltration channel.
 
-- `EDITOR`
-- `VISUAL`
-- `PAGER`
-- `BROWSER`
+If a helper's security claim requires the absence of one of these variables,
+the current wrapper environment model does not provide that guarantee. Do not
+document a stronger boundary than the implementation supplies.
 
-Ask:
+## 6. Are arguments parsed like an API?
 
-- does the target honor any of these?
-- would a malicious helper inherit the secret-bearing environment?
-- should the wrapper set a fixed trusted value instead of passing through the caller's value?
+For every caller-controlled value, define:
 
-Prefer `envSet` over `envPassthrough` for these if they are needed at all.
-
-## 5. Is `envPassthrough` really necessary?
-
-Every passthrough variable is a trust decision.
-
-Ask for each one:
-
-- why is this needed?
-- what behavior of the target does it influence?
-- could it select helper binaries, config files, sockets, or plugins?
-- would a fixed trusted `envSet` value be cleaner?
-
-Also note:
-
-- `HOME`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
-  `XDG_CACHE_HOME`, and `XDG_STATE_HOME` are not passthrough knobs in
-  underwrap's hardened model
-- use `envSet` only for intentional `HOME` / base `XDG_*` overrides, and keep those override values absolute
-- `XDG_RUNTIME_DIR` is the target's own provisioned runtime dir
-  (`<targetRuntimeDirBase>/<target-user-name>`); there is no per-wrapper knob and
-  the caller's own `/run/user/<uid>` is not wired into the namespace. If a tool
-  needs specific caller-owned directories, list them in `accessPaths` (idmapped
-  caller↔target). Submounts under an `accessPaths` entry are best-effort:
-  idmappable filesystems (ZFS, ext4/xfs/btrfs) are mapped, fuse submounts are
-  skipped with a warning
-
-If you cannot explain why a passthrough is safe enough, do not add it.
-
-## 6. Are all free-form arguments validated?
-
-If your helper accepts caller-controlled arguments, validate them as if the helper were an API.
+- grammar;
+- maximum size;
+- accepted range or enum;
+- path root and symlink policy;
+- encoding;
+- duplicate/conflicting flag behavior.
 
 Examples:
 
-- PR numbers should be numeric
-- repo names should be fixed or validated
-- file paths should be bounded and explicitly allowed
-- message sizes should be capped
-- flag subsets should be explicit
+- PR numbers are decimal and bounded;
+- repository names are fixed or strictly parsed;
+- stdin/request bodies are size-limited before dispatch;
+- accepted files are regular, readable, size-limited, symlink-safe, and under an
+  allowed root;
+- a secret-bearing helper never accepts paths such as `/proc/self/environ`;
+- unknown options are rejected;
+- `--` separates options from positional values.
 
-The helper should not quietly devolve into “basically a shell around the real CLI”.
+Avoid shell evaluation and string-built commands.
 
-## 7. Are secret values kept out of logs and diagnostics?
+## 7. Can the target expose the secret?
 
-Ask:
+Check output and persistence paths:
 
-- could the helper print the secret accidentally?
-- could it dump request bodies containing the secret?
-- could verbose/debug output leak headers or tokens?
+- normal stdout/stderr;
+- verbose/debug modes;
+- HTTP request/response dumps;
+- crash reports and core dumps;
+- history, cache, config, and log files;
+- telemetry and tracing;
+- child-process environments.
 
-Log identifiers, paths, and wrapper names.
-Do **not** log secret material.
+underwrap sets `RLIMIT_CORE=0` and isolates process state, but it cannot stop the
+target from deliberately printing or writing its own projection.
 
-## 8. Does the wrapper need libsecret mode or directory mode?
+Log identifiers and decisions, never secret values.
 
-Use libsecret mode when the target genuinely expects Secret Service behavior, such as:
+## 8. Is the projection mode appropriate?
 
-- `gh auth login`
-- tools that store/retrieve credentials via libsecret
+### Env
 
-Use directory mode when the target persists backend-managed credential state in files under the user's home view, such as:
+Use for a fixed value consumed directly by an audited helper. The raw value
+lives in the target environment for its lifetime.
 
-- config directories containing tokens or refresh state
-- tools that expect credential files under `.config/` or `.local/share/`
+### Files
 
-Do **not** use libsecret mode just because it sounds more advanced.
-Do **not** use directory mode as a catch-all for random writable app state.
+Use when the application manages credential material as files. Configure only
+the required clean relative mount paths. Do not use the files slot as generic
+application storage.
 
-Ask:
+### Libsecret
 
-- does the target need Secret Service semantics?
-- does it actually persist credential material in a directory tree?
-- or is a simple env-injected secret enough?
+Use when the application expects Secret Service or a compatible keyring API.
+Separate writable authentication wrappers from read-only action wrappers.
 
-The simpler mode is usually better unless the workflow really needs libsecret or directory-backed state.
+Choose the simplest mode that matches the target. Complexity adds state and
+input surface.
 
-## 9. How tightly should access be time-bounded?
+## 9. Is host access explicit?
 
-This is a backend-side question, not a local one. underwrap does not
-ship a per-invocation prompt; if you need human-in-the-loop confirmation
-on every call, layer `sudo`/polkit in front of the wrapper.
+The target runs under a dedicated UID. `HOME` names the caller's passwd home,
+but the target does not automatically gain access to it.
 
-Ask:
+For every `accessPaths` entry, check:
 
-- is standing `Unlocked` access acceptable, or should this wrapper be
-  `Locked` by default and flipped to `UnlockedUntil { until_epoch }` for
-  time-bounded windows?
-- if an operator needs to dig into the projected secret to debug an
-  incident, `UnsafeDebugUntil` enables the debug tool — a full
-  interactive shell/exec session with **read-write** access to the
-  secret (not a read-only viewer: a `debug` run can write the secret
-  back, gated only by `writable`). Use the shortest TTL that fits.
+- why the target needs it;
+- whether a narrower subdirectory works;
+- which config, hooks, plugins, keys, or sockets become reachable;
+- whether target writes back to caller-owned state are acceptable;
+- whether the filesystem supports idmapped mounts.
 
-Set wrapper permission modes in the [admin UI](admin-ui.md).
+`accessPaths` exposes host state; it is not a backend-managed secret projection.
 
-## 10. Is the token itself scoped tightly enough?
+## 10. Is backend policy minimal?
 
-underwrap improves secret delivery. It does **not** make an overpowered token safe.
+Each permission row is keyed by runtime client instance, wrapper, and resource.
+Check:
 
-Ask:
+- standing `Unlocked` access is actually required;
+- `UnlockedUntil` can bound the window;
+- the writable flag is off unless files/libsecret changes must persist;
+- the wrapper maps to the intended resource;
+- stale permission rows and pairs are removed.
 
-- is the downstream token the narrowest one available?
-- can it be limited to one repo / one service / one action class?
-- is a mutable app-managed credential state more appropriate than a long-lived static token?
+`UnsafeDebugUntil` permits an env summary, interactive shell, or arbitrary exec
+inside the wrapper namespace. It can persist changes when writable is enabled.
+Use the shortest practical TTL and disable it immediately afterward.
 
-A good wrapper with a bad token scope is still a bad overall design.
+Per-invocation approval is not built in. Use sudo or polkit for a human prompt.
 
-## 11. Are you relying on broad descendant behavior you haven't reviewed?
+## 11. Is the downstream credential narrow?
 
-Even with a fixed top-level target, descendant helper execution matters.
+Check service-side scope independently from wrapper shape:
 
-Ask:
+- repository/project/account scope;
+- read versus write permissions;
+- endpoint/action restrictions;
+- lifetime and rotation;
+- revocation procedure.
 
-- what child processes can this target spawn?
-- what hooks/plugins/config files can affect it?
-- what files or sockets does it trust?
+A narrow helper with an administrator token still carries administrator-level
+impact if the helper or downstream CLI can be abused.
 
-underwrap is not a general sandbox. If the target is too behaviorally broad, a narrow helper is often the better answer.
+## 12. Is the local-user model understood?
 
-## 12. Does the wrapper still look good as part of a first release?
+`allowedUsers` installs PATH shims only. It does not prevent another local user
+from executing `/run/wrappers/bin/underwrap-<instance>` directly. Backend policy
+identifies the frontend runtime client instance, not the Unix caller.
 
-This project is greenfield. Backwards compatibility is not the priority. A polished first release is.
+Check whether the host needs:
 
-Ask:
+- sudo rules;
+- polkit;
+- a separate frontend instance/host;
+- another OS-level local-user gate.
 
-- is the wrapper design clean?
-- is the trust boundary obvious?
-- would a new reader understand why this wrapper exists?
-- is there a simpler, tighter design now that should replace the current one?
+Do not describe the shim list as authorization.
 
-If a better design is clear and does not weaken security, prefer the better design.
+## 13. Have descendant behaviors been reviewed?
 
-## A good default mindset
+List what the target can load or execute:
 
-A wrapper should ideally read like a security boundary description:
+- plugins and extensions;
+- Git hooks and credential helpers;
+- shell startup files;
+- interpreters and config-driven commands;
+- network proxies;
+- files exposed by `accessPaths`;
+- other underwrap entry points.
 
-- fixed target
-- fixed helper set
-- explicit argument surface
-- explicit environment policy
-- token scope matched to intent
+A fixed target path does not make configurable descendant behavior fixed.
 
-If it instead feels like a convenience shim around a broad CLI, keep tightening it.
+## 14. Is the boundary easy to explain?
 
-## Related docs
+A review-ready wrapper should have a short description containing:
 
-- [Getting started](getting-started.md)
-- [Configuration reference](configuration.md)
-- [Agent-facing wrappers](agents.md)
+- fixed target;
+- allowed action and arguments;
+- projection mode;
+- explicit host access;
+- fixed helper set/environment;
+- backend resource and permission mode;
+- downstream credential scope;
+- known limitations.
+
+If that description is difficult to write, simplify the wrapper before relying
+on it.
+
+## Validation
+
+At minimum, test:
+
+- successful intended actions;
+- missing, malformed, oversized, and option-shaped arguments;
+- hostile path and symlink cases;
+- caller-controlled environment values;
+- locked, expired, and missing permissions;
+- read-only write attempts;
+- absence of secret values in stdout, stderr, and service logs;
+- target exit and signal propagation.
+
+NixOS wrapper-boundary changes require the VM test described in
+[Testing](testing.md).
+
+## Related documentation
+
+- [Agent-facing wrappers](agent-facing-wrappers.md)
+- [Configuration](configuration.md)
 - [Security](security.md)
+- [Admin UI](admin-ui.md)

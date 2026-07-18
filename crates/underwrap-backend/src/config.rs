@@ -97,3 +97,6 @@ pub struct BackendConfig {
     #[serde(default)]
     pub admin: Option<AdminConfig>,
 }
+
+#[cfg(test)]
+mod tests;

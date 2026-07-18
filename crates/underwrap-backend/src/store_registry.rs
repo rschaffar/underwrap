@@ -42,10 +42,11 @@ impl StoreState {
 }
 
 /// One store as held by the live registry: persisted record, current
-/// lock state, and the rotation lock guarding key rotation against
-/// concurrent runtime writes. The rotation lock lives on the entry
-/// so it dies with the store on delete instead of leaking into an
-/// unbounded map on `ListenerState`.
+/// lock state, and a mutex that serializes rotation requests with one
+/// another. Ordinary reads and writes do not acquire this mutex; operators
+/// must quiesce store access during rotation. The lock lives on the entry so
+/// it dies with the store on delete instead of leaking into an unbounded map
+/// on `ListenerState`.
 pub struct StoreEntry {
     pub record: StoreRecord,
     pub state: StoreState,
@@ -70,7 +71,7 @@ pub enum RegistryLookupError {
     Locked,
 }
 
-/// Open backends + provenance metadata + rotation locks for every
+/// Open backends + provenance metadata + per-store rotation mutexes for every
 /// store visible to the admin API. Wrapped in an `RwLock` inside
 /// [`crate::runtime_state::ListenerState`] so the CRUD handlers
 /// can mutate it without rebooting the daemon. Readers consult

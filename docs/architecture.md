@@ -1,365 +1,318 @@
 # Architecture
 
-This document is the high-level map of underwrap. For the backend
-surface in depth, see [The underwrap backend](backend.md).
+underwrap separates persistent secret authority from local process execution.
+The backend owns resources and policy; the NixOS frontend turns one authorized
+resource into a short-lived target process.
 
 ## Components
 
-| Component | Role | Typical location |
-|---|---|---|
-| `underwrapd` | Frontend daemon on the target host | target machine running wrappers |
-| `underwrap-exec` | Stage 1 wrapper: authenticate, fetch secret, drop privilege | `/run/wrappers/bin/underwrap-<instance>` |
-| `underwrap-ns` | Stage 2 wrapper: create namespace, exec target | `/run/wrappers/bin/underwrap-ns` |
-| `underwrap-backend` | Central service: holds secrets + policy, authenticates `underwrapd` instances over mTLS, serves the embedded admin SPA | operator workstation or central server |
-| `underwrap-secretsd` | Secret Service provider for libsecret mode | inside the wrapper namespace |
+| Component | Responsibility |
+| --- | --- |
+| `underwrap-backend` | HTTPS runtime API, admin API, embedded SPA, policy, resources, and persistent storage |
+| `underwrapd` | Per-instance local broker; authenticates wrapper peers and relays the three runtime API calls |
+| `underwrap-exec` | Setgid entry stage; requests an invocation, drops the instance-group identity, and hands execution state to `underwrap-ns` |
+| `underwrap-ns` | Namespace supervisor; checks out the resource, switches target identity, projects slots, executes the target, and finalizes usage/writeback |
+| `underwrap-secretsd` | Private Secret Service provider used inside a libsecret-enabled invocation |
+| `underwrap-debug-tool` | Explicitly unsafe target selected only for an authorized debug variant |
+| Admin SPA | Vite/React operator interface embedded in `underwrap-backend` |
 
-The implementation deliberately splits process flow, authorization,
-protocol handling, and storage into separate modules. Reviewers can read
-the layers top-down without spelunking.
+The frontend wrapper chain is supported on NixOS. The backend is an ordinary
+Linux HTTPS service.
 
-## Why the wrapper chain has two stages
+## Identities and authorization units
 
-The wrapper chain is two binaries:
+Several identities serve different purposes:
 
-1. **`underwrap-exec`** — installed once per instance as the setgid
-   entry point `underwrap-<instance>`, setgid to the instance group
-   `underwrap-<instance>`. It parses `[debug] <wrapper> [args]`,
-   authenticates against `underwrapd` via the instance-group egid, and
-   receives secret material plus the daemon-chosen target.
-2. **`underwrap-ns`**
-   - installed with `cap_sys_admin` (the module also lists `cap_setpcap`
-     on the binary, but `nixpkgs` `security.wrappers` strips it from
-     the ambient set at exec — see `docs/security.md`)
-   - creates the PID/mount namespace, sets `PR_SET_NO_NEW_PRIVS`, clears
-     the permitted/effective/inheritable cap sets via `capset`, attempts
-     bounding-set pruning best-effort, and execs the final target
+- **Frontend instance:** one `underwrapd`, one Unix socket, one setgid entry
+  point, one instance group, and one mTLS credential.
+- **Runtime client instance:** the backend principal resolved from the presented
+  client certificate fingerprint. It maps to exactly one store.
+- **Wrapper/resource pair:** a configured wrapper name bound to one backend
+  resource.
+- **Permission row:** backend authorization keyed by
+  `(runtime client instance, wrapper, resource)`.
+- **Target UID:** one dedicated system UID/GID per `(frontend instance,
+  wrapper)` pair.
+- **Local Unix user:** the caller that starts the wrapper. This identity is not
+  part of backend policy.
 
-The split exists because the setgid identity story and the
-capability-based namespace story do not cleanly coexist on a single
-binary.
+`allowedUsers` only installs per-user PATH shims. It does not restrict direct
+execution of `/run/wrappers/bin/underwrap-<instance>`.
 
-## Per-user PATH integration
-
-`security.wrappers` is system-wide, so the one setgid entry point per
-instance lives under `/run/wrappers/bin/underwrap-<instance>` (e.g.
-`underwrap-work`). On top of it, the NixOS module installs per-user convenience
-shims into each authorized user's profile directory —
-`/etc/profiles/per-user/<user>/bin/jira` and `.../bin/debug-jira` for any
-user in the instance's `allowedUsers`. Those shims are plain,
-unprivileged scripts that just `exec /run/wrappers/bin/underwrap-<instance>
-[debug] jira "$@"`; they carry no setgid bit and no config. NixOS places
-per-user profile bins on each user's `PATH`, so users invoke wrappers by
-their bare attribute name. All kernel identity and target selection
-happen in `underwrap-<instance>` and the daemon, never in the shim.
-
-## End-to-end request flow
-
-For a normal env-var wrapper:
+## Deployment shape
 
 ```text
-user runs jira issue list
-  -> /etc/profiles/per-user/<user>/bin/jira            (per-user shim script)
-  -> /run/wrappers/bin/underwrap-work jira issue list          (underwrap-exec, setgid)
-  -> connect to /run/underwrap-work/wrapper.sock        (0660, instance group)
-  -> underwrapd checks the peer's effective GID == the instance group
-     (race-free via SO_PEERPIDFD), then validates the wrapper name "jira"
-     against config and relays { wrapper_name, resource, variant } to the
-     backend
-  -> backend re-evaluates the policy for the variant and returns the blob
-  -> underwrapd returns the daemon-CHOSEN target + env + secret
-  -> underwrap-exec drops privilege
-  -> secret + target are handed to underwrap-ns over fd 3
-  -> underwrap-ns creates the target environment
-  -> the daemon-chosen target execs with the injected secret
+operator browser
+      │ HTTPS + session cookie + CSRF
+      ▼
+underwrap-backend ◄──────── HTTPS + mTLS ──────── underwrapd
+      │                                                ▲
+      │ resources + policy                             │ Unix socket
+      │                                                │ effective-GID check
+      ▼                                                │
+StorageBackend                                   underwrap-exec
+                                                       │ fd 3 + fd 20
+                                                       ▼
+                                                underwrap-ns
+                                                       │
+                                                       ▼
+                                                    target
 ```
 
-Per-invocation approval is intentionally out of scope. If you need
-a human-in-the-loop prompt, layer it at the OS level (sudo, polkit)
-in front of the wrapper.
+Runtime, admin API, and SPA routes share one configured HTTPS listener. TLS
+accepts browser connections without a client certificate and runtime connections
+with a presented client certificate; runtime handlers resolve and enforce the
+mTLS principal.
 
-## Local identity model
+## End-to-end invocation
 
-Identity splits into a kernel gate and a daemon gate:
-
-- **Kernel gate.** One `0660` socket per instance,
-  `/run/underwrap-<instance>/wrapper.sock`, owned by the instance group
-  `underwrap-<instance>`. A process can only open it if it holds that
-  group as effective GID, and the only way to get it is to exec the
-  setgid `underwrap-<instance>` binary. The daemon re-confirms the peer egid
-  (race-free via `SO_PEERPIDFD`, `SO_PEERCRED` + `/proc` fallback) before
-  reading the request.
-- **Daemon gate.** The wrapper name and variant in the request are
-  client-supplied. The daemon treats the name as a *selector*: it
-  rejects unknown names and the reserved `debug` token, and then —
-  crucially — **chooses the target binary itself** (configured target
-  for `Real`, debug tool for `Debug`), only after the backend authorizes
-  the variant. A forged `variant = Real` cannot reach the debug tool,
-  and `argv[0]` is never consulted.
-
-## Central authorization model
-
-Everything beyond "is this wrapper allowed to talk to me at all" lives
-in the backend's `PolicyDocument`. The document is a flat list of
-`WrapperPermission` rows keyed by `(client_instance, wrapper, resource_id)`.
-Each row carries:
-
-- a **mode**: `Locked`, `Unlocked`, `UnlockedUntil { until_epoch }`, or
-  `UnsafeDebugUntil { until_epoch }` (the only mode that admits the
-  `Debug` variant),
-- a per-row **`writable: bool`** flag deciding whether wrapper-side
-  writebacks are accepted.
-
-See [The underwrap backend](backend.md) for the evaluation order,
-policy data model, and API shape. `underwrapd` does not evaluate
-policy itself — it forwards every wrapper invocation to the backend,
-which re-evaluates the document on every open and every finalize.
-
-## Trust boundary
-
-The daemon is intentionally a thin client of the backend. What it
-**CAN** do:
-
-- accept connections on the instance socket, verify the peer's
-  effective GID == the instance group, validate the client-supplied
-  wrapper name against config, and refuse otherwise;
-- map a verified wrapper invocation to a `(wrapper_name, resource_name)`
-  pair and forward it to the backend over mTLS;
-- relay an opaque resource blob from the backend to the wrapper
-  (and back, on writeback) without inspecting it.
-
-What the daemon **CANNOT** do:
-
-- evaluate the policy document (it never has it);
-- name a backend storage key on the wire (the runtime API speaks
-  `(wrapper_name, resource_name)` only — `control/*` is
-  unreachable);
-- decide whether a writeback is allowed (the backend re-checks the
-  `writable` flag on every finalize);
-- mutate the `env` section of a resource blob on writeback (the
-  backend rejects any change to `env` with
-  `InvalidBlob { reason: "env-section-immutable" }`).
-
-A buggy or malicious daemon can only reach what its mTLS client
-certificate's principal already has explicit `WrapperPermission`
-rows for.
-
-## Backend storage
-
-`underwrap-backend` persists everything under one of:
-
-- **plain** — files owned by the backend daemon user,
-- **encrypted** — ChaCha20-Poly1305 files keyed by a 32-byte master key
-  file.
-
-The runtime listener exposes exactly three mTLS endpoints to
-`underwrapd`:
-
-- `POST /v1/wrappers` — register the daemon's `(wrapper_name,
-  resource_name)` pairs at startup.
-- `POST /v1/wrapper-invocations` — open one invocation. Returns
-  `Allow { resource_id, blob_b64, writable }` or `Deny { reason }`.
-- `POST /v1/wrapper-invocations/finalize` — close one invocation,
-  optionally with a writeback blob. Re-checks writability and
-  env-immutability server-side.
-
-A separate admin listener exposes the policy and admin surface.
-
-## Libsecret flow
-
-Libsecret mode adds two extra processes inside the wrapper namespace:
-
-- `dbus-daemon` (private to the namespace)
-- `underwrap-secretsd`
+For a normal wrapper invocation:
 
 ```text
-underwrap-exec
-  -> underwrap-ns
-      -> private dbus-daemon
-      -> underwrap-secretsd  (talks back via the daemon's scoped channel fd)
-      -> target (for example gh)
+caller runs <wrapper> [args]
+  → per-user shim (when installed)
+  → /run/wrappers/bin/underwrap-<instance> <wrapper> [args]
+  → /run/underwrap-<instance>/wrapper.sock
+  → underwrapd
+  → POST /v1/wrapper-invocations
+  → underwrap-exec
+  → underwrap-ns
+  → configured target
+  → POST /v1/wrapper-invocations/finalize
 ```
 
-The target sees a private `DBUS_SESSION_BUS_ADDRESS` and uses
-`underwrap-secretsd` as its Secret Service provider. `underwrap-secretsd`
-does not authenticate to the daemon on its own; the daemon creates a
-pre-authenticated channel during the original wrapper request and
-passes one end into the namespace.
+The detailed sequence is:
 
-## Directory credential flow
+1. The setgid instance entry point gives `underwrap-exec` the instance-group
+   effective GID.
+2. `underwrap-exec` connects to the instance's `0660` socket and sends the
+   caller-selected wrapper name and invocation variant.
+3. `underwrapd` reads the peer's effective GID, validates the wrapper name
+   against root-owned config, resolves that wrapper's resource, and asks the
+   backend to open the invocation.
+4. The backend derives the runtime client instance from mTLS, resolves the
+   wrapper/resource pair and permission row, evaluates the permission mode, and
+   returns the canonical resource blob plus its current writable flag.
+5. `underwrapd` chooses the target path: the configured target for `Real`, or
+   `underwrap-debug-tool` for an authorized `Debug` invocation. It creates one
+   scoped resource socketpair and sends the wrapper end with `SCM_RIGHTS`.
+6. `underwrap-exec` permanently drops its setgid identity, maps the resource
+   channel to fd 20, and sends the execution bundle to `underwrap-ns` over fd 3.
+7. `underwrap-ns` resolves the dedicated target UID/GID from the root-owned
+   `(instance, wrapper)` table. The UID/GID never comes from IPC or the daemon.
+8. `underwrap-ns` creates PID, mount, IPC, and UTS namespaces, checks out the
+   resource over fd 20, prepares projections, switches the target child to its
+   dedicated UID, clears capabilities, and executes the daemon-chosen target.
+9. After the target exits, the namespace supervisor compares the canonical
+   post-run resource with the Checkout bytes. It sends either `UsageSignal` or
+   `Checkin` over fd 20.
+10. `underwrapd` translates that request into the finalize API. The backend
+    re-evaluates policy and, for a writeback, re-checks writability and env
+    immutability before persisting.
 
-Directory credentials reuse the same channel pattern as libsecret mode:
+The runtime API is stateless: finalize does not rely on backend-side open-session
+state.
+
+## Local wrapper gate
+
+Each frontend instance has:
+
+- `/run/wrappers/bin/underwrap-<instance>` — system-wide setgid entry point;
+- `/run/underwrap-<instance>/wrapper.sock` — `0660`, owned by the instance
+  group;
+- `underwrap-<instance>` — the daemon's primary group and the socket gate.
+
+A non-root process reaches the daemon only by executing the setgid entry point.
+The daemon confirms the resulting effective GID using `SO_PEERPIDFD` on the
+default Linux 6.5+ hardened posture. The client-supplied wrapper name remains
+application data: the daemon validates it and chooses the target itself.
+
+This gate enforces traversal through the trusted wrapper chain. It does not
+identify the local user and does not distinguish users for backend policy.
+
+## Two wrapper stages
+
+The entry flow is split because the setgid identity hop and namespace
+capabilities have different privilege lifecycles.
+
+### `underwrap-exec`
+
+- starts through the per-instance setgid wrapper;
+- authenticates to the instance socket;
+- receives the daemon-chosen execution plan and resource channel;
+- attempts to clear supplementary groups (`EPERM` is tolerated because a
+  setgid-only process normally lacks `CAP_SETGID`) and permanently restores the
+  caller's real, effective, and saved UID/GID;
+- transfers the execution bundle through fd 3;
+- executes the capability-bearing namespace helper.
+
+### `underwrap-ns`
+
+The NixOS capability wrapper supplies `CAP_SYS_ADMIN`, `CAP_SETUID`, and
+`CAP_SETGID` for namespace, mount, idmap, and target-identity setup. The wrapper
+configuration also names `CAP_SETPCAP`, but the NixOS security-wrapper mechanism
+does not raise it into the ambient set.
+
+`underwrap-ns`:
+
+- creates fresh PID, mount, IPC, and UTS namespaces;
+- makes mount propagation private and remounts `/proc` for the new PID
+  namespace;
+- resolves and switches to the dedicated target UID/GID;
+- creates the selected projections;
+- sets `PR_SET_NO_NEW_PRIVS`, clears capabilities, verifies that root cannot be
+  regained, disables core dumps, starts a new session, and closes inherited
+  descriptors;
+- executes the target as PID 1 of the new PID namespace.
+
+The namespace supervisor remains outside the target PID namespace long enough
+to wait and finalize the resource. Env-only supervisors drop capabilities before
+waiting. Files/libsecret supervisors retain `CAP_SYS_ADMIN`, `CAP_SETUID`, and
+`CAP_SETGID` through target execution and the post-run fsuid read window, then
+drop them; the implementation does not selectively drop `CAP_SYS_ADMIN` before
+the wait.
+
+## Target environment and host access
+
+The target starts with a cleared environment. `underwrap-ns` adds:
+
+- a fixed built-in passthrough set;
+- additional variables named by `envPassthrough`;
+- trusted fixed values from `envSet`;
+- selected env-slot entries from the resource.
+
+`HOME` defaults to the original caller's passwd home path, but the dedicated
+target UID does not automatically gain access to that home. `accessPaths`
+creates explicit idmapped bind mounts for caller-owned directories the target
+needs. The idmap maps only the caller's UID/GID to the target UID/GID; other
+owners remain unmapped.
+
+`XDG_RUNTIME_DIR` points to a dedicated `0700` directory provisioned for the
+target UID under `services.underwrap.targetRuntimeDirBase`. The caller's logind
+runtime tree is not mounted automatically.
+
+## Resource model
+
+Each wrapper projects exactly one backend resource. A resource is one
+JCS-canonical JSON blob with three slots:
 
 ```text
-underwrap-exec
-  -> underwrap-ns
-      -> namespace-private staging directory
-      -> bind-mount into $HOME/<configured-path>...
-      -> target
+resource
+  ├── env
+  ├── files
+  └── libsecret
 ```
 
-For each directory binding, `underwrap-ns` materializes current backend
-files into a namespace-private staging directory, bind-mounts it into
-the target's home view (always read-write to the target — the backend,
-not a kernel mount flag, is the sole write authority), and syncs changes
-back to the backend after exit. When the wrapper permission is read-only
-the end-of-run writeback is rejected server-side and the change is
-dropped (with one journal event + stderr line per affected resource).
+The wrapper opts into any non-empty combination of these slots. The backend
+keeps wrapper/resource pairs and permission rows separate so changing a
+frontend wrapper's resource name cannot silently redirect an existing
+permission to another secret.
 
-The same backend resource can be projected at multiple paths within one
-wrapper by configuring `files.paths` as a list. Each configured path
-gets its own staging directory, and every file key in the resource
-blob is routed to the staging dir whose mount path is a prefix of the
-key (e.g. `.config/gh/hosts.yml` lands under the `.config/gh` mount).
-A blob key that does not match any configured mount path aborts the
-wrapper — the backend stores keys opaquely, but the frontend will not
-silently drop content that has nowhere to go. Mount paths in
-`files.paths` are required to be non-overlapping so routing is
-unambiguous; the NixOS module rejects configurations that violate
-this.
+### Environment projection
 
-## Runtime directory for isolated targets
+Selected env entries are inserted only into the final target environment.
+Runtime finalize rejects a submitted env section that differs from the resource
+snapshot it loads, so the admin API/UI is the intended editor. The compare and
+whole-blob save are not a transaction: concurrent writers are last-writer-wins,
+and a stale runtime writeback can overwrite an admin edit that races between
+them.
 
-Every wrapped target runs as a dedicated `underwrap-target-*` uid X — one per
-`(instance, wrapper)` pair (see the target-UID isolation work). A runtime
-directory (`XDG_RUNTIME_DIR`) is a
-**per-uid** resource — the kernel/desktop convention is one `0700` dir owned by
-the uid using it — so the honest reflection of running as X is that **X gets
-X's own runtime directory**, not the caller's. This is not sandboxing; it is
-just giving the executing uid the runtime dir that uid is entitled to.
+### Files projection
 
-That directory has to be **provisioned by the system**. logind only creates
-`/run/user/<uid>` for *login sessions*, and X is a `nologin` system uid that
-never logs in, so it never gets one. `underwrap-ns` cannot create one at runtime
-either: it holds `cap_sys_admin,cap_setpcap,cap_setuid,cap_setgid` but **not**
-`CAP_DAC_OVERRIDE`/`CAP_CHOWN`, and `/run/user` is root-owned (logind's tree). So
-the NixOS module provisions, via `systemd-tmpfiles`, one `0700` self-owned dir
-per target user under a dedicated base (`services.underwrap.targetRuntimeDirBase`,
-default `/run/underwrap-runtime` — deliberately **not** under `/run/user`). The
-directory is keyed on the target user *name* (known at module-eval time);
-`underwrap-ns` derives the identical path from X via `getpwuid(X).pw_name`, so
-the two always agree without pinning a numeric uid. `XDG_RUNTIME_DIR` is then
-`<base>/<target-user-name>`, forced into the target environment (an `envSet`
-override is rejected).
+`underwrap-ns` materializes the files slot in a namespace-private `noswap`
+tmpfs. Each configured `files.paths` entry becomes a bind mount rooted at the
+caller's passwd home path. Paths must be clean, relative, unique, and
+non-overlapping; every files-slot key must route to one configured path.
 
-The caller's *own* session runtime dir is intentionally **not** wired into the
-namespace. If a tool needs specific caller-owned directories (config/state),
-list them in `accessPaths`: each is exposed through an idmapped bind mount that
-maps exactly the caller's uid/gid to X's, so the target reads and writes those
-files as the caller while every other owner stays unmapped. The idmap is applied
-**best-effort per submount**: the directory is cloned recursively (so nested
-mounts come along) and each mount is idmapped individually, so an idmappable
-submount (a nested ZFS dataset under `~`, an ext4/xfs/btrfs bind) is mapped while
-a non-idmappable one (fuse — desktop portals, sshfs, AppImage) is skipped with a
-warning instead of failing the whole mount with `EINVAL`. The named directory's
-own filesystem must be idmappable, or the access path is a hard error.
+The target sees writable mounts. If the permission is read-only, changed bytes
+are discarded and an audit event plus optional stderr warning records the
+attempt. If the permission is writable, the complete canonical resource is
+submitted for backend validation and replacement.
 
-This all sits on the right side of the threat model (see `CLAUDE.md`): none of it
-exposes the brokered secret to the caller. The target is handed a working
-runtime dir, so it is not made non-functional; only the caller's live *session*
-(its `/run/user` sockets — wayland, ssh-agent, the session D-Bus) is out of
-scope, by choice.
+### Libsecret projection
 
-### Rejected alternatives
+Libsecret mode runs a private `dbus-daemon` and `underwrap-secretsd` beside the
+target:
 
-- **Idmap the caller's `/run/user/<uid>` into the namespace (the first attempt,
-  default-on).** A category mismatch: `/run/user` is a live session tree of
-  sockets and foreign fuse filesystems, not caller-owned config/state. It broke
-  in practice — a recursive `mount_setattr(IDMAP)` returns `EINVAL` on the fuse
-  portals (`xdg-document-portal`, `gvfsd-fuse`) a desktop session mounts there.
-  It also leaks target scratch into the caller's session, depends on the caller
-  having a session at all, and on a `libsecret` wrapper re-exposes the caller's
-  real session bus at `$XDG_RUNTIME_DIR/bus`. Even reduced to a default-off
-  opt-in it was removed entirely — not worth the surface until a concrete need
-  appears.
-- **A private per-invocation tmpfs.** A namespace-local hack for "X has no
-  runtime dir": ephemeral, and non-canonical — a provisioned per-uid directory
-  is what a runtime dir actually *is*.
-- **A shared `1777` base keyed on the caller uid.** World-writable, cross-uid
-  collisions, wrong ownership.
+```text
+underwrap-ns (owns fd 20 to underwrapd)
+  ├── dbus-daemon
+  ├── underwrap-secretsd
+  │     ├── one-shot initial section from underwrap-ns
+  │     └── canonical state file on namespace-private tmpfs
+  └── target → private DBUS_SESSION_BUS_ADDRESS
+```
+
+`underwrap-secretsd` has no daemon socket. `underwrap-ns` sends the initial
+libsecret section through a one-shot pipe. secretsd keeps the keyring in memory
+and atomically rewrites a tmpfs state file before acknowledging each D-Bus
+mutation. When the target exits, the kernel terminates its PID-namespace
+siblings; the supervisor reads the state file and performs final writeback over
+fd 20.
+
+The target, dbus-daemon, and secretsd all close fd 20 before exec. See
+[secretsd security](secretsd-security.md) for the target-input boundary.
+
+## Backend
+
+The backend maps each active runtime client certificate fingerprint to one
+runtime client instance and one store. It exposes exactly three runtime routes:
+
+- `POST /v1/wrappers`
+- `POST /v1/wrapper-invocations`
+- `POST /v1/wrapper-invocations/finalize`
+
+The wire carries wrapper and resource names, never a storage key. See
+[Backend](backend.md) for the policy and data model.
+
+Stores use either:
+
+- `PlainBackend` — atomic plaintext files under the configured store directory;
+- `EncryptedBackend` — ChaCha20-Poly1305 with an operator-held 32-byte key kept
+  only in backend process memory.
+
+Encrypted stores start locked after a backend restart. An operator supplies the
+key through the admin UI/API; a canary verifies it before the backend installs
+the unlocked store.
+
+## NixOS module responsibilities
+
+`nix/modules/underwrap.nix` provisions:
+
+- per-instance daemon users/groups, state directories, runtime directories,
+  sockets, and systemd services;
+- one setgid entry point per instance;
+- per-user convenience shims;
+- one dedicated target user/group per `(instance, wrapper)`;
+- the root-owned target-UID table;
+- one runtime directory per target UID;
+- the capability-bearing `underwrap-ns` wrapper;
+- daemon and entry-stage configuration;
+- target-host Yama and swap assertions under the hardened posture.
+
+The module is part of the security architecture, not packaging convenience.
 
 ## Crate layout
 
 ```text
-crates/
-  underwrap-protocol       shared config, message families, IPC framing, fd passing,
-                           runtime wire types, policy + resource models
-  underwrap-backend-store  storage trait + plain/encrypted backend implementations
-                           (backend-internal — nothing else implements it)
-  underwrap-secretsd-store in-memory Secret Service data model
-  underwrapd               frontend daemon on the target host
-  underwrap-exec           stage 1 wrapper (setgid)
-  underwrap-ns             stage 2 wrapper (namespace setup)
-  underwrap-secretsd       Secret Service implementation for libsecret mode
-  underwrap-keygen         underwrap-keygen: client-credential / key generation
-  underwrap-debug-tool     underwrap-debug-tool: the target the daemon execs
-                           for variant = Debug (summary / shell / exec, with
-                           read-write access to the projected secret)
-  underwrap-backend        central authenticated HTTPS service +
-                           sole policy authority + embedded admin SPA
-  integration-tests        cross-component tests
-web/                       Vite + React + shadcn admin SPA (embedded into
-                           underwrap-backend via rust-embed)
+underwrap-protocol        config, IPC, runtime/admin DTOs, policy, resources
+underwrap-backend-store   persistent storage implementations
+underwrap-secretsd-store  in-memory Secret Service data model
+underwrapd                local broker and runtime HTTPS client
+underwrap-exec            setgid entry stage
+underwrap-ns              namespace supervisor and target execution
+underwrap-secretsd        private Secret Service provider
+underwrap-debug-tool      unsafe debug target
+underwrap-keygen          runtime client credential generator
+underwrap-backend         runtime/admin HTTPS service and embedded SPA
+integration-tests         real daemon/backend integration harness
+web                       admin SPA
 ```
-
-### `underwrapd` internals
-
-- `server.rs` — daemon startup, listener orchestration, lazy
-  `BackendClient` open
-- `backend_client.rs` — typed mTLS client for the three runtime
-  endpoints; sync-callable from the wrapper-socket loop via a
-  dedicated tokio worker thread
-- `startup.rs` — config validation, UID/GID resolution, socket binding
-- `peer_auth.rs` — peer credential resolution (race-free via
-  `SO_PEERPIDFD` where available, with a `SO_PEERCRED` + `/proc`
-  fallback) and the effective-GID check against the instance group
-- `wrapper_flow/` — the wrapper request flow (peer auth → open
-  invocation on the backend → relay `ReadOk` + scoped channel)
-- `wrapper_resource_channel.rs` — serves Checkout from the cached
-  blob and turns Checkin / UsageSignal into finalize calls
-- `audit.rs` — structured audit-event emission (secret IDs, never values)
-- `wrapper_bindings.rs` — env/libsecret/directory binding selection
-
-### `underwrap-ns` internals
-
-- `main.rs` — high-level orchestration and fork/child/parent phasing
-- `env.rs` — target environment assembly
-- `caps.rs` — `no_new_privs` and capability drop logic
-- `mounts.rs` — mount namespace setup and staging cleanup
-- `libsecret.rs` — private D-Bus + `underwrap-secretsd` orchestration
-- `directory_credential.rs` — directory materialization and sync
-- `target_uid.rs` — dedicated-uid resolution (root-owned table), switch, and the
-  target's own runtime-dir path derivation
-- `idmap.rs` — `accessPaths` idmapped bind mounts (best-effort per submount)
-
-### `underwrap-secretsd` internals
-
-- `dbus_service.rs` — shared types and path helpers
-- `dbus_service/service.rs` — `org.freedesktop.Secret.Service`
-- `dbus_service/collection.rs` — collection interface
-- `dbus_service/item.rs` — item interface
-
-## NixOS module responsibilities
-
-The NixOS module generates and manages:
-
-- instance users and the single instance group `underwrap-<instance>`
-- the one setgid entry point per instance, `underwrap-<instance>`
-- per-user convenience shims (`<wrapper>` / `debug-<wrapper>`)
-- the shared `underwrap-ns` wrapper
-- the daemon config (`/etc/underwrap/daemon/<instance>.yaml`) and the
-  minimal underwrap-exec sidecar (`/etc/underwrap/instances/<instance>.yaml`)
-- systemd services
-- runtime and state directories
-
-The NixOS module is load-bearing for the identity model, not just
-packaging sugar — it provisions the privileged pieces (setgid binary,
-file capabilities, declarative user/group, systemd units) the wrapper
-chain depends on.
 
 ## Further reading
 
-- [The underwrap backend](backend.md)
-- [Deploying the central backend](remote-backend.md)
-- [Admin UI](admin-ui.md)
-- [Configuration reference](configuration.md)
 - [Security](security.md)
+- [Backend](backend.md)
+- [Configuration](configuration.md)
+- [Deploying the backend](remote-backend.md)
+- [Testing](testing.md)

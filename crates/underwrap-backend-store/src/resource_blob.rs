@@ -1,14 +1,14 @@
-//! Helpers for reading and writing the canonical per-resource blob,
-//! plus a bridge between the structured blob and the legacy flat-KV
-//! shape that the admin secrets endpoints (`env`, `files`) still use.
+//! Helpers for reading and writing canonical resource blobs and for projecting
+//! their `env` and `files` sections into the flat entry shape used by the admin
+//! secret endpoints.
 //!
 //! The storage backend is opaque per-key: keys are strings, values are
 //! bytes. The blob layout sits one layer above that — every resource
 //! is one storage key (`resources/<resource_id>`) whose value is the
 //! JCS-canonical bytes of a `ResourceBlob`.
 //!
-//! The flat-KV bridge survives only for the slots that genuinely are
-//! key/value: `env` (name → value) and `files` (path → bytes). The
+//! The flat entry projection covers the slots that are naturally key/value:
+//! `env` (name → value) and `files` (path → bytes). The
 //! `libsecret` section is a structured tree (Service → Collections →
 //! Items + an alias table) addressed through its own admin endpoints
 //! (`/v1/admin/stores/{sid}/resources/{rid}/libsecret/*`); it never

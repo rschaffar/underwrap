@@ -119,10 +119,9 @@ mod socket_binding {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
 
-    // The daemon no longer chowns its wrapper socket; it relies on the
-    // socket inheriting the daemon's primary group (= instance group) and
-    // verifies that gid in `bind_socket`. These tests pin both halves of
-    // that contract on a real bound socket.
+    // The socket inherits the daemon's primary group (the instance group), and
+    // `bind_socket` verifies that GID. These tests exercise both parts of that
+    // contract on a real Unix socket.
 
     #[tokio::test]
     async fn socket_inherits_caller_uid_and_gid_and_mode() {

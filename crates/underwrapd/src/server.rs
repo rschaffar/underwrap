@@ -178,15 +178,16 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     let instance_gid = resolve_instance_gid(&config)?;
     let state = Arc::new(State::new(config.clone()));
 
-    // Best-effort startup register. Failure is just informational —
-    // the lazy open in `ensure_backend` retries on the first wrapper
-    // request.
+    // Best-effort startup registration. Wrapper requests lazily retry opening
+    // the backend client, but they do not repeat this registration call; after
+    // enrollment or a startup registration failure, the operator restarts the
+    // daemon to register configured assets.
     match state.ensure_backend() {
         Ok(client) => {
             if let Err(e) = register_wrapper_assets(&client, &config) {
                 warn!(
                     err = %format!("{e:#}"),
-                    "wrapper-asset register call failed at startup; the daemon will retry on the next wrapper invocation",
+                    "wrapper-asset register call failed at startup; restart the daemon to retry registration",
                 );
             } else {
                 info!("backend client opened at startup");

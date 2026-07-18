@@ -1,0 +1,83 @@
+# Internal underwrapd configuration schema.
+#
+# On NixOS, `services.underwrap` generates this file at
+# `/etc/underwrap/daemon/<instance>.yaml`. Operators configure the NixOS module;
+# this annotated example documents the resulting daemon input.
+
+backend:
+  url: https://backend.example.internal:18443
+  # Optional. Omit for a publicly trusted WebPKI server certificate.
+  ca_file: /etc/underwrap/ca.pem
+  # The NixOS module fixes these paths under the per-instance state directory.
+  client_cert_file: /var/lib/underwrap-example/client-example.pem
+  client_key_file: /var/lib/underwrap-example/client-example.key
+
+# One instance has one setgid entry point (`underwrap-<instance>`), one group,
+# one daemon, and one wrapper socket. Wrapper names are selectors validated
+# against the map below; backend policy is the authorization authority.
+instance: example
+socket: /run/underwrap-example/wrapper.sock
+group: underwrap-example
+
+# Absolute helper paths selected by trusted configuration.
+ns_binary: /run/wrappers/bin/underwrap-ns
+debug_tool_target: /nix/store/...-underwrap/bin/underwrap-debug-tool
+
+# The NixOS module provisions one target-owned runtime directory below this
+# base for every `(instance, wrapper)` target UID.
+target_runtime_dir_base: /run/underwrap-runtime
+
+wrappers:
+  # Each wrapper projects exactly one backend resource and enables at least one
+  # of its env, files, or libsecret slots. Wrapper name `debug` is reserved.
+  gh-authorized:
+    target: /nix/store/...-gh/bin/gh
+    resource: github/token
+    env: true
+
+  # Agent-facing pattern: select a narrow helper as the target. The helper fixes
+  # the repository and subcommand and calls a store-pinned gh binary.
+  agent-gh-comment:
+    target: /nix/store/...-agent-gh-comment/bin/agent-gh-comment
+    resource: github/token
+    env: true
+    # Additional caller environment names and fixed trusted values.
+    env_passthrough:
+      - TERM
+    env_set:
+      PATH: /nix/store/...-wrapper-tools/bin
+
+  agent-slack:
+    target: /nix/store/...-slack-cli/bin/slack-cli
+    resource: slack/xoxp
+    env: true
+    # XDG_RUNTIME_DIR is derived automatically from the dedicated target UID.
+    # Expose specific caller-owned config/state directories with access_paths.
+
+  # Multiple wrappers can share one libsecret resource while retaining distinct
+  # wrapper/resource pairs and permission rows.
+  gh-auth:
+    target: /nix/store/...-gh/bin/gh
+    resource: github/gh
+    libsecret: true
+
+  gh-pr:
+    target: /nix/store/...-gh-pr-helper/bin/gh-pr-helper
+    resource: github/gh
+    libsecret: true
+
+  # Files projection routes each resource key to exactly one configured,
+  # target-home-relative mount path. Paths must be clean and non-overlapping.
+  gws-auth:
+    target: /nix/store/...-gws/bin/gws
+    resource: gws/state
+    files:
+      paths:
+        - .config/gws
+    # Optional caller-owned host directories, exposed through idmapped mounts.
+    access_paths:
+      - ~/.config/gcloud
+
+    # Files mounts are writable to the target. A non-writable permission causes
+    # changed state to be discarded and audited at teardown; a submitted
+    # writeback is always re-authorized by the backend.

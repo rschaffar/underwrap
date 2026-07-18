@@ -92,9 +92,8 @@ impl TryFrom<ResourceSlot> for KvSecretSlot {
 }
 
 /// Compose the in-blob entry key for `(resource_id, slot, key)`. This
-/// is the canonical mapping admin handlers use to route a structured
-/// secret address into the legacy entry map produced by
-/// `expand_blob_to_entries`.
+/// is the canonical mapping admin handlers use to route a structured secret
+/// address into the flat entry map produced by `expand_blob_to_entries`.
 pub fn compose_secret_id(resource_id: &str, slot: ResourceSlot, key: &str) -> String {
     format!("{resource_id}/{}/{key}", slot.name())
 }

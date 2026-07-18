@@ -418,14 +418,11 @@ fn exec_via_ns(
         cmd.env_remove("UNDERWRAP_ISOLATION_INSTANCE");
         cmd.env_remove("UNDERWRAP_ISOLATION_WRAPPER");
 
-        // The (instance, wrapper) selector underwrap-ns resolves the dedicated
-        // sandbox uid from (story 2720). Sourced here, not over the wire: the
-        // instance is the kernel-enforced effective-GID gate and the wrapper is
-        // the name the daemon already validated for this read. This is a
-        // SELECTOR resolved against the root-owned /etc/underwrap/target-uids
-        // table — never the uid/gid itself — so the ExecBundle "no target
-        // identity" invariant is preserved. underwrap-ns strips both vars before
-        // exec'ing the target; they never reach the target's environment.
+        // underwrap-ns resolves the dedicated UID from the `(instance, wrapper)`
+        // selector. The instance comes from the effective-GID gate and the daemon
+        // validated the wrapper name for this read. Only the selector travels;
+        // the root-owned table supplies the UID/GID. underwrap-ns removes both
+        // internal variables before target exec.
         cmd.env("UNDERWRAP_ISOLATION_INSTANCE", instance);
         cmd.env("UNDERWRAP_ISOLATION_WRAPPER", wrapper);
 

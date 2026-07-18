@@ -238,12 +238,11 @@ pub(crate) async fn handle_admin_secret_delete(
     Ok(Json(AdminSecretDeleteResponse { existed }))
 }
 
-/// Atomically rename a per-slot entry inside a resource blob.
-/// One load-modify-save of the resource blob: the previous key is
-/// removed and the new key is inserted in the same in-memory pass,
-/// so disk never holds both entries (or neither) — `atomic_write`
-/// in the storage layer guarantees the file flip is a single rename.
-/// Optionally overwrites material in the same step.
+/// Rename a per-slot entry inside a resource blob.
+/// One load-modify-save removes the source key and inserts the destination in
+/// the same in-memory pass; the storage layer then replaces the resource file
+/// with one atomic rename. Concurrent whole-blob writers remain
+/// last-writer-wins. Optionally overwrites material in the same step.
 #[utoipa::path(
     post,
     path = "/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename",

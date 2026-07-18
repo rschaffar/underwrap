@@ -2,42 +2,47 @@
 
 underwrap has two configuration surfaces:
 
-- **NixOS module** (`services.underwrap`) — defines frontend instances,
-  wrappers, the daemon's backend connection, and the wrapper chain. The
-  module generates the setgid binary, the instance user/group, the
-  socket, the systemd service, and per-user shims.
-- **Backend config** (`underwrap-backend`) — central secret storage,
-  the HTTPS admin/runtime listener, and the operator-facing admin API.
+1. the NixOS frontend module (`services.underwrap`);
+2. the YAML file read by `underwrap-backend`.
 
-## NixOS module
+The NixOS module generates `underwrapd`'s internal YAML and all privileged
+frontend state. Operators should configure the module rather than hand-writing
+daemon config on NixOS.
 
-The module lives at `nix/modules/underwrap.nix`. See
-[`examples/config.yaml`](../examples/config.yaml) for an annotated
-daemon-config equivalent, and the module file itself for the full
-option schema.
+## NixOS frontend module
+
+Import `underwrap.nixosModules.default` and configure
+`services.underwrap`.
+
+A complete frontend example is in [`examples/nixos.nix`](../examples/nixos.nix).
+The generated daemon schema is documented separately in
+[`examples/daemon-config.yaml`](../examples/daemon-config.yaml).
 
 ### Top-level options
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enable` | bool | `false` | Enable the frontend service stack on this host |
-| `package` | package | flake package | Which underwrap package to install |
-| `targetRuntimeDirBase` | str | `/run/underwrap-runtime` | Base directory under which underwrap provisions each isolated target its own `0700` runtime dir (`<base>/<target-user-name>`), exported as the target's `XDG_RUNTIME_DIR`. Must be absolute and not under `/run/user` (logind's per-login-session tree) |
-| `hardenTargetHost` | bool | `true` | Pin `kernel.yama.ptrace_scope=2` (via `mkDefault`), require encrypted swap, and assert kernel ≥ 6.5 so the daemon's race-free `SO_PEERPIDFD` peer-auth path is always available. This is the posture the same-UID protection claim in `docs/security.md` depends on. |
-| `instances.<name>` | submodule | — | One frontend instance per attribute key (see below) |
+| `enable` | bool | `false` | Enable all configured frontend instances |
+| `package` | package | required | underwrap package containing the frontend binaries |
+| `targetRuntimeDirBase` | string | `/run/underwrap-runtime` | Base for one `0700`, target-owned runtime directory per `(instance, wrapper)` target UID; must be absolute and outside `/run/user` |
+| `hardenTargetHost` | bool | `true` | Require Linux 6.5+, default Yama `ptrace_scope=2` with `mkDefault`, and require encrypted swap or no swap; an operator override can weaken the Yama value |
+| `instances.<name>` | attribute set | `{}` | Named frontend instances |
 
-`hardenTargetHost = true` is the recommended first-release posture.
-Lowering it weakens the security claims in `docs/security.md`.
+The security claim in [Security](security.md#security-claim) assumes
+`hardenTargetHost = true`. Disabling it is an explicit weaker deployment
+posture.
 
-### Per-instance options
+### Instance options
 
 ```nix
 services.underwrap.instances.work = {
   allowedUsers = [ "alice" ];
+
   backend = {
     url = "https://backend.example.internal:18443";
     caFile = "/etc/underwrap/ca.pem";
   };
+
   wrappers = {
     # …
   };
@@ -46,34 +51,56 @@ services.underwrap.instances.work = {
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `allowedUsers` | list of str | `[]` | Local users that get per-user shims (`<wrapper>` and `debug-<wrapper>`) on `PATH` |
-| `backend.url` | str | — | HTTPS URL of `underwrap-backend` |
-| `backend.caFile` | path | — | CA bundle the daemon uses to verify the backend's server cert |
-| `wrappers` | attrset | — | One entry per wrapper (see below) |
+| `allowedUsers` | list of strings | `[]` | Users that receive `<wrapper>` and `debug-<wrapper>` PATH shims; users of an instance literally named `default` also receive an `underwrap` alias |
+| `backend.url` | string | required | Base HTTPS URL of `underwrap-backend` |
+| `backend.caFile` | path or string or null | `null` | CA bundle for the backend server certificate; null uses reqwest's bundled WebPKI root set |
+| `wrappers` | attribute set | `{}` | Wrapper definitions keyed by the canonical wrapper name |
 
-The mTLS client credential is **not** a module option. The module
-provisions a per-instance state directory and expects the credential at:
+`allowedUsers` is convenience configuration, not access control. The underlying
+setgid instance entry point is system-wide, and backend permissions identify the
+mTLS runtime client instance rather than the local Unix caller. Use sudo, polkit,
+or another OS-level mechanism when local-user authorization is required.
 
-- cert: `/var/lib/underwrap-<instance>/client-<instance>.pem`
-- key:  `/var/lib/underwrap-<instance>/client-<instance>.key`
+The module assigns each instance:
 
-Populate it once with:
+- daemon user/group `underwrap-<instance>`;
+- `/run/wrappers/bin/underwrap-<instance>`;
+- `/run/underwrap-<instance>/wrapper.sock`;
+- `/var/lib/underwrap-<instance>/`;
+- `/etc/underwrap/daemon/<instance>.yaml`;
+- `/etc/underwrap/instances/<instance>.yaml`.
 
-```bash
-sudo underwrap-keygen --instance-config /etc/underwrap/daemon/<instance>.yaml
+### Runtime client credential
+
+The mTLS client credential is generated after deployment, not supplied as a
+Nix option. The module configures:
+
+```text
+/var/lib/underwrap-<instance>/client-<instance>.pem
+/var/lib/underwrap-<instance>/client-<instance>.key
 ```
 
-then paste the printed cert PEM into the admin UI on the backend.
+Generate it with:
 
-### Per-wrapper options
+```bash
+sudo underwrap-keygen \
+  --instance-config /etc/underwrap/daemon/<instance>.yaml
+```
+
+Register the printed certificate PEM on a backend runtime client instance. The
+private key remains on the frontend host.
+
+### Wrapper options
 
 ```nix
 wrappers.gh = {
   target = "${pkgs.gh}/bin/gh";
-  resource = "gh/main";
+  resource = "github/gh";
+
   env = true;
-  files.paths = [ ".config/gh" ".config/git" ];
+  files.paths = [ ".config/gh" ];
   libsecret = true;
+
   accessPaths = [ "~/.config/git" "~/.ssh" ];
   envSet.PATH = lib.makeBinPath [ pkgs.git pkgs.openssh ];
 };
@@ -81,90 +108,128 @@ wrappers.gh = {
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `target` | str | — | Absolute path to the binary the daemon execs for `Real` invocations |
-| `resource` | str | — | Backend resource id this wrapper projects (one resource per wrapper) |
-| `env` | bool | `false` | Inject the resource's env-slot keys as environment variables |
-| `files` | nullable submodule | `null` | Mount the resource's files slot at one or more home-relative paths via `files.paths = [ ... ]` |
-| `libsecret` | bool | `false` | Run the target inside a private Secret Service session bus backed by the resource's libsecret slot |
-| `accessPaths` | list of str | `[]` | Caller-owned directories to expose to the dedicated target UID through idmapped bind mounts (`~`, `~/rel`, or absolute paths). Submounts are handled best-effort: idmappable ones (nested ZFS datasets, ext4/xfs/btrfs binds) are mapped, non-idmappable ones (fuse) are skipped with a warning |
-| `envPassthrough` | list of str | minimal allowlist | Caller-environment variables to preserve verbatim (does not name `HOME`, `XDG_*`, `LD_*`, or other dynamic-linker variables) |
-| `envSet` | attrset | `{}` | Fixed environment variables to set on the target (absolute paths only for `HOME` and base `XDG_*` overrides) |
+| `target` | string | required | Absolute daemon-chosen target path for real invocations |
+| `resource` | string | required | Operator-facing backend resource name; one resource per wrapper |
+| `env` | bool | `false` | Project the resource's env slot into the target environment |
+| `files` | null or submodule | `null` | Enable files projection at `files.paths` |
+| `files.paths` | non-empty list of strings | required when `files` is set | Clean, target-home-relative, unique, non-overlapping mount paths |
+| `libsecret` | bool | `false` | Project the libsecret slot through a private Secret Service |
+| `accessPaths` | list of strings | `[]` | Caller-owned directories exposed through one-pair idmapped bind mounts; entries are `~`, `~/relative`, or absolute paths |
+| `envPassthrough` | list of strings | `[]` | Additional caller environment names beyond the built-in passthrough set |
+| `envSet` | attribute set of strings | `{}` | Fixed trusted target environment values |
 
-`target` must always be an absolute trusted path; underwrap does not use
-`PATH` lookup for the main exec target. Every wrapper must enable at
-least one projection slot (`env`, `files`, or `libsecret`). Wrapped targets run
-under a dedicated target UID; use `accessPaths` to grant that UID explicit,
-selected access to caller-owned config or state directories. Only the caller's
-uid/gid is mapped through those mounts; other owners remain unmapped.
+Every wrapper must enable at least one of `env`, `files`, or `libsecret`.
+Wrapper name `debug` is reserved.
 
-The debug tool is **always** built alongside every wrapper. Whether an
-operator can actually invoke it is a runtime decision: set the
-`(client_instance, wrapper, resource)` permission to `UnsafeDebugUntil`
-in the admin UI, then run `debug-<wrapper>` (or `underwrap-<instance> debug
-<wrapper>`).
+The module rejects:
 
-### Target-environment policy
+- non-absolute target paths;
+- empty resource names;
+- invalid or overlapping files paths;
+- `LD_*` variables in `envPassthrough` or `envSet`;
+- forced home/XDG names in `envPassthrough`;
+- `XDG_RUNTIME_DIR` in `envSet`;
+- relative `HOME` or base XDG values in `envSet`.
 
-The wrapper chain launches the target with `env_clear()` and then
-restores only the allowlisted variables. The module enforces:
+### Target environment
 
-- `HOME` is set to the trusted passwd home unless `envSet.HOME` overrides
-  it with an absolute path
-- `XDG_RUNTIME_DIR` is set to the target's **own** provisioned runtime
-  directory, `<targetRuntimeDirBase>/<target-user-name>` (an
-  `envSet.XDG_RUNTIME_DIR` override is rejected). The target runs under a
-  dedicated UID with no logind session, so underwrap provisions it a private
-  `0700` runtime dir (under the top-level `services.underwrap.targetRuntimeDirBase`,
-  default `/run/underwrap-runtime`) rather than handing it the caller's
-  `/run/user/<uid>`. The caller's own session runtime dir is **not** wired into
-  the namespace; if a tool needs specific caller-owned directories, list them in
-  `accessPaths`.
-- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
-  `XDG_STATE_HOME` are derived from the effective `HOME`
-- `envPassthrough` may not name `HOME`, any `XDG_*` variable, or any
-  dynamic-linker variable (`LD_*`)
+The target starts from `env_clear()`.
 
-Files-slot mount targets are always anchored to the passwd home resolved
-by `underwrap-ns`, not to an `envSet.HOME` override. Choosing a non-passwd
-`HOME` while also using `files.paths` is an explicit divergence.
+The built-in passthrough set includes basic user, terminal, locale, timezone,
+temporary-directory, display, SSH-agent, and proxy variables. It is fixed for
+all wrappers in this release. `envPassthrough` can add names; it cannot remove
+built-ins. `PATH` is not a built-in and should be set through a trusted
+`envSet.PATH` when required.
 
-## Backend configuration
+Forced paths are:
 
-`underwrap-backend` reads a YAML config (path passed via `--config`).
+- `HOME` — the original caller's passwd home path unless `envSet.HOME` supplies
+  another absolute path;
+- `XDG_RUNTIME_DIR` — the dedicated target UID's provisioned runtime directory;
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` —
+  derived from effective `HOME` unless explicitly set to absolute values.
+
+The dedicated target UID does not automatically gain access to the caller's
+home merely because `HOME` names it. Use `accessPaths` for caller-owned state
+the target needs. Files projection mount targets remain anchored to the
+caller's passwd home path even when `envSet.HOME` points elsewhere.
+
+### Files projection and access paths
+
+Files-slot keys are full paths relative to the caller-home view, for example:
+
+```text
+.config/gh/hosts.yml
+```
+
+Each key must have one configured `files.paths` prefix. underwrap aborts when a
+key has no route or when configured mount paths overlap.
+
+`accessPaths` serves a different purpose: it exposes existing caller-owned host
+directories to the dedicated target UID. Each idmapped mount maps only the
+caller UID/GID to the target UID/GID. Unsupported nested submounts are skipped
+with a warning; failure to idmap the named directory itself aborts the
+invocation.
+
+### Debug variant
+
+Every wrapper has an explicit debug invocation form:
+
+```text
+underwrap-<instance> debug <wrapper>
+debug-<wrapper>              # shim, when installed for the user
+```
+
+The daemon selects `underwrap-debug-tool` only when the backend permission mode
+is an active `UnsafeDebugUntil`. Local Nix configuration does not authorize
+debug access.
+
+## Backend YAML
+
+`underwrap-backend` reads a YAML path passed with `--config`. The annotated
+canonical example is [`examples/backend.yaml`](../examples/backend.yaml).
+
 Minimal shape:
 
 ```yaml
-stores_dir:    /var/lib/underwrap-backend/stores
-clients_dir:   /var/lib/underwrap-backend/clients
-users_dir:     /var/lib/underwrap-backend/users
+stores_dir: /var/lib/underwrap-backend/stores
+clients_dir: /var/lib/underwrap-backend/clients
+users_dir: /var/lib/underwrap-backend/users
 bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
 
 https:
   listen: 0.0.0.0:18443
   tls:
     cert_file: /etc/underwrap-backend/server.pem
-    key_file:  /etc/underwrap-backend/server.key
+    key_file: /etc/underwrap-backend/server.key
 
 admin:
-  # allowed_origins: [ "https://underwrap.example.internal" ]
-  # session_lifetime_secs: 43200   # default 12h
-  # stores_data_root: /var/lib/underwrap-backend/data
+  allowed_origins:
+    - https://backend.example.internal:18443
+  session_lifetime_secs: 43200
+  stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Admin sessions are held in memory (`tower_sessions::MemoryStore`); they
-do not survive a restart and there is no signing-key file to provision.
-Operators re-authenticate after every backend restart.
+Registry paths have defaults and missing directories are treated as empty. In a
+real deployment, set explicit paths and ownership through the service manager.
 
-The admin SPA ships embedded inside the backend binary and is served
-from the same HTTPS listener as the JSON admin API at `/v1/admin/*`.
-Browser sessions use Argon2id passwords, opaque `__Host-underwrap-session`
-cookies, and synchronizer-token CSRF — see [Admin UI](admin-ui.md). There
-is no separate admin process and no bearer-token mode.
+`https` is required for a running service. Adding `admin` mounts the admin API
+and embedded SPA on the same listener. `stores_data_root` enables store creation
+through the admin UI; omitting it leaves existing-store management available
+but rejects create-store requests.
 
-## See also
+Admin sessions are stored in memory and do not survive backend restart.
+`allowed_origins` is an additional same-origin check for state-changing
+requests; CSRF tokens remain required independently.
 
-- [The underwrap backend](backend.md) — admin and runtime API surface.
-- [Admin UI](admin-ui.md) — operator-facing deployment and auth model.
-- [Deploying the central backend](remote-backend.md) — step-by-step.
-- [Getting started](getting-started.md) — first successful wrapper
-  invocation.
+Store records, runtime client instances, users, resources, pairs, permissions,
+and resource values are managed dynamically through the admin API. They are not
+declared in backend YAML.
+
+## Related documentation
+
+- [Getting started](getting-started.md)
+- [Admin UI](admin-ui.md)
+- [Deploying the backend](remote-backend.md)
+- [Backend](backend.md)
+- [Security](security.md)

@@ -26,13 +26,9 @@ fn create_store(
     ))
 }
 
-/// Tests previously asserted against the dedicated
-/// `handle_admin_store_detail` endpoint. That route was removed (the
-/// SPA only consumes the list), so we re-implement the same
-/// projection in tests by calling `handle_admin_stores_list` and
-/// finding the row by id. The list item shape is a subset of the
-/// old detail shape — it omits `dir` and `source_path` — so any test
-/// that needed those reads them from the registry file directly.
+/// Return one store's list projection for handler tests. The admin surface has
+/// no detail route because the SPA consumes the list; fields outside the list
+/// item shape are asserted directly against the persisted registry record.
 fn store_detail(
     state: Arc<crate::runtime_state::ListenerState>,
     store_id: &str,

@@ -81,31 +81,42 @@ fn get_peer_cred_for_fd(fd: RawFd) -> Result<PeerCred, PeerAuthReject> {
 
     // Primary path: SO_PEERPIDFD. Holding the pidfd open pins the peer's
     // PID — the kernel will not recycle it to a different process — so the
-    // subsequent `/proc/<pid>/status` read is race-free.
-    if let Some(pidfd) = peer_pidfd(fd) {
-        let resolved = (|| {
-            let pid = pidfd_pid(pidfd)?;
-            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-            Some((pid, status))
-        })();
-        // Release the pidfd only after the read above has completed.
-        unsafe { libc::close(pidfd) };
+    // subsequent `/proc/<pid>/status` read is race-free. Only ENOPROTOOPT
+    // selects the older-kernel fallback; every other acquisition failure is a
+    // hard rejection.
+    match peer_pidfd(fd) {
+        Ok(Some(pidfd)) => {
+            let resolved = (|| {
+                let pid = pidfd_pid(pidfd)?;
+                let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+                Some((pid, status))
+            })();
+            // Release the pidfd only after the read above has completed.
+            unsafe { libc::close(pidfd) };
 
-        return match resolved {
-            Some((pid, status)) => finish_peer_cred(cred, pid, &status, PeerAuthPath::PeerPidfd),
-            None => {
-                // Reached when either the pidfd's `/proc/self/fdinfo` had no
-                // parseable `Pid:` line (an unexpected procfs shape) or the
-                // peer's `/proc/<pid>/status` could not be read. Both are
-                // hard auth failures *by design*: we reject rather than drop
-                // to the racy SO_PEERCRED fallback for a single connection.
-                // `hardenTargetHost` pins the kernel floor (>= 6.5) on which
-                // pidfd fdinfo is guaranteed to expose `Pid:`, so the
-                // fdinfo-shape case is not expected on a supported host.
-                warn!("SO_PEERPIDFD obtained but peer PID/proc resolution failed; rejecting");
-                Err(PeerAuthReject::Unresolved)
-            }
-        };
+            return match resolved {
+                Some((pid, status)) => {
+                    finish_peer_cred(cred, pid, &status, PeerAuthPath::PeerPidfd)
+                }
+                None => {
+                    // Reached when either the pidfd's `/proc/self/fdinfo` had no
+                    // parseable `Pid:` line (an unexpected procfs shape) or the
+                    // peer's `/proc/<pid>/status` could not be read. Both are
+                    // hard auth failures *by design*: we reject rather than drop
+                    // to the racy SO_PEERCRED fallback for a single connection.
+                    // `hardenTargetHost` pins the kernel floor (>= 6.5) on which
+                    // pidfd fdinfo is guaranteed to expose `Pid:`, so the
+                    // fdinfo-shape case is not expected on a supported host.
+                    warn!("SO_PEERPIDFD obtained but peer PID/proc resolution failed; rejecting");
+                    Err(PeerAuthReject::Unresolved)
+                }
+            };
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(%err, "SO_PEERPIDFD acquisition failed unexpectedly; rejecting peer");
+            return Err(PeerAuthReject::Unresolved);
+        }
     }
 
     // Fallback path: pre-6.5 kernel without SO_PEERPIDFD.
@@ -174,8 +185,9 @@ fn peer_ucred(fd: RawFd) -> Option<libc::ucred> {
 }
 
 /// `SO_PEERPIDFD` (Linux 6.5+). Returns an owned pidfd the caller must
-/// close, or `None` when the kernel doesn't support the option.
-fn peer_pidfd(fd: RawFd) -> Option<RawFd> {
+/// close, `Ok(None)` only when the kernel reports that the option is unsupported,
+/// and an error for every other failure.
+fn peer_pidfd(fd: RawFd) -> std::io::Result<Option<RawFd>> {
     let mut pidfd: libc::c_int = -1;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     let ret = unsafe {
@@ -187,11 +199,21 @@ fn peer_pidfd(fd: RawFd) -> Option<RawFd> {
             &mut len,
         )
     };
-    if ret == 0 && pidfd >= 0 {
-        Some(pidfd)
-    } else {
-        None
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        return if err.raw_os_error() == Some(libc::ENOPROTOOPT) {
+            Ok(None)
+        } else {
+            Err(err)
+        };
     }
+    if pidfd < 0 || len != std::mem::size_of::<libc::c_int>() as libc::socklen_t {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "SO_PEERPIDFD returned an invalid descriptor payload",
+        ));
+    }
+    Ok(Some(pidfd))
 }
 
 /// Resolve the PID a pidfd refers to via `/proc/self/fdinfo/<pidfd>`,
@@ -275,29 +297,35 @@ fn warn_fallback_once() {
 /// Log, once at daemon startup, which peer-auth path this kernel will
 /// use. Operators should know if they are on the weaker fallback.
 pub(crate) fn log_peer_auth_mode() {
-    if peerpidfd_supported() {
-        info!("wrapper peer auth: SO_PEERPIDFD available (race-free PID pinning, Linux 6.5+)");
-    } else {
-        warn!(
+    match peerpidfd_supported() {
+        Ok(true) => {
+            info!("wrapper peer auth: SO_PEERPIDFD available (race-free PID pinning, Linux 6.5+)")
+        }
+        Ok(false) => warn!(
             "wrapper peer auth: SO_PEERPIDFD unavailable (kernel < 6.5); using the \
              SO_PEERCRED + /proc fallback",
-        );
+        ),
+        Err(err) => warn!(
+            %err,
+            "wrapper peer auth: SO_PEERPIDFD probe failed unexpectedly; peer connections will reject"
+        ),
     }
 }
 
-fn peerpidfd_supported() -> bool {
+fn peerpidfd_supported() -> std::io::Result<bool> {
     let mut fds = [0 as libc::c_int; 2];
     let ret = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     if ret != 0 {
-        return false;
+        return Err(std::io::Error::last_os_error());
     }
-    let supported = match peer_pidfd(fds[0]) {
-        Some(pidfd) => {
+    let supported = peer_pidfd(fds[0]).map(|pidfd| {
+        if let Some(pidfd) = pidfd {
             unsafe { libc::close(pidfd) };
             true
+        } else {
+            false
         }
-        None => false,
-    };
+    });
     unsafe {
         libc::close(fds[0]);
         libc::close(fds[1]);

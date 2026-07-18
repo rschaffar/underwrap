@@ -78,18 +78,11 @@ fn exec_bundle_roundtrip_populated() {
 
 #[test]
 fn exec_bundle_carries_no_target_identity() {
-    // Authority invariant (story 2600): the dedicated sandbox uid/gid an isolated
-    // target is switched to is resolved by underwrap-ns from the root-owned
-    // /etc/underwrap/target-uids table, keyed on the daemon-chosen target path —
-    // NEVER carried on this wire form (nor env/argv/daemon response). This test
-    // pins it: the encoded bundle is byte-exactly its documented fields
-    // concatenated, with nothing extra (e.g. a smuggled uid/gid). If a field is
-    // ever added to ExecBundle, both this length check and the exhaustive struct
-    // literals in the round-trip tests above fail, forcing a deliberate review of
-    // whether the new field belongs on the wire and whether it weakens the
-    // confused-deputy guard. `access_paths` is a plain list selector (which
-    // caller-owned dirs to idmap), NOT a target identity, so it belongs on the
-    // wire; the invariant is specifically that no target uid/gid is smuggled.
+    // Authority invariant: underwrap-ns resolves the target UID/GID from the
+    // root-owned table keyed by `(instance, wrapper)`. The identity never appears
+    // in ExecBundle, argv, or a daemon response. This byte-exact encoding check
+    // forces deliberate review if the wire fields change. `access_paths` selects
+    // caller-owned directories; it is not target identity.
     let bundle = ExecBundle {
         env: HashMap::new(),
         env_passthrough: Vec::new(),

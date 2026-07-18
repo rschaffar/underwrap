@@ -14,11 +14,10 @@ use std::path::PathBuf;
 
 /// Top-level daemon configuration.
 ///
-/// The frontend's only externally meaningful identity is its
-/// mTLS-bound runtime client instance id, which the backend assigns
-/// at enrollment time. No client-side `host` / `instance` / allowlist
-/// fields exist any more — anything that needs per-principal gating
-/// is expressed as a backend grant keyed on the client instance.
+/// The backend assigns the frontend's externally meaningful identity at
+/// enrollment and binds it to the runtime mTLS client certificate. Per-principal
+/// authorization is expressed by backend permission rows keyed on that runtime
+/// client instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     /// Backend service the frontend talks to.
@@ -28,10 +27,8 @@ pub struct DaemonConfig {
     /// the `underwrap-<instance>` binary and same-named instance group.
     pub instance: String,
 
-    /// The single wrapper socket for this instance. One socket per
-    /// instance now selects the daemon; the wrapper name is a
-    /// client-supplied selector carried over IPC, not encoded in the
-    /// socket path.
+    /// The single wrapper socket for this instance. The socket selects the
+    /// daemon; the wrapper name is a client-supplied selector carried over IPC.
     pub socket: PathBuf,
 
     /// The single setgid group gating `socket` (mode 0660). Acquiring
@@ -225,11 +222,9 @@ pub struct BackendServiceConfig {
 
 /// A wrapper definition.
 ///
-/// The map key in `DaemonConfig::wrappers` is the canonical wrapper name;
-/// there is no per-wrapper socket or group any more (one of each per
-/// instance). Exec parameters that used to live in a per-wrapper sidecar
-/// config (`env_passthrough`, `env_set`) are absorbed here so the daemon
-/// can supply the full exec plan in `ReadOk`.
+/// The map key in `DaemonConfig::wrappers` is the canonical wrapper name. Each
+/// instance has one socket and group, while the daemon supplies this wrapper's
+/// complete execution plan in `ReadOk`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WrapperDef {
@@ -264,12 +259,10 @@ pub struct WrapperDef {
     #[serde(default)]
     pub env_set: HashMap<String, String>,
 
-    /// Caller-owned directories to make available to the dedicated-uid target
-    /// via idmapped bind mounts that map ONLY the caller's uid/gid to the
-    /// target's (story 2600/2640). Each entry is either `~`/`~/<rel>` (resolved
-    /// against the calling user's home) or an absolute path. Lets a uid-X target
-    /// read/write selected caller files as the caller while everything else stays
-    /// untouched.
+    /// Caller-owned directories to make available to the dedicated-UID target
+    /// via idmapped bind mounts that map only the caller's UID/GID to the
+    /// target's. Each entry is `~`, `~/<rel>` (resolved against the caller's
+    /// home), or an absolute path. Other file owners remain unmapped.
     #[serde(default)]
     pub access_paths: Vec<String>,
 }

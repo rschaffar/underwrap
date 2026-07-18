@@ -1370,7 +1370,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Key rotated; old material persisted alongside the new one.",
+            "description": "Key rotated and the replacement key returned once.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1817,7 +1817,7 @@
         "tags": [
           "secrets"
         ],
-        "summary": "Atomically rename a per-slot entry inside a resource blob.\nOne load-modify-save of the resource blob: the previous key is\nremoved and the new key is inserted in the same in-memory pass,\nso disk never holds both entries (or neither) — `atomic_write`\nin the storage layer guarantees the file flip is a single rename.\nOptionally overwrites material in the same step.",
+        "summary": "Rename a per-slot entry inside a resource blob.\nOne load-modify-save removes the source key and inserts the destination in\nthe same in-memory pass; the storage layer then replaces the resource file\nwith one atomic rename. Concurrent whole-blob writers remain\nlast-writer-wins. Optionally overwrites material in the same step.",
         "operationId": "handle_admin_secret_rename",
         "parameters": [
           {
@@ -4690,7 +4690,7 @@
           },
           {
             "type": "object",
-            "description": "Allow every invocation through this permission.",
+            "description": "Allow real invocations; debug remains denied.",
             "required": [
               "kind"
             ],

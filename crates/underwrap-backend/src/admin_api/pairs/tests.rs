@@ -101,7 +101,7 @@ fn admin_pair_delete_refuses_when_permissions_reference_the_pair() {
 }
 
 #[test]
-fn admin_pair_with_new_resource_creates_both_atomically() {
+fn admin_pair_with_new_resource_creates_both_in_one_request() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (state, store_id) = entity_test_state_with_store(tmp.path());
     let p = admin_principal();

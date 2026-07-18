@@ -4,7 +4,7 @@ use base64::Engine;
 
 #[tokio::test]
 async fn parse_example_config() {
-    // Inline a representative config matching the structure of examples/config.yaml.
+    // Inline a representative config matching examples/daemon-config.yaml.
     // This avoids depending on the file being present in nix sandbox builds.
     let text = r#"
 backend:

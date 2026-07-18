@@ -3,9 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
-// The backend admin listener defaults to https://localhost:9443 on the
-// developer's machine; the dev server proxies /v1/admin/* to it so the
-// SPA can call relative URLs in both dev and production.
+// The dev server proxies `/v1/*` to a local backend so the SPA can use
+// relative API URLs in development and in the embedded production build.
 const PROXY_TARGET =
   process.env.UNDERWRAP_BACKEND_DEV_URL ?? "http://127.0.0.1:9080";
 

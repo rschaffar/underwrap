@@ -467,10 +467,8 @@ pub(crate) fn create_store_for_test(
     value["store"]["id"].as_str().unwrap().to_string()
 }
 
-/// Sync helper used by `runtime_api/*` tests. Accepts anything
-/// `IntoResponse` (the handlers return `Result<Json<T>,
-/// RuntimeError>` since ticket 1100), turns it into an
-/// `axum::response::Response`, drains the body, and decodes it as
+/// Sync helper used by `runtime_api/*` tests. Accepts any `IntoResponse`, turns
+/// it into an `axum::response::Response`, drains the body, and decodes it as
 /// JSON. The HTTP status is smuggled under `__status` so a single
 /// `assert_eq!` can check both shape and code. Admin-side tests use
 /// [`run_handler`] instead.

@@ -1,9 +1,8 @@
-//! Target → caller boundary hardening (story 2600, the 2645 closures).
+//! Target-to-caller boundary hardening.
 //!
-//! Giving the target a distinct uid X makes the caller the *more*-privileged
-//! peer, so any channel from the uid-X target back to the caller becomes an
-//! escalation that did not exist when target == caller. These close the cheap,
-//! critical ones. They run in the child, right before the target exec.
+//! The target runs under a distinct UID while retaining caller-provided stdio.
+//! These controls sever ambient session capabilities that should not cross that
+//! boundary. They run in the child immediately before target exec.
 
 /// `CLOSE_RANGE_CLOEXEC` (linux/close_range.h) — mark the range close-on-exec
 /// rather than closing it immediately, so std's exec machinery is undisturbed.

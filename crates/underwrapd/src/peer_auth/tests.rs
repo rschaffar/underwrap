@@ -160,6 +160,12 @@ fn get_peer_cred_resolves_self_over_socketpair() {
 }
 
 #[test]
+fn peer_pidfd_preserves_unexpected_getsockopt_errors() {
+    let err = peer_pidfd(-1).expect_err("an invalid socket fd must not select the fallback");
+    assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+}
+
+#[test]
 fn log_peer_auth_mode_does_not_panic() {
     // Smoke: the startup probe must run on any kernel without crashing.
     log_peer_auth_mode();

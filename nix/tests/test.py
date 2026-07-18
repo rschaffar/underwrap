@@ -229,9 +229,9 @@ def admin_get_blob(url, store, resource):
     """Read a resource blob's canonical bytes directly off the
     backend's on-disk store and return them base64-encoded.
 
-    The admin API no longer exposes a `blob/get` endpoint — the SPA
-    edits secrets per-key — so we go through
-    the storage backend's on-disk layout: a `PlainBackend` stores each
+    The admin API exposes per-key secret edits rather than whole-blob reads, so
+    the harness uses the storage backend's on-disk layout: a `PlainBackend`
+    stores each
     resource blob at `<dir>/resources/<resource_id>`. Picking the
     right `<dir>` per (url, store) keeps the byte-equal comparison
     semantics callers rely on.
@@ -492,9 +492,9 @@ def boot_and_service_checks():
         "PASS: wrapper assets auto-created with client-instance provenance after flag flip"
     )
 
-    # services.underwrap.hardenTargetHost defaults true; the module pins
-    # kernel.yama.ptrace_scope=2 so a same-UID caller cannot inspect the
-    # wrapper chain or the target process state. Confirm it took effect.
+    # services.underwrap.hardenTargetHost defaults true and, absent an
+    # operator override, sets kernel.yama.ptrace_scope=2. Confirm the VM uses
+    # the expected value.
     scope = machine.succeed("cat /proc/sys/kernel/yama/ptrace_scope").strip()
     assert scope == "2", f"expected ptrace_scope=2 from hardenTargetHost, got {scope}"
     machine.log("PASS: kernel.yama.ptrace_scope=2 enforced by hardenTargetHost")
@@ -505,10 +505,9 @@ def local_socket_permissions():
     # ============================================================
     # LOCAL INSTANCE: one socket / one group / one setgid binary
     # ============================================================
-    # The single-instance redesign collapses the old per-wrapper
-    # group/socket/binary fan-out into exactly one of each per instance.
-    # The wrapper name is now a client-supplied selector validated by the
-    # daemon; the kernel gate is the single instance-group egid.
+    # Each instance has exactly one group, socket, and setgid entry binary. The
+    # wrapper name is a client-supplied selector validated by the daemon; the
+    # kernel gate is the single instance-group egid.
 
     perms = machine.succeed("stat -c %a /run/underwrap-local").strip()
     assert perms == "755", f"expected 755, got {perms}"
@@ -531,7 +530,7 @@ def local_socket_permissions():
     ).strip()
     assert count == "1", f"expected exactly one instance socket, got {count}"
 
-    # The single instance group exists; the old per-wrapper groups do not.
+    # Only the instance group exists; wrapper-specific groups must not.
     machine.succeed("getent group underwrap-local")
     machine.fail("getent group underwrap-local-test-echo")
     machine.fail("getent group underwrap-local-test-echo2")
@@ -540,13 +539,13 @@ def local_socket_permissions():
     stat = machine.succeed("stat -c '%A %G' /run/wrappers/bin/underwrap-local").strip()
     assert "underwrap-local" in stat, f"wrong group: {stat}"
     assert "s" in stat.lower(), f"setgid not set: {stat}"
-    # The old per-wrapper setgid binaries are gone.
+    # Wrapper-specific setgid binaries must not exist.
     machine.fail("test -e /run/wrappers/bin/local-test-echo")
 
     # Instance configs: full DaemonConfig + minimal underwrap-exec sidecar.
     machine.succeed("test -f /etc/underwrap/daemon/local.yaml")
     machine.succeed("test -f /etc/underwrap/instances/local.yaml")
-    # The old per-wrapper sidecar directory is gone.
+    # Wrapper-specific sidecar configs must not exist.
     machine.fail("test -e /etc/underwrap/wrappers/local-test-echo.yaml")
 
     # underwrap-ns has the capabilities it needs for namespace setup and
@@ -561,9 +560,8 @@ def local_store_and_basic_ops():
     # LOCAL INSTANCE: store secrets + basic operations
     # ============================================================
 
-    # Admin writes through the per-secret PUT endpoint are
-    # unconditional; the global `writes_enabled` toggle is gone and
-    # per-grant `writable` controls only wrapper-side writes.
+    # Admin writes through the per-secret PUT endpoint are unconditional;
+    # per-permission `writable` controls only wrapper-side persistence.
 
     # Every wrapper invocation needs a grant for
     # `(client_instance, wrapper, resource)`. Pre-seed Unlocked grants
@@ -659,8 +657,7 @@ def per_user_bare_name_path():
             f"shim {name} debug-subcommand mismatch: {body}"
     machine.log("PASS: shims are unprivileged scripts forwarding to underwrap-<instance>")
 
-    # The per-user dir is a bare-name namespace: it must not expose the old
-    # instance-prefixed names.
+    # The per-user directory exposes bare names, not instance-prefixed aliases.
     rc = machine.execute(f"test -e {profile_bin}/local-test-echo")[0]
     assert rc != 0, "per-user bin unexpectedly contains prefixed name"
 
@@ -996,7 +993,7 @@ def local_pid_namespace_proc_isolation():
 
 def local_target_uid_isolation():
     # ============================================================
-    # LOCAL INSTANCE: per-target uid isolation (story 2600 / 2670)
+    # LOCAL INSTANCE: per-wrapper target-UID isolation
     # ============================================================
     # An env-mode target AND its descendant run as a dedicated sandbox uid X
     # (!= caller, != 0), so a same-caller process is denied the WHOLE subtree's
@@ -1179,7 +1176,7 @@ def local_target_uid_isolation():
 
 def local_target_uid_idmapped_home():
     # ============================================================
-    # LOCAL INSTANCE: idmapped directory for an isolated target (story 2640)
+    # LOCAL INSTANCE: idmapped directory for a dedicated-UID target
     # ============================================================
     # An isolated target runs as the dedicated uid X but, through an idmapped
     # `~/iso-data` mount that maps ONLY caller<->X, it reads a caller-owned file
@@ -1187,8 +1184,8 @@ def local_target_uid_idmapped_home():
     # Back iso-data with a tmpfs (owned by the caller): tmpfs fully supports
     # idmapped mounts and lives in init_user_ns, so the test is deterministic
     # regardless of what filesystem the VM's /home happens to be on. Production
-    # homes (ext4/btrfs/xfs) support idmapped mounts too; this only pins the test
-    # environment (see story 2660's "deterministic /home backing" note).
+    # homes (ext4/btrfs/xfs) support idmapped mounts too; this pins a
+    # deterministic filesystem for the test.
     # mode=0700 (a realistic home perm) is deliberate: it makes the idmap-setup
     # path the same as a real 0700 home, where the caller cannot traverse the
     # mount once it is idmapped — the condition behind the deepthought submount
@@ -1200,7 +1197,7 @@ def local_target_uid_idmapped_home():
     )
     machine.succeed(
         "su testuser -s /bin/sh -c '"
-        "printf %s caller-content-2640 > /home/testuser/iso-data/from-caller && "
+        "printf %s caller-content-idmap > /home/testuser/iso-data/from-caller && "
         "rm -f /home/testuser/iso-data/from-target'"
     )
     # Runs synchronously: the target reads from-caller, writes from-target, exits.
@@ -1209,7 +1206,7 @@ def local_target_uid_idmapped_home():
         "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-home'"
     )
     out = machine.succeed("cat /home/testuser/iso-data/from-target").strip()
-    assert out == "caller-content-2640", (
+    assert out == "caller-content-idmap", (
         f"FAIL: idmapped target did not reproduce the caller file content "
         f"(got {out!r}) — the idmapped read did not work"
     )
@@ -1219,14 +1216,13 @@ def local_target_uid_idmapped_home():
         f"the caller<->X write mapping is wrong"
     )
     machine.log(
-        "PASS: idmapped dir (2640) — isolated target read the caller's file as "
+        "PASS: dedicated-UID target read the caller's file through an idmapped directory as "
         "owner; its writeback is owned by the caller on disk"
     )
 
-    # Best-effort submount idmap (story 1000 / 1030): a non-idmappable submount
-    # under an accessPaths dir must be SKIPPED, not fail the whole mount with
-    # EINVAL. proc lacks FS_ALLOW_IDMAP, a portable stand-in for the fuse-portal
-    # case that broke a real desktop session. The parent dir must stay idmapped.
+    # A non-idmappable nested mount is skipped without losing the parent idmap.
+    # proc lacks FS_ALLOW_IDMAP and provides a portable stand-in for a FUSE
+    # submount. The parent directory must remain idmapped.
     machine.succeed("mkdir -p /home/testuser/iso-data/portal")
     machine.succeed("mount -t proc proc /home/testuser/iso-data/portal")
     try:
@@ -1251,11 +1247,10 @@ def local_target_uid_idmapped_home():
         "the parent stayed idmapped and usable"
     )
 
-    # Recursive submount idmap — the deepthought ZFS case (story 1000 / 1030). An
-    # IDMAPPABLE submount under a 0700 idmapped root MUST itself be idmapped. A
-    # nested tmpfs (idmap-capable, separate superblock — a faithful proxy for a
-    # ZFS dataset) holds a 0600 caller-owned file; the uid-X target can read it
-    # back only if that submount was idmapped caller<->X by the recursive idmap.
+    # An idmappable submount under a 0700 idmapped root must receive its own
+    # idmap. A nested tmpfs (idmap-capable, separate superblock) holds a 0600
+    # caller-owned file; the target can read it only when recursive idmapping
+    # handles the submount.
     machine.succeed("mkdir -p /home/testuser/iso-data/sub")
     machine.succeed(
         "mount -t tmpfs -o mode=0700,uid=1099,gid=100 tmpfs /home/testuser/iso-data/sub"
@@ -1263,7 +1258,7 @@ def local_target_uid_idmapped_home():
     try:
         machine.succeed(
             "su testuser -s /bin/sh -c '"
-            "printf %s caller-content-2640 > /home/testuser/iso-data/from-caller && "
+            "printf %s caller-content-idmap > /home/testuser/iso-data/from-caller && "
             "rm -f /home/testuser/iso-data/from-target && "
             "printf %s sub-secret-content > /home/testuser/iso-data/sub/from-caller-sub && "
             "chmod 0600 /home/testuser/iso-data/sub/from-caller-sub && "
@@ -1299,8 +1294,8 @@ def local_target_uid_runtime_dir():
     # ============================================================
     # LOCAL INSTANCE: an isolated target gets its OWN provisioned runtime dir
     # ============================================================
-    # story 1000: the dedicated target uid X has no logind /run/user, so underwrap
-    # provisions it its own 0700 runtime dir at <targetRuntimeDirBase>/<X-name>
+    # The dedicated target UID has no logind /run/user, so underwrap provisions
+    # its 0700 runtime directory at <targetRuntimeDirBase>/<target-user-name>
     # and exports that as XDG_RUNTIME_DIR. It is X-owned, so the target writes it
     # directly — no idmap, and the caller's /run/user is never involved (the
     # caller here has no session dir, so this also proves the path is
@@ -1332,7 +1327,7 @@ def local_target_uid_runtime_dir():
     assert content == "runtime_dir_ok", f"FAIL: runtime-dir marker content {content!r}"
     machine.succeed(f"rm -rf {runtime_dir}/uw-runtime-probe")
     machine.log(
-        "PASS: story 1000 — isolated target used its own provisioned runtime dir "
+        "PASS: target used its own provisioned runtime directory "
         "(X-owned), independent of the caller's /run/user"
     )
 
@@ -1345,7 +1340,7 @@ def local_target_uid_files_libsecret():
     # libsecret slot. The X-owned staging / private bus is created by the child
     # AFTER the switch to X (so the uid-X target can read/write it), and the
     # supervisor reads it back through the single setfsuid(X) window. This is the
-    # carved-out remainder of 2630.
+    # required cross-UID projection path.
 
     # --- Files slot under mandatory target UID ---
     grant_local_unlocked("test-iso-dir")
@@ -1477,7 +1472,7 @@ def local_target_uid_files_libsecret():
 
 def local_target_uid_authority():
     # ============================================================
-    # LOCAL INSTANCE: target-uid authority (stories 2620/2630/2660)
+    # LOCAL INSTANCE: root-owned target-UID authority
     # ============================================================
     # The dedicated sandbox uid is chosen by underwrap-ns from a ROOT-OWNED
     # target-path -> uid table, NEVER from anything the caller or underwrap-exec
@@ -1508,10 +1503,9 @@ def local_target_uid_authority():
     )
     machine.log(f"PASS: {table} is root:root {mode} (sole, unforgeable uid authority)")
 
-    # Each row maps an (instance, wrapper) pair to a dedicated sandbox
-    # user/group ("<instance>\t<wrapper>\t<user>\t<group>"), never to root
-    # (story 2720). Keying on the pair — not the target binary path — means the
-    # uid itself separates the secrets distinct wrappers broker.
+    # Each row maps an `(instance, wrapper)` pair to a dedicated target
+    # user/group ("<instance>\t<wrapper>\t<user>\t<group>"), never to root.
+    # Pair-keying separates wrappers even when they share a target binary.
     contents = machine.succeed(f"cat {table}")
     iso_rows = [l for l in contents.splitlines() if l.strip()]
     assert iso_rows, f"FAIL: {table} is empty but wrappers exist"
@@ -1533,10 +1527,9 @@ def local_target_uid_authority():
         f"dedicated underwrap-target-* users (never root)"
     )
 
-    # DISTINCTNESS (the point of story 2720). test-echo and test-locked (local
-    # instance) both target ${coreutils}/bin/env; remote-echo (remote instance)
-    # also targets env. Under the old path-keyed scheme all three shared one uid.
-    # Now each (instance, wrapper) pair must resolve to its OWN sandbox user.
+    # test-echo and test-locked in the local instance both target `env`, and
+    # remote-echo does the same in another instance. Every pair must nevertheless
+    # resolve to its own target user.
     same_binary_same_instance = (
         pair_to_user.get(("local", "test-echo")),
         pair_to_user.get(("local", "test-locked")),
@@ -1648,8 +1641,8 @@ def local_ancestor_attack():
     # LOCAL INSTANCE: adversarial ancestor attack (CRITICAL TEST)
     # ============================================================
     # A PARENT process spawns a wrapper (test-iso) and tries to inspect the
-    # dedicated-uid-X target subtree it spawned. The UID boundary (story 2600)
-    # makes `ptrace_may_access` fail the UID gate for BOTH the READ-mode files
+    # dedicated-UID target subtree it spawned. The UID boundary makes
+    # `ptrace_may_access` fail for both the READ-mode files
     # (/proc/<pid>/environ) and the ATTACH-mode vectors (ptrace,
     # /proc/<pid>/mem), so even an ancestor cannot recover the secret. The unique
     # `sleep 5252` marker also means the attack locates exactly this run's target,
@@ -2840,15 +2833,13 @@ def local_backend_policy_control_center():
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-grant: {output}"
     machine.log("PASS: re-Unlocking the grant restores wrapper access")
 
-    # `local-test-locked` is wired up by the test harness as a wrapper
-    # that historically required a local unlock; under the grant
-    # model it simply needs an Unlocked grant.
+    # A second wrapper becomes usable when its permission is Unlocked.
     grant_local_unlocked("test-locked")
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-locked"))
     assert "LOCKED_TOKEN=locked_secret" in output, (
-        f"expected formerly-locked wrapper to work via grant model: {output}"
+        f"expected Unlocked wrapper to work: {output}"
     )
-    machine.log("PASS: grant model replaces local unlock when active")
+    machine.log("PASS: active Unlocked permission admits the wrapper")
 
 
 def instance_isolation():
@@ -2919,7 +2910,7 @@ def local_debug_subcommand():
     # The Debug variant must run under the SAME sandbox uid as test-echo's Real
     # target — the uid is keyed on (instance, wrapper), not the binary, so debug
     # (which brokers the same secret) shares the wrapper's uid and never a
-    # host-wide debug-tool uid (story 2720). The debug tool prints "uid: <n>".
+    # host-wide debug-tool UID. The debug tool prints "uid: <n>".
     debug_uid = next(
         (l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("uid:")),
         None,
@@ -2961,10 +2952,9 @@ def local_debug_subcommand():
     # and `until_epoch` is itself a whole second, so a deadline only ~1s in the
     # past collapses to zero effective margin: if the debug request lands in the
     # same integer second as `int(time.time()) - 1`, `decide` reads the
-    # permission as not-yet-expired and (wrongly, for the test's intent) allows
-    # the Debug variant. That is the non-deterministic "debug allowed when it
-    # should be denied" flake investigated in ticket 1610 — a too-tight fixture
-    # boundary, not a policy bug. Two minutes is far outside any plausible skew.
+    # permission as not-yet-expired and (wrongly for the fixture) allows the
+    # Debug variant. Two minutes keeps the test outside whole-second truncation
+    # and plausible host/VM skew.
     past = int(time.time()) - 120
     admin_upsert_grant(
         ADMIN_LOCAL,
@@ -2995,12 +2985,9 @@ def runtime_api_invariants():
     # RUNTIME API INVARIANTS
     # ============================================================
     #
-    # Pins the trust-boundary properties of the new three-endpoint
-    # runtime API end-to-end: lazy self-heal after a backend restart
-    # (regression for the original auth-bypass risk that motivated
-    # the redesign), no legacy storage-key route on the wire, no
-    # PerCallApproval mode anywhere in the admin surface, and the
-    # env-immutability rule applied by the backend on every finalize.
+    # Pins the three-endpoint runtime API's trust-boundary properties end to
+    # end: lazy backend-client recovery, no storage-key route on the wire, a
+    # closed permission-mode enum, and env validation on every finalize.
     # ============================================================
 
     # ----------------------------------------------------------
@@ -3029,8 +3016,7 @@ def runtime_api_invariants():
     login_admin_session(ADMIN_LOCAL)
 
     # ----------------------------------------------------------
-    # PerCallApproval variant is gone — admin wrapper-permissions/
-    # upsert rejects any payload that tries to carry it.
+    # Wrapper-permission upsert rejects an unsupported permission-mode variant.
     # ----------------------------------------------------------
     rid = _resource_id_for(ADMIN_LOCAL, "test/token")
     err = admin_api_expect_status(
@@ -3050,13 +3036,12 @@ def runtime_api_invariants():
         or "kind" in err_blob
     ), f"unexpected wrapper-permissions upsert error shape: {err}"
     machine.log(
-        "PASS: admin wrapper-permissions upsert rejects per-call-approval payloads"
+        "PASS: admin wrapper-permissions upsert rejects an unsupported mode"
     )
 
     # ----------------------------------------------------------
-    # The legacy per-key /v1/write route is gone — even an
-    # authenticated runtime mTLS client cannot reach it. Same for
-    # /v1/status, /v1/read, /v1/delete, /v1/list.
+    # An authenticated runtime mTLS client still receives 404 for guessed
+    # storage-key/status routes outside the three-endpoint runtime surface.
     # ----------------------------------------------------------
     runtime_cert = "/var/lib/underwrap-local/client-local.pem"
     runtime_key = "/var/lib/underwrap-local/client-local.key"
@@ -3090,17 +3075,15 @@ def runtime_api_invariants():
         body_text = machine.succeed("cat /tmp/runtime-body")
         return json.loads(body_text) if body_text.strip() else {}
 
-    for legacy in ("/v1/status", "/v1/read", "/v1/write", "/v1/list", "/v1/delete",
-                   "/v1/read-prefixes", "/v1/runtime/wrappers/register"):
-        _runtime_curl("POST", legacy, body={}, expect_status=404)
-    machine.log("PASS: every legacy per-key runtime route returns 404 on mTLS")
+    for forbidden_path in ("/v1/status", "/v1/read", "/v1/write", "/v1/list", "/v1/delete",
+                           "/v1/read-prefixes", "/v1/runtime/wrappers/register"):
+        _runtime_curl("POST", forbidden_path, body={}, expect_status=404)
+    machine.log("PASS: non-runtime storage/status routes return 404 on mTLS")
 
     # ----------------------------------------------------------
-    # Env immutability through the full mTLS path: open returns
-    # the canonical blob, finalize rejects a writeback that
-    # mutates the env section even when the permission is
-    # writable. This pins the redesign's "env is admin-only on
-    # writeback" guarantee at the wire level inside a real VM.
+    # Env validation through the full mTLS path: open returns the canonical
+    # blob, and finalize rejects a writeback that mutates the env section even
+    # when the permission is writable.
     # ----------------------------------------------------------
     admin_upsert_grant(
         ADMIN_LOCAL,

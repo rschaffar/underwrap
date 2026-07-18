@@ -73,7 +73,7 @@ The clearest argument for underwrap is this:
 
 That is the use case where underwrap feels most distinct.
 
-See [Agent-facing wrappers](agents.md).
+See [Agent-facing wrappers](agent-facing-wrappers.md).
 
 ## The main trade-off
 
@@ -88,5 +88,5 @@ If you do not need those properties, simpler tools will usually be easier to liv
 ## Related docs
 
 - [Getting started](getting-started.md)
-- [Agent-facing wrappers](agents.md)
+- [Agent-facing wrappers](agent-facing-wrappers.md)
 - [Security](security.md)

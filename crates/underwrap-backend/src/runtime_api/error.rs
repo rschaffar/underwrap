@@ -74,9 +74,8 @@ impl IntoResponse for RuntimeError {
     }
 }
 
-/// Result-adapter trait so handlers can write
-/// `load_x(...).into_internal("loading X document")?` instead of the
-/// 7-line `match` block the old hand-built helpers required.
+/// Result-adapter trait that keeps handler error conversion concise and gives
+/// every internal storage failure an operation-specific context string.
 pub(crate) trait IntoInternal<T> {
     fn into_internal(self, context: &'static str) -> Result<T, RuntimeError>;
 }

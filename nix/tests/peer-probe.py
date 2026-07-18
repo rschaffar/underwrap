@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Same-host NON-ANCESTOR (peer) probe against an isolated target (story 2600 / 2660).
+"""Same-host non-ancestor probe against an isolated target.
 
 Runs as the caller's uid (`testuser`) but is **not** an ancestor of the target —
 it is a separately spawned peer process, the realistic "another process I own

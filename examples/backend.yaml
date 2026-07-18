@@ -34,17 +34,15 @@ https:
     key_file:  /etc/underwrap-backend/server.key
 
 admin:
-  # Allowlist of `Origin`/`Referer` values for state-changing admin
-  # requests (same-origin CSRF defence). Empty disables the check.
-  # allowed_origins:
-  #   - https://underwrap.example.internal
+  # Allowlist of `Origin`/`Referer` values for state-changing admin requests.
+  # Keep the browser-visible HTTPS origin here in deployed configurations.
+  allowed_origins:
+    - https://backend.example.internal:18443
 
-  # Admin session lifetime in seconds. Defaults to 12 hours. Sessions are
-  # held in memory (tower-sessions MemoryStore) and do not survive a
-  # backend restart — there is no signing-key file to provision.
+  # Admin session lifetime in seconds. Defaults to 12 hours. Sessions are held
+  # in memory and do not survive a backend restart.
   # session_lifetime_secs: 43200
 
-  # Directory under which the "create store" admin API places the data
-  # directories of newly-created dynamic stores
-  # (`<stores_data_root>/<store_id>/`). Unset disables store creation.
-  # stores_data_root: /var/lib/underwrap-backend/data
+  # Data root for stores created through the admin UI. Each store gets a
+  # generated `<stores_data_root>/<store_id>/` directory.
+  stores_data_root: /var/lib/underwrap-backend/data

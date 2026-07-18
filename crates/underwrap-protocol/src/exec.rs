@@ -51,15 +51,12 @@ impl WireDecode for ExecResourceBinding {
 
 /// The full exec → ns handoff payload.
 ///
-/// **Authority invariant (story 2600):** this bundle carries **no** target
-/// uid/gid. The dedicated sandbox identity an isolated target is switched to is
-/// resolved by `underwrap-ns` itself from the root-owned
-/// `/etc/underwrap/target-uids` table, keyed on the daemon-chosen target path —
-/// never relayed over this wire form, env, argv, or the daemon response. Adding
-/// a uid/gid field here would reintroduce a confused-deputy / privilege-escalation
-/// vector (a compromised `underwrap-exec` could redirect the `cap_setuid` switch),
-/// so the absence is deliberate and load-bearing. See
-/// `exec_bundle_carries_no_target_identity`.
+/// **Authority invariant:** this bundle carries no target UID/GID.
+/// `underwrap-ns` resolves the dedicated identity from the root-owned
+/// `/etc/underwrap/target-uids` table using the `(instance, wrapper)` selector
+/// supplied separately by `underwrap-exec`. Adding an identity field here would
+/// let a compromised stage redirect the capability-backed UID switch, so its
+/// absence is load-bearing. See `exec_bundle_carries_no_target_identity`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecBundle {
     pub env: HashMap<String, SecretBytes>,

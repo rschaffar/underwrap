@@ -360,11 +360,9 @@ impl TestDaemon {
         secret_id: &str,
         material: &str,
     ) -> Result<()> {
-        // The new resource-vocabulary backend resolves a resource by
-        // name (and rejects unregistered pairs) before consulting the
-        // policy, so seed the resource + pair records too. The legacy
-        // fixtures pre-dated the resource catalog and used the
-        // resource id as both the storage prefix and the policy key.
+        // Runtime policy resolution requires a registered resource and pair, so
+        // seed both before creating the permission. Test fixtures use one string
+        // as the stable resource id and operator-facing resource name.
         self.ensure_pair_in_store(store, wrapper, secret_id)?;
         self.put_policy_for_store(store, secret_id, wrapper).await?;
         self.admin_write_raw(store, wrapper, secret_id, material)
@@ -439,9 +437,8 @@ impl TestDaemon {
 
     /// Same as [`Self::ensure_pair`] but targets a specific store
     /// directory. Use for tests that remap the daemon to a
-    /// non-default store. Idempotent. Bypasses the admin API
-    /// (which would auto-assign a `res_<hex>` id) so legacy fixtures
-    /// that reference the resource id as a string keep working.
+    /// non-default store. Idempotent. It bypasses the admin API's generated
+    /// `res_<hex>` id so tests can choose deterministic identifiers.
     pub fn ensure_pair_in_store(
         &self,
         store_id: &str,
@@ -727,11 +724,9 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
-    /// Load a resource's canonical blob directly from the on-disk
-    /// store. The admin API no longer exposes a blob-get endpoint
-    /// (the SPA edits per-key via `/v1/admin/secret/*`); tests that
-    /// need to inspect the raw blob go through the storage backend
-    /// instead, same pattern as [`Self::ensure_pair_in_store`].
+    /// Load a resource's canonical blob directly from the on-disk store. The
+    /// admin API exposes per-entry operations rather than a raw-blob read, so
+    /// tests inspect canonical bytes through the storage backend.
     pub fn get_resource_blob(
         &self,
         store: &str,

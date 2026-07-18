@@ -90,15 +90,11 @@ pub(crate) async fn bootstrap_admin(
 /// Ask the kernel for an unused TCP port on loopback, then release
 /// it so the caller can bind it from the test fixture.
 ///
-/// This pattern has a tiny race window — between `drop(listener)` and
-/// the next bind, the kernel could reassign the port to a different
-/// process. In practice, port assignment is roughly LIFO inside the
-/// ephemeral range, and the next bind happens within microseconds, so
-/// collisions are rare in the test harness. The previous monotonic
-/// counter starting at 43000 had the much worse failure mode of
-/// reusing the same port across `cargo test` runs while it was still
-/// in `TIME_WAIT`. Holding the listener open until the real server
-/// binds would close the race but requires restructuring the harness.
+/// This pattern has a tiny race window between releasing the probe listener and
+/// binding the fixture. Port assignment is roughly LIFO inside the ephemeral
+/// range and the fixture binds immediately, so collisions are rare. Holding the
+/// listener until the real server accepts it would eliminate the race but
+/// requires passing an already-bound descriptor into the server.
 pub(crate) fn pick_unused_port() -> Result<u16> {
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").context("binding ephemeral port for harness")?;
@@ -110,12 +106,9 @@ pub(crate) fn pick_unused_port() -> Result<u16> {
     Ok(port)
 }
 
-// Total window: 3000 × 20 ms ≈ 60 s. The previous 2 s budget flaked
-// under contended Nix-sandbox loads — the loop exits as soon as the
-// listener answers, so a longer ceiling costs nothing on the happy
-// path. The contention is real: `cargo test --workspace`
-// runs many test binaries in parallel, and backend startup can still
-// be delayed substantially by general CPU / I/O contention.
+// Total window: 3000 × 20 ms ≈ 60 s. The loop exits as soon as the listener
+// answers, while the generous ceiling accommodates CPU and I/O contention when
+// `cargo test --workspace` starts many fixtures in parallel.
 pub(crate) async fn wait_for_admin(url: &str, ca_cert: &Path) -> Result<()> {
     let client = admin_client(ca_cert, std::time::Duration::from_millis(500))?;
     for _ in 0..3000 {

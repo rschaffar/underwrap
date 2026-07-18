@@ -165,7 +165,7 @@ let
     ${pkgs.coreutils}/bin/sleep 5252 &
     wait
   '';
-  # Isolated target that exercises an idmapped directory (story 2640): it runs as
+  # Target that exercises an idmapped directory: it runs as
   # the dedicated uid X but, through the idmapped `~/iso-data` mount, reads a
   # caller-owned file (proving X sees caller files as owner) and writes one back
   # (proving the write lands on disk owned by the caller, not X).
@@ -182,7 +182,7 @@ let
         > "$HOME/iso-data/sub/from-target-sub"
     fi
   '';
-  # Isolated target that exercises its OWN provisioned runtime dir (story 1000).
+  # Target that exercises its own provisioned runtime directory.
   # It mkdirs + writes a marker under XDG_RUNTIME_DIR (the dedicated uid's own
   # 0700 dir, so this just works with no idmap), then prints the runtime dir path
   # so the test can confirm it is the provisioned per-target-uid dir and that the
@@ -194,7 +194,7 @@ let
     ${pkgs.coreutils}/bin/printf '%s' runtime_dir_ok > "$probe/marker"
     ${pkgs.coreutils}/bin/printf '%s\n' "$XDG_RUNTIME_DIR"
   '';
-  # Isolated target projecting a FILES slot (story 2635). The files-slot staging
+  # Target projecting a files slot. The files-slot staging
   # is owned by the dedicated uid X and bound at `$HOME/iso-files/dir-a` under an
   # idmapped `~/iso-files`, so the uid-X target reads/writes it directly. `write`
   # seeds a file (persisted by the supervisor through the single setfsuid(X)
@@ -454,7 +454,7 @@ in {
             resource = "test/descendant-tok";
             env = true;
           };
-          # Per-target uid isolation (story 2600). Target + descendant run as a
+          # Target-UID isolation: target and descendant run as a
           # dedicated uid X, so a same-caller process is denied the whole
           # subtree's /proc secret surface.
           test-iso = {
@@ -462,22 +462,22 @@ in {
             resource = "test/iso-tok";
             env = true;
           };
-          # Isolated target with an idmapped directory (story 2640).
+          # Target with an idmapped caller-owned directory.
           test-iso-home = {
             target = "${isoHomeScript}";
             resource = "test/iso-home-tok";
             env = true;
             accessPaths = [ "~/iso-data" ];
           };
-          # Story 1000: an isolated target gets its OWN provisioned runtime dir
-          # as XDG_RUNTIME_DIR (<targetRuntimeDirBase>/<target-user-name>), owned
-          # by the dedicated uid X — not the caller's /run/user. No flag needed.
+          # A target gets its own provisioned runtime directory as
+          # XDG_RUNTIME_DIR (<targetRuntimeDirBase>/<target-user-name>), owned by
+          # the dedicated UID rather than the caller. No wrapper flag is needed.
           test-runtime-dir = {
             target = "${runtimeDirScript}";
             resource = "test/runtime-tok";
             env = true;
           };
-          # Isolated target projecting a FILES slot (story 2635). The staging is
+          # Target projecting a files slot. The staging is
           # owned by uid X and bound under an idmapped `~/iso-files`; the uid-X
           # target reads/writes it and the supervisor persists the writeback
           # through the single setfsuid(X) window.
@@ -487,7 +487,7 @@ in {
             files.paths = [ "iso-files/dir-a" ];
             accessPaths = [ "~/iso-files" ];
           };
-          # Isolated LIBSECRET target (story 2635): dbus-daemon + secretsd run as
+          # Libsecret target: dbus-daemon and secretsd run as
           # the dedicated uid X on an X-owned private bus tmpfs; the supervisor
           # reads the X-owned state file at writeback inside the setfsuid(X)
           # window.

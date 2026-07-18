@@ -11,9 +11,9 @@ use super::{Item, SecretStore};
 /// search (`Collection.SearchItems`), never by path or sort order, so a
 /// random id is safe. It must remain a valid D-Bus object-path segment
 /// (`[A-Za-z0-9_]`), so we hex-encode 16 random bytes (32 chars) — a
-/// hyphenated UUID would be an illegal segment. Randomness replaces the
-/// old reset-on-startup counter, which could re-mint an id that already
-/// existed in the reloaded state and **silently overwrite** that item.
+/// hyphenated UUID would be an illegal segment. Random ids avoid collisions
+/// with items loaded from persisted state, preventing a create from silently
+/// overwriting an existing item.
 ///
 /// Fails loudly if the OS RNG is unavailable rather than falling back to
 /// a predictable id.
