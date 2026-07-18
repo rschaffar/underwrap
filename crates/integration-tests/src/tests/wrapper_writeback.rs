@@ -27,7 +27,6 @@ use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 
-use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{
     ResourceErrorCode, SecretBytes, WrapperRequest, WrapperResourceRequest,
@@ -39,26 +38,9 @@ use underwrap_protocol::scm_rights;
 
 use super::*;
 
-/// Result of the wrapper-side Read + SCM_RIGHTS exchange: ReadOk
-/// metadata plus the one open `UnixStream` for the wrapper's resource
-/// channel.
-struct OpenedRun {
-    #[allow(dead_code)] // captured for diagnostics; tests assert on the channel side
-    env: HashMap<String, SecretBytes>,
-    #[allow(dead_code)]
-    resource_id: String,
-    #[allow(dead_code)]
-    access: AccessMode,
-    #[allow(dead_code)]
-    libsecret: bool,
-    #[allow(dead_code)]
-    files_target_paths: Vec<String>,
-    channel: StdUnixStream,
-}
-
-/// Connect a sync wrapper-side `StdUnixStream`, send `Read`, parse
+/// Connect a sync wrapper-side `StdUnixStream`, send `Read`, verify
 /// `ReadOk`, and receive the one channel fd via SCM_RIGHTS.
-fn open_run(socket_path: &Path, wrapper_name: &str) -> OpenedRun {
+fn open_run(socket_path: &Path, wrapper_name: &str) -> StdUnixStream {
     let mut stream = StdUnixStream::connect(socket_path)
         .unwrap_or_else(|e| panic!("connect {}: {e}", socket_path.display()));
     write_frame_sync(
@@ -71,15 +53,8 @@ fn open_run(socket_path: &Path, wrapper_name: &str) -> OpenedRun {
     )
     .unwrap();
     let resp: WrapperResponse = read_frame_sync(&mut stream).unwrap();
-    let (env, resource_id, access, libsecret, files_target_paths) = match resp {
-        WrapperResponse::ReadOk {
-            env,
-            resource_id,
-            access,
-            libsecret,
-            files_target_paths,
-            ..
-        } => (env, resource_id, access, libsecret, files_target_paths),
+    let resource_id = match resp {
+        WrapperResponse::ReadOk { resource_id, .. } => resource_id,
         other => panic!("expected ReadOk, got {other:?}"),
     };
 
@@ -88,16 +63,7 @@ fn open_run(socket_path: &Path, wrapper_name: &str) -> OpenedRun {
     // SAFETY: the fd was just received via SCM_RIGHTS and is owned
     // by this process; wrapping it in a UnixStream gives us a
     // standard owned handle for the channel.
-    let channel = unsafe { StdUnixStream::from_raw_fd(fd) };
-
-    OpenedRun {
-        env,
-        resource_id,
-        access,
-        libsecret,
-        files_target_paths,
-        channel,
-    }
+    unsafe { StdUnixStream::from_raw_fd(fd) }
 }
 
 fn send_checkout(stream: &mut StdUnixStream) -> (Vec<u8>, bool) {
@@ -212,8 +178,7 @@ async fn clean_run_only_sends_usage_signal() {
     // doesn't block the current-thread tokio runtime the daemon
     // tasks are running on.
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let (blob, writable) = send_checkout(&mut channel);
         assert_eq!(blob, initial_bytes);
         assert!(writable);
@@ -257,8 +222,7 @@ async fn writable_grant_persists_checkin() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     let result = tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let (blob, writable) = send_checkout(&mut channel);
         assert!(writable);
         assert!(blob != mutated_bytes);
@@ -301,8 +265,7 @@ async fn readonly_grant_rejects_checkin() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let (_blob, writable) = send_checkout(&mut channel);
         assert!(!writable, "grant is read-only at Checkout");
 
@@ -359,8 +322,7 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     let mutated = blob_with_env("GH_TOKEN", b"ghp_flipped");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let blocking = tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let (_blob, writable) = send_checkout(&mut channel);
         assert!(writable, "Checkout must observe the still-writable grant");
         checkout_done_tx.send(()).unwrap();
@@ -433,8 +395,7 @@ async fn noncanonical_checkin_rejected() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let (_blob, _writable) = send_checkout(&mut channel);
         let resp = send_checkin(&mut channel, &noncanonical);
         match resp {
@@ -520,8 +481,7 @@ async fn checkout_bumps_last_used() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let _ = send_checkout(&mut channel);
     })
     .await
@@ -547,8 +507,7 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let _ = send_checkout(&mut channel);
         let resp = send_checkin(&mut channel, &mutated_bytes);
         assert!(matches!(resp, WrapperResourceResponse::CheckinOk));
@@ -573,8 +532,7 @@ async fn usage_signal_bumps_last_used() {
 
     let socket = daemon.wrapper_sockets["gh-writeback"].clone();
     tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         // Skip Checkout — drive UsageSignal directly to isolate the
         // bump from any other backend read.
         let resp = send_usage_signal(&mut channel);
@@ -605,8 +563,7 @@ async fn rejected_checkin_still_bumps_last_used() {
     let mutated = blob_with_env("GH_TOKEN", b"ghp_rejected_mutation");
     let mutated_bytes = mutated.to_canonical_bytes().unwrap();
     let blocking = tokio::task::spawn_blocking(move || {
-        let run = open_run(&socket, "gh-writeback");
-        let mut channel = run.channel;
+        let mut channel = open_run(&socket, "gh-writeback");
         let _ = send_checkout(&mut channel);
         checkout_done_tx.send(()).unwrap();
         flip_rx.recv().unwrap();
