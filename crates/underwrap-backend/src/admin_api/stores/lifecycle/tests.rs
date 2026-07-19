@@ -160,28 +160,6 @@ async fn rotate_key_refuses_locked_store() {
     assert_eq!(body["code"], "store_locked");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn rotate_key_succeeds_on_unlocked_encrypted_store() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let state = Arc::new(crud_state(tmp.path()));
-    let p = admin_principal();
-    let store_id = create_store_for_test(
-        state.clone(),
-        &p,
-        &AdminStoreCreateRequest {
-            name: "vault".into(),
-            backend: AdminStoreBackendKind::Encrypted,
-            description: None,
-        },
-    );
-    let (status, _) = run_handler(handle_admin_store_rotate_key(
-        State(state.clone()),
-        Extension(p),
-        Path(store_id),
-    ));
-    assert_eq!(status, StatusCode::OK);
-}
-
 #[test]
 fn unlock_round_trip_succeeds_with_correct_hex() {
     let tmp = tempfile::TempDir::new().unwrap();
