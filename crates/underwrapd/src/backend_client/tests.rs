@@ -9,6 +9,56 @@ const TEST_CLIENT_PEM: &str =
 const TEST_CLIENT_KEY: &str =
     include_str!("../../../integration-tests/testdata/pki/client-local.key");
 
+#[derive(Debug, PartialEq, Eq)]
+enum BackendCaPolicyOperation {
+    BuiltInRoots(bool),
+    AddConfiguredRoot,
+}
+
+#[derive(Default)]
+struct RecordingBackendCaPolicyTarget {
+    operations: Vec<BackendCaPolicyOperation>,
+}
+
+impl BackendCaPolicyTarget for RecordingBackendCaPolicyTarget {
+    fn tls_built_in_root_certs(mut self, enabled: bool) -> Self {
+        self.operations
+            .push(BackendCaPolicyOperation::BuiltInRoots(enabled));
+        self
+    }
+
+    fn add_backend_root_certificate(mut self, _certificate: Certificate) -> Self {
+        self.operations
+            .push(BackendCaPolicyOperation::AddConfiguredRoot);
+        self
+    }
+}
+
+#[test]
+fn backend_ca_policy_configured_mode_disables_built_ins() {
+    let certificate = Certificate::from_pem(TEST_CA_PEM.as_bytes()).unwrap();
+    let recorder =
+        apply_backend_ca_policy(RecordingBackendCaPolicyTarget::default(), Some(certificate));
+
+    assert_eq!(
+        recorder.operations,
+        vec![
+            BackendCaPolicyOperation::BuiltInRoots(false),
+            BackendCaPolicyOperation::AddConfiguredRoot,
+        ]
+    );
+}
+
+#[test]
+fn backend_ca_policy_default_mode_keeps_built_ins() {
+    let recorder = apply_backend_ca_policy(RecordingBackendCaPolicyTarget::default(), None);
+
+    assert_eq!(
+        recorder.operations,
+        vec![BackendCaPolicyOperation::BuiltInRoots(true)]
+    );
+}
+
 #[test]
 fn open_fails_immediately_on_bad_credentials() {
     let dir = tempfile::tempdir().unwrap();

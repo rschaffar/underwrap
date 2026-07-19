@@ -546,10 +546,13 @@ The frontend admits only an absolute HTTPS backend URL with a host. The NixOS
 module rejects non-`https://` instance options, daemon startup validates the URL
 before credential reads or wrapper-socket binding, `BackendClient::open` repeats
 the check before file I/O or worker creation, and reqwest is configured
-HTTPS-only so redirects cannot downgrade the runtime channel to plaintext. The
-frontend verifies the backend server certificate with either the configured CA
-bundle or reqwest's bundled WebPKI root set; this URL rule does not change that
-trust-root selection.
+HTTPS-only so redirects cannot downgrade the runtime channel to plaintext. A
+configured CA bundle is the complete server trust set for that runtime client
+instance and excludes bundled public WebPKI roots; when no bundle is configured,
+the frontend uses reqwest's bundled WebPKI roots. Normal certificate hostname
+verification applies in either mode. This server trust selection is separate
+from the client-certificate fingerprint that defines runtime identity, and the
+URL rule does not change either mechanism.
 
 The checked value is the endpoint the daemon dials. Direct backend rustls and
 Layer-4 TLS passthrough preserve the mTLS peer certificate. An HTTPS Layer-7

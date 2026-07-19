@@ -68,12 +68,17 @@ host after issuing the server certificate.
 Install:
 
 - `server.pem` and `server.key` on the backend host;
-- `ca.pem` on each frontend host;
+- `ca.pem` on each frontend host and configure that instance's `backend.caFile`;
 - CA trust in operator browsers or their operating systems.
 
-Runtime client certificates are not signed by this CA. Each frontend generates
-a self-signed leaf, and the backend pins its fingerprint after operator
-enrollment.
+For a private CA, `backend.caFile` is the daemon's complete, exclusive server
+trust bundle; bundled WebPKI roots are not also trusted. For an ordinary
+public-PKI server certificate, omit `backend.caFile` to use reqwest's bundled
+WebPKI roots.
+
+Runtime client certificates are not signed by this server CA. Each frontend
+generates a self-signed leaf, and the backend uses its fingerprint after
+operator enrollment to identify the runtime client instance.
 
 ## Backend host
 
@@ -153,7 +158,8 @@ before client enrollment.
 
 ## Frontend host
 
-Configure the NixOS module with the remote URL and server CA:
+Configure the NixOS module with the remote URL and, for this private-CA
+example, the exclusive server CA bundle:
 
 ```nix
 services.underwrap = {

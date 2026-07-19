@@ -53,7 +53,7 @@ services.underwrap.instances.work = {
 | --- | --- | --- | --- |
 | `allowedUsers` | list of strings | `[]` | Users that receive `<wrapper>` and `debug-<wrapper>` PATH shims; users of an instance literally named `default` also receive an `underwrap` alias |
 | `backend.url` | string | required | Absolute backend endpoint in lowercase `https://` form, with a host; non-root base paths and trailing slashes are preserved |
-| `backend.caFile` | path or string or null | `null` | CA bundle for the backend server certificate; null uses reqwest's bundled WebPKI root set |
+| `backend.caFile` | path or string or null | `null` | Complete CA bundle for backend server verification; when set it replaces bundled WebPKI roots, and null uses reqwest's bundled WebPKI roots |
 | `wrappers` | attribute set | `{}` | Wrapper definitions keyed by the canonical wrapper name |
 
 The NixOS module rejects an instance whose `backend.url` does not start with
@@ -63,6 +63,10 @@ and constructs an HTTPS-only request client. There is no plaintext override,
 including for loopback or a proxy upstream. An HTTPS proxy endpoint is admitted;
 that admission does not add forwarded-certificate or proxy-identity support.
 See [Remote backend](remote-backend.md#https-endpoint-and-proxy-topology).
+When `backend.caFile` is set, that bundle is the runtime client instance's
+exclusive server trust set. Omitting it uses reqwest's bundled WebPKI roots.
+This server trust choice is independent of the runtime client's mTLS
+certificate and fingerprint identity.
 
 `allowedUsers` is convenience configuration, not access control. The underlying
 setgid instance entry point is system-wide, and backend permissions identify the

@@ -6,7 +6,8 @@
 
 backend:
   url: https://backend.example.internal:18443
-  # Optional. Omit for a publicly trusted WebPKI server certificate.
+  # Optional. When set, this is the complete server trust bundle and replaces
+  # bundled WebPKI roots. Omit to use reqwest's bundled WebPKI roots.
   ca_file: /etc/underwrap/ca.pem
   # The NixOS module fixes these paths under the per-instance state directory.
   client_cert_file: /var/lib/underwrap-example/client-example.pem

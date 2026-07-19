@@ -87,10 +87,21 @@ Workspace tests cover:
 
 Some integration tests skip when the host cannot supply the required Linux
 capabilities. The VM test covers the deployed privileged path independently.
-Daemon transport tests pin absolute HTTPS URL admission, base-path preservation,
-and HTTPS-to-HTTP redirect rejection through the production client. The
-`frontend-backend-url-eval` check proves module-level HTTP rejection and exact
-HTTPS URL generation; the VM independently proves a handcrafted plaintext
+Daemon transport tests cover absolute HTTPS URL admission, base-path preservation,
+and HTTPS-to-HTTP redirect rejection through the production client. Applied
+root-policy unit tests record that the production client disables bundled
+WebPKI roots before adding a configured CA, while omission explicitly retains
+the bundled roots. Supplemental loopback probes use two independent private
+server authorities and a wrong-host certificate to prove selected-chain and
+hostname behavior through `BackendClient::open` and register; those probes do
+not require server-side client authentication, and rejection of an arbitrary
+second private CA alone is not evidence that public roots are excluded. The
+separate real-backend integration suite retains mTLS client-certificate,
+fingerprint-principal, registration, resource, policy, and writeback evidence,
+and the NixOS VM exercises representative deployed private-CA traffic.
+
+The `frontend-backend-url-eval` check proves module-level HTTP rejection and
+exact HTTPS URL generation; the VM independently proves a handcrafted plaintext
 configuration fails before credentials, socket readiness, or network traffic.
 
 ## OpenAPI drift

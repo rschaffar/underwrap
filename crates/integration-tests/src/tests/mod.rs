@@ -163,6 +163,7 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
 // ===========================================================================
 
 mod admin_libsecret;
+mod backend_ca;
 mod client_instances;
 mod daemon;
 mod directory_and_status;

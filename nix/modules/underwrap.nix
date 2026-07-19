@@ -375,10 +375,9 @@ let
         type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
         default = null;
         description = ''
-          CA certificate file used to verify the backend service
-          certificate. Leave as `null` when the backend uses a
-          publicly-trusted certificate covered by reqwest's bundled WebPKI
-          root set.
+          Complete CA bundle used to verify the backend service certificate.
+          When set, it replaces reqwest's bundled WebPKI roots for server
+          verification. Leave as `null` to use the bundled WebPKI roots.
         '';
       };
     };

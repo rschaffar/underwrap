@@ -12,6 +12,22 @@ pub(crate) const TEST_CLIENT_TUNNEL_PEM: &str =
     include_str!("../../testdata/pki/client-tunnel.pem");
 pub(crate) const TEST_CLIENT_TUNNEL_KEY: &str =
     include_str!("../../testdata/pki/client-tunnel.key");
+pub(crate) const TEST_CA_SELECTED_EXCLUSIVE_PEM: &str =
+    include_str!("../../testdata/pki/ca-selected-exclusive.pem");
+pub(crate) const TEST_CA_UNSELECTED_PEM: &str =
+    include_str!("../../testdata/pki/ca-unselected.pem");
+pub(crate) const TEST_SERVER_SELECTED_EXCLUSIVE_PEM: &str =
+    include_str!("../../testdata/pki/server-selected-exclusive.pem");
+pub(crate) const TEST_SERVER_SELECTED_EXCLUSIVE_KEY: &str =
+    include_str!("../../testdata/pki/server-selected-exclusive.key");
+pub(crate) const TEST_SERVER_UNSELECTED_CA_PEM: &str =
+    include_str!("../../testdata/pki/server-unselected-ca.pem");
+pub(crate) const TEST_SERVER_UNSELECTED_CA_KEY: &str =
+    include_str!("../../testdata/pki/server-unselected-ca.key");
+pub(crate) const TEST_SERVER_WRONG_HOST_PEM: &str =
+    include_str!("../../testdata/pki/server-wrong-host.pem");
+pub(crate) const TEST_SERVER_WRONG_HOST_KEY: &str =
+    include_str!("../../testdata/pki/server-wrong-host.key");
 
 pub(super) struct TestPkiPaths {
     pub ca_cert: PathBuf,

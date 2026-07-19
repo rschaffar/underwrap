@@ -93,6 +93,33 @@ pub struct BackendClient {
     sender: mpsc::Sender<Command>,
 }
 
+trait BackendCaPolicyTarget: Sized {
+    fn tls_built_in_root_certs(self, enabled: bool) -> Self;
+    fn add_backend_root_certificate(self, certificate: Certificate) -> Self;
+}
+
+impl BackendCaPolicyTarget for reqwest::ClientBuilder {
+    fn tls_built_in_root_certs(self, enabled: bool) -> Self {
+        reqwest::ClientBuilder::tls_built_in_root_certs(self, enabled)
+    }
+
+    fn add_backend_root_certificate(self, certificate: Certificate) -> Self {
+        reqwest::ClientBuilder::add_root_certificate(self, certificate)
+    }
+}
+
+fn apply_backend_ca_policy<T: BackendCaPolicyTarget>(
+    target: T,
+    configured_ca: Option<Certificate>,
+) -> T {
+    match configured_ca {
+        Some(certificate) => target
+            .tls_built_in_root_certs(false)
+            .add_backend_root_certificate(certificate),
+        None => target.tls_built_in_root_certs(true),
+    }
+}
+
 impl BackendClient {
     /// Build the mTLS HTTPS client and spawn the I/O worker thread.
     /// The worker owns its own tokio runtime so synchronous call sites
@@ -129,19 +156,21 @@ impl BackendClient {
         // close_notify`; with it, every call opens a fresh TLS
         // connection and the daemon survives backend restarts without
         // operator intervention.
-        let mut builder = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .use_rustls_tls()
             .https_only(true)
             .pool_max_idle_per_host(0)
             .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?);
-        if let Some(ca_path) = config.ca_file.as_ref() {
+        let configured_ca = if let Some(ca_path) = config.ca_file.as_ref() {
             let ca_pem = fs::read(ca_path)
                 .with_context(|| format!("reading backend ca file {}", ca_path.display()))?;
-            builder = builder.add_root_certificate(
-                Certificate::from_pem(&ca_pem).context("parsing backend CA PEM")?,
-            );
-        }
-        let client = builder.build().context("building backend HTTPS client")?;
+            Some(Certificate::from_pem(&ca_pem).context("parsing backend CA PEM")?)
+        } else {
+            None
+        };
+        let client = apply_backend_ca_policy(builder, configured_ca)
+            .build()
+            .context("building backend HTTPS client")?;
 
         let (tx, rx) = mpsc::channel::<Command>();
         std::thread::spawn(move || {

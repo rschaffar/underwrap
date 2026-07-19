@@ -55,11 +55,11 @@ Operators manage the backend through the admin UI served directly by
   `underwrap-keygen` helper on the target host and registered with the
   backend manually by an admin pasting the cert PEM into the admin UI.
   The backend authenticates connections by SHA-256 fingerprint lookup
-  against the runtime-client registry (no CA chain). The daemon verifies the
-  server certificate against a configured CA bundle or, when none is supplied,
-  reqwest's bundled WebPKI root set. The backend maps each authenticated client
-  instance to one store and only serves that
-  store's view.
+  against the runtime-client registry (no CA chain). Separately, the daemon
+  authenticates the server certificate against its configured CA bundle as the
+  complete server trust set, or against reqwest's bundled WebPKI roots when no
+  bundle is configured. The backend maps each authenticated client instance to
+  one store and only serves that store's view.
 - **operator browser ↔ `underwrap-backend`**: the same HTTPS listener,
   but without a client certificate. Admin routes authenticate via username +
   Argon2id password hash + an opaque `tower-sessions` session cookie (session
