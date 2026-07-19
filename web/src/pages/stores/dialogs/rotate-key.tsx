@@ -45,10 +45,27 @@ export function RotateStoreKeyDialog({
         description={
           <>
             <strong>Heads up:</strong> {revealKey.warning} This is the only time
-            the new key will be shown.
+            the new key will be shown. The retained old ciphertext consumes
+            backend-host disk and remains decryptable with the old key until a
+            trusted host operator removes only the selected generation after
+            replacement-key verification.
           </>
         }
         keyHex={revealKey.keyHex}
+        acknowledgement={
+          <>
+            I understand closing this dialog discards the one-time local
+            display. The backend cannot know whether I received, saved, or
+            independently verified this replacement key.
+          </>
+        }
+        guidance={
+          <>
+            The retained old ciphertext consumes backend-host disk and remains
+            decryptable with the old key. A trusted host operator removes only
+            the selected generation after replacement-key verification.
+          </>
+        }
         onClose={() => {
           setRevealKey(null);
           onClose();
@@ -62,7 +79,7 @@ export function RotateStoreKeyDialog({
       open
       onClose={onClose}
       title={`Rotate master key: ${store.name}`}
-      description="Quiesce wrapper traffic and other admin access to this store first: rotation is serialized only against another rotation, so concurrent reads may fail and concurrent writes may be lost. The operation mints a fresh 32-byte key, re-encrypts the store, and shows the new key once — save it before closing the dialog."
+      description="Quiesce wrapper traffic and other admin access to this store first: rotation is serialized only against another rotation, so concurrent reads may fail and concurrent writes may be lost. The operation mints a fresh 32-byte key, re-encrypts the store, and shows the new key once. Every displaced ciphertext generation remains on the backend host, consumes disk, and stays decryptable with its old key until a trusted host operator removes that selected generation after independently verifying a later key."
     >
       {store.locked ? (
         <Alert variant="warning">
@@ -78,8 +95,9 @@ export function RotateStoreKeyDialog({
           onChange={(e) => setAck(e.target.checked)}
         />
         <span>
-          I understand every resource will be re-encrypted and a new master key
-          will be issued.
+          I understand every resource will be re-encrypted, a new master key
+          will be issued once, and old ciphertext requires separate trusted-host
+          verification and manual cleanup.
         </span>
       </label>
       {submitError ? <Alert>{submitError}</Alert> : null}

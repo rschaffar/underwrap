@@ -1,6 +1,9 @@
 use super::*;
 use std::path::Path;
+use underwrap_backend_store::{EncryptedBackend, StorageBackend};
 use underwrap_protocol::config::StoreRecord;
+
+use crate::test_support::tree_snapshot;
 
 fn plain_record(id: &str, name: &str, dir: &Path) -> StoreRecord {
     StoreRecord {
@@ -11,6 +14,131 @@ fn plain_record(id: &str, name: &str, dir: &Path) -> StoreRecord {
         storage: underwrap_protocol::config::StorageConfig::Plain {
             dir: dir.to_path_buf(),
         },
+    }
+}
+
+fn encrypted_record(id: &str, dir: &Path) -> StoreRecord {
+    StoreRecord {
+        id: id.to_string(),
+        name: "Encrypted".into(),
+        description: None,
+        created_at: None,
+        storage: underwrap_protocol::config::StorageConfig::Encrypted {
+            dir: dir.to_path_buf(),
+        },
+    }
+}
+
+fn create_generation(path: &Path, key: [u8; 32], marker: &[u8], include_canary: bool) {
+    let backend = EncryptedBackend::create_with_key(path, key).unwrap();
+    if include_canary {
+        backend
+            .write(
+                underwrap_backend_store::ENCRYPTED_CANARY_ID,
+                underwrap_backend_store::ENCRYPTED_CANARY_PLAINTEXT,
+            )
+            .unwrap();
+    }
+    backend.write("resource/marker", marker).unwrap();
+}
+
+fn create_private_directory(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir(path).unwrap();
+}
+
+#[test]
+fn startup_preserves_every_process_visible_rotation_shape_without_reconciliation() {
+    struct Shape {
+        name: &'static str,
+        canonical_key: Option<[u8; 32]>,
+        backup: bool,
+        stage: bool,
+    }
+    for shape in [
+        Shape {
+            name: "canonical-old-plus-incomplete-stage",
+            canonical_key: Some([3; 32]),
+            backup: false,
+            stage: true,
+        },
+        Shape {
+            name: "missing-plus-backup-plus-stage",
+            canonical_key: None,
+            backup: true,
+            stage: true,
+        },
+        Shape {
+            name: "canonical-new-plus-backup",
+            canonical_key: Some([9; 32]),
+            backup: true,
+            stage: false,
+        },
+        Shape {
+            name: "missing-plus-backup",
+            canonical_key: None,
+            backup: true,
+            stage: false,
+        },
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let canonical = tmp.path().join("store_e");
+        if let Some(key) = shape.canonical_key {
+            create_generation(&canonical, key, shape.name.as_bytes(), true);
+        }
+        let workspace = tmp
+            .path()
+            .join(".store_e.underwrap-rotation-1111111111111111");
+        create_private_directory(&workspace);
+        if shape.backup {
+            create_generation(&workspace.join("backup"), [3; 32], b"old", true);
+        }
+        if shape.stage {
+            create_generation(&workspace.join("stage"), [9; 32], b"new-incomplete", false);
+        }
+
+        let before = tree_snapshot(tmp.path());
+        let entries = open_initial_stores(HashMap::from([(
+            "store_e".into(),
+            encrypted_record("store_e", &canonical),
+        )]))
+        .unwrap();
+        assert!(matches!(entries["store_e"].state, StoreState::Locked));
+        assert_eq!(
+            tree_snapshot(tmp.path()),
+            before,
+            "shape {} changed",
+            shape.name
+        );
+
+        match shape.canonical_key {
+            Some(key) => {
+                let backend = EncryptedBackend::open_existing_with_key(&canonical, key).unwrap();
+                assert_eq!(
+                    backend.read("resource/marker").unwrap().unwrap().as_ref(),
+                    shape.name.as_bytes()
+                );
+            }
+            None => {
+                assert!(EncryptedBackend::open_existing_with_key(&canonical, [3; 32]).is_err());
+                assert!(
+                    !canonical.exists(),
+                    "shape {} recreated canonical",
+                    shape.name
+                );
+            }
+        }
+        assert_eq!(
+            tree_snapshot(tmp.path()),
+            before,
+            "shape {} changed after open",
+            shape.name
+        );
     }
 }
 

@@ -19,11 +19,15 @@ export function KeyRevealDialog({
   title,
   description,
   keyHex,
+  acknowledgement = "I have saved this key securely.",
+  guidance,
   onClose,
 }: {
   title: string;
   description: ReactNode;
   keyHex: string;
+  acknowledgement?: ReactNode;
+  guidance?: ReactNode;
   onClose: () => void;
 }) {
   const [ack, setAck] = useState(false);
@@ -63,6 +67,9 @@ export function KeyRevealDialog({
         >
           {keyHex}
         </pre>
+        {guidance ? (
+          <div className="text-xs text-(--color-muted)">{guidance}</div>
+        ) : null}
         <div className="flex items-center gap-2">
           <Button type="button" size="sm" variant="ghost" onClick={onCopy}>
             Copy to clipboard
@@ -83,7 +90,7 @@ export function KeyRevealDialog({
             checked={ack}
             onChange={(e) => setAck(e.target.checked)}
           />
-          <span>I have saved this key securely.</span>
+          <span>{acknowledgement}</span>
         </label>
       </div>
       <DialogFooter>

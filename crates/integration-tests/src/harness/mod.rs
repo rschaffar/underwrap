@@ -556,6 +556,27 @@ impl TestDaemon {
         &self.service_url
     }
 
+    pub fn store_data_dir(&self, store_id: &str) -> PathBuf {
+        self.stores_data_root.join(store_id)
+    }
+
+    pub async fn rotate_store_discard_response(&self, store_id: &str) -> Result<()> {
+        let response = self
+            .admin_request(
+                reqwest::Method::POST,
+                &format!("/v1/admin/stores/{store_id}/rotate-key"),
+            )
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        drop(response);
+        Ok(())
+    }
+
     pub async fn create_store(
         &self,
         body: &underwrap_protocol::service::AdminStoreCreateRequest,

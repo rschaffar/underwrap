@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::StorageBackend;
-use crate::path::{
-    atomic_write, cleanup_empty_parents, list_files_recursive, prepare_dir, validated_path,
-};
+use crate::path::{atomic_write, cleanup_empty_parents, list_files_recursive, validated_path};
 use underwrap_protocol::message::SecretBytes;
 
 /// Master key — zeroed from memory on drop.
@@ -28,14 +26,102 @@ pub struct EncryptedBackend {
 }
 
 impl EncryptedBackend {
-    /// Open the backend against `dir` using the in-memory `key`. The
-    /// caller's `key` is moved into the backend and zeroized on drop.
-    pub fn open_with_key(dir: &Path, key: [u8; 32]) -> Result<Self> {
+    /// Create a new encrypted backend directory exclusively. Existing files,
+    /// directories, and symlinks are rejected rather than reused.
+    pub fn create_with_key(dir: &Path, key: [u8; 32]) -> Result<Self> {
+        let key = MasterKey(key);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(dir)
+                .with_context(|| format!("creating encrypted storage dir {}", dir.display()))?;
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir(dir)
+            .with_context(|| format!("creating encrypted storage dir {}", dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(error) =
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            {
+                let _ = std::fs::remove_dir(dir);
+                return Err(error)
+                    .with_context(|| format!("securing encrypted storage dir {}", dir.display()));
+            }
+        }
+
+        match Self::open_existing(dir, key) {
+            Ok(backend) => Ok(backend),
+            Err(error) => {
+                // This call created the directory exclusively and has not
+                // written ciphertext yet, so only that new empty directory is
+                // eligible for cleanup.
+                let _ = std::fs::remove_dir(dir);
+                Err(error)
+            }
+        }
+    }
+
+    /// Open an existing encrypted backend without creating or repairing its
+    /// directory. The fixed-size key is copied into the backend and zeroized on
+    /// drop; callers should wipe their temporary array immediately afterward.
+    pub fn open_existing_with_key(dir: &Path, key: [u8; 32]) -> Result<Self> {
+        Self::open_existing(dir, MasterKey(key))
+    }
+
+    fn open_existing(dir: &Path, key: MasterKey) -> Result<Self> {
+        let metadata = std::fs::symlink_metadata(dir)
+            .with_context(|| format!("inspecting encrypted storage dir {}", dir.display()))?;
+        anyhow::ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "encrypted storage path is not a directory: {}",
+            dir.display(),
+        );
         Ok(Self {
-            dir: prepare_dir(dir)?,
-            key: MasterKey(key),
+            dir: dir.canonicalize().with_context(|| {
+                format!("canonicalizing encrypted storage dir {}", dir.display())
+            })?,
+            key,
         })
     }
+}
+
+fn ensure_private_parent_directories(base: &Path, parent: &Path) -> Result<()> {
+    let relative = parent
+        .strip_prefix(base)
+        .context("encrypted secret parent escaped storage root")?;
+    let mut current = base.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        #[cfg(unix)]
+        let created = {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(&current)
+        };
+        #[cfg(not(unix))]
+        let created = std::fs::create_dir(&current);
+        match created {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = std::fs::symlink_metadata(&current)?;
+                anyhow::ensure!(
+                    metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+                    "encrypted storage parent is not a directory: {}",
+                    current.display(),
+                );
+            }
+            Err(error) => return Err(error.into()),
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
 }
 
 impl StorageBackend for EncryptedBackend {
@@ -53,6 +139,7 @@ impl StorageBackend for EncryptedBackend {
 
     fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
         let path = validated_path(&self.dir, secret_id)?;
+        ensure_private_parent_directories(&self.dir, path.parent().unwrap_or(&self.dir))?;
         let data = encrypt(&self.key.0, material)?;
         atomic_write(&path, &self.dir, secret_id, &data)
     }

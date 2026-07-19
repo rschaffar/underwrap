@@ -1,11 +1,9 @@
 //! Encrypted-store lifecycle: `unlock`, `lock`, `rotate-key`.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path as AxumPath, State};
-use tracing::warn;
 use underwrap_backend_store::StorageBackend;
 use underwrap_protocol::service::{
     AdminOkResponse, AdminStoreLockResponse, AdminStoreRotateKeyResponse, AdminStoreUnlockRequest,
@@ -18,7 +16,9 @@ use crate::admin_api::AdminError;
 use crate::admin_api::csrf::Principal;
 use crate::http::responses::Body;
 use crate::runtime_state::ListenerState;
-use crate::store_registry::{StoreState, save_store_record};
+use crate::store_registry::StoreState;
+
+mod rotation;
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
@@ -27,15 +27,13 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
         .routes(routes!(handle_admin_store_lock))
 }
 
-use super::{create_data_dir_secure, generate_master_key_bytes, master_key_hex};
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 
-/// `POST /v1/admin/stores/{id}/rotate-key` — mint a fresh 32-byte
-/// master key in memory, re-encrypt every resource in the store under
-/// it, atomically swap the data directory, install the new backend in
-/// the registry, and return the new key **exactly once**. Plain stores
-/// reject the operation; locked encrypted stores must be unlocked
-/// first.
+/// `POST /v1/admin/stores/{id}/rotate-key` — mint a fresh in-memory
+/// master key, re-encrypt the complete store, atomically activate it, and
+/// return the key once. Every displaced ciphertext generation remains in a
+/// uniquely named backend-host recovery workspace until trusted manual cleanup.
+/// HTTP delivery and the browser's local acknowledgement do not prove custody.
 #[utoipa::path(
     post,
     path = "/v1/admin/stores/{id}/rotate-key",
@@ -43,10 +41,10 @@ use crate::admin_api::audit::{AuditEntity, log_admin_event};
     security(("session_cookie" = []), ("csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     responses(
-        (status = 200, description = "Key rotated and the replacement key returned once.", body = AdminStoreRotateKeyResponse),
+        (status = 200, description = "Key rotated and returned once; the displaced encrypted generation is retained for backend-host recovery.", body = AdminStoreRotateKeyResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-        (status = 500, description = "Rotation failed mid-flight.", body = ServiceErrorResponse),
+        (status = 500, description = "Rotation failed; rotation_recovery_required means trusted host recovery is required.", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_store_rotate_key(
@@ -54,13 +52,73 @@ pub(crate) async fn handle_admin_store_rotate_key(
     axum::Extension(principal): axum::Extension<Principal>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<AdminStoreRotateKeyResponse>, AdminError> {
-    let (mut updated_record, dir, current_backend, rotate_lock) = {
-        let reg = state.shared.stores.read().unwrap();
-        let entry = reg
-            .entry(&name)
-            .map_err(|_| AdminError::store_not_found())?;
-        let record = entry.record.clone();
-        let dir = match &record.storage {
+    rotate_key_with_hooks(state, principal, name, &rotation::ProductionHooks).await
+}
+
+struct RotationAdmission {
+    rotation_lock: Arc<tokio::sync::Mutex<()>>,
+    canonical: std::path::PathBuf,
+    backend: Arc<dyn StorageBackend>,
+}
+
+fn entry_matches_admission(
+    entry: &crate::store_registry::StoreEntry,
+    admission: &RotationAdmission,
+) -> bool {
+    let same_path = matches!(
+        &entry.record.storage,
+        underwrap_protocol::config::StorageConfig::Encrypted { dir }
+            if dir == &admission.canonical
+    );
+    Arc::ptr_eq(&entry.rotation_lock, &admission.rotation_lock)
+        && same_path
+        && matches!(
+            &entry.state,
+            StoreState::Unlocked(backend) if Arc::ptr_eq(backend, &admission.backend)
+        )
+}
+
+fn audit_rotation_publish_failure(principal: &Principal, store: &str) {
+    log_admin_event(
+        "store.rotate-key",
+        principal,
+        AuditEntity::Store { store },
+        Some("publish-failed"),
+        "failure",
+    );
+}
+
+async fn rotate_key_with_hooks(
+    state: Arc<ListenerState>,
+    principal: Principal,
+    name: String,
+    hooks: &dyn rotation::RotationHooks,
+) -> Result<Json<AdminStoreRotateKeyResponse>, AdminError> {
+    // Resolve only the stable entry-owned mutex before waiting. The same mutex
+    // identity must still own the entry after admission and at publication.
+    let rotation_lock = {
+        let registry = state.shared.stores.read().unwrap();
+        Arc::clone(
+            &registry
+                .entry(&name)
+                .map_err(|_| AdminError::store_not_found())?
+                .rotation_lock,
+        )
+    };
+    hooks.before_rotation_lock();
+    let _rotation_guard = rotation_lock.lock().await;
+
+    let admission = {
+        let registry = state.shared.stores.read().unwrap();
+        let Ok(entry) = registry.entry(&name) else {
+            audit_rotation_publish_failure(&principal, &name);
+            return Err(AdminError::rotation_recovery_required());
+        };
+        if !Arc::ptr_eq(&entry.rotation_lock, &rotation_lock) {
+            audit_rotation_publish_failure(&principal, &name);
+            return Err(AdminError::rotation_recovery_required());
+        }
+        let canonical = match &entry.record.storage {
             underwrap_protocol::config::StorageConfig::Plain { .. } => {
                 return Err(AdminError::conflict(
                     "not_encrypted",
@@ -69,188 +127,61 @@ pub(crate) async fn handle_admin_store_rotate_key(
             }
             underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.to_path_buf(),
         };
-        let rotate_lock = Arc::clone(&entry.rotation_lock);
-        match &entry.state {
-            StoreState::Unlocked(b) => (record, dir, Arc::clone(b), rotate_lock),
+        let backend = match &entry.state {
+            StoreState::Unlocked(backend) => Arc::clone(backend),
             StoreState::Locked => return Err(AdminError::store_locked(&name)),
+        };
+        RotationAdmission {
+            rotation_lock: Arc::clone(&rotation_lock),
+            canonical,
+            backend,
         }
     };
 
-    let _rotate_guard = rotate_lock.lock().await;
-
-    let new_key_bytes = generate_master_key_bytes();
-    let key_hex = master_key_hex(&new_key_bytes);
-
-    // Stage the re-encrypted blobs in a sibling temp directory before the
-    // two-rename replacement. The temp dir is colocated with the data dir so
-    // each rename is atomic on the same filesystem. Ordinary store I/O does
-    // not acquire `rotate_lock`; operators must quiesce it during rotation.
-    let parent = dir
-        .parent()
-        .ok_or_else(|| {
-            AdminError::internal_with_code(
-                "internal",
-                "encrypted store directory has no parent — cannot stage rotation",
-            )
-        })?
-        .to_path_buf();
-    let stage_name = format!(".rotating-{}-{}", name, crate::ids::random_hex_8());
-    let stage_dir = parent.join(&stage_name);
-    if let Err(e) = create_data_dir_secure(&stage_dir) {
-        log_admin_event(
-            "store.rotate-key",
-            &principal,
-            AuditEntity::Store { store: &name },
-            Some("stage-failed"),
-            "failure",
-        );
-        return Err(AdminError::internal_with_code(
-            "rotate_stage_failed",
-            format!(
-                "creating rotation staging dir {}: {e:#}",
-                stage_dir.display()
-            ),
-        ));
-    }
-    let new_backend =
-        match underwrap_backend_store::EncryptedBackend::open_with_key(&stage_dir, new_key_bytes) {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&stage_dir);
-                log_admin_event(
-                    "store.rotate-key",
-                    &principal,
-                    AuditEntity::Store { store: &name },
-                    Some("stage-failed"),
-                    "failure",
-                );
-                return Err(AdminError::internal_with_code(
-                    "rotate_stage_failed",
-                    format!("opening rotation staging backend: {e:#}"),
-                ));
-            }
-        };
-
-    reencrypt_into(
-        &*current_backend,
-        &new_backend,
-        &stage_dir,
-        &principal,
+    let result = rotation::rotate_generation(
         &name,
-    )?;
-
-    // Move the live data dir aside and swap the staged dir in. Both
-    // renames are individually atomic; we attempt to undo the first
-    // if the second fails so the registry's `Arc` never points at a
-    // backend whose directory has vanished.
-    let backup_dir = parent.join(format!("{stage_name}.replaced"));
-    if let Err(e) = std::fs::rename(&dir, &backup_dir) {
-        let _ = std::fs::remove_dir_all(&stage_dir);
-        log_admin_event(
-            "store.rotate-key",
-            &principal,
-            AuditEntity::Store { store: &name },
-            Some("swap-failed"),
-            "failure",
-        );
-        return Err(AdminError::internal_with_code(
-            "rotate_swap_failed",
-            format!(
-                "moving live data dir aside ({} → {}): {e:#}",
-                dir.display(),
-                backup_dir.display(),
-            ),
-        ));
-    }
-    if let Err(e) = std::fs::rename(&stage_dir, &dir) {
-        // Try to roll the first rename back so the live dir keeps
-        // pointing at usable ciphertext.
-        let _ = std::fs::rename(&backup_dir, &dir);
-        let _ = std::fs::remove_dir_all(&stage_dir);
-        log_admin_event(
-            "store.rotate-key",
-            &principal,
-            AuditEntity::Store { store: &name },
-            Some("swap-failed"),
-            "failure",
-        );
-        return Err(AdminError::internal_with_code(
-            "rotate_swap_failed",
-            format!(
-                "promoting staged data dir ({} → {}): {e:#}",
-                stage_dir.display(),
-                dir.display(),
-            ),
-        ));
-    }
-
-    // Open a fresh backend at the post-swap path so the registry
-    // ends up holding an `Arc` whose `dir` field matches the live
-    // directory. (Reusing `new_backend` would carry the staging
-    // path even though we just renamed it.)
-    let rotated_backend: Arc<dyn StorageBackend> = {
-        // Re-derive the in-memory key from the hex we already
-        // computed — that way we don't have to hold on to two
-        // copies of the byte form across the swap.
-        let bytes = match underwrap_backend_store::parse_hex_key(&key_hex) {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&backup_dir);
-                log_admin_event(
-                    "store.rotate-key",
-                    &principal,
-                    AuditEntity::Store { store: &name },
-                    Some("reopen-failed"),
-                    "failure",
-                );
-                return Err(AdminError::internal(
-                    "parsing fresh rotation key back from hex",
-                    e,
-                ));
+        &admission.canonical,
+        admission.backend.as_ref(),
+        hooks,
+    );
+    let rotated = match result {
+        Ok(rotated) => rotated,
+        Err(failure) => {
+            if failure.disposition == rotation::FailureDisposition::Lock {
+                let mut registry = state.shared.stores.write().unwrap();
+                if matches!(
+                    registry.entries.get(&name),
+                    Some(entry) if entry_matches_admission(entry, &admission)
+                ) {
+                    registry.lock(&name);
+                }
             }
-        };
-        match underwrap_backend_store::EncryptedBackend::open_with_key(&dir, bytes) {
-            Ok(b) => Arc::new(b),
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&backup_dir);
-                log_admin_event(
-                    "store.rotate-key",
-                    &principal,
-                    AuditEntity::Store { store: &name },
-                    Some("reopen-failed"),
-                    "failure",
-                );
-                return Err(AdminError::internal_with_code(
-                    "open_store_failed",
-                    format!("opening rotated backend at {}: {e:#}", dir.display()),
-                ));
-            }
+            log_admin_event(
+                "store.rotate-key",
+                &principal,
+                AuditEntity::Store { store: &name },
+                Some(failure.audit_reason),
+                "failure",
+            );
+            return Err(failure.error);
         }
     };
-    // Best-effort cleanup of the old ciphertext directory now that
-    // the swap has succeeded.
-    if let Err(e) = std::fs::remove_dir_all(&backup_dir) {
-        warn!(
-            store = %name,
-            backup_dir = %backup_dir.display(),
-            err = format!("{e:#}"),
-            "rotation succeeded but old data dir could not be removed; left in place for manual cleanup",
-        );
-    }
 
-    updated_record.storage = underwrap_protocol::config::StorageConfig::Encrypted { dir };
-    {
-        let mut reg = state.shared.stores.write().unwrap();
-        if let Some(entry) = reg.entries.get_mut(&name) {
-            entry.state = StoreState::Unlocked(rotated_backend);
-            entry.record = updated_record.clone();
+    hooks.before_publish();
+    let published = {
+        let mut registry = state.shared.stores.write().unwrap();
+        match registry.entries.get_mut(&name) {
+            Some(entry) if entry_matches_admission(entry, &admission) => {
+                entry.state = StoreState::Unlocked(Arc::clone(&rotated.backend));
+                true
+            }
+            _ => false,
         }
-        if let Err(e) = save_store_record(&state.admin().stores_dir, &updated_record) {
-            return Err(AdminError::internal_with_code(
-                "write_store_registry_failed",
-                format!("{e:#}"),
-            ));
-        }
+    };
+    if !published {
+        audit_rotation_publish_failure(&principal, &name);
+        rotated.discard();
+        return Err(AdminError::rotation_recovery_required());
     }
 
     log_admin_event(
@@ -261,85 +192,10 @@ pub(crate) async fn handle_admin_store_rotate_key(
         "success",
     );
     Ok(Json(AdminStoreRotateKeyResponse {
-        key_hex,
-        warning: "every resource in this store has been re-encrypted under the new master key. \
-             the new key is shown only here — record it now in a password manager or other \
-             trusted store. you will need it to unlock this store after the next backend \
-             restart."
+        key_hex: rotated.key_hex,
+        warning: "every resource in this store has been re-encrypted under the new master key. the complete previous ciphertext generation remains on the backend host. it consumes disk and remains decryptable with the old key. record and independently verify this replacement key after restart/unlock and representative reads, then have a trusted host operator remove only the selected obsolete recovery generation. this browser acknowledgement is local only; the backend cannot know that the key reached external custody."
             .to_string(),
     }))
-}
-
-/// Copy every key — resource blobs and control-plane documents — from
-/// `from` to `to`, transparently decrypting under the old key and
-/// re-encrypting under the new one. The canary is the one key skipped
-/// in the loop because it is written fresh up front (see below). On any
-/// failure the staged data directory is removed
-/// and a structured `AdminError` is returned for the rotate handler
-/// to surface to the operator.
-fn reencrypt_into(
-    from: &dyn StorageBackend,
-    to: &dyn StorageBackend,
-    stage_dir: &Path,
-    principal: &Principal,
-    store_name: &str,
-) -> Result<(), AdminError> {
-    let bail = |reason: &'static str, code: &str, message: String| -> AdminError {
-        let _ = std::fs::remove_dir_all(stage_dir);
-        log_admin_event(
-            "store.rotate-key",
-            principal,
-            AuditEntity::Store { store: store_name },
-            Some(reason),
-            "failure",
-        );
-        AdminError::internal_with_code(code.to_string(), message)
-    };
-    let ids = from.list("").map_err(|e| {
-        bail(
-            "list-failed",
-            "rotate_list_failed",
-            format!("listing existing resources for rotation: {e:#}"),
-        )
-    })?;
-    // Make sure the canary is always present in the new backend even
-    // if the source store somehow lost it (e.g. operator deleted it
-    // by hand). Write it once up front; the loop below will skip its
-    // own re-write so we don't fight ourselves over the canary id.
-    to.write(
-        underwrap_backend_store::ENCRYPTED_CANARY_ID,
-        underwrap_backend_store::ENCRYPTED_CANARY_PLAINTEXT,
-    )
-    .map_err(|e| {
-        bail(
-            "canary-write-failed",
-            "rotate_canary_failed",
-            format!("writing canary in staged data dir: {e:#}"),
-        )
-    })?;
-    for id in ids {
-        if id == underwrap_backend_store::ENCRYPTED_CANARY_ID {
-            continue;
-        }
-        let material = match from.read(&id).map_err(|e| {
-            bail(
-                "read-failed",
-                "rotate_read_failed",
-                format!("reading '{id}' for rotation: {e:#}"),
-            )
-        })? {
-            Some(m) => m,
-            None => continue, // raced — gone
-        };
-        to.write(&id, material.as_ref()).map_err(|e| {
-            bail(
-                "write-failed",
-                "rotate_write_failed",
-                format!("writing '{id}' to staged data dir: {e:#}"),
-            )
-        })?;
-    }
-    Ok(())
 }
 
 /// `POST /v1/admin/stores/{id}/unlock` — accept a 64-character hex
@@ -360,6 +216,7 @@ fn reencrypt_into(
         (status = 200, description = "Store unlocked.", body = AdminOkResponse),
         (status = 400, description = "Wrong key / passphrase.", body = ServiceErrorResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 500, description = "Canonical encrypted generation is missing; trusted-host recovery is required.", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_store_unlock(
@@ -393,7 +250,7 @@ pub(crate) async fn handle_admin_store_unlock(
         }
         dir
     };
-    let key_bytes = match underwrap_backend_store::parse_hex_key(&body.key_hex) {
+    let mut key_bytes = match underwrap_backend_store::parse_hex_key(&body.key_hex) {
         Ok(k) => k,
         Err(e) => {
             log_admin_event(
@@ -409,9 +266,26 @@ pub(crate) async fn handle_admin_store_unlock(
             ));
         }
     };
-    let backend = match underwrap_backend_store::EncryptedBackend::open_with_key(&dir, key_bytes) {
-        Ok(b) => b,
-        Err(e) => {
+    if matches!(
+        std::fs::symlink_metadata(&dir),
+        Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+    ) {
+        key_bytes.fill(0);
+        log_admin_event(
+            "store.unlock",
+            &principal,
+            AuditEntity::Store { store: &name },
+            Some("recovery-required"),
+            "failure",
+        );
+        return Err(AdminError::rotation_recovery_required());
+    }
+    let backend_result =
+        underwrap_backend_store::EncryptedBackend::open_existing_with_key(&dir, key_bytes);
+    key_bytes.fill(0);
+    let backend = match backend_result {
+        Ok(backend) => backend,
+        Err(_) => {
             log_admin_event(
                 "store.unlock",
                 &principal,
@@ -421,7 +295,7 @@ pub(crate) async fn handle_admin_store_unlock(
             );
             return Err(AdminError::internal_with_code(
                 "open_store_failed",
-                format!("opening encrypted store at {}: {e:#}", dir.display()),
+                "opening the existing encrypted store failed",
             ));
         }
     };
@@ -533,5 +407,11 @@ pub(crate) async fn handle_admin_store_lock(
     }))
 }
 
+#[cfg(test)]
+#[path = "lifecycle/audit_tests.rs"]
+mod audit_tests;
+#[cfg(test)]
+#[path = "lifecycle/concurrency_tests.rs"]
+mod concurrency_tests;
 #[cfg(test)]
 mod tests;

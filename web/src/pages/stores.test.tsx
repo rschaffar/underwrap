@@ -294,6 +294,10 @@ describe("StoresPage", () => {
     const dialog = await screen.findByRole("dialog", {
       name: /rotate master key/i,
     });
+    expect(dialog).toHaveTextContent(/displaced ciphertext generation remains on the backend host/i);
+    expect(dialog).toHaveTextContent(/consumes disk/i);
+    expect(dialog).toHaveTextContent(/decryptable with its old key/i);
+    expect(dialog).toHaveTextContent(/manual cleanup/i);
     await user.click(within(dialog).getByRole("checkbox"));
     await user.click(
       within(dialog).getByRole("button", { name: /^rotate key$/i }),
@@ -303,6 +307,13 @@ describe("StoresPage", () => {
     expect(within(reveal).getByTestId("key-reveal-value")).toHaveTextContent(
       "b".repeat(64),
     );
+    expect(reveal).toHaveTextContent(/retained old ciphertext consumes backend-host disk/i);
+    expect(reveal).toHaveTextContent(/remains decryptable with the old key/i);
+    expect(reveal).toHaveTextContent(/closing this dialog discards the one-time local display/i);
+    expect(reveal).toHaveTextContent(
+      /backend cannot know whether I received, saved, or independently verified/i,
+    );
+    expect(reveal).not.toHaveTextContent(/I have saved and independently verified/i);
     expect(screen.getByTestId("key-reveal-confirm")).toBeDisabled();
   });
 

@@ -286,7 +286,11 @@ Stores use either:
 
 Encrypted stores start locked after a backend restart. An operator supplies the
 key through the admin UI/API; a canary verifies it before the backend installs
-the unlocked store.
+the unlocked store. Key rotation stages and verifies a complete fresh
+generation, activates it, and retains every displaced ciphertext generation in
+a unique backend-host sibling workspace. Startup does not select or reconcile
+those workspaces; trusted offline recovery and selective cleanup follow the
+[backend procedure](backend.md#retained-rotation-generations).
 
 ## NixOS module responsibilities
 

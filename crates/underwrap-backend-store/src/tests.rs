@@ -20,7 +20,8 @@ fn open_refuses_encrypted_config() {
     match result {
         Ok(_) => panic!("encrypted configs must be refused by the generic dispatcher"),
         Err(err) => assert!(
-            err.to_string().contains("EncryptedBackend::open_with_key"),
+            err.to_string()
+                .contains("EncryptedBackend::open_existing_with_key"),
             "unexpected error: {err}",
         ),
     }

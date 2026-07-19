@@ -176,9 +176,11 @@ pub(crate) fn resolve_store_dir(
     Ok(root.join(store_id))
 }
 
-/// Generate 32 fresh random bytes via the OS RNG. The bytes are
-/// caller-owned and should be moved into either the [`EncryptedBackend`]
-/// (which zeroizes on drop) or the JSON response buffer — never both.
+/// Generate 32 fresh random bytes via the OS RNG. Constructors copy the
+/// fixed-size array into an [`EncryptedBackend`], which zeroizes its copy on
+/// drop; callers wipe their temporary binary copy immediately afterward. The
+/// deliberately retained lowercase-hex response remains live only until its
+/// one-time JSON response is returned or discarded.
 pub(super) fn generate_master_key_bytes() -> [u8; 32] {
     use rand::RngCore;
     let mut bytes = [0u8; 32];

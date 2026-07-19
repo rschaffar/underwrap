@@ -74,7 +74,7 @@ pub trait StorageBackend: Send + Sync {
 ///
 /// Encrypted stores need a 32-byte master key supplied by the caller
 /// (held only in process memory) and must therefore be opened
-/// explicitly via [`EncryptedBackend::open_with_key`]. The dispatcher
+/// explicitly via [`EncryptedBackend::open_existing_with_key`]. The dispatcher
 /// here returns an explanatory error if asked to open an encrypted
 /// store so a forgotten code path fails loudly instead of silently
 /// constructing an unusable backend.
@@ -84,7 +84,7 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
         StorageConfig::Encrypted { .. } => {
             anyhow::bail!(
                 "encrypted stores must be opened with an in-memory master key via \
-                 EncryptedBackend::open_with_key — they cannot be opened by this generic dispatcher",
+                 EncryptedBackend::open_existing_with_key — they cannot be opened by this generic dispatcher",
             )
         }
     }
@@ -93,7 +93,7 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
 /// Parse exactly 64 hex characters into a 32-byte master key. Leading
 /// or trailing whitespace is trimmed. Used by the admin unlock and
 /// rotate-key flows to convert an operator-supplied hex string into
-/// the byte form consumed by [`EncryptedBackend::open_with_key`].
+/// the byte form consumed by [`EncryptedBackend::open_existing_with_key`].
 pub fn parse_hex_key(s: &str) -> Result<[u8; 32]> {
     let trimmed = s.trim();
     anyhow::ensure!(

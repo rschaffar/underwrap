@@ -109,6 +109,14 @@ impl AdminError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
     }
 
+    pub(crate) fn rotation_recovery_required() -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rotation_recovery_required",
+            "the canonical encrypted generation is unavailable; stop the backend and restore a retained generation using the documented trusted-host recovery procedure",
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn status(&self) -> StatusCode {
         self.status

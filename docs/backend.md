@@ -364,17 +364,83 @@ libsecret collection, `{iid}` a libsecret item.
 - `POST   /v1/admin/stores/{id}/unlock` — body `{key_hex}`; decrypts the
   canary to verify the key, then installs the `Unlocked` backend.
   Failure cases: `400 invalid_key_hex`, `400 store_not_encrypted`,
-  `403 key_mismatch`, `409 already_unlocked`.
+  `403 key_mismatch`, `409 already_unlocked`, and
+  `500 rotation_recovery_required` when the canonical encrypted generation is
+  missing and the trusted-host retained-generation procedure is required.
 - `POST   /v1/admin/stores/{id}/lock` — drop the in-memory backend so
   subsequent runtime requests fail `store_locked`. Idempotent.
-- `POST   /v1/admin/stores/{id}/rotate-key` — stage a copy re-encrypted under
-  a fresh master key, move the live directory aside, promote the staged
-  directory, and return the new `key_hex` **exactly once**. Each filesystem
-  rename is atomic, but the two-rename swap is not one atomic operation. The
-  per-store mutex serializes rotation requests only; ordinary reads and writes
-  do not acquire it. Quiesce wrapper traffic and admin mutations for the store
-  before rotating. `503 store_locked` if locked, `409 not_encrypted` on plain
-  stores.
+- `POST   /v1/admin/stores/{id}/rotate-key` — stage and verify a complete copy
+  under a fresh master key, move the live directory into a unique recovery
+  workspace, promote the staged directory, and return the new `key_hex`
+  **exactly once**. The displaced ciphertext is never automatically deleted.
+  Each filesystem rename is atomic, but the multi-rename operation is not a
+  transaction. The per-store mutex serializes rotations only; ordinary reads
+  and writes do not acquire it. Quiesce wrapper traffic and admin mutations for
+  the store before rotating. `503 store_locked` if locked, `409 not_encrypted`
+  on plain stores, and `500 rotation_recovery_required` when the canonical
+  generation cannot be restored safely.
+
+#### Retained rotation generations
+
+For canonical store directory `<parent>/<store-id>`, rotation exclusively
+creates a mode-`0700` workspace named:
+
+```text
+<parent>/.<store-id>.underwrap-rotation-<16-lowercase-hex-id>/
+```
+
+Before the swap it contains `stage/`. After success it contains `backup/`, the
+complete pre-rotation generation, while the fresh generation occupies the
+canonical path. Later rotations create new workspaces and never discover,
+overwrite, modify, or delete earlier ones. A failed rotation whose rollback
+succeeds restores the previous canonical generation and leaves the complete
+unpublished new generation at `stage/`; it is never selected automatically and
+requires explicit trusted-host cleanup. A failed rollback can leave both
+`backup/` and `stage/`, or `backup/` plus a canonical promoted generation.
+Startup does not enumerate or reconcile these paths. Store deletion likewise
+does not remove retained sibling workspaces.
+
+The backend cannot know whether an HTTP response reached the operator or whether
+the replacement key entered external custody. Retention is therefore unbounded:
+it consumes disk and every retained snapshot remains decryptable with its old
+key until a trusted host operator deliberately removes it.
+
+To recover one generation, use backend-host authority while all store access is
+quiesced and the backend is stopped:
+
+1. Enumerate only workspaces matching the exact store id and naming rule. Select
+   a workspace whose `backup/` corresponds to a key already held externally.
+2. Choose a fresh sibling name for the current canonical directory. Treat a
+   dangling symlink as occupied: require both `test ! -e PATH` and
+   `test ! -L PATH` for every destination. Verify the selected `backup/` is a
+   directory. The canonical path may already be absent after an interrupted
+   rename; do not create it or require a live generation to exist.
+3. Refuse a canonical symlink, including a dangling one. If the canonical path
+   exists, require it to be a directory and preserve it at the fresh sibling
+   with a checked, non-overwriting, no-target-directory move such as
+   `mv --no-clobber --no-target-directory SOURCE DESTINATION`; then assert the
+   source is absent and destination is present. If canonical was already absent,
+   leave it absent. Promote the selected `backup/` with the same checked
+   move, after rechecking that canonical is neither present nor a dangling
+   symlink; assert `backup/` is absent and canonical is a directory afterward.
+   Never delete or overwrite a path to make room.
+4. Start the backend. It leaves the encrypted store locked. Unlock with the
+   selected generation's key and verify the canary plus representative resource
+   and control-document reads through normal APIs.
+5. If verification fails, stop again and preserve every path before restoring or
+   trying another generation. There is no automatic selection or promotion.
+
+Cleanup is a separate trusted decision. First verify a later active key through
+lock or restart, unlock, canary, and representative resource/control reads.
+Stop the backend, re-enumerate exact paths, and remove only the explicitly
+selected obsolete workspace or preserved generation. Confirm that the canonical
+path and all other retained workspaces are unchanged before restarting. Do not
+infer safe cleanup from HTTP 200 or the browser checkbox.
+
+These steps provide process-visible recovery across returned I/O errors,
+interruption states, restart, and response loss. They do not provide CAS,
+coordinate ordinary writes, guarantee response delivery, or promise fsync/power-
+loss durability.
 
 ### Resources
 

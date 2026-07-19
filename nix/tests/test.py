@@ -1,11 +1,15 @@
 """underwrap VM test — local + remote instances on one machine."""
 
 import base64
+import contextlib
 import json
+import os
 import re
 import shlex
+import tempfile
 import time
 import urllib.parse
+import uuid
 
 
 def _seg(value):
@@ -19,7 +23,6 @@ def su(cmd):
     return f"su testuser -s /bin/sh -c '{cmd}'"
 
 # Spoof script path is passed as an env var by the Nix test driver.
-import os
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PEER_PROBE_SCRIPT = os.environ.get("PEER_PROBE_SCRIPT", "/dev/null")
 DIRECT_NS_ATTACK_SCRIPT = os.environ.get("DIRECT_NS_ATTACK_SCRIPT", "/dev/null")
@@ -155,6 +158,23 @@ def login_admin_session(url):
     _CSRF_TOKEN[url] = csrf
 
 
+@contextlib.contextmanager
+def _admin_json_body(payload):
+    """Copy one JSON body through a mode-0600 file so secret-bearing
+    request data never appears in the guest process argv or shell command."""
+    guest_path = f"/run/underwrap-admin-body-{uuid.uuid4().hex}"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as body:
+        json.dump(payload, body, separators=(",", ":"))
+        host_path = body.name
+    try:
+        machine.copy_from_host(host_path, guest_path)
+        machine.succeed(f"chmod 0600 {shlex.quote(guest_path)}")
+        yield guest_path
+    finally:
+        machine.succeed(f"rm -f {shlex.quote(guest_path)}")
+        os.unlink(host_path)
+
+
 def admin_api(url, path, payload=None, method="POST"):
     """Make an authenticated admin API call. Uses the session cookies
     populated by `login_admin_session` for the listener at `url`
@@ -179,11 +199,17 @@ def admin_api(url, path, payload=None, method="POST"):
     ]
     if is_state_changing:
         cmd += ["-H", f"X-CSRF-Token: {csrf}"]
-    if payload is not None:
-        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(payload)]
-    cmd += [f"{url}{path}"]
-    quoted = " ".join(shlex.quote(part) for part in cmd)
-    out = machine.succeed(quoted)
+    if payload is None:
+        cmd += [f"{url}{path}"]
+        out = machine.succeed(" ".join(shlex.quote(part) for part in cmd))
+    else:
+        with _admin_json_body(payload) as body_path:
+            cmd += [
+                "-H", "Content-Type: application/json",
+                "--data-binary", f"@{body_path}",
+                f"{url}{path}",
+            ]
+            out = machine.succeed(" ".join(shlex.quote(part) for part in cmd))
     return json.loads(out) if out.strip() else None
 
 
@@ -2594,11 +2620,20 @@ def encrypted_store_in_memory_keys():
     assert stray == "", f"unexpected on-disk .key files: {stray}"
 
     # ---- 2. seed a known plaintext and verify round-trip ----------
-    # Admin secret writes/reads route through the resource blob shim
-    # without requiring a pre-existing resource record, so we can
-    # exercise the store's encryption without first wiring up
-    # resources / pairs / grants.
-    resource_id = "vault/greeting"
+    # Seed both the control/resources document and a resource blob so the
+    # later offline recovery drill verifies representative control and secret
+    # data through normal APIs.
+    resource_resp = admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/resources",
+        {"name": "vault/greeting"},
+    )
+    resource_id = resource_resp["resource"]["id"]
+    resources_before = admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/resources",
+        method="GET",
+    )
     slot_payload = base64.b64encode(b"hello-locked").decode()
     secret_path = (
         f"/v1/admin/stores/{store_id}/secrets/{_seg(resource_id)}/env/GREETING"
@@ -2684,6 +2719,36 @@ def encrypted_store_in_memory_keys():
     assert read_secret()["material_b64"] == slot_payload, (
         "round-trip after rotate-key failed"
     )
+    canonical = f"/var/lib/underwrap-backend-local/data-root/{store_id}"
+    workspace_prefix = f".{store_id}.underwrap-rotation-"
+
+    def encrypted_tree_snapshot(path):
+        """Exact path/type/mode/raw-byte snapshot for one encrypted tree."""
+        script = f"""set -euo pipefail
+root={shlex.quote(path)}
+find -P "$root" -printf '%P\\t%y\\t%m\\n' | LC_ALL=C sort
+while IFS= read -r -d '' file; do
+  rel="${{file#"$root"/}}"
+  printf 'raw\\t%s\\t' "$rel"
+  base64 -w0 -- "$file"
+  printf '\\n'
+done < <(find -P "$root" -type f -print0 | LC_ALL=C sort -z)
+"""
+        return machine.succeed("bash -c " + shlex.quote(script))
+
+    def assert_encrypted_tree_modes(path):
+        bad = machine.succeed(
+            f"find -P {shlex.quote(path)} "
+            "\\( -type d ! -perm 0700 -o -type f ! -perm 0600 -o -type l \\) -print"
+        ).strip()
+        assert bad == "", f"unexpected encrypted tree type/mode under {path}: {bad}"
+    first_workspaces = machine.succeed(
+        f"find {shlex.quote(os.path.dirname(canonical))} -mindepth 1 -maxdepth 1 "
+        f"-type d -name {shlex.quote(workspace_prefix + '*')} -print"
+    ).splitlines()
+    assert len(first_workspaces) == 1, first_workspaces
+    original_workspace = first_workspaces[0]
+    assert_encrypted_tree_modes(original_workspace)
 
     # ---- 7. restart → locked, old key refused, new key unlocks ----
     machine.succeed("systemctl restart underwrap-backend-local")
@@ -2722,14 +2787,165 @@ def encrypted_store_in_memory_keys():
     )
     assert locked_after_lock["code"] == "store_locked"
 
-    # Restore for any later tests / leave the store unlocked at the end.
+    # Restore, then rotate a second time. The first recovery generation must
+    # remain byte-for-byte present while another unique generation is retained.
     admin_api(
         ADMIN_LOCAL,
         f"/v1/admin/stores/{store_id}/unlock",
         {"key_hex": key_hex_rotated},
     )
+    original_snapshot = encrypted_tree_snapshot(original_workspace)
+    second_rotate = admin_api(
+        ADMIN_LOCAL, f"/v1/admin/stores/{store_id}/rotate-key", {}
+    )
+    key_hex_latest = second_rotate["key_hex"]
+    assert key_hex_latest not in (key_hex_original, key_hex_rotated)
+    assert encrypted_tree_snapshot(original_workspace) == original_snapshot
+    all_workspaces = machine.succeed(
+        f"find {shlex.quote(os.path.dirname(canonical))} -mindepth 1 -maxdepth 1 "
+        f"-type d -name {shlex.quote(workspace_prefix + '*')} -print"
+    ).splitlines()
+    assert len(all_workspaces) == 2, all_workspaces
+    rotated_workspace = next(path for path in all_workspaces if path != original_workspace)
+    other_snapshot = encrypted_tree_snapshot(rotated_workspace)
+    assert_encrypted_tree_modes(original_workspace)
+    assert_encrypted_tree_modes(rotated_workspace)
+    assert_encrypted_tree_modes(canonical)
+    latest_snapshot = encrypted_tree_snapshot(canonical)
 
-    machine.log("PASS: encrypted store keeps master keys in memory only")
+    # Independently verify the latest key through restart, unlock, canary, a
+    # representative resource read, and the control/resources document.
+    machine.succeed("systemctl restart underwrap-backend-local")
+    machine.wait_for_unit("underwrap-backend-local.service")
+    machine.wait_until_succeeds(
+        f"curl -fsS --cacert {CA_CERT} "
+        f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
+    )
+    login_admin_session(ADMIN_LOCAL)
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_latest},
+    )
+    assert read_secret()["material_b64"] == slot_payload
+    assert admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/resources",
+        method="GET",
+    ) == resources_before
+
+    # Trusted-host recovery: stop/quiesce the backend, preserve the current
+    # live generation without overwriting, and promote the selected original
+    # backup. Startup does not reconcile anything; the old externally held key
+    # unlocks the promoted snapshot.
+    preserved_live = f"{canonical}.recovery-preserved-{uuid.uuid4().hex[:16]}"
+    machine.succeed("systemctl stop underwrap-backend-local")
+    machine.succeed(
+        f"test ! -e {shlex.quote(preserved_live)} && test ! -L {shlex.quote(preserved_live)}; "
+        f"test ! -L {shlex.quote(canonical)}; "
+        f"if test -e {shlex.quote(canonical)}; then "
+        f"  test -d {shlex.quote(canonical)}; "
+        f"  mv --no-clobber --no-target-directory -- {shlex.quote(canonical)} {shlex.quote(preserved_live)}; "
+        f"  test ! -e {shlex.quote(canonical)} && test ! -L {shlex.quote(canonical)}; "
+        f"  test -d {shlex.quote(preserved_live)} && test ! -L {shlex.quote(preserved_live)}; "
+        "else "
+        f"  test ! -L {shlex.quote(canonical)}; "
+        "fi; "
+        f"test -d {shlex.quote(original_workspace + '/backup')} && test ! -L {shlex.quote(original_workspace + '/backup')}; "
+        f"test ! -e {shlex.quote(canonical)} && test ! -L {shlex.quote(canonical)}; "
+        f"mv --no-clobber --no-target-directory -- {shlex.quote(original_workspace + '/backup')} {shlex.quote(canonical)}; "
+        f"test ! -e {shlex.quote(original_workspace + '/backup')} && test ! -L {shlex.quote(original_workspace + '/backup')}; "
+        f"test -d {shlex.quote(canonical)} && test ! -L {shlex.quote(canonical)}"
+    )
+    machine.succeed("systemctl start underwrap-backend-local")
+    machine.wait_for_unit("underwrap-backend-local.service")
+    machine.wait_until_succeeds(
+        f"curl -fsS --cacert {CA_CERT} "
+        f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
+    )
+    login_admin_session(ADMIN_LOCAL)
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_original},
+    )
+    assert read_secret()["material_b64"] == slot_payload
+    assert admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/resources",
+        method="GET",
+    ) == resources_before
+
+    # Restore the verified latest live generation non-destructively, verify it
+    # again after restart/unlock, then remove only the selected old workspace.
+    machine.succeed("systemctl stop underwrap-backend-local")
+    machine.succeed(
+        f"test ! -e {shlex.quote(original_workspace + '/backup')} && test ! -L {shlex.quote(original_workspace + '/backup')}; "
+        f"mv --no-clobber --no-target-directory -- {shlex.quote(canonical)} {shlex.quote(original_workspace + '/backup')}; "
+        f"test ! -e {shlex.quote(canonical)} && test ! -L {shlex.quote(canonical)}; "
+        f"test -d {shlex.quote(original_workspace + '/backup')} && test ! -L {shlex.quote(original_workspace + '/backup')}; "
+        f"test -d {shlex.quote(preserved_live)} && test ! -L {shlex.quote(preserved_live)}; "
+        f"mv --no-clobber --no-target-directory -- {shlex.quote(preserved_live)} {shlex.quote(canonical)}; "
+        f"test ! -e {shlex.quote(preserved_live)} && test ! -L {shlex.quote(preserved_live)}; "
+        f"test -d {shlex.quote(canonical)} && test ! -L {shlex.quote(canonical)}"
+    )
+    machine.succeed("systemctl start underwrap-backend-local")
+    machine.wait_for_unit("underwrap-backend-local.service")
+    machine.wait_until_succeeds(
+        f"curl -fsS --cacert {CA_CERT} "
+        f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
+    )
+    login_admin_session(ADMIN_LOCAL)
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_latest},
+    )
+    assert read_secret()["material_b64"] == slot_payload
+    assert admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/resources",
+        method="GET",
+    ) == resources_before
+
+    canonical_snapshot = encrypted_tree_snapshot(canonical)
+    assert canonical_snapshot == latest_snapshot
+    assert encrypted_tree_snapshot(rotated_workspace) == other_snapshot
+    assert_encrypted_tree_modes(canonical)
+    assert_encrypted_tree_modes(rotated_workspace)
+    machine.succeed("systemctl stop underwrap-backend-local")
+    machine.succeed(f"rm -rf -- {shlex.quote(original_workspace)}")
+    assert not machine.succeed(
+        f"test -e {shlex.quote(original_workspace)} && echo present || true"
+    ).strip()
+    assert encrypted_tree_snapshot(canonical) == canonical_snapshot
+    assert encrypted_tree_snapshot(rotated_workspace) == other_snapshot
+    assert_encrypted_tree_modes(canonical)
+    assert_encrypted_tree_modes(rotated_workspace)
+    machine.succeed("systemctl start underwrap-backend-local")
+    machine.wait_for_unit("underwrap-backend-local.service")
+    machine.wait_until_succeeds(
+        f"curl -fsS --cacert {CA_CERT} "
+        f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
+    )
+    login_admin_session(ADMIN_LOCAL)
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/{store_id}/unlock",
+        {"key_hex": key_hex_latest},
+    )
+    assert read_secret()["material_b64"] == slot_payload
+
+    journal = machine.succeed("journalctl -u underwrap-backend-local --no-pager")
+    for forbidden in (key_hex_original, key_hex_rotated, key_hex_latest, "hello-locked"):
+        assert forbidden not in journal
+    stray = machine.succeed(
+        "find /var/lib/underwrap-backend-local /run/underwrap-backend-local "
+        "-name '*.key' 2>/dev/null || true"
+    ).strip()
+    assert stray == "", f"unexpected on-disk .key files: {stray}"
+
+    machine.log("PASS: encrypted store retains recoverable generations and keeps master keys in memory only")
 
 
 def admin_api_expect_status(url, path, payload, *, status, method="POST"):
@@ -2752,11 +2968,17 @@ def admin_api_expect_status(url, path, payload, *, status, method="POST"):
     ]
     if is_state_changing:
         cmd += ["-H", f"X-CSRF-Token: {csrf}"]
-    if payload is not None:
-        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(payload)]
-    cmd += [f"{url}{path}"]
-    quoted = " ".join(shlex.quote(part) for part in cmd)
-    code = machine.succeed(quoted).strip()
+    if payload is None:
+        cmd += [f"{url}{path}"]
+        code = machine.succeed(" ".join(shlex.quote(part) for part in cmd)).strip()
+    else:
+        with _admin_json_body(payload) as body_path:
+            cmd += [
+                "-H", "Content-Type: application/json",
+                "--data-binary", f"@{body_path}",
+                f"{url}{path}",
+            ]
+            code = machine.succeed(" ".join(shlex.quote(part) for part in cmd)).strip()
     assert code == str(status), (
         f"expected HTTP {status} from {path}, got {code}"
     )

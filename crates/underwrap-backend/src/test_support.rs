@@ -6,6 +6,10 @@
 //! per-module tests file with one `use crate::test_support::*;`
 //! import.
 
+mod fs_snapshot;
+
+pub(crate) use fs_snapshot::{TreeEntry, assert_secure_encrypted_tree, tree_snapshot};
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

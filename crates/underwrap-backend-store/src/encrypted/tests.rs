@@ -3,8 +3,71 @@ use super::*;
 fn test_backend() -> (tempfile::TempDir, EncryptedBackend) {
     let dir = tempfile::TempDir::new().unwrap();
     let key: [u8; 32] = rand::random();
-    let backend = EncryptedBackend::open_with_key(&dir.path().join("secrets"), key).unwrap();
+    let backend = EncryptedBackend::create_with_key(&dir.path().join("secrets"), key).unwrap();
     (dir, backend)
+}
+
+#[test]
+fn create_is_exclusive_and_open_existing_never_creates() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("store");
+    let backend = EncryptedBackend::create_with_key(&path, [7; 32]).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    assert!(EncryptedBackend::create_with_key(&path, [8; 32]).is_err());
+    drop(backend);
+    assert!(EncryptedBackend::open_existing_with_key(&path, [7; 32]).is_ok());
+
+    let missing = tmp.path().join("missing");
+    assert!(EncryptedBackend::open_existing_with_key(&missing, [7; 32]).is_err());
+    assert!(!missing.exists());
+
+    let file = tmp.path().join("file");
+    std::fs::write(&file, b"untouched").unwrap();
+    assert!(EncryptedBackend::create_with_key(&file, [7; 32]).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"untouched");
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&path, tmp.path().join("link")).unwrap();
+        assert!(
+            EncryptedBackend::open_existing_with_key(&tmp.path().join("link"), [7; 32]).is_err()
+        );
+    }
+}
+
+#[test]
+fn nested_directories_and_ciphertext_files_are_private() {
+    let (dir, backend) = test_backend();
+    backend.write("resource/nested/value", b"private").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [
+            dir.path().join("secrets"),
+            dir.path().join("secrets/resource"),
+            dir.path().join("secrets/resource/nested"),
+        ] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        assert_eq!(
+            std::fs::metadata(dir.path().join("secrets/resource/nested/value"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
 }
 
 #[test]
@@ -48,7 +111,8 @@ fn wrong_key_fails() {
     b.write("tok", b"secret").unwrap();
 
     let other_key: [u8; 32] = rand::random();
-    let b2 = EncryptedBackend::open_with_key(&dir.path().join("secrets"), other_key).unwrap();
+    let b2 =
+        EncryptedBackend::open_existing_with_key(&dir.path().join("secrets"), other_key).unwrap();
     assert!(b2.read("tok").is_err());
 }
 

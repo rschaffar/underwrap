@@ -153,11 +153,12 @@ pub struct AdminStoreCreateResponse {
 }
 
 /// Response from `POST /v1/admin/stores/{name}/rotate-key`. The new
-/// key is returned exactly once. Every resource in the store has
-/// been transparently re-encrypted under the new key before the
-/// response is sent; `warning` carries a one-line reminder that the
-/// operator is solely responsible for saving the new value (the
-/// backend does not store it on disk).
+/// key is returned exactly once. Every resource is re-encrypted before
+/// the response is sent, while the displaced ciphertext generation remains
+/// in a uniquely named backend-host recovery workspace until trusted manual
+/// cleanup. `warning` explains that response delivery and local browser
+/// acknowledgement do not prove external key custody. The backend never
+/// persists the replacement key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreRotateKeyResponse {
     pub key_hex: String,

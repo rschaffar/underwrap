@@ -280,6 +280,12 @@ keys are not stored on disk.
 A locked store returns a structured runtime error, which the wrapper reports as
 an operator-actionable message.
 
+Rotation retains every displaced encrypted generation on the backend host. A
+lost response or `rotation_recovery_required` error is handled while the remote
+backend is stopped, not from a frontend host or browser. Follow the exact
+non-overwriting [retained-generation recovery and selective-cleanup procedure](backend.md#retained-rotation-generations), then unlock and verify representative
+data before resuming frontend traffic.
+
 ## Related documentation
 
 - [Getting started](getting-started.md)

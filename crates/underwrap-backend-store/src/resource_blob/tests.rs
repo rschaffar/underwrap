@@ -129,7 +129,7 @@ fn encrypted_backend_one_file_per_resource() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key: [u8; 32] = rand::random();
     let dir = tmp.path().join("secrets");
-    let backend = crate::EncryptedBackend::open_with_key(&dir, key).unwrap();
+    let backend = crate::EncryptedBackend::create_with_key(&dir, key).unwrap();
 
     save_resource_blob(&backend, "github/token", &sample_blob("a")).unwrap();
     save_resource_blob(&backend, "aws/creds", &sample_blob("b")).unwrap();

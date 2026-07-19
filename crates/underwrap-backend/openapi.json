@@ -1294,7 +1294,7 @@
         "tags": [
           "stores"
         ],
-        "summary": "`POST /v1/admin/stores/{id}/rotate-key` — mint a fresh 32-byte\nmaster key in memory, re-encrypt every resource in the store under\nit, atomically swap the data directory, install the new backend in\nthe registry, and return the new key **exactly once**. Plain stores\nreject the operation; locked encrypted stores must be unlocked\nfirst.",
+        "summary": "`POST /v1/admin/stores/{id}/rotate-key` — mint a fresh in-memory\nmaster key, re-encrypt the complete store, atomically activate it, and\nreturn the key once. Every displaced ciphertext generation remains in a\nuniquely named backend-host recovery workspace until trusted manual cleanup.\nHTTP delivery and the browser's local acknowledgement do not prove custody.",
         "operationId": "handle_admin_store_rotate_key",
         "parameters": [
           {
@@ -1309,7 +1309,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Key rotated and the replacement key returned once.",
+            "description": "Key rotated and returned once; the displaced encrypted generation is retained for backend-host recovery.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1339,7 +1339,7 @@
             }
           },
           "500": {
-            "description": "Rotation failed mid-flight.",
+            "description": "Rotation failed; rotation_recovery_required means trusted host recovery is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1909,6 +1909,16 @@
           },
           "404": {
             "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Canonical encrypted generation is missing; trusted-host recovery is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4176,7 +4186,7 @@
       },
       "AdminStoreRotateKeyResponse": {
         "type": "object",
-        "description": "Response from `POST /v1/admin/stores/{name}/rotate-key`. The new\nkey is returned exactly once. Every resource in the store has\nbeen transparently re-encrypted under the new key before the\nresponse is sent; `warning` carries a one-line reminder that the\noperator is solely responsible for saving the new value (the\nbackend does not store it on disk).",
+        "description": "Response from `POST /v1/admin/stores/{name}/rotate-key`. The new\nkey is returned exactly once. Every resource is re-encrypted before\nthe response is sent, while the displaced ciphertext generation remains\nin a uniquely named backend-host recovery workspace until trusted manual\ncleanup. `warning` explains that response delivery and local browser\nacknowledgement do not prove external key custody. The backend never\npersists the replacement key.",
         "required": [
           "key_hex",
           "warning"

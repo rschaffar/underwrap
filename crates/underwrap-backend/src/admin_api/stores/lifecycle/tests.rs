@@ -19,6 +19,34 @@ fn is_locked(state: &ListenerState, store_id: &str) -> bool {
     )
 }
 
+fn encrypted_dir(state: &ListenerState, store_id: &str) -> std::path::PathBuf {
+    let registry = state.shared.stores.read().unwrap();
+    match &registry.entry(store_id).unwrap().record.storage {
+        underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.clone(),
+        underwrap_protocol::config::StorageConfig::Plain { .. } => {
+            panic!("expected encrypted store")
+        }
+    }
+}
+
+struct HandlerHooks {
+    failures: Vec<rotation::RotationPhase>,
+}
+
+impl rotation::RotationHooks for HandlerHooks {
+    fn rotation_id(&self) -> String {
+        "aaaaaaaaaaaaaaaa".into()
+    }
+
+    fn checkpoint(&self, phase: rotation::RotationPhase) -> std::io::Result<()> {
+        if self.failures.contains(&phase) {
+            Err(std::io::Error::other("injected"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 fn create_store(
     state: Arc<crate::runtime_state::ListenerState>,
     p: &crate::admin_api::csrf::Principal,
@@ -108,6 +136,106 @@ async fn rotate_key_reencrypts_resources_and_returns_new_value_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rotation_does_not_write_the_unchanged_registry_record() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let created = create_store(
+        state.clone(),
+        &principal,
+        AdminStoreBackendKind::Encrypted,
+        "vault",
+    );
+    let store_id = created["store"]["id"].as_str().unwrap().to_string();
+    let registry_path = state.admin().stores_dir.join(format!("{store_id}.json"));
+    let before = std::fs::read(&registry_path).unwrap();
+    let stores_dir = state.admin().stores_dir.clone();
+    let displaced_registry = tmp.path().join("stores-registry-offline");
+    std::fs::rename(&stores_dir, &displaced_registry).unwrap();
+    std::fs::write(&stores_dir, b"registry writes must fail").unwrap();
+
+    let (status, _) = run_handler(handle_admin_store_rotate_key(
+        State(state.clone()),
+        Extension(principal),
+        Path(store_id.clone()),
+    ));
+
+    std::fs::remove_file(&stores_dir).unwrap();
+    std::fs::rename(&displaced_registry, &stores_dir).unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(std::fs::read(&registry_path).unwrap(), before);
+}
+
+#[test]
+fn unrecoverable_handler_failure_locks_store_and_returns_safe_stable_error() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let created = create_store(
+        state.clone(),
+        &principal,
+        AdminStoreBackendKind::Encrypted,
+        "vault",
+    );
+    let store_id = created["store"]["id"].as_str().unwrap().to_string();
+    let old_key_hex = created["key_hex"].as_str().unwrap().to_string();
+    let old_key = underwrap_backend_store::parse_hex_key(&old_key_hex).unwrap();
+    let canonical = encrypted_dir(&state, &store_id);
+    state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .expect_unlocked(&store_id)
+        .write("resource/private-name", b"seeded-private-plaintext")
+        .unwrap();
+    let hooks = HandlerHooks {
+        failures: vec![
+            rotation::RotationPhase::PromoteStage,
+            rotation::RotationPhase::RestoreBackup,
+        ],
+    };
+    let (status, body) = run_handler(rotate_key_with_hooks(
+        state.clone(),
+        principal,
+        store_id.clone(),
+        &hooks,
+    ));
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["code"], "rotation_recovery_required");
+    let response_text = serde_json::to_string(&body).unwrap();
+    assert!(!response_text.contains(&old_key_hex));
+    assert!(!response_text.contains("private-name"));
+    assert!(!response_text.contains("seeded-private-plaintext"));
+    assert!(is_locked(&state, &store_id));
+    assert!(!canonical.exists());
+    let workspace = std::fs::read_dir(canonical.parent().unwrap())
+        .unwrap()
+        .map(Result::unwrap)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("underwrap-rotation")
+        })
+        .unwrap();
+    let retained = underwrap_backend_store::EncryptedBackend::open_existing_with_key(
+        &workspace.join("backup"),
+        old_key,
+    )
+    .unwrap();
+    assert_eq!(
+        retained
+            .read("resource/private-name")
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"seeded-private-plaintext"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rotate_key_refuses_plain_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));
@@ -186,6 +314,42 @@ fn unlock_round_trip_succeeds_with_correct_hex() {
     ));
     assert_eq!(status, StatusCode::OK);
     assert!(!is_locked(&state, &store_id));
+}
+
+#[test]
+fn unlock_missing_canonical_requires_host_recovery_without_recreating_it() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let created = create_store(
+        state.clone(),
+        &principal,
+        AdminStoreBackendKind::Encrypted,
+        "vault",
+    );
+    let store_id = created["store"]["id"].as_str().unwrap().to_string();
+    let key_hex = created["key_hex"].as_str().unwrap().to_string();
+    let canonical = encrypted_dir(&state, &store_id);
+    let retained = canonical.with_extension("retained-test");
+    let (lock_status, _) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(lock_status, StatusCode::OK);
+    std::fs::rename(&canonical, &retained).unwrap();
+
+    let (status, body) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(principal),
+        Path(store_id.clone()),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest { key_hex }),
+    ));
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["code"], "rotation_recovery_required");
+    assert!(is_locked(&state, &store_id));
+    assert!(!canonical.exists());
+    assert!(retained.is_dir());
 }
 
 #[test]

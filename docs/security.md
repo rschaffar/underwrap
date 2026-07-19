@@ -608,18 +608,39 @@ service account.
 - an encrypted store starts locked after every backend restart;
 - lock drops the in-memory backend and zeroizes the master key when its final
   reference is released;
-- rotation re-encrypts resources under a fresh key in a staging directory,
-  moves the live directory aside, and promotes the staged directory with two
-  individually atomic renames.
+- rotation re-encrypts and verifies a complete generation under a fresh key,
+  displaces the live directory into a unique mode-`0700` backend-host recovery
+  workspace, and promotes the staged generation with individually atomic
+  renames;
+- every displaced complete ciphertext generation remains unmodified while it is
+  retained as a recovery artifact and is never automatically overwritten or
+  deleted by rotation, restart, later rotation, response success, or browser
+  acknowledgement;
+- a failed post-swap rollback either restores the old canonical generation or
+  locks the store with `rotation_recovery_required` while preserving every
+  potentially useful directory;
+- unlock and post-promotion reopen require the canonical directory to exist and
+  never create an empty replacement after an interrupted swap.
+
+The protected availability boundary runs from ciphertext-generation commit to
+the one-time replacement-key response and external custody. The backend cannot
+observe delivery or custody. Retaining every old-key-decryptable snapshot keeps
+an externally held key useful after response loss; the confidentiality cost is
+unbounded disk use and prolonged old-key access to stale ciphertext until
+trusted host cleanup. Recovery paths are backend-host-only siblings and are not
+exposed through admin or runtime APIs. The exact non-overwriting recovery,
+verification, and selective-cleanup procedure is normative in
+[Backend](backend.md#retained-rotation-generations).
 
 The rotation mutex excludes another rotation only. Ordinary reads and writes
-are not coordinated with the copy or two-step swap and can fail or be lost, so
-operators must quiesce all access to the store during rotation.
+are not coordinated with the copy or multi-rename swap and can fail or be lost,
+so operators must quiesce all access to the store during rotation. The procedure
+does not claim CAS, response delivery, automatic reconciliation, or power-loss
+/fsync durability.
 
-The operator must keep the displayed key in an external password manager or
-vault. Loss of the key means loss of the encrypted store. Memory compromise of
-the running backend can recover an unlocked key; TPM/HSM custody is out of
-scope.
+The operator must keep displayed keys in an external password manager or vault.
+Memory compromise of the running backend can recover an unlocked key; TPM/HSM
+custody is out of scope.
 
 ## Permission model
 

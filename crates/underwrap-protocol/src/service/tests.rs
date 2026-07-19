@@ -54,6 +54,19 @@ fn runtime_invalid_blob_reason_wire_strings_are_pinned() {
 }
 
 #[test]
+fn rotate_key_response_shape_remains_key_and_warning_only() {
+    let value = serde_json::to_value(AdminStoreRotateKeyResponse {
+        key_hex: "fixture-key".into(),
+        warning: "fixture-warning".into(),
+    })
+    .unwrap();
+    let object = value.as_object().unwrap();
+    assert_eq!(object.len(), 2);
+    assert_eq!(object["key_hex"], "fixture-key");
+    assert_eq!(object["warning"], "fixture-warning");
+}
+
+#[test]
 fn error_code_store_locked_is_pinned() {
     assert_eq!(ERROR_CODE_STORE_LOCKED, "store_locked");
 }

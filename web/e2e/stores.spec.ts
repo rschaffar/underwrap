@@ -136,6 +136,10 @@ test("rotate-key flow surfaces a fresh key once for an existing encrypted store"
   const rotateDlg = page.getByRole("dialog", {
     name: /rotate master key: rotvault/i,
   });
+  await expect(rotateDlg).toContainText(/remains on the backend host/i);
+  await expect(rotateDlg).toContainText(/consumes disk/i);
+  await expect(rotateDlg).toContainText(/decryptable with its old key/i);
+  await expect(rotateDlg).toContainText(/manual cleanup/i);
   await rotateDlg
     .getByRole("checkbox", { name: /every resource will be re-encrypted/i })
     .check();
@@ -148,10 +152,41 @@ test("rotate-key flow surfaces a fresh key once for an existing encrypted store"
   ).trim();
   expect(rotatedKey).toMatch(/^[0-9a-f]{64}$/);
   expect(rotatedKey).not.toEqual(originalKey);
+  await expect(reveal).toContainText(/retained old ciphertext consumes backend-host disk/i);
+  await expect(reveal).toContainText(/remains decryptable with the old key/i);
+  await expect(reveal).toContainText(/closing this dialog discards the one-time local display/i);
+  await expect(reveal).toContainText(
+    /backend cannot know whether I received, saved, or independently verified/i,
+  );
+  await expect(reveal).not.toContainText(/I have saved and independently verified/i);
 
   await page.getByTestId("key-reveal-ack").check();
   await page.getByTestId("key-reveal-confirm").click();
   await expect(reveal).toBeHidden();
+
+  const browserState = await page.evaluate(() => ({
+    local: Object.entries(localStorage),
+    session: Object.entries(sessionStorage),
+    cookie: document.cookie,
+    href: window.location.href,
+    resources: performance.getEntriesByType("resource").map((entry) => entry.name),
+  }));
+  const cookies = await page.context().cookies();
+  const storesResponse = await page.request.get(
+    `${backendWithAdmin.baseUrl}/v1/admin/stores`,
+  );
+  expect(storesResponse.ok()).toBe(true);
+  const laterState = JSON.stringify({
+    browserState,
+    cookies,
+    stores: await storesResponse.text(),
+  });
+  expect(laterState).not.toContain(originalKey);
+  expect(laterState).not.toContain(rotatedKey);
+
+  await page.reload();
+  await expect(page.getByTestId("key-reveal-dialog")).toBeHidden();
+  expect(await page.content()).not.toContain(rotatedKey);
 });
 
 // Declarative-vs-dynamic stores no longer exist as a backend

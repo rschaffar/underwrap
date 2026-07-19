@@ -261,6 +261,8 @@ fn create_plain_store_returns_no_key_hex() {
 fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));
+    let data_root = state.admin().stores_data_root.clone().unwrap();
+    std::fs::remove_dir(&data_root).unwrap();
     let p = admin_principal();
     let (status, body) = create_store(
         state.clone(),

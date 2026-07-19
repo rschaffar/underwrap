@@ -153,22 +153,34 @@ pub(crate) async fn handle_admin_store_create(
             (storage, backend, None)
         }
         AdminStoreBackendKind::Encrypted => {
-            create_data_dir_secure(&validated_dir).map_err(|e| {
+            let parent = validated_dir.parent().ok_or_else(|| {
                 AdminError::internal_with_code(
                     "create_data_dir_failed",
-                    format!("creating data dir {}: {e:#}", validated_dir.display()),
+                    "encrypted store directory has no parent",
                 )
             })?;
-            let key_bytes = generate_master_key_bytes();
+            create_data_dir_secure(parent).map_err(|e| {
+                AdminError::internal_with_code(
+                    "create_data_dir_failed",
+                    format!(
+                        "creating encrypted stores data root {}: {e:#}",
+                        parent.display()
+                    ),
+                )
+            })?;
+            let mut key_bytes = generate_master_key_bytes();
             let key_hex = master_key_hex(&key_bytes);
-            let backend =
-                underwrap_backend_store::EncryptedBackend::open_with_key(&validated_dir, key_bytes)
-                    .map_err(|e| {
-                        AdminError::internal_with_code(
-                            "open_store_failed",
-                            format!("opening encrypted store backend after create: {e:#}"),
-                        )
-                    })?;
+            let backend_result = underwrap_backend_store::EncryptedBackend::create_with_key(
+                &validated_dir,
+                key_bytes,
+            );
+            key_bytes.fill(0);
+            let backend = backend_result.map_err(|e| {
+                AdminError::internal_with_code(
+                    "open_store_failed",
+                    format!("creating encrypted store backend: {e:#}"),
+                )
+            })?;
             backend
                 .write(
                     underwrap_backend_store::ENCRYPTED_CANARY_ID,

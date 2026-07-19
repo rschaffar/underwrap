@@ -58,10 +58,20 @@ after every backend restart. Use **Unlock** and provide the key before runtime
 or admin secret operations can access it.
 
 **Lock** drops the in-memory key. **Rotate key** re-encrypts the store and
-returns the replacement key exactly once; update external custody immediately.
+returns the replacement key exactly once. Every displaced ciphertext generation
+remains in a unique backend-host recovery workspace. It consumes disk and stays
+decryptable with its old key until a trusted host operator removes that selected
+artifact after independently verifying a later key through lock/restart,
+unlock, and representative reads. The reveal checkbox prevents accidental local
+dismissal only; it does not tell the backend that delivery or external custody
+succeeded.
+
 Quiesce wrapper traffic and other admin access first: rotation is serialized
 only against another rotation, so concurrent reads may fail and concurrent
-writes may be lost. There is no recovery mechanism for a lost key.
+writes may be lost. If a response is lost, the old key still opens the retained
+pre-rotation snapshot through the trusted-host procedure in
+[Backend](backend.md#retained-rotation-generations). Recovery and cleanup are
+not browser or API operations.
 
 Store creation is available only when `admin.stores_data_root` is configured.
 
