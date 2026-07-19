@@ -34,6 +34,9 @@
             filter = path: type:
               (craneLib.filterCargoSources path type)
               || (pkgs.lib.hasInfix "/src/assets/" path)
+              # Integration tests compile these crate-local PKI fixtures with
+              # `include_str!`; Cargo source filtering otherwise drops them.
+              || (pkgs.lib.hasInfix "/crates/integration-tests/testdata/" path)
               # The committed OpenAPI spec at
               # `crates/underwrap-backend/openapi.json` is read off disk
               # by the `openapi_export` drift test and rewritten +
