@@ -1,25 +1,5 @@
 use super::*;
-use underwrap_protocol::config::BackendServiceConfig;
-
-fn config_with_backend_url(url: &str) -> DaemonConfig {
-    DaemonConfig {
-        backend: BackendServiceConfig {
-            url: url.into(),
-            ca_file: None,
-            client_cert_file: None,
-            client_key_file: None,
-        },
-        instance: "local".into(),
-        socket: std::path::PathBuf::from("/run/underwrap/local.sock"),
-        group: "underwrap-local".into(),
-        ns_binary: std::path::PathBuf::from("/run/wrappers/bin/underwrap-ns"),
-        debug_tool_target: std::path::PathBuf::from(
-            "/run/current-system/sw/bin/underwrap-debug-tool",
-        ),
-        target_runtime_dir_base: "/run/user".into(),
-        wrappers: Default::default(),
-    }
-}
+use crate::test_support::config_with_backend_url;
 
 #[test]
 fn ensure_backend_reports_missing_credential_when_files_absent() {

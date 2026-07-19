@@ -7,5 +7,8 @@ pub(crate) mod wrapper_flow;
 pub mod wrapper_resource_channel;
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 #[path = "lib/tests.rs"]
 mod tests;

@@ -1,23 +1,10 @@
 use super::*;
+use crate::test_support::config_with_backend_url;
 
 fn minimal_config() -> DaemonConfig {
-    DaemonConfig {
-        backend: underwrap_protocol::config::BackendServiceConfig {
-            url: "https://backend.example.internal".into(),
-            ca_file: Some(std::path::PathBuf::from("/etc/underwrap/ca.pem")),
-            client_cert_file: None,
-            client_key_file: None,
-        },
-        instance: "local".into(),
-        socket: std::path::PathBuf::from("/run/underwrap/local.sock"),
-        group: "underwrap-local".into(),
-        ns_binary: std::path::PathBuf::from("/run/wrappers/bin/underwrap-ns"),
-        debug_tool_target: std::path::PathBuf::from(
-            "/run/current-system/sw/bin/underwrap-debug-tool",
-        ),
-        target_runtime_dir_base: "/run/user".into(),
-        wrappers: std::collections::HashMap::new(),
-    }
+    let mut config = config_with_backend_url("https://backend.example.internal");
+    config.backend.ca_file = Some(std::path::PathBuf::from("/etc/underwrap/ca.pem"));
+    config
 }
 
 #[test]
