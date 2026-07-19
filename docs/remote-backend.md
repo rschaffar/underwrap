@@ -9,8 +9,9 @@ that execute wrappers:
   wrapper chain;
 - **operator browser** — connects to the backend's HTTPS origin.
 
-The frontend makes outbound HTTPS connections only. There is no SSH tunnel or
-backend Unix-socket transport.
+The frontend makes outbound HTTPS connections only. Nix evaluation, daemon URL
+admission, and the request client's HTTPS-only policy enforce this independently;
+there is no plaintext, SSH-tunnel, or backend Unix-socket transport.
 
 ## Network and trust plan
 
@@ -30,6 +31,21 @@ TLS authentication does not replace ordinary firewalling and host hardening.
 
 underwrap uses a conventional server certificate for the backend endpoint. Its
 SANs must include every hostname or IP used by frontends and browsers.
+
+### HTTPS endpoint and proxy topology
+
+The enforced URL is the endpoint `underwrapd` dials. Direct backend-owned rustls
+HTTPS is supported. A URL naming an HTTPS nginx or other proxy frontend also
+passes endpoint admission, and a Layer-4 TLS passthrough can preserve the
+end-to-end mTLS connection.
+
+Endpoint admission does not create generic Layer-7 proxy support. The backend
+derives the runtime client instance from the peer certificate on its own rustls
+connection. Ordinary TLS termination followed by plaintext HTTP neither reaches
+that peer certificate boundary nor provides an accepted forwarded-certificate
+or proxy-identity protocol. This release adds no trusted proxy header, forwarded
+client certificate, or proxy service identity. Do not configure an `http://`
+upstream as a workaround.
 
 A minimal `step` recipe is:
 

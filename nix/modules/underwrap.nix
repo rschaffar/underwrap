@@ -369,7 +369,7 @@ let
     options = {
       url = lib.mkOption {
         type = lib.types.str;
-        description = "Backend service URL, e.g. https://backend.example.internal:8443.";
+        description = "HTTPS backend service URL in lowercase https:// form, e.g. https://backend.example.internal:8443/base/.";
       };
       caFile = lib.mkOption {
         type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
@@ -598,7 +598,11 @@ in {
         }
       ]
       ++ (lib.flatten (lib.mapAttrsToList (instName: inst:
-        (lib.mapAttrsToList (wrapperName: wrapper:
+        [ {
+          assertion = lib.hasPrefix "https://" inst.backend.url;
+          message = "services.underwrap.instances.${instName}.backend.url: must use lowercase https://; plaintext runtime backend transport is not supported";
+        } ]
+        ++ (lib.mapAttrsToList (wrapperName: wrapper:
           let
             paths = wrapperDirectoryPaths wrapper;
             pairs = lib.concatMap (left:

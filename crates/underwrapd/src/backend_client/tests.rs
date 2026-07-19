@@ -1,5 +1,13 @@
 use super::*;
-use std::io::Write;
+use std::io::{Read, Write};
+
+const TEST_CA_PEM: &str = include_str!("../../../integration-tests/testdata/pki/ca.pem");
+const TEST_SERVER_PEM: &str = include_str!("../../../integration-tests/testdata/pki/server.pem");
+const TEST_SERVER_KEY: &str = include_str!("../../../integration-tests/testdata/pki/server.key");
+const TEST_CLIENT_PEM: &str =
+    include_str!("../../../integration-tests/testdata/pki/client-local.pem");
+const TEST_CLIENT_KEY: &str =
+    include_str!("../../../integration-tests/testdata/pki/client-local.key");
 
 #[test]
 fn open_fails_immediately_on_bad_credentials() {
@@ -38,5 +46,157 @@ fn open_rejects_missing_client_identity() {
     assert!(
         format!("{:#}", result.err().unwrap()).contains("client_cert_file"),
         "expected client_cert_file error",
+    );
+}
+
+#[test]
+fn backend_url_rejection_precedes_all_credential_file_reads() {
+    let result = BackendClient::open(&BackendServiceConfig {
+        url: "http://plaintext.example.invalid".to_string(),
+        ca_file: Some("/unusable/ca.pem".into()),
+        client_cert_file: Some("/unusable/client.pem".into()),
+        client_key_file: Some("/unusable/client.key".into()),
+    });
+    assert_eq!(
+        result.err().unwrap().to_string(),
+        "backend.url must be an absolute HTTPS URL with a host"
+    );
+}
+
+#[test]
+fn backend_url_endpoint_preserves_non_root_base_path_and_trailing_slash() {
+    assert_eq!(
+        endpoint(
+            "https://proxy.example.internal/base/runtime/",
+            "/v1/wrappers"
+        ),
+        "https://proxy.example.internal/base/runtime/v1/wrappers"
+    );
+    assert_eq!(
+        endpoint("https://backend.example.internal", "/v1/wrappers"),
+        "https://backend.example.internal/v1/wrappers"
+    );
+}
+
+fn write_fixture(path: &std::path::Path, contents: &str) {
+    std::fs::write(path, contents.as_bytes()).unwrap();
+}
+
+#[test]
+fn https_only_redirect_never_connects_to_plaintext_trap() {
+    use rustls::pki_types::pem::PemObject;
+    use std::sync::Arc;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let trap = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    trap.set_nonblocking(true).unwrap();
+    let trap_address = trap.local_addr().unwrap();
+    let (trap_stop_tx, trap_stop_rx) = std::sync::mpsc::channel();
+
+    let tls_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    tls_listener.set_nonblocking(true).unwrap();
+    let tls_address = tls_listener.local_addr().unwrap();
+    let certificate =
+        rustls::pki_types::CertificateDer::from_pem_slice(TEST_SERVER_PEM.as_bytes()).unwrap();
+    let private_key =
+        rustls::pki_types::PrivateKeyDer::from_pem_slice(TEST_SERVER_KEY.as_bytes()).unwrap();
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], private_key)
+        .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    let cert = dir.path().join("client.pem");
+    let key = dir.path().join("client.key");
+    write_fixture(&ca, TEST_CA_PEM);
+    write_fixture(&cert, TEST_CLIENT_PEM);
+    write_fixture(&key, TEST_CLIENT_KEY);
+    let client = BackendClient::open(&BackendServiceConfig {
+        url: format!("https://127.0.0.1:{}/proxy-base/", tls_address.port()),
+        ca_file: Some(ca),
+        client_cert_file: Some(cert),
+        client_key_file: Some(key),
+    })
+    .unwrap();
+
+    let trap_server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match trap.accept() {
+                Ok((mut stream, _)) => {
+                    let timeout = Some(std::time::Duration::from_secs(1));
+                    stream.set_read_timeout(timeout).unwrap();
+                    stream.set_write_timeout(timeout).unwrap();
+                    let mut request = [0u8; 4096];
+                    let read = stream.read(&mut request).unwrap();
+                    assert!(read > 0);
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                    stream.flush().unwrap();
+                    return 1usize;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("plaintext redirect trap accept failed: {error}"),
+            }
+
+            match trap_stop_rx.try_recv() {
+                Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => return 0,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "plaintext redirect trap exceeded its deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+    let tls_server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let stream = loop {
+            match tls_listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("HTTPS redirect server accept failed: {error}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "HTTPS redirect server exceeded its accept deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let timeout = Some(std::time::Duration::from_secs(5));
+        stream.set_read_timeout(timeout).unwrap();
+        stream.set_write_timeout(timeout).unwrap();
+        let connection = rustls::ServerConnection::new(Arc::new(server_config)).unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, stream);
+        let mut request = [0u8; 4096];
+        let read = tls.read(&mut request).unwrap();
+        assert!(read > 0);
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://{trap_address}/plaintext-trap\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        tls.write_all(response.as_bytes()).unwrap();
+        tls.flush().unwrap();
+    });
+
+    let register_result = client.register(RuntimeWrapperRegisterRequest { wrappers: vec![] });
+    let _ = trap_stop_tx.send(());
+    let tls_result = tls_server.join();
+    let trap_result = trap_server.join();
+
+    tls_result.unwrap();
+    let plaintext_connections = trap_result.unwrap();
+    assert_eq!(
+        plaintext_connections, 0,
+        "plaintext redirect trap unexpectedly accepted a connection"
+    );
+    let error = register_result.expect_err("HTTPS-only client must reject HTTP redirect");
+    assert!(
+        format!("{error:#}").contains("sending backend register request"),
+        "unexpected redirect error: {error:#}"
     );
 }

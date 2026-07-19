@@ -53,6 +53,7 @@ nix build .#checks.x86_64-linux.workspace-audit
 nix build .#checks.x86_64-linux.workspace-deny
 nix build .#checks.x86_64-linux.workspace-llvm-cov
 nix build .#checks.x86_64-linux.examples-nix-parse
+nix build .#checks.x86_64-linux.frontend-backend-url-eval
 nix build .#checks.x86_64-linux.vm-test
 ```
 
@@ -86,6 +87,11 @@ Workspace tests cover:
 
 Some integration tests skip when the host cannot supply the required Linux
 capabilities. The VM test covers the deployed privileged path independently.
+Daemon transport tests pin absolute HTTPS URL admission, base-path preservation,
+and HTTPS-to-HTTP redirect rejection through the production client. The
+`frontend-backend-url-eval` check proves module-level HTTP rejection and exact
+HTTPS URL generation; the VM independently proves a handcrafted plaintext
+configuration fails before credentials, socket readiness, or network traffic.
 
 ## OpenAPI drift
 
@@ -201,7 +207,7 @@ not appear in service logs.
 | Admin handler or DTO | backend tests, OpenAPI drift, SPA test/build |
 | SPA behavior | Vitest, build; Playwright for user flows |
 | Storage or encryption | store/backend tests, integration tests |
-| NixOS module | VM test |
+| NixOS module | focused evaluator checks, examples, workspace Nix checks, VM test |
 | setgid, peer auth, UID, namespace, capabilities, mounts, fd lifecycle | integration tests and VM test |
 | Documentation/examples only | link/path checks, example parse/evaluation tests, relevant generated-schema checks |
 

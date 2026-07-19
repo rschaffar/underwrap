@@ -212,6 +212,56 @@
               pkgs.runCommand "underwrap-examples-nix-parse" { } ''
                 touch "$out"
               '';
+
+            # Prove the frontend module rejects plaintext runtime endpoints and
+            # preserves an admitted HTTPS proxy/base-path URL exactly in the
+            # generated daemon configuration.
+            frontend-backend-url-eval =
+              let
+                evaluate = url: nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.default
+                    ({ ... }: {
+                      boot.isContainer = true;
+                      system.stateVersion = "25.11";
+                      services.underwrap = {
+                        enable = true;
+                        package = pkgs.hello;
+                        hardenTargetHost = false;
+                        instances.probe.backend.url = url;
+                      };
+                    })
+                  ];
+                };
+                invalid = evaluate "http://backend.example.invalid";
+                validUrl = "https://proxy.example.invalid/runtime/base/";
+                valid = evaluate validUrl;
+                expectedMessage = "services.underwrap.instances.probe.backend.url: must use lowercase https://; plaintext runtime backend transport is not supported";
+                invalidAssertion = pkgs.lib.findFirst
+                  (entry: entry.message == expectedMessage)
+                  (throw "missing instance-specific backend URL assertion")
+                  invalid.config.assertions;
+                validAssertion = pkgs.lib.findFirst
+                  (entry: entry.message == expectedMessage)
+                  (throw "missing instance-specific backend URL assertion")
+                  valid.config.assertions;
+                invalidToplevel = builtins.tryEval invalid.config.system.build.toplevel;
+                validToplevel = builtins.tryEval valid.config.system.build.toplevel;
+                daemonConfig = valid.config.environment.etc."underwrap/daemon/probe.yaml".source;
+              in
+              assert !invalidAssertion.assertion;
+              assert !invalidToplevel.success;
+              assert validAssertion.assertion;
+              assert validToplevel.success;
+              pkgs.runCommand "underwrap-frontend-backend-url-eval" {
+                inherit daemonConfig validUrl expectedMessage;
+              } ''
+                grep -F -- "\"url\":\"$validUrl\"" "$daemonConfig"
+                mkdir -p "$out"
+                cp "$daemonConfig" "$out/probe-daemon.json"
+                printf '%s\n' "$expectedMessage" > "$out/plaintext-rejection.txt"
+              '';
           };
 
           devShells.default = craneLib.devShell {

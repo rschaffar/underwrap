@@ -52,9 +52,17 @@ services.underwrap.instances.work = {
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `allowedUsers` | list of strings | `[]` | Users that receive `<wrapper>` and `debug-<wrapper>` PATH shims; users of an instance literally named `default` also receive an `underwrap` alias |
-| `backend.url` | string | required | Base HTTPS URL of `underwrap-backend` |
+| `backend.url` | string | required | Absolute backend endpoint in lowercase `https://` form, with a host; non-root base paths and trailing slashes are preserved |
 | `backend.caFile` | path or string or null | `null` | CA bundle for the backend server certificate; null uses reqwest's bundled WebPKI root set |
 | `wrappers` | attribute set | `{}` | Wrapper definitions keyed by the canonical wrapper name |
+
+The NixOS module rejects an instance whose `backend.url` does not start with
+lowercase `https://`. `underwrapd` independently parses the URL, requires an
+absolute HTTPS URL with a host before reading credentials or binding its socket,
+and constructs an HTTPS-only request client. There is no plaintext override,
+including for loopback or a proxy upstream. An HTTPS proxy endpoint is admitted;
+that admission does not add forwarded-certificate or proxy-identity support.
+See [Remote backend](remote-backend.md#https-endpoint-and-proxy-topology).
 
 `allowedUsers` is convenience configuration, not access control. The underlying
 setgid instance entry point is system-wide, and backend permissions identify the

@@ -2571,6 +2571,84 @@ def local_atomic_writeback():
     )
 
 
+def plaintext_runtime_backend_url_is_rejected_before_io():
+    """A standalone handcrafted daemon config cannot let unusable
+    credentials mask the HTTPS admission error or contact plaintext."""
+    trap_port = 19666
+    machine.succeed("rm -f /tmp/plain-url-trap-ready /tmp/plain-url-trap-count")
+    trap_program = (
+        "import socket;"
+        "s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
+        f"s.bind(('127.0.0.1',{trap_port}));s.listen(1);s.settimeout(3);"
+        "open('/tmp/plain-url-trap-ready','w').write('ready');count=0;"
+        "\ntry:\n c,_=s.accept();count=1;c.close()\nexcept TimeoutError:\n pass\n"
+        "open('/tmp/plain-url-trap-count','w').write(str(count));s.close()"
+    )
+    trap_command = " ".join(
+        shlex.quote(part)
+        for part in [PYTHON3, "-c", trap_program]
+    )
+    machine.succeed(
+        f"{trap_command} >/tmp/plain-url-trap-python.log 2>&1 & echo $! >/tmp/plain-url-trap-pid"
+    )
+    machine.wait_until_succeeds("test -f /tmp/plain-url-trap-ready")
+
+    config = {
+        "backend": {
+            "url": f"http://127.0.0.1:{trap_port}/runtime/base/",
+            "ca_file": "/unusable/credentials/ca.pem",
+            "client_cert_file": "/unusable/credentials/client.pem",
+            "client_key_file": "/unusable/credentials/client.key",
+        },
+        "instance": "plaintext-test",
+        "socket": "/run/underwrap-plaintext-test/wrapper.sock",
+        "group": "root",
+        "ns_binary": "/unusable/underwrap-ns",
+        "debug_tool_target": "/unusable/debug-tool",
+        "target_runtime_dir_base": "/run/underwrap-runtime",
+        "wrappers": {},
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as body:
+        json.dump(config, body, separators=(",", ":"))
+        host_config = body.name
+    guest_config = "/run/underwrap-plaintext-test.json"
+    try:
+        machine.copy_from_host(host_config, guest_config)
+        machine.succeed(f"chmod 0600 {guest_config}")
+        exit_code = int(
+            machine.succeed(
+                f"set +e; timeout 10s underwrapd --config {guest_config} "
+                ">/tmp/plain-url-daemon.log 2>&1; status=$?; printf '%s\\n' \"$status\""
+            ).strip()
+        )
+    finally:
+        machine.succeed(f"rm -f {guest_config}")
+        os.unlink(host_config)
+    assert exit_code != 0, "plaintext standalone daemon unexpectedly started"
+    assert exit_code != 124, "plaintext standalone daemon did not fail before the timeout"
+    machine.wait_until_succeeds("test -f /tmp/plain-url-trap-count")
+    assert machine.succeed("cat /tmp/plain-url-trap-count").strip() == "0"
+    assert not machine.succeed(
+        "test -S /run/underwrap-plaintext-test/wrapper.sock && echo present || true"
+    ).strip()
+    diagnostics = machine.succeed("cat /tmp/plain-url-daemon.log")
+    assert diagnostics.count(
+        "backend.url must be an absolute HTTPS URL with a host"
+    ) == 1, diagnostics
+    assert "daemon ready" not in diagnostics
+    assert "/unusable/credentials" not in diagnostics
+    for forbidden in (
+        "BEGIN PRIVATE KEY",
+        "BEGIN CERTIFICATE",
+        "secret_via_service",
+        "hello-locked",
+    ):
+        assert forbidden not in diagnostics
+    machine.log(
+        "PASS: plaintext runtime backend URL rejected before credential, socket, readiness, or network I/O"
+    )
+
+
 def encrypted_store_in_memory_keys():
     """Verifies the in-memory-master-key flow end-to-end against the
     local backend's admin API.
@@ -3534,6 +3612,7 @@ instance_isolation()
 local_debug_subcommand()
 local_backend_policy_control_center()
 local_backend_managed_grants()
+plaintext_runtime_backend_url_is_rejected_before_io()
 encrypted_store_in_memory_keys()
 runtime_api_invariants()
 audit_and_no_secret_leaks()

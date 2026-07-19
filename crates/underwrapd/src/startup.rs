@@ -28,9 +28,22 @@ pub(crate) fn resolve_group_gid(name: &str) -> Result<u32> {
     Ok(unsafe { (*grp).gr_gid })
 }
 
+/// Parse and validate the runtime backend endpoint without performing any I/O.
+/// The returned URL is used only as validation evidence; endpoint construction
+/// deliberately retains the daemon's existing base-path concatenation rules.
+pub(crate) fn validate_backend_url(value: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(value)
+        .map_err(|_| anyhow::anyhow!("backend.url must be an absolute HTTPS URL with a host"))?;
+    anyhow::ensure!(
+        url.scheme() == "https" && url.host().is_some(),
+        "backend.url must be an absolute HTTPS URL with a host"
+    );
+    Ok(url)
+}
+
 /// Validate configuration at load time.
 pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
-    anyhow::ensure!(!config.backend.url.is_empty(), "backend.url must be set");
+    validate_backend_url(&config.backend.url)?;
     anyhow::ensure!(
         config.backend.client_cert_file.is_some() == config.backend.client_key_file.is_some(),
         "backend.client_cert_file and backend.client_key_file must either both be set or both be omitted"

@@ -98,6 +98,7 @@ impl BackendClient {
     /// The worker owns its own tokio runtime so synchronous call sites
     /// in the daemon can issue requests from any thread.
     pub fn open(config: &BackendServiceConfig) -> Result<Self> {
+        crate::startup::validate_backend_url(&config.url)?;
         let base_url = config.url.clone();
         let cert_path = config
             .client_cert_file
@@ -130,6 +131,7 @@ impl BackendClient {
         // operator intervention.
         let mut builder = reqwest::Client::builder()
             .use_rustls_tls()
+            .https_only(true)
             .pool_max_idle_per_host(0)
             .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?);
         if let Some(ca_path) = config.ca_file.as_ref() {

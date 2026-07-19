@@ -30,6 +30,50 @@ fn paths_overlap_detects_parent_child_and_equal() {
 }
 
 #[test]
+fn backend_url_accepts_absolute_https_hosts_and_proxy_base_paths() {
+    for value in [
+        "https://backend.example.internal",
+        "https://proxy.example.internal:8443/base/",
+        "https://127.0.0.1:9443/runtime/prefix/",
+    ] {
+        let parsed = validate_backend_url(value).unwrap();
+        assert_eq!(parsed.scheme(), "https");
+        assert!(parsed.host().is_some());
+    }
+}
+
+#[test]
+fn backend_url_rejects_empty_malformed_relative_hostless_and_non_https() {
+    for value in [
+        "",
+        "not a url",
+        "/relative/backend",
+        "https://",
+        "http://backend.example.internal",
+        "ftp://backend.example.internal",
+        "file:///tmp/backend",
+    ] {
+        let error = validate_backend_url(value).expect_err("URL must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "backend.url must be an absolute HTTPS URL with a host"
+        );
+    }
+}
+
+#[test]
+fn backend_url_error_precedes_credential_shape_validation() {
+    let mut config = minimal_config();
+    config.backend.url = "http://plaintext.example.invalid".into();
+    config.backend.client_cert_file = Some(std::path::PathBuf::from("/missing/client.pem"));
+    let error = validate_config(&config).expect_err("plaintext URL must fail first");
+    assert_eq!(
+        error.to_string(),
+        "backend.url must be an absolute HTTPS URL with a host"
+    );
+}
+
+#[test]
 fn validate_config_allows_unenrolled_backend_credentials() {
     validate_config(&minimal_config()).unwrap();
 }

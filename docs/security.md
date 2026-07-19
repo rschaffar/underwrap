@@ -542,8 +542,20 @@ with the same fingerprint and maps that client to one store. Certificate
 subject, SAN, CA chain, KU/EKU, and validity dates do not define runtime
 identity.
 
-The frontend verifies the backend server certificate with either the configured
-CA bundle or reqwest's bundled WebPKI root set.
+The frontend admits only an absolute HTTPS backend URL with a host. The NixOS
+module rejects non-`https://` instance options, daemon startup validates the URL
+before credential reads or wrapper-socket binding, `BackendClient::open` repeats
+the check before file I/O or worker creation, and reqwest is configured
+HTTPS-only so redirects cannot downgrade the runtime channel to plaintext. The
+frontend verifies the backend server certificate with either the configured CA
+bundle or reqwest's bundled WebPKI root set; this URL rule does not change that
+trust-root selection.
+
+The checked value is the endpoint the daemon dials. Direct backend rustls and
+Layer-4 TLS passthrough preserve the mTLS peer certificate. An HTTPS Layer-7
+proxy address is syntactically admitted, but ordinary TLS termination followed
+by HTTP does not preserve the backend's peer-certificate principal. No trusted
+forwarded-certificate or proxy-identity mechanism is implied.
 
 ### Frontend daemon hardening
 
