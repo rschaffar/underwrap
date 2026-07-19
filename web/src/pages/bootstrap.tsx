@@ -1,154 +1,50 @@
-import { useState } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-
-import {
-  Form,
-  FormControl,
-  FormDescription,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
-import { postBootstrap } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
-import { describeApiError } from "@/lib/error-message";
 
-const schema = z
-  .object({
-    username: z.string().min(1, "Username is required."),
-    password: z.string().min(1, "Password is required."),
-    confirm: z.string().min(1, "Please re-enter the password."),
-  })
-  .refine((v) => v.password === v.confirm, {
-    path: ["confirm"],
-    message: "Passwords do not match.",
-  });
-type BootstrapValues = z.infer<typeof schema>;
-
-interface BootstrapPageProps {
-  onSuccess: () => void | Promise<void>;
-}
-
-export function BootstrapPage({ onSuccess }: BootstrapPageProps) {
-  const [submitError, setSubmitError] = useState<string | null>(null);
-
+export function BootstrapPage() {
   useDocumentTitle("underwrap — first-time setup");
-
-  const form = useForm<BootstrapValues>({
-    resolver: zodResolver(schema),
-    defaultValues: { username: "", password: "", confirm: "" },
-    mode: "onSubmit",
-  });
-
-  async function onSubmit(values: BootstrapValues) {
-    setSubmitError(null);
-    try {
-      await postBootstrap({
-        username: values.username,
-        password: values.password,
-      });
-      await onSuccess();
-    } catch (err) {
-      setSubmitError(describeApiError(err));
-    }
-  }
 
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-sm rounded-xl border border-(--color-line) bg-(--color-surface-0)/70 p-6 shadow-sm">
+      <div className="w-full max-w-lg rounded-xl border border-(--color-line) bg-(--color-surface-0)/70 p-6 shadow-sm">
         <header className="mb-5">
           <h1 className="text-lg font-semibold text-(--color-fg)">
-            First-time setup
+            First-time setup required
           </h1>
-          <p className="mt-1 text-sm text-(--color-muted)">
-            Create the first admin operator for this backend. After this
-            you'll be signed in immediately.
+          <p className="mt-2 text-sm text-(--color-muted)">
+            The first operator must be created on the backend host. Network
+            clients cannot create administrator credentials.
           </p>
         </header>
-        <Form {...form}>
-          <form
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-4"
-            noValidate
+
+        <div className="space-y-4 text-sm text-(--color-fg)">
+          <ol className="list-decimal space-y-2 pl-5">
+            <li>Stop the underwrap backend service.</li>
+            <li>
+              As the backend service identity, run the offline command and
+              supply the new password through standard input:
+            </li>
+          </ol>
+          <pre className="overflow-x-auto rounded-md bg-(--color-surface-1) p-3 text-xs">
+            <code>
+              underwrap-backend --config /path/to/backend.yaml admin
+              bootstrap-user --username &lt;name&gt;
+            </code>
+          </pre>
+          <ol start={3} className="list-decimal space-y-2 pl-5">
+            <li>Restart the service, then sign in with the new operator.</li>
+          </ol>
+          <p className="text-(--color-muted)">
+            Run the command from a trusted terminal or password-manager flow.
+            Never place the password in argv, environment variables,
+            configuration, or shell history.
+          </p>
+          <a
+            href="/login"
+            className="inline-flex h-9 items-center justify-center rounded-md bg-(--color-accent) px-4 font-medium text-(--color-accent-contrast)"
           >
-            <FormField
-              control={form.control}
-              name="username"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Username</FormLabel>
-                  <FormControl>
-                    <Input
-                      autoComplete="username"
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      autoFocus
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    Stored lower-cased. Choose something you'll remember.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="password"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Password</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="password"
-                      autoComplete="new-password"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    At least 12 characters.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="confirm"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Confirm password</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="password"
-                      autoComplete="new-password"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            {submitError ? <Alert>{submitError}</Alert> : null}
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={form.formState.isSubmitting}
-            >
-              {form.formState.isSubmitting
-                ? "Creating admin…"
-                : "Create first admin"}
-            </Button>
-          </form>
-        </Form>
+            Continue to sign in
+          </a>
+        </div>
       </div>
     </div>
   );

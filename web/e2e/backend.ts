@@ -1,8 +1,8 @@
 /**
  * Spawn a real `underwrap-backend` against an isolated temp directory.
  *
- * Each test gets its own backend so the bootstrap-flow tests start
- * from an empty operator collection without interfering with the
+ * Each test gets its own backend so setup-guidance and network-rejection
+ * tests start from an empty operator collection without interfering with
  * tests that rely on an existing admin. The cost is one process spawn
  * per test (~1 s), which is fine for the size of the e2e suite.
  *
@@ -15,7 +15,7 @@
  * `npm run build` is enough between e2e runs — the daemon binary
  * itself doesn't have to be rebuilt.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import {
   mkdtempSync,
@@ -79,13 +79,8 @@ export interface BackendInstance {
 }
 
 export interface StartBackendOptions {
-  /**
-   * If true, bootstrap an admin operator before yielding so tests can
-   * jump straight to the `/login` UI. Bootstrap is performed through
-   * the public `POST /v1/admin/auth/bootstrap` endpoint, so the
-   * sentinel and password hashing are exercised the same way as a
-   * real first-time setup.
-   */
+  /** Provision an operator through the real offline CLI before the listener
+   * starts so tests can jump straight to the `/login` UI. */
   withAdmin?: { username: string; password: string };
 }
 
@@ -195,6 +190,30 @@ export async function startBackend(
     // need to see the backend's reasoning.
     RUST_LOG: process.env.UNDERWRAP_E2E_RUST_LOG ?? "warn",
   };
+  if (opts.withAdmin) {
+    const provision = spawnSync(
+      binary,
+      [
+        "--config",
+        configPath,
+        "admin",
+        "bootstrap-user",
+        "--username",
+        opts.withAdmin.username,
+      ],
+      {
+        env,
+        input: `${opts.withAdmin.password}\n`,
+        encoding: "utf8",
+      },
+    );
+    if (provision.status !== 0) {
+      throw new Error(
+        `offline bootstrap-user (${opts.withAdmin.username}) failed: ${provision.stderr}`,
+      );
+    }
+  }
+
   const proc = spawn(binary, ["--config", configPath], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -211,10 +230,6 @@ export async function startBackend(
   // the public bootstrap-status endpoint — it's GET, requires no
   // session, and returns 200 once the server is fully up.
   await waitForReady(baseUrl, proc);
-
-  if (opts.withAdmin) {
-    await bootstrapAdmin(baseUrl, opts.withAdmin);
-  }
 
   const cleanup = async () => {
     if (!proc.killed && proc.exitCode === null) {
@@ -269,29 +284,6 @@ async function waitForReady(
       lastErr instanceof Error ? lastErr.message : String(lastErr)
     }`,
   );
-}
-
-async function bootstrapAdmin(
-  baseUrl: string,
-  creds: { username: string; password: string },
-): Promise<void> {
-  const res = await fetchInsecure(`${baseUrl}/v1/admin/auth/bootstrap`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      // The admin listener requires Origin on state-changing requests
-      // (the CSRF-protection layer); the same-origin baseUrl satisfies
-      // it without needing the cookie+header double-submit that only
-      // applies to authenticated sessions.
-      Origin: baseUrl,
-    },
-    body: JSON.stringify(creds),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `bootstrap admin (${creds.username}) failed: ${res.status} ${await res.text()}`,
-    );
-  }
 }
 
 /**

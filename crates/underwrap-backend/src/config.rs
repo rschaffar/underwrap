@@ -86,9 +86,10 @@ pub struct BackendConfig {
     /// [`crate::users::DEFAULT_USERS_DIR`].
     #[serde(default = "default_users_dir")]
     pub users_dir: PathBuf,
-    /// Path of the persistent bootstrap-completed sentinel. The file's
-    /// presence is the "bootstrap has run" signal; its absence means
-    /// the bootstrap page must be served. Defaults to
+    /// Path of the persistent offline-bootstrap sentinel. Its absence with an
+    /// empty operator collection makes the SPA show deployment instructions;
+    /// only the offline `bootstrap-user` command creates the first operator.
+    /// Defaults to
     /// [`crate::users::DEFAULT_BOOTSTRAP_FILE`].
     #[serde(default = "default_bootstrap_file")]
     pub bootstrap_file: PathBuf,

@@ -2,6 +2,7 @@
 
 import base64
 import json
+import re
 import shlex
 import time
 import urllib.parse
@@ -31,9 +32,12 @@ ADMIN_LOCAL = "https://127.0.0.1:18443"
 ADMIN_REMOTE = "https://127.0.0.1:18444"
 CA_CERT = "/etc/underwrap-test-ca.pem"
 ADMIN_BOOTSTRAP_USER = "tester"
-ADMIN_BOOTSTRAP_PASSWORD = "hunter2-long"
+# Public fixture material, not a credential. Guest-side generators derive the
+# synthetic password and write it directly into a pipe; the derived value never
+# enters a Nix test command string, argv, environment, or configuration.
+ADMIN_PASSWORD_FIXTURE_MATERIAL = "underwrap-vm-admin-password-v1"
 
-# Per-admin session-cookie state, populated by `bootstrap_admin_session`
+# Per-admin session-cookie state, populated by `login_admin_session`
 # during boot. `_COOKIE_JAR[url]` is curl's cookie file on the VM
 # (carries `__Host-underwrap-session` and `__Host-underwrap-csrf` cookies);
 # `_CSRF_TOKEN[url]` is the HMAC authenticity token from the most
@@ -57,39 +61,68 @@ def _extract_csrf_response_header(headers_text):
     return None
 
 
-def bootstrap_admin_session(url):
-    """Create the first operator on an admin listener and capture its
-    session cookies + CSRF authenticity token. Must be called exactly
-    once per backend boot — subsequent bootstrap POSTs would return 409.
-    """
-    cookie_jar = _cookie_jar_path(url)
-    headers_file = f"{cookie_jar}.headers"
-    payload = json.dumps({
-        "username": ADMIN_BOOTSTRAP_USER,
-        "password": ADMIN_BOOTSTRAP_PASSWORD,
-    })
-    cmd = [
-        "curl", "-fsS",
-        "--cacert", CA_CERT,
-        "-c", cookie_jar,
-        "-D", headers_file,
-        "-X", "POST",
-        "-H", f"Origin: {url}",
-        "-H", "Content-Type: application/json",
-        "-d", payload,
-        f"{url}/v1/admin/auth/bootstrap",
-    ]
-    machine.succeed(" ".join(shlex.quote(p) for p in cmd))
+def backend_config_path(unit):
+    """Read the immutable config path from the packaged unit definition."""
+    unit_text = machine.succeed(f"systemctl cat {shlex.quote(unit)}")
+    match = re.search(r"--config[ =]([^ \n]+)", unit_text)
+    if not match:
+        raise AssertionError(f"could not find --config in {unit} unit")
+    return match.group(1)
 
-    headers = machine.succeed(f"cat {shlex.quote(headers_file)}")
-    csrf = _extract_csrf_response_header(headers)
-    if not csrf:
-        raise AssertionError(
-            f"bootstrap_admin_session: no X-CSRF-Token response header in {headers_file}"
+
+def _admin_password_stream(*, as_login_json=False):
+    """Return a guest command that writes the derived fixture only to stdout."""
+    digest = (
+        f"hashlib.sha256({ADMIN_PASSWORD_FIXTURE_MATERIAL.encode()!r}).hexdigest()"
+    )
+    if as_login_json:
+        source = (
+            "import hashlib,json,sys;"
+            f"password={digest};"
+            "sys.stdout.write(json.dumps({"
+            f"'username':{ADMIN_BOOTSTRAP_USER!r},'password':password"
+            "},separators=(',',':')))"
         )
+    else:
+        source = (
+            "import hashlib,sys;"
+            f"sys.stdout.write({digest}+'\\n')"
+        )
+    return f"{shlex.quote(PYTHON3)} -c {shlex.quote(source)}"
 
-    _COOKIE_JAR[url] = cookie_jar
-    _CSRF_TOKEN[url] = csrf
+
+def provision_backend_operator(unit, service_user, state_dir):
+    """Provision before listener startup through the real stdin-only CLI."""
+    config = backend_config_path(unit)
+    backend_command = (
+        f"underwrap-backend --config {shlex.quote(config)} admin bootstrap-user "
+        f"--username {shlex.quote(ADMIN_BOOTSTRAP_USER)}"
+    )
+
+    # The ordinary user must fail specifically at the service-owned DAC
+    # boundary, without creating either authoritative artifact.
+    ordinary_command = (
+        f"{_admin_password_stream()} | runuser -u testuser -- {backend_command} 2>&1"
+    )
+    status, output = machine.execute(ordinary_command)
+    assert status != 0, "ordinary user unexpectedly provisioned an operator"
+    assert "Permission denied" in output, output
+    machine.succeed(
+        f"test ! -e {shlex.quote(state_dir + '/bootstrap.json')} && "
+        f"{{ test ! -d {shlex.quote(state_dir + '/users')} || "
+        f"! find {shlex.quote(state_dir + '/users')} -name '*.json' -print -quit "
+        "| grep -q .; }"
+    )
+
+    service_command = (
+        f"{_admin_password_stream()} | runuser -u {shlex.quote(service_user)} -- "
+        f"{backend_command}"
+    )
+    machine.succeed(service_command)
+    machine.succeed(
+        f"test -f {shlex.quote(state_dir + '/bootstrap.json')} && "
+        f"test $(find {shlex.quote(state_dir + '/users')} -name '*.json' | wc -l) -eq 1"
+    )
 
 
 def login_admin_session(url):
@@ -99,10 +132,6 @@ def login_admin_session(url):
     `/v1/admin/auth/login`."""
     cookie_jar = _cookie_jar_path(url)
     headers_file = f"{cookie_jar}.headers"
-    payload = json.dumps({
-        "username": ADMIN_BOOTSTRAP_USER,
-        "password": ADMIN_BOOTSTRAP_PASSWORD,
-    })
     cmd = [
         "curl", "-fsS",
         "--cacert", CA_CERT,
@@ -111,10 +140,11 @@ def login_admin_session(url):
         "-X", "POST",
         "-H", f"Origin: {url}",
         "-H", "Content-Type: application/json",
-        "-d", payload,
+        "--data-binary", "@-",
         f"{url}/v1/admin/auth/login",
     ]
-    machine.succeed(" ".join(shlex.quote(p) for p in cmd))
+    quoted_curl = " ".join(shlex.quote(p) for p in cmd)
+    machine.succeed(f"{_admin_password_stream(as_login_json=True)} | {quoted_curl}")
     headers = machine.succeed(f"cat {shlex.quote(headers_file)}")
     csrf = _extract_csrf_response_header(headers)
     if not csrf:
@@ -127,7 +157,7 @@ def login_admin_session(url):
 
 def admin_api(url, path, payload=None, method="POST"):
     """Make an authenticated admin API call. Uses the session cookies
-    populated by `bootstrap_admin_session` for the listener at `url`
+    populated by `login_admin_session` for the listener at `url`
     and adds an `X-CSRF-Token` header on every state-changing request
     so the backend's CSRF double-submit check passes.
     """
@@ -136,7 +166,7 @@ def admin_api(url, path, payload=None, method="POST"):
     csrf = _CSRF_TOKEN.get(url)
     if cookie_jar is None or csrf is None:
         raise AssertionError(
-            f"admin_api({url!r}, …): bootstrap_admin_session was never "
+            f"admin_api({url!r}, …): login_admin_session was never "
             f"called for this listener — cookies + CSRF token are unset",
         )
 
@@ -378,22 +408,40 @@ def boot_and_service_checks():
     # ============================================================
 
     machine.wait_for_unit("multi-user.target")
+
+    # Neither backend listener is started until deployment-side filesystem
+    # authority has created its first operator through the real offline CLI.
+    provision_backend_operator(
+        "underwrap-backend.service",
+        "underwrap-backend",
+        "/var/lib/underwrap-backend",
+    )
+    provision_backend_operator(
+        "underwrap-backend-local.service",
+        "underwrap-local",
+        "/var/lib/underwrap-backend-local",
+    )
+    machine.succeed("systemctl start underwrap-backend.service")
+    machine.succeed("systemctl start underwrap-backend-local.service")
     machine.wait_for_unit("underwrap-backend.service")
     machine.wait_for_unit("underwrap-backend-local.service")
 
-    # Wait for the unified HTTPS listeners to start accepting before
-    # bootstrapping. The bootstrap-status endpoint is the cheapest GET
-    # the backend exposes.
     for url in (ADMIN_LOCAL, ADMIN_REMOTE):
         machine.wait_until_succeeds(
             f"curl -fsS --cacert {CA_CERT} {url}/v1/admin/auth/bootstrap/status >/dev/null"
         )
+        hostile_status = machine.succeed(
+            f"{_admin_password_stream(as_login_json=True)} | "
+            "curl -sS -o /dev/null -w '%{http_code}' "
+            f"--cacert {CA_CERT} -X POST -H {shlex.quote('Origin: ' + url)} "
+            "-H 'Content-Type: application/json' --data-binary @- "
+            f"{url}/v1/admin/auth/bootstrap"
+        ).strip()
+        assert hostile_status in ("404", "405"), hostile_status
 
-    # Create the first operator on each backend and capture session
-    # cookies + CSRF token. Every subsequent admin_api(...) call
-    # depends on these globals being populated.
-    bootstrap_admin_session(ADMIN_LOCAL)
-    bootstrap_admin_session(ADMIN_REMOTE)
+    # Ordinary login, not bootstrap, supplies session + CSRF state.
+    login_admin_session(ADMIN_LOCAL)
+    login_admin_session(ADMIN_REMOTE)
 
     # underwrapd-local / underwrapd-tunnel only come up after the
     # backends are reachable (they issue an empty `POST /v1/wrappers`
@@ -2578,9 +2626,8 @@ def encrypted_store_in_memory_keys():
         f"{ADMIN_LOCAL}/v1/admin/auth/bootstrap/status >/dev/null"
     )
     # We have to re-login our session against the listener because
-    # in-memory session state was reset. The on-disk bootstrap
-    # sentinel persists across restarts, so the public bootstrap
-    # endpoint now refuses; use the login path instead.
+    # In-memory session state was reset; the operator persists, so use the
+    # ordinary login path again.
     login_admin_session(ADMIN_LOCAL)
 
     stores_after_restart = admin_api(

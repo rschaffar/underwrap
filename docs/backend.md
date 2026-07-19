@@ -304,8 +304,8 @@ single source of typed admin-API truth.
 Two SecuritySchemes are referenced from individual operations:
 `session_cookie` (the opaque `__Host-underwrap-session` cookie issued by
 tower-sessions) and `csrf_header` (the synchronizer `X-CSRF-Token`
-header issued by `axum_csrf`). Public endpoints (login, whoami,
-bootstrap) carry neither; read-only protected endpoints carry only
+header issued by `axum_csrf`). Public endpoints (login, whoami, and read-only
+bootstrap status) carry neither; read-only protected endpoints carry only
 `session_cookie`; state-changing protected endpoints carry both.
 
 
@@ -317,10 +317,10 @@ libsecret collection, `{iid}` a libsecret item.
 
 ### Authentication and session
 
-- `GET  /v1/admin/auth/bootstrap/status` — *public*; reports whether the
-  first operator account still needs to be created.
-- `POST /v1/admin/auth/bootstrap` — *public*; creates the very first
-  operator account (only succeeds while the user collection is empty).
+- `GET  /v1/admin/auth/bootstrap/status` — *public and read-only*; reports
+  whether the deployment operator still needs to run the offline
+  `underwrap-backend admin bootstrap-user` command. No network route creates an
+  operator.
 - `POST /v1/admin/auth/login` — *public*; establishes the session cookie.
 - `POST /v1/admin/auth/logout` — end the current session.
 - `GET  /v1/admin/auth/whoami` — current principal.

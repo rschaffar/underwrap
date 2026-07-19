@@ -61,7 +61,7 @@ pub(crate) struct AdminState {
     /// (`<users_dir>/<id>.json`).
     pub(crate) users_dir: PathBuf,
     /// Path of the persistent bootstrap-completed sentinel file. Its
-    /// presence means the online bootstrap flow has already run.
+    /// presence means offline first-operator provisioning has completed.
     pub(crate) bootstrap_file: PathBuf,
     /// `axum-login` backend resolving credentials and user ids against
     /// the operator collection. Cloning shares the per-username
@@ -85,12 +85,6 @@ pub(crate) struct AdminState {
     /// True when the admin listener terminates TLS. The CSRF config
     /// stored alongside is built from this same flag.
     pub(crate) cookies_secure: bool,
-    /// Mutex that serialises bootstrap attempts so concurrent callers
-    /// can't both pass the "is operator collection empty" check
-    /// before either has written the first record. The lock is held
-    /// across the read-collection / write-collection / mark-sentinel
-    /// sequence.
-    pub(crate) bootstrap_lock: std::sync::Mutex<()>,
     /// Mutex that serialises operator-collection read-modify-write
     /// cycles so two concurrent admin requests (e.g. two user
     /// renames) can't observe and overwrite each other's intermediate

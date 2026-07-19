@@ -2,7 +2,7 @@
  * Baseline auth e2e — runs against a freshly-spawned backend per
  * test. The scenarios cover the must-not-regress paths:
  *
- *   1. bootstrap → login → dashboard
+ *   1. fresh backend → offline setup guidance; network bootstrap rejected
  *   2. login with the wrong password → inline error
  *   3. logout invalidates the server-side session
  *   4. CSRF token is attached on POSTs the SPA initiates
@@ -11,46 +11,32 @@
 import { request as playwrightRequest } from "@playwright/test";
 import { test, expect, loginViaUi, ADMIN_USERNAME, ADMIN_PASSWORD } from "./fixtures";
 
-test("bootstrap-then-login happy path", async ({ page, backend }) => {
-  // 1) The guard sees an empty operator collection and redirects to
-  //    /bootstrap.
+test("fresh backend requires offline setup and rejects network bootstrap", async ({
+  page,
+  backend,
+}) => {
   await page.goto(`${backend.baseUrl}/`);
-  // The guard redirects to /bootstrap with a `?next=...` echo of the
-  // original URL, so anchor on the path only.
   await expect(page).toHaveURL(/\/bootstrap(\?|$)/);
   await expect(
-    page.getByRole("heading", { name: /first-time setup/i }),
+    page.getByRole("heading", { name: /first-time setup required/i }),
   ).toBeVisible();
+  await expect(page.getByText(/bootstrap-user --username/i)).toBeVisible();
+  await expect(page.getByLabel("Username")).toHaveCount(0);
+  await expect(page.getByLabel(/password/i)).toHaveCount(0);
 
-  // 2) Fill the bootstrap form. The page form enforces password >= 12
-  //    and confirms match — use a deliberately strong password.
-  await page.getByLabel("Username").fill(ADMIN_USERNAME);
-  await page.getByLabel(/^password$/i).fill(ADMIN_PASSWORD);
-  await page.getByLabel(/confirm password/i).fill(ADMIN_PASSWORD);
-  await page.getByRole("button", { name: /create first admin/i }).click();
-
-  // 3) Auto-signed-in: `/` redirects to the Secrets landing page.
-  await page.waitForURL(/\/secrets(\?|$)/);
-  await expect(
-    page.getByRole("heading", { name: /^secrets$/i }),
-  ).toBeVisible();
-
-  // 4) The whoami endpoint reflects the new identity.
-  const whoami = await page.request.get(
-    `${backend.baseUrl}/v1/admin/auth/whoami`,
+  const hostile = await page.request.post(
+    `${backend.baseUrl}/v1/admin/auth/bootstrap`,
+    {
+      headers: { Origin: backend.baseUrl },
+      data: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD },
+    },
   );
-  expect(whoami.status()).toBe(200);
-  const body = await whoami.json();
-  // whoami carries only the username now (no role/authenticated flag);
-  // the SPA treats `username !== undefined` as authenticated.
-  expect(body).toMatchObject({ username: ADMIN_USERNAME });
+  expect([404, 405]).toContain(hostile.status());
 
-  // 5) A subsequent visit to /bootstrap (or trying to bootstrap again)
-  //    must report bootstrap_required: false.
   const status = await page.request.get(
     `${backend.baseUrl}/v1/admin/auth/bootstrap/status`,
   );
-  expect(await status.json()).toEqual({ bootstrap_required: false });
+  expect(await status.json()).toEqual({ bootstrap_required: true });
 });
 
 test("login with wrong password shows inline error", async ({

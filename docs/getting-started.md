@@ -118,7 +118,7 @@ The module creates:
 The daemon can start before its client credential or backend is available. It
 retries backend initialization on each wrapper request.
 
-## 2. Start the backend
+## 2. Prepare the backend
 
 Create backend state directories:
 
@@ -150,16 +150,29 @@ admin:
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Start it in a dedicated terminal for the tutorial:
+Before starting the listener, create the first operator through backend-host
+filesystem authority. Run the command as the identity that owns the backend
+state and supply the password through standard input from a trusted prompt or
+password manager:
 
 ```bash
-sudo underwrap-backend --config /etc/underwrap-backend/config.yaml
+sudo underwrap-backend \
+  --config /etc/underwrap-backend/config.yaml \
+  admin bootstrap-user --username alice
 ```
 
-A production deployment should run the backend as a dedicated service account
-with a hardened service unit; see [Deploying the backend](remote-backend.md).
+Do not place the password in argv, environment variables, configuration, or
+shell history. Then start the backend in a dedicated terminal:
 
-## 3. Bootstrap an operator and create the store
+```bash
+sudo underwrap-backend \
+  --config /etc/underwrap-backend/config.yaml
+```
+
+A production deployment should use a hardened service unit; see
+[Deploying the backend](remote-backend.md).
+
+## 3. Sign in and create the store
 
 Open:
 
@@ -167,8 +180,8 @@ Open:
 https://127.0.0.1:18443/
 ```
 
-The SPA routes an empty backend to the bootstrap page. Create the first operator,
-then open **Stores** and create a **plain** store named `demo`.
+Sign in with the offline-provisioned operator, then open **Stores** and create a
+**plain** store named `demo`.
 
 The store must exist before a runtime client instance can select it.
 

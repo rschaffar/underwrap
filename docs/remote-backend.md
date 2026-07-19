@@ -115,12 +115,22 @@ The backend configuration and full data model are documented in
 
 ## Bootstrap the backend
 
-Open the backend origin in a trusted browser and:
+Before the service exposes its listener, run the offline command as the backend
+service identity:
 
-1. bootstrap the first operator;
-2. create the target store;
-3. for an encrypted store, record the one-time master key in an external vault;
-4. leave the encrypted store unlocked while enrolling and testing its frontend.
+```text
+underwrap-backend --config /etc/underwrap-backend/config.yaml admin bootstrap-user --username <name>
+```
+
+Supply the password through standard input from a trusted prompt or password
+manager. Do not put it in argv, environment variables, configuration, or shell
+history. The command uses the service-owned user directory and bootstrap
+sentinel, and refuses non-fresh state. Start the service, sign in through the
+ordinary login page, then:
+
+1. create the target store;
+2. for an encrypted store, record the one-time master key in an external vault;
+3. leave the encrypted store unlocked while enrolling and testing its frontend.
 
 A runtime client instance must select an existing store, so store creation comes
 before client enrollment.

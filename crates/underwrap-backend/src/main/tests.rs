@@ -9,6 +9,23 @@ fn cli_parses_config_flag() {
 }
 
 #[test]
+fn cli_parses_bootstrap_user_subcommand() {
+    let cli = Cli::parse_from([
+        "underwrap-backend",
+        "admin",
+        "bootstrap-user",
+        "--username",
+        "Alice",
+    ]);
+    match cli.command {
+        Some(Command::Admin(AdminCommand::BootstrapUser { username })) => {
+            assert_eq!(username, "Alice");
+        }
+        _ => panic!("expected bootstrap-user subcommand, got {:?}", cli.command),
+    }
+}
+
+#[test]
 fn cli_parses_recover_user_subcommand() {
     let cli = Cli::parse_from([
         "underwrap-backend",

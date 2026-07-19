@@ -273,7 +273,6 @@ in {
   # Backend daemon service (for remote test).
   systemd.services.underwrap-backend = {
     description = "underwrap backend daemon";
-    wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "simple";
       User = "underwrap-backend";
@@ -361,7 +360,6 @@ in {
   # Local backend daemon serving the local frontend instance.
   systemd.services.underwrap-backend-local = {
     description = "underwrap backend daemon (local)";
-    wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "simple";
       User = "underwrap-local";

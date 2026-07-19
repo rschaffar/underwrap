@@ -3,7 +3,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::info;
 
-use underwrap_backend::{BackendConfig, cli::recover_user, server};
+use underwrap_backend::{
+    BackendConfig,
+    cli::{bootstrap_user, recover_user},
+    server,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,12 +37,19 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum AdminCommand {
+    /// Create the first operator while the backend service is stopped.
+    /// Requires backend-host filesystem authority and reads the password from
+    /// stdin so it never enters argv or the environment.
+    BootstrapUser {
+        /// Username to create. Will be normalised (trimmed + lowercased).
+        #[arg(long)]
+        username: String,
+    },
     /// Offline recovery: append (or refuse-on-conflict) a user
     /// directly to the backend-managed user-state file. Use when
     /// nobody can log in to the running daemon. This subcommand
     /// intentionally does NOT touch the bootstrap-completed sentinel:
-    /// it's the escape hatch for the locked-out case, not a
-    /// replacement for the online bootstrap flow.
+    /// it remains distinct from first-operator provisioning.
     ///
     /// Requires physical/file-system access to the backend state dir.
     /// The password is read from stdin to keep it out of the process
@@ -99,17 +110,34 @@ async fn main() -> Result<()> {
     }
 }
 
+fn read_password_from_stdin() -> Result<String> {
+    let mut password = String::new();
+    std::io::stdin()
+        .read_line(&mut password)
+        .context("reading password from stdin")?;
+    Ok(password.trim_end_matches(['\r', '\n']).to_string())
+}
+
 fn run_admin(cmd: AdminCommand, config: BackendConfig) -> Result<()> {
-    let users_dir = config.users_dir.clone();
     match cmd {
+        AdminCommand::BootstrapUser { username } => {
+            let password = read_password_from_stdin()?;
+            bootstrap_user(
+                &config.users_dir,
+                &config.bootstrap_file,
+                &username,
+                &password,
+            )?;
+            info!(
+                dir = %config.users_dir.display(),
+                "bootstrap-user: initial operator created"
+            );
+            Ok(())
+        }
         AdminCommand::RecoverUser { username } => {
-            let mut password = String::new();
-            std::io::stdin()
-                .read_line(&mut password)
-                .context("reading password from stdin")?;
-            let password = password.trim_end_matches(['\r', '\n']).to_string();
-            recover_user(&users_dir, &username, &password)?;
-            info!(dir = %users_dir.display(), username = %username, "recover-user: user added");
+            let password = read_password_from_stdin()?;
+            recover_user(&config.users_dir, &username, &password)?;
+            info!(dir = %config.users_dir.display(), username = %username, "recover-user: user added");
             Ok(())
         }
     }

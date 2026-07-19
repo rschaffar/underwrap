@@ -21,8 +21,9 @@ clients_dir: /var/lib/underwrap-backend/clients
 # Directory holding the admin operator collection (`<users_dir>/<id>.json`).
 users_dir: /var/lib/underwrap-backend/users
 
-# Persistent "bootstrap has run" sentinel. Its absence makes the backend
-# serve the one-time bootstrap page that creates the first admin user.
+# Persistent "offline first-operator provisioning has completed" sentinel.
+# Before starting the listener, run `underwrap-backend admin bootstrap-user`
+# as the service identity; the public setup page never accepts credentials.
 bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
 
 # HTTPS listener. Serves both the mTLS runtime API (daemon-facing) and the

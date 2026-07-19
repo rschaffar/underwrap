@@ -32,7 +32,7 @@ pub(crate) fn csrf_cookie_header(session_cookie: &str, csrf_cookie: &str) -> Str
 }
 
 /// Material the harness needs to authenticate subsequent admin
-/// requests after a successful bootstrap or login: the session
+/// requests after a successful login: the session
 /// cookie value, the CSRF cookie value, and the HMAC authenticity
 /// token to echo back in `X-CSRF-Token`.
 pub(crate) struct AdminCredentials {
@@ -41,7 +41,7 @@ pub(crate) struct AdminCredentials {
     pub csrf_token: String,
 }
 
-pub(crate) async fn bootstrap_admin(
+pub(crate) async fn login_admin(
     url: &str,
     ca_cert: &Path,
     username: &str,
@@ -49,7 +49,7 @@ pub(crate) async fn bootstrap_admin(
 ) -> Result<AdminCredentials> {
     let client = admin_client(ca_cert, std::time::Duration::from_secs(5))?;
     let response = client
-        .post(format!("{url}/v1/admin/auth/bootstrap"))
+        .post(format!("{url}/v1/admin/auth/login"))
         .json(&serde_json::json!({
             "username": username,
             "password": password,
@@ -58,7 +58,7 @@ pub(crate) async fn bootstrap_admin(
         .await?;
     anyhow::ensure!(
         response.status().is_success(),
-        "bootstrap returned {}",
+        "login returned {}",
         response.status()
     );
     let csrf_token = response
@@ -66,7 +66,7 @@ pub(crate) async fn bootstrap_admin(
         .get("X-CSRF-Token")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
-        .context("bootstrap response missing X-CSRF-Token header")?;
+        .context("login response missing X-CSRF-Token header")?;
     let cookies = response.headers().get_all(reqwest::header::SET_COOKIE);
     let mut session_cookie = None;
     let mut csrf_cookie = None;
@@ -78,8 +78,8 @@ pub(crate) async fn bootstrap_admin(
             csrf_cookie = parse_cookie_value(value, "__Host-underwrap-csrf");
         }
     }
-    let session_cookie = session_cookie.context("bootstrap response missing session cookie")?;
-    let csrf_cookie = csrf_cookie.context("bootstrap response missing csrf cookie")?;
+    let session_cookie = session_cookie.context("login response missing session cookie")?;
+    let csrf_cookie = csrf_cookie.context("login response missing csrf cookie")?;
     Ok(AdminCredentials {
         session_cookie,
         csrf_cookie,

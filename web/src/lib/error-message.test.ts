@@ -10,7 +10,6 @@ describe("describeApiError", () => {
       ["password_too_short", /at least 12 characters/i],
       ["password_empty", /password is required/i],
       ["rate_limited", /too many attempts/i],
-      ["bootstrap_already_completed", /already been completed/i],
       ["operators_already_exist", /operator already exists/i],
       ["csrf_required", /session is stale/i],
       ["csrf_mismatch", /session is stale/i],

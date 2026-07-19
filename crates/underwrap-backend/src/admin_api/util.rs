@@ -18,8 +18,8 @@ use crate::admin_api::AdminError;
 
 /// Reject a password that fails [`crate::auth::validate_password`]
 /// with the canonical `password_empty` / `password_too_short` codes.
-/// Used by every endpoint that accepts an operator password
-/// (create user, reset password, change password, bootstrap).
+/// Used by the authenticated endpoints that accept a new operator password
+/// (create user, reset password, and change password).
 pub(crate) fn validate_password_or_bad_request(password: &str) -> Result<(), AdminError> {
     if let Err(code) = crate::auth::validate_password(password) {
         return Err(AdminError::bad_request(

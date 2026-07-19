@@ -240,7 +240,6 @@ pub(crate) fn default_admin_runtime_state() -> ListenerState {
             csrf_config: crate::admin_api::csrf::build_csrf_config(cookies_secure),
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure,
-            bootstrap_lock: std::sync::Mutex::new(()),
             user_collection_lock: std::sync::Mutex::new(()),
         }),
     }
@@ -409,64 +408,6 @@ where
         })
     };
     (parts.status, value)
-}
-
-/// Mirror of the production `handle_admin_bootstrap` validation +
-/// state mutations, minus the body-parse and AuthSession-issue steps.
-/// Used by tests that only care about the DB-side state transition
-/// and don't want to spin up an `AdminAuthSession`.
-pub(crate) fn run_bootstrap(
-    state: &ListenerState,
-    username: &str,
-    password: &str,
-) -> (StatusCode, serde_json::Value) {
-    use crate::admin_api::AdminError;
-    use crate::admin_api::audit::log_bootstrap_attempt;
-
-    let username_norm = crate::users::normalise_username(username);
-    if username_norm.is_empty() {
-        let err = AdminError::bad_request("invalid_credentials", "missing username");
-        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
-    }
-    let _guard = state.admin().bootstrap_lock.lock().unwrap();
-    if crate::users::bootstrap_completed(&state.admin().bootstrap_file).unwrap_or(true) {
-        log_bootstrap_attempt(
-            &username_norm,
-            Some("bootstrap-already-completed"),
-            "failure",
-        );
-        let err = AdminError::conflict("bootstrap_already_completed", "already done");
-        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
-    }
-    let collection = crate::users::load(&state.admin().users_dir).unwrap();
-    if !collection.is_empty() {
-        log_bootstrap_attempt(&username_norm, Some("users-already-exist"), "failure");
-        let err = AdminError::conflict("users_already_exist", "already populated");
-        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
-    }
-    if let Err(code) = crate::auth::validate_password(password) {
-        log_bootstrap_attempt(&username_norm, Some(code), "failure");
-        let err = AdminError::bad_request(code, "password rejected");
-        return run_handler(async { Err::<axum::Json<()>, AdminError>(err) });
-    }
-    let now = crate::time::now_epoch_secs();
-    let hash = crate::auth::hash_password(password).unwrap();
-    let record = crate::users::UserRecord {
-        id: crate::users::new_user_id(),
-        username: username_norm.clone(),
-        password_hash: hash,
-        created_at: now,
-        password_changed_at: now,
-    };
-    let mut new_collection = crate::users::UserCollection::default();
-    new_collection.add(record.clone()).unwrap();
-    crate::users::save_user(&state.admin().users_dir, &record).unwrap();
-    crate::users::mark_bootstrap_completed(&state.admin().bootstrap_file).unwrap();
-    log_bootstrap_attempt(&record.username, None, "success");
-    let body = crate::admin_api::auth::bootstrap::BootstrapResponse {
-        username: record.username.clone(),
-    };
-    run_handler(async { Ok::<_, crate::admin_api::AdminError>(axum::Json(body)) })
 }
 
 pub(crate) fn admin_principal() -> crate::admin_api::csrf::Principal {

@@ -18,14 +18,18 @@ certificate is required for browser access.
 
 ## First-use bootstrap
 
-An empty backend redirects to `/bootstrap`.
+An empty backend redirects to `/bootstrap`, which shows deployment instructions
+but accepts no credentials. Stop the backend service and run, as its service
+identity:
 
-1. Create the first operator username and password.
-2. Record the credential in the operator's password manager.
-3. Sign in.
+```text
+underwrap-backend --config /etc/underwrap/backend.yaml admin bootstrap-user --username <name>
+```
 
-Bootstrap succeeds only while the operator collection is empty. The backend
-writes the configured bootstrap sentinel after the first account is created.
+Supply the password through standard input from a trusted prompt or password
+manager; never place it in argv, environment variables, configuration, or shell
+history. The command succeeds only while the operator collection is empty and
+the bootstrap sentinel is absent. Restart the service and sign in normally.
 
 All authenticated operators have the same authority. There are no roles or
 per-store operator grants. A last-user guard prevents deleting the final

@@ -1,5 +1,5 @@
 //! Admin login surface: `/v1/admin/auth/{login, logout, whoami,
-//! password, bootstrap, bootstrap/status}`.
+//! password, bootstrap/status}`.
 //!
 //! Sessions are issued via [`tower_sessions`] / [`axum_login`]: on a
 //! successful password check the handler calls
@@ -11,11 +11,8 @@
 //! it to drive the login / bootstrap redirect dance without producing
 //! 401s.
 //!
-//! The [`bootstrap`] submodule covers the once-only "first operator"
-//! setup that runs against an empty operator collection. Its routes
-//! share this module's `/v1/admin/auth/*` prefix and are merged into
-//! [`public_router`] below — there is no separate top-level
-//! `bootstrap` module.
+//! The [`bootstrap`] submodule exposes only read-only setup status. First-
+//! operator creation is an offline deployment command, never a network route.
 
 pub(crate) mod bootstrap;
 

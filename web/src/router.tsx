@@ -214,17 +214,7 @@ const loginRoute = createRoute({
 const bootstrapRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/bootstrap",
-  component: function BootstrapRouteComponent() {
-    const navigate = bootstrapRoute.useNavigate();
-    return (
-      <BootstrapPage
-        onSuccess={async () => {
-          await queryClient.invalidateQueries();
-          await navigate({ to: "/" });
-        }}
-      />
-    );
-  },
+  component: BootstrapPage,
 });
 
 const logoutRoute = createRoute({

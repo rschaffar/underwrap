@@ -5,9 +5,9 @@
  * `backend.baseUrl`.
  *
  * Two variants:
- *   - `test`         — empty backend, useful for the bootstrap flow.
- *   - `loggedOutTest` — backend that already has an admin user. Tests
- *                       hit `/login` to exercise the login UI.
+ *   - `test` — empty backend for setup guidance/status/network rejection.
+ *   - `backendWithAdmin` — backend provisioned offline with an admin user.
+ *                          Tests hit `/login` to exercise the login UI.
  */
 import { test as base, type Page } from "@playwright/test";
 import { startBackend, type BackendInstance } from "./backend";

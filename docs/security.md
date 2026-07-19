@@ -571,6 +571,14 @@ startup; each wrapper request retries backend initialization.
 
 ### Admin authentication
 
+The first operator is created only by the quiesced offline
+`underwrap-backend admin bootstrap-user` command, executed with backend-host
+root or service-identity filesystem authority. The public network surface
+exposes only read-only setup status; it cannot create an operator. The command
+reads the password from stdin, serializes independent processes with a stable
+advisory lock, commits the user before the bootstrap sentinel, and never rolls
+back a valid user when sentinel persistence fails.
+
 The admin API and SPA share the backend HTTPS listener. Authentication uses:
 
 - Argon2id password hashes;

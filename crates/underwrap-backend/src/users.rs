@@ -4,13 +4,12 @@
 //! id is the file stem, so it is not serialized into the JSON body —
 //! the loader backfills it from the filename. A separate
 //! `<bootstrap_file>` (typically a sibling of `users_dir`) holds the
-//! persistent bootstrap-completed sentinel; its mere presence signals
-//! that the online bootstrap flow has completed.
+//! persistent bootstrap-completed sentinel; its presence signals that the
+//! offline first-operator command completed both persistence steps.
 //!
 //! Authorisation is intentionally flat: any authenticated user can
 //! perform any admin action. The "last user" guard prevents the
-//! collection from going empty (which would re-trigger the bootstrap
-//! flow).
+//! operator collection from becoming empty.
 //!
 //! Password hashes are Argon2id PHC strings. We never log them; the
 //! [`UserRecord`] `Debug` impl redacts them and tests assert that
@@ -96,8 +95,8 @@ impl UserCollection {
         self.users.len()
     }
 
-    /// True when no user records exist. Used by the bootstrap flow
-    /// to decide whether to show the bootstrap page.
+    /// True when no user records exist. Used by read-only setup status and
+    /// offline first-operator freshness checks.
     pub fn is_empty(&self) -> bool {
         self.users.is_empty()
     }
@@ -246,9 +245,13 @@ pub fn delete_user(dir: &Path, user_id: &str) -> Result<()> {
     crate::storage::json_dir_store::delete(dir, "user", user_id)
 }
 
-/// True iff the bootstrap-completed sentinel file is present.
+/// True iff any directory entry occupies the bootstrap-sentinel path.
+///
+/// The final path component is deliberately not followed: a dangling symlink
+/// is existing, non-fresh authentication state and must fail closed. An
+/// ordinary missing final entry retains the fresh-backend meaning.
 pub fn bootstrap_completed(bootstrap_file: &Path) -> Result<bool> {
-    match std::fs::metadata(bootstrap_file) {
+    match std::fs::symlink_metadata(bootstrap_file) {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e).with_context(|| format!("statting {}", bootstrap_file.display())),

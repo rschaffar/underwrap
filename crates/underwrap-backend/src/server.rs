@@ -64,7 +64,6 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
                 csrf_config: crate::admin_api::csrf::build_csrf_config(cookies_secure),
                 session_lifetime_secs: cfg.session_lifetime_secs,
                 cookies_secure,
-                bootstrap_lock: std::sync::Mutex::new(()),
                 user_collection_lock: std::sync::Mutex::new(()),
             }
         });

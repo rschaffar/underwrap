@@ -1,6 +1,66 @@
 use super::*;
 use crate::harness::{pick_unused_port, wait_for_service};
 use base64::Engine;
+use std::fs::{File, OpenOptions};
+use std::io::Write as _;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+fn checked_flock(file: &File, operation: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: `file` owns a live descriptor for the duration of this call;
+    // `flock` takes no pointers and does not transfer descriptor ownership.
+    let result = unsafe { libc::flock(file.as_raw_fd(), operation) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn json_file_count(path: &std::path::Path) -> usize {
+    match std::fs::read_dir(path) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .count(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => panic!("reading {}: {error}", path.display()),
+    }
+}
+
+fn provision_operator(
+    backend_bin: &str,
+    config_path: &std::path::Path,
+    username: &str,
+    password: &str,
+) {
+    let mut child = std::process::Command::new(backend_bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "admin",
+            "bootstrap-user",
+            "--username",
+            username,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{password}\n").as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "offline bootstrap-user failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 #[tokio::test]
 async fn parse_example_config() {
@@ -51,7 +111,7 @@ wrappers:
 // ===========================================================================
 
 #[tokio::test]
-async fn backend_admin_starts_from_empty_dynamic_state() {
+async fn network_bootstrap_cannot_create_operator() {
     let backend_bin = cargo_bin("underwrap-backend");
     let https_port = pick_unused_port().unwrap();
     let admin_url = format!("https://127.0.0.1:{https_port}");
@@ -116,15 +176,426 @@ async fn backend_admin_starts_from_empty_dynamic_state() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
+    assert_eq!(bootstrap_required, Some(true));
+
+    for origin in [None, Some(admin_url.as_str())] {
+        let mut request = client
+            .post(format!("{admin_url}/v1/admin/auth/bootstrap"))
+            .json(&serde_json::json!({
+                "username": "network-attacker",
+                "password": "attacker-password"
+            }));
+        if let Some(origin) = origin {
+            request = request.header(reqwest::header::ORIGIN, origin);
+        }
+        let response = request.send().await.unwrap();
+        assert!(
+            matches!(
+                response.status(),
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            ),
+            "removed bootstrap route returned {}",
+            response.status()
+        );
+    }
+    assert_eq!(json_file_count(&base.join("users")), 0);
+    assert!(!base.join("bootstrap.json").exists());
+    let status = client
+        .get(format!("{admin_url}/v1/admin/auth/bootstrap/status"))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(status["bootstrap_required"], true);
+
     let _ = backend_child.start_kill();
     let backend_output = backend_child.wait_with_output().await.unwrap();
-    assert_eq!(
-        bootstrap_required,
-        Some(true),
-        "backend failed to boot from empty dynamic state\n--- backend stdout ---\n{}\n--- backend stderr ---\n{}",
+    assert!(
+        backend_output.status.success() || backend_output.status.code().is_none(),
+        "backend shutdown failed\n--- backend stdout ---\n{}\n--- backend stderr ---\n{}",
         String::from_utf8_lossy(&backend_output.stdout),
         String::from_utf8_lossy(&backend_output.stderr),
     );
+}
+
+#[test]
+fn bootstrap_user_processes_serialize_without_touching_other_state() {
+    struct BootstrapChildren {
+        children: [Option<std::process::Child>; 2],
+    }
+
+    impl BootstrapChildren {
+        fn new() -> Self {
+            Self {
+                children: [None, None],
+            }
+        }
+
+        fn pids(&self) -> [u32; 2] {
+            self.children
+                .each_ref()
+                .map(|child| child.as_ref().unwrap().id())
+        }
+
+        fn wait_for_completion(&mut self, timeout: std::time::Duration) {
+            let pids = self.pids();
+            let deadline = std::time::Instant::now() + timeout;
+            let mut statuses = [None, None];
+            loop {
+                for (child, status) in self.children.iter_mut().zip(&mut statuses) {
+                    if status.is_none() {
+                        let child = child.as_mut().unwrap();
+                        let pid = child.id();
+                        *status = child.try_wait().unwrap_or_else(|error| {
+                            panic!("checking bootstrap child pid {pid} completion: {error}")
+                        });
+                    }
+                }
+                if statuses.iter().all(Option::is_some) {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out after {timeout:?} waiting for bootstrap child pids {pids:?} to exit after the flock gate was released; observed statuses: {statuses:?}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+
+        fn into_outputs(mut self) -> [std::process::Output; 2] {
+            [
+                self.children[0].take().unwrap().wait_with_output().unwrap(),
+                self.children[1].take().unwrap().wait_with_output().unwrap(),
+            ]
+        }
+    }
+
+    impl Drop for BootstrapChildren {
+        fn drop(&mut self) {
+            for child in self.children.iter_mut().filter_map(Option::as_mut) {
+                match child.try_wait() {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        let _ = child.kill();
+                    }
+                }
+                let _ = child.wait();
+            }
+        }
+    }
+
+    fn is_waiting_flock(line: &str, pid: u32, device: u64, inode: u64) -> bool {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        let Some(flock) = fields.iter().position(|field| *field == "FLOCK") else {
+            return false;
+        };
+        // Linux /proc/locks inserts `->` immediately before FLOCK for a blocked
+        // request. Relative to FLOCK, the fields are then
+        // `ADVISORY WRITE <pid> <hex-major>:<hex-minor>:<decimal-inode>`.
+        // Locating FLOCK first avoids relying on absolute columns shifted by `->`.
+        if flock == 0
+            || fields[flock - 1] != "->"
+            || fields.get(flock + 1) != Some(&"ADVISORY")
+            || fields.get(flock + 2) != Some(&"WRITE")
+            || fields.get(flock + 3).and_then(|field| field.parse().ok()) != Some(pid)
+        {
+            return false;
+        }
+        let Some(lock_id) = fields.get(flock + 4) else {
+            return false;
+        };
+        let parts = lock_id.split(':').collect::<Vec<_>>();
+        if parts.len() != 3 {
+            return false;
+        }
+        let parsed = (
+            u64::from_str_radix(parts[0], 16),
+            u64::from_str_radix(parts[1], 16),
+            parts[2].parse::<u64>(),
+        );
+        matches!(
+            parsed,
+            (Ok(major), Ok(minor), Ok(lock_inode))
+                if major == u64::from(libc::major(device))
+                    && minor == u64::from(libc::minor(device))
+                    && lock_inode == inode
+        )
+    }
+
+    let backend_bin = cargo_bin("underwrap-backend");
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let base = tempdir.path();
+    let stores_dir = base.join("stores");
+    let clients_dir = base.join("clients");
+    std::fs::create_dir_all(&stores_dir).unwrap();
+    std::fs::create_dir_all(&clients_dir).unwrap();
+    std::fs::write(stores_dir.join("marker"), b"store-state").unwrap();
+    std::fs::write(clients_dir.join("marker"), b"client-state").unwrap();
+    let config = underwrap_backend::BackendConfig {
+        stores_dir: stores_dir.clone(),
+        clients_dir: clients_dir.clone(),
+        users_dir: base.join("users"),
+        bootstrap_file: base.join("bootstrap.json"),
+        https: None,
+        admin: None,
+    };
+    let config_path = base.join("backend.yaml");
+    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+
+    let lock_path = base.join("bootstrap.json.lock");
+    let gate = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&lock_path)
+        .unwrap();
+    checked_flock(&gate, libc::LOCK_EX).unwrap();
+    let lock_metadata = gate.metadata().unwrap();
+
+    let mut children = BootstrapChildren::new();
+    for (slot, username) in children.children.iter_mut().zip(["alice", "bob"]) {
+        *slot = Some(
+            std::process::Command::new(&backend_bin)
+                .args([
+                    "--config",
+                    config_path.to_str().unwrap(),
+                    "admin",
+                    "bootstrap-user",
+                    "--username",
+                    username,
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    const PASSWORD: &[u8] = b"hunter2-long";
+    for child in children.children.iter_mut().filter_map(Option::as_mut) {
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(PASSWORD).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        drop(stdin);
+    }
+
+    let child_pids = children.pids();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let locks = loop {
+        let locks = std::fs::read_to_string("/proc/locks").unwrap();
+        if child_pids.iter().all(|pid| {
+            locks
+                .lines()
+                .any(|line| is_waiting_flock(line, *pid, lock_metadata.dev(), lock_metadata.ino()))
+        }) {
+            break locks;
+        }
+        for child in children.children.iter_mut().filter_map(Option::as_mut) {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "bootstrap child pid {} exited before waiting on the retained flock inode {}",
+                child.id(),
+                lock_metadata.ino()
+            );
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for bootstrap child pids {child_pids:?} to appear as waiting FLOCK entries for device {}:{} inode {}; relevant /proc/locks entries:\n{}",
+            libc::major(lock_metadata.dev()),
+            libc::minor(lock_metadata.dev()),
+            lock_metadata.ino(),
+            locks
+                .lines()
+                .filter(|line| line.contains("FLOCK"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        std::thread::yield_now();
+    };
+    assert!(child_pids.iter().all(|pid| {
+        locks
+            .lines()
+            .any(|line| is_waiting_flock(line, *pid, lock_metadata.dev(), lock_metadata.ino()))
+    }));
+    checked_flock(&gate, libc::LOCK_UN).unwrap();
+    drop(gate);
+
+    children.wait_for_completion(std::time::Duration::from_secs(10));
+    let outputs = children.into_outputs();
+    for (index, output) in outputs.iter().enumerate() {
+        for (label, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+            assert!(
+                !bytes
+                    .windows(PASSWORD.len())
+                    .any(|window| window == PASSWORD),
+                "stdin credential appeared in bootstrap child {index} {label}"
+            );
+        }
+    }
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|output| output.status.success())
+            .count(),
+        1,
+        "expected one successful bootstrap; statuses: {:?}",
+        outputs.each_ref().map(|output| output.status)
+    );
+    let loser = outputs
+        .iter()
+        .find(|output| !output.status.success())
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&loser.stderr)
+            .contains("bootstrap-user: bootstrap has already been completed"),
+        "losing bootstrap did not report authoritative completed state: {}",
+        String::from_utf8_lossy(&loser.stderr)
+    );
+    assert_eq!(json_file_count(&config.users_dir), 1);
+    assert!(config.bootstrap_file.exists());
+    assert_eq!(
+        std::fs::read(stores_dir.join("marker")).unwrap(),
+        b"store-state"
+    );
+    assert_eq!(
+        std::fs::read(clients_dir.join("marker")).unwrap(),
+        b"client-state"
+    );
+}
+
+#[test]
+fn bootstrap_lock_is_released_when_real_owner_is_killed() {
+    let backend_bin = cargo_bin("underwrap-backend");
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let base = tempdir.path();
+    let config = underwrap_backend::BackendConfig {
+        stores_dir: base.join("stores"),
+        clients_dir: base.join("clients"),
+        users_dir: base.join("users"),
+        bootstrap_file: base.join("bootstrap.json"),
+        https: None,
+        admin: None,
+    };
+    let config_path = base.join("backend.yaml");
+    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+
+    let lock_path = base.join("bootstrap.json.lock");
+    let gate = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&lock_path)
+        .unwrap();
+    checked_flock(&gate, libc::LOCK_EX).unwrap();
+    let retained_inode = std::fs::metadata(&lock_path).unwrap().ino();
+
+    let mut owner = std::process::Command::new(&backend_bin)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "admin",
+            "bootstrap-user",
+            "--username",
+            "interrupted",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    const OWNER_PASSWORD: &[u8] = b"holder-password";
+    let mut owner_stdin = owner.stdin.take().unwrap();
+    owner_stdin.write_all(OWNER_PASSWORD).unwrap();
+    owner_stdin.write_all(b"\n").unwrap();
+    drop(owner_stdin);
+    assert!(owner.try_wait().unwrap().is_none());
+
+    // The real command has consumed its closed stdin and is held behind the
+    // gate flock. Its credential must not cross into process metadata.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", owner.id())).unwrap();
+    assert!(
+        !cmdline
+            .windows(OWNER_PASSWORD.len())
+            .any(|window| window == OWNER_PASSWORD),
+        "stdin credential appeared in owner cmdline"
+    );
+    match std::fs::read(format!("/proc/{}/environ", owner.id())) {
+        Ok(environ) => assert!(
+            !environ
+                .windows(OWNER_PASSWORD.len())
+                .any(|window| window == OWNER_PASSWORD),
+            "stdin credential appeared in owner environ"
+        ),
+        // `underwrap-backend` sets PR_SET_DUMPABLE=0 before parsing the CLI.
+        // Normal non-root test processes therefore cannot inspect environ;
+        // that denial is a stronger boundary than readable credential absence.
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(error) => panic!("reading owner environ: {error}"),
+    }
+
+    let probe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&lock_path)
+        .unwrap();
+    drop(gate);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match checked_flock(&probe, libc::LOCK_EX | libc::LOCK_NB) {
+            Ok(()) => {
+                checked_flock(&probe, libc::LOCK_UN).unwrap();
+                assert!(
+                    owner.try_wait().unwrap().is_none(),
+                    "bootstrap owner exited before its lock was observed"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "owner never acquired flock"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("probing bootstrap flock: {error}"),
+        }
+    }
+
+    owner.kill().unwrap();
+    let killed = owner.wait_with_output().unwrap();
+    assert!(!killed.status.success());
+    for (label, bytes) in [("stdout", killed.stdout), ("stderr", killed.stderr)] {
+        assert!(
+            !bytes
+                .windows(OWNER_PASSWORD.len())
+                .any(|window| window == OWNER_PASSWORD),
+            "stdin credential appeared in owner {label}"
+        );
+    }
+
+    checked_flock(&probe, libc::LOCK_EX | libc::LOCK_NB)
+        .expect("owner death must release the retained bootstrap flock");
+    checked_flock(&probe, libc::LOCK_UN).unwrap();
+    assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), retained_inode);
+    assert_eq!(json_file_count(&config.users_dir), 0);
+    assert!(!config.bootstrap_file.exists());
+
+    provision_operator(
+        &backend_bin,
+        &config_path,
+        "replacement",
+        "replacement-password",
+    );
+    assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), retained_inode);
+    assert_eq!(json_file_count(&config.users_dir), 1);
+    assert!(config.bootstrap_file.exists());
 }
 
 #[tokio::test]
@@ -257,6 +728,7 @@ async fn underwrapd_binary_start_and_read() {
     .unwrap();
     let backend_config_path = base.join("backend.yaml");
     std::fs::write(&backend_config_path, &backend_config).unwrap();
+    provision_operator(&backend_bin, &backend_config_path, "tester", "hunter2-long");
 
     let mut backend_child = tokio::process::Command::new(&backend_bin)
         .args(["--config", backend_config_path.to_str().unwrap()])
@@ -270,7 +742,7 @@ async fn underwrapd_binary_start_and_read() {
         session_cookie: admin_session_cookie,
         csrf_cookie: admin_csrf_cookie,
         csrf_token: admin_csrf_token,
-    } = bootstrap_admin(&admin_url, &ca_cert, "tester", "hunter2-long")
+    } = login_admin(&admin_url, &ca_cert, "tester", "hunter2-long")
         .await
         .unwrap();
     let client = reqwest::Client::builder()

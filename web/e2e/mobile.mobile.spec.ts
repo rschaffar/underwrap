@@ -28,12 +28,12 @@ test("drawer nav opens on mobile and a nav destination is reachable", async ({
   ).toBeVisible();
 });
 
-test("login form fits the mobile viewport without horizontal scroll", async ({
+test("offline setup page fits the mobile viewport without horizontal scroll", async ({
   page,
   backend,
 }) => {
   await page.goto(`${backend.baseUrl}/bootstrap`);
-  // The form is rendered. Confirm the page didn't introduce a
+  // The setup guidance is rendered. Confirm the page didn't introduce a
   // horizontal scrollbar — a common regression on small screens.
   const scrollDelta = await page.evaluate(() => {
     return document.documentElement.scrollWidth - window.innerWidth;

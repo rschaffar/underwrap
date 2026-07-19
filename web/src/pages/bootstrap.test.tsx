@@ -1,128 +1,30 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 
 import { BootstrapPage } from "./bootstrap";
 
-function mockJsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 describe("BootstrapPage", () => {
-  it("surfaces password_too_short from the backend", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJsonResponse(400, {
-        code: "password_too_short",
-        message: "password too short",
-      }),
-    );
-    render(<BootstrapPage onSuccess={vi.fn()} />);
-
-    await user.type(screen.getByLabelText(/^username$/i), "root");
-    await user.type(screen.getByLabelText(/^password$/i), "short");
-    await user.type(screen.getByLabelText(/confirm password/i), "short");
-    await user.click(
-      screen.getByRole("button", { name: /create first admin/i }),
-    );
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/at least 12 characters/i);
-  });
-
-  it("surfaces password mismatch when length is OK", async () => {
-    const user = userEvent.setup();
-    render(<BootstrapPage onSuccess={vi.fn()} />);
-
-    await user.type(screen.getByLabelText(/^username$/i), "root");
-    await user.type(
-      screen.getByLabelText(/^password$/i),
-      "longenoughpw1234",
-    );
-    await user.type(screen.getByLabelText(/confirm password/i), "different1234");
-    await user.click(
-      screen.getByRole("button", { name: /create first admin/i }),
-    );
+  it("shows actionable offline provisioning guidance", () => {
+    render(<BootstrapPage />);
 
     expect(
-      await screen.findByText(/passwords do not match/i),
+      screen.getByRole("heading", { name: /first-time setup required/i }),
     ).toBeInTheDocument();
-  });
-
-  it("creates the first admin and calls onSuccess", async () => {
-    const user = userEvent.setup();
-    const onSuccess = vi.fn();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        mockJsonResponse(200, { username: "root", role: "admin" }),
-      );
-    render(<BootstrapPage onSuccess={onSuccess} />);
-
-    await user.type(screen.getByLabelText(/^username$/i), "root");
-    await user.type(
-      screen.getByLabelText(/^password$/i),
-      "longenoughpw1234",
-    );
-    await user.type(
-      screen.getByLabelText(/confirm password/i),
-      "longenoughpw1234",
-    );
-    await user.click(
-      screen.getByRole("button", { name: /create first admin/i }),
-    );
-
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
-    const req = fetchSpy.mock.calls[0]![0] as Request;
-    expect(req.url.endsWith("/v1/admin/auth/bootstrap")).toBe(true);
-    expect(req.method).toBe("POST");
-    const body = await req.text();
-    expect(body).toBe(
-      JSON.stringify({ username: "root", password: "longenoughpw1234" }),
+    expect(screen.getByText(/stop the underwrap backend service/i)).toBeVisible();
+    expect(screen.getByText(/bootstrap-user --username/i)).toBeVisible();
+    expect(screen.getByRole("link", { name: /continue to sign in/i })).toHaveAttribute(
+      "href",
+      "/login",
     );
   });
 
-  it("surfaces bootstrap_already_completed", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJsonResponse(409, {
-        code: "bootstrap_already_completed",
-        message: "no",
-      }),
-    );
-    render(<BootstrapPage onSuccess={vi.fn()} />);
-    await user.type(screen.getByLabelText(/^username$/i), "root");
-    await user.type(
-      screen.getByLabelText(/^password$/i),
-      "longenoughpw1234",
-    );
-    await user.type(
-      screen.getByLabelText(/confirm password/i),
-      "longenoughpw1234",
-    );
-    await user.click(
-      screen.getByRole("button", { name: /create first admin/i }),
-    );
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/already been completed/i);
-  });
+  it("contains no credential form or network bootstrap action", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    render(<BootstrapPage />);
 
-  it("uses correct new-password autocomplete on both password fields", () => {
-    render(<BootstrapPage onSuccess={vi.fn()} />);
-    expect(screen.getByLabelText(/^password$/i)).toHaveAttribute(
-      "autocomplete",
-      "new-password",
-    );
-    expect(screen.getByLabelText(/confirm password/i)).toHaveAttribute(
-      "autocomplete",
-      "new-password",
-    );
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

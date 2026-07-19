@@ -17,8 +17,6 @@ export function describeApiError(err: unknown): string {
         return "Password is required.";
       case "rate_limited":
         return "Too many attempts. Please wait a moment and try again.";
-      case "bootstrap_already_completed":
-        return "First-time setup has already been completed. Sign in instead.";
       case "operators_already_exist":
         return "An operator already exists. Sign in instead.";
       case "csrf_required":

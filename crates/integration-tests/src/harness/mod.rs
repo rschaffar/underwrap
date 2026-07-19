@@ -49,7 +49,7 @@ pub(crate) use pki::{
 use pki::{principal_client_name, test_pki_paths};
 use readiness::wait_for_path;
 pub(crate) use readiness::{
-    AdminCredentials, bootstrap_admin, csrf_cookie_header, pick_unused_port, wait_for_admin,
+    AdminCredentials, csrf_cookie_header, login_admin, pick_unused_port, wait_for_admin,
     wait_for_service,
 };
 
@@ -170,6 +170,13 @@ impl TestDaemon {
                 stores_data_root: Some(stores_data_root.clone()),
             }),
         };
+        underwrap_backend::cli::bootstrap_user(
+            &backend_config.users_dir,
+            &backend_config.bootstrap_file,
+            "tester",
+            "hunter2-long",
+        )?;
+
         let backend_shutdown = Arc::new(Notify::new());
         let backend_shutdown_clone = Arc::clone(&backend_shutdown);
         let backend_handle = thread::spawn(move || {
@@ -187,7 +194,7 @@ impl TestDaemon {
             session_cookie: admin_session_cookie,
             csrf_cookie: admin_csrf_cookie,
             csrf_token: admin_csrf_token,
-        } = bootstrap_admin(&service_url, &pki.ca_cert, "tester", "hunter2-long").await?;
+        } = login_admin(&service_url, &pki.ca_cert, "tester", "hunter2-long").await?;
         let admin_client = reqwest::Client::builder()
             .use_rustls_tls()
             .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(

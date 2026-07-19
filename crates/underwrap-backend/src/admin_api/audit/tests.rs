@@ -234,24 +234,6 @@ fn log_admin_event_secret_variant_encodes_store_resource_slot_key() {
 }
 
 #[test]
-fn log_bootstrap_attempt_puts_username_in_operator_field_and_omits_entity() {
-    let out = capture(|| {
-        log_bootstrap_attempt("first-admin", Some("invalid-username"), "failure");
-    });
-    assert_contains_all(
-        &out,
-        &[
-            "action=bootstrap.attempt",
-            "operator=first-admin",
-            "wrapper=None",
-            "resource=None",
-            "operation=Some(\"invalid-username\")",
-            "result=failure",
-        ],
-    );
-}
-
-#[test]
 fn log_admin_event_propagates_operation_and_result_strings() {
     let out = capture(|| {
         log_admin_event(

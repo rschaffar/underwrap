@@ -158,23 +158,6 @@ pub(crate) fn result_label<T, E>(r: &Result<T, E>) -> &'static str {
     if r.is_ok() { "success" } else { "failure" }
 }
 
-/// Emit a bootstrap-attempt audit line. Distinct from
-/// [`log_admin_event`] because at bootstrap time no [`Principal`]
-/// record exists yet — the username the caller is *trying* to create
-/// is what we log as the operator. No entity record either; the
-/// would-be user shows up in the `operator` field.
-pub(crate) fn log_bootstrap_attempt(username: &str, operation: Option<&str>, result: &str) {
-    emit(
-        "bootstrap.attempt",
-        username,
-        None,
-        None,
-        None,
-        operation,
-        result,
-    );
-}
-
 fn emit(
     action: &str,
     operator: &str,
