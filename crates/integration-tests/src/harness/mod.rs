@@ -509,17 +509,7 @@ impl TestDaemon {
     /// credential mid-flight and want to assert the next runtime
     /// connection fails.
     pub async fn direct_service_status(&self) -> Result<()> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let ca_pem = std::fs::read(&self.service_ca_cert)?;
-        let cert_pem = std::fs::read(&self.service_client_cert)?;
-        let key_pem = std::fs::read(&self.service_client_key)?;
-        let mut identity_pem = cert_pem;
-        identity_pem.extend_from_slice(&key_pem);
-        let client = reqwest::Client::builder()
-            .use_rustls_tls()
-            .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem)?)
-            .identity(reqwest::Identity::from_pem(&identity_pem)?)
-            .build()?;
+        let client = self.direct_service_client()?;
         let response = client
             .post(format!("{}/v1/wrappers", self.service_url))
             .json(&underwrap_protocol::service::RuntimeWrapperRegisterRequest { wrappers: vec![] })
