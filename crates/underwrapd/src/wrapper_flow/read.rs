@@ -25,7 +25,6 @@ use underwrap_protocol::variant::WrapperVariant;
 use crate::audit;
 use crate::backend_client::{BackendClient, StoreLockedError, UnauthorizedError};
 use crate::server::State;
-use crate::wrapper_bindings::wrapper_file_paths;
 
 use super::ReadOutcome;
 
@@ -173,7 +172,11 @@ pub(super) fn open_invocation(
     } else {
         AccessMode::ReadOnly
     };
-    let files_target_paths = wrapper_file_paths(wrapper_def);
+    let files_target_paths = wrapper_def
+        .files
+        .as_ref()
+        .map(|f| f.paths.clone())
+        .unwrap_or_default();
     let libsecret = wrapper_def.libsecret;
 
     // The daemon — not the wrapper — chooses the binary to exec. For a

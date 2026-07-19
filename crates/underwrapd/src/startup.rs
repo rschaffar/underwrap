@@ -53,12 +53,6 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
             "wrapper '{}' must declare a resource",
             name
         );
-        anyhow::ensure!(
-            crate::wrapper_bindings::wrapper_has_projection(wrapper),
-            "wrapper '{}' must enable at least one projection slot (env, files, or libsecret)",
-            name,
-        );
-
         if let Some(files) = &wrapper.files {
             anyhow::ensure!(
                 !files.paths.is_empty(),
