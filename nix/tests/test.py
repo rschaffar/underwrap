@@ -374,7 +374,6 @@ LOCAL_WRAPPER_RESOURCES = {
 
 # Each wrapper now projects exactly one resource, so no secondary
 # grants are needed.
-LOCAL_WRAPPER_EXTRA_RESOURCES: dict[str, list[str]] = {}
 
 REMOTE_WRAPPER_RESOURCES = {
     "remote-echo": "remote/token",
@@ -416,16 +415,6 @@ def grant_local_unlocked(wrapper, resource=None):
         {"kind": "unlocked"},
         writable=True,
     )
-    for extra in LOCAL_WRAPPER_EXTRA_RESOURCES.get(wrapper, []):
-        admin_upsert_grant(
-            ADMIN_LOCAL,
-            "local",
-            LOCAL_CLIENT_INSTANCE,
-            wrapper,
-            extra,
-            {"kind": "unlocked"},
-            writable=True,
-        )
 
 
 def boot_and_service_checks():
