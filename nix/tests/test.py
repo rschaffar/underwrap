@@ -2207,21 +2207,10 @@ def local_atomic_writeback():
         machine.succeed(su("/run/wrappers/bin/underwrap-local test-dir-write seed"))
         return admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
 
-    def journal_lines_since(boot_offset, *, units=None, grep=None):
-        """Capture journal output emitted since `boot_offset` (a
-        cursor string from journalctl -o export --show-cursor=)."""
-        units_args = ""
-        if units:
-            units_args = " ".join(f"-u {u}" for u in units) + " "
-        cmd = f"journalctl --no-pager --after-cursor={shlex.quote(boot_offset)} {units_args}--output=cat"
-        if grep:
-            cmd += f" | grep -F {shlex.quote(grep)} || true"
-        return machine.succeed(cmd).strip().split("\n") if machine.succeed(cmd).strip() else []
-
     def journal_cursor():
-        """Snapshot the current journal cursor so a follow-up call to
-        journal_lines_since() can scope its grep to events after this
-        point. journalctl prints the cursor on stderr with -o export
+        """Snapshot the current journal cursor so follow-up journal
+        queries can be scoped to events after this point. journalctl
+        prints the cursor on stderr with -o export
         --show-cursor; the simplest reliable form is to read the very
         last entry's cursor via -n 1 -o export."""
         out = machine.succeed("journalctl -n 1 -o export --no-pager")
