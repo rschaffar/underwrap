@@ -12,14 +12,13 @@
 //! - bytes differ + readonly  → drop the change; one warning is
 //!   emitted; `UsageSignal` is still sent so the daemon records use.
 
-use std::collections::BTreeMap;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{
-    ResourceErrorCode, SecretBytes, WrapperResourceRequest, WrapperResourceResponse,
+    ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse,
 };
 use underwrap_protocol::resource_blob::{LibsecretSection, ResourceBlob};
 
@@ -120,7 +119,9 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
         original.libsecret.clone()
     };
 
-    let new_blob = compose_blob(original.env.clone(), new_files, new_libsecret);
+    let mut new_blob = original;
+    new_blob.files = new_files;
+    new_blob.libsecret = new_libsecret;
     let new_canonical = new_blob.to_canonical_bytes().map_err(|e| {
         format!(
             "canonicalizing post-run blob for '{}': {e}",
@@ -154,18 +155,6 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
             })
         }
     }
-}
-
-fn compose_blob(
-    env: BTreeMap<String, SecretBytes>,
-    files: BTreeMap<String, SecretBytes>,
-    libsecret: LibsecretSection,
-) -> ResourceBlob {
-    let mut blob = ResourceBlob::empty();
-    blob.env = env;
-    blob.files = files;
-    blob.libsecret = libsecret;
-    blob
 }
 
 enum CheckinOutcome {
