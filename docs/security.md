@@ -220,6 +220,29 @@ Handoff peer authentication, namespace creation, mount setup, target-UID
 switching, capability drop, credential checks, and descriptor cleanup abort on
 failure.
 
+After the secret-free idmap helper is reaped, `underwrap-ns` creates a private
+CLOEXEC child-to-parent authorization gate while fixed fd 3 and fd 20 remain
+occupied. The supervisor then unshares PID, mount, IPC, and UTS namespaces,
+makes mount propagation private, realizes idmapped caller-directory mounts, and
+forks. The child enters the new PID namespace, remounts `/proc`, and performs
+the remaining controlled setup and projection materialization. It reports
+`Armed` only after resource-channel closure and final descriptor protection; a
+controlled return reports `Failed`. The supervisor observes the gate through
+EOF and then reaps the child. It collects staging and sends an end-of-run
+resource verb only when the exact `Armed` marker followed by EOF, with no
+failure or extra bytes, is paired with a successful reap. Early EOF, an observed
+failure, malformed or truncated input, gate I/O failure, or wait failure
+suppresses both collection and `Checkin`/`UsageSignal`.
+
+This gate records an authorized lifecycle; it does not prove that exec
+succeeded. After a normal successful exec, finalization may include changes made
+by the target. Only when the child dies after `Armed` but before either CLOEXEC
+exec closure or complete observation of `Failed` is pre-exec death
+indistinguishable from exec closure. In that narrow false-positive case, no
+target ran and finalization can include at most the already validated, fully
+materialized unchanged projection. The gate does not provide signal forwarding
+or prevent a supervisor from orphaning an executed target.
+
 The older-kernel `SO_PEERCRED + /proc` peer-auth path is available only when an
 operator disables the default hardened posture. A failure while taking the
 `SO_PEERPIDFD` path must reject the peer, not silently switch to the weaker
@@ -465,11 +488,17 @@ execution, and caller-controlled arguments.
 
 For a files-enabled wrapper, `underwrap-ns`:
 
+- after Checkout, decodes the blob and purely validates every configured mount
+  and file key before namespace preparation, idmapped-mount realization, PID
+  fork, staging, target-UID switch, or target-facing helper launch;
+- requires each clean file key to route to exactly one strict mount prefix,
+  rejects a key equal to a mount path, and rejects file/descendant collisions;
 - mounts a namespace-private tmpfs with `noswap`, `mode=0700`, and a size cap;
-- materializes regular files from the blob;
+- realizes only the completed routing plan and materializes regular files from
+  the blob;
 - bind-mounts configured clean relative paths into the caller-home view;
-- rejects keys that do not route to a configured mount path;
-- collects only regular files after target exit and rejects symlinks.
+- collects only regular files after an authorized lifecycle and rejects
+  symlinks.
 
 The target sees the mounts as writable. Final persistence follows the permission
 writable flag and backend finalize checks.
@@ -696,10 +725,13 @@ Structured daemon events cover:
 Events contain wrapper/resource/principal metadata, never secret values or
 resource blobs.
 
-When a target changes a files/libsecret projection that cannot be persisted,
-`underwrap-ns` emits one structured `writeback_rejected` event containing the
-resource id, resource name, and reason. It also writes one human-readable stderr
-warning unless the caller set:
+When an authorized lifecycle changes a files/libsecret projection that cannot
+be persisted, `underwrap-ns` emits one structured `writeback_rejected` event
+containing the resource id, resource name, and reason. Once the private gate
+authorizes finalization, collection and canonical comparison still occur for
+target exit 0, nonzero exit, and signal death. Finalization failures remain
+diagnostic and do not replace the target's exit or signal status. It also
+writes one human-readable stderr warning unless the caller set:
 
 ```text
 UNDERWRAP_SUPPRESS_READONLY_WARNING=1

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import tempfile
 import time
 import urllib.parse
@@ -222,11 +223,20 @@ def admin_write_secret(url, store, wrapper, secret_id, value):
     new wire shape."""
     del wrapper  # kept for call-site readability only
     resource_name, slot, key = secret_id.rsplit("/", 2)
+    return admin_write_resource_value(url, store, resource_name, slot, key, value.encode())
+
+
+def admin_write_resource_value(url, store, resource_name, slot, key, value):
+    """Write arbitrary bytes to an explicit resource slot/key.
+
+    Unlike `admin_write_secret`, the key is a separate argument and may contain
+    slashes, which is required for deployed files-projection fixtures.
+    """
     rid = _resource_id_for(url, resource_name)
     return admin_api(
         url,
         f"/v1/admin/stores/{store}/secrets/{_seg(rid)}/{_seg(slot)}/{_seg(key)}",
-        {"material_b64": base64.b64encode(value.encode()).decode()},
+        {"material_b64": base64.b64encode(value).decode()},
         method="PUT",
     )
 
@@ -370,6 +380,10 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-dir-touch": "test/dir-a",
     "test-dir-env-probe": "test/dir-a",
     "test-dir-env-override-probe": "test/dir-a",
+    "test-f006-unroutable": "test/f006-unroutable",
+    "test-f006-exec-missing": "test/f006-exec-missing",
+    "test-f006-exit-37": "test/f006-exit-37",
+    "test-f006-sigkill": "test/f006-sigkill",
 }
 
 # Each wrapper now projects exactly one resource, so no secondary
@@ -2175,6 +2189,60 @@ def local_directory_credentials():
     time.sleep(0.5)
 
 
+def journal_cursor():
+    """Snapshot the current journal cursor for exact follow-up queries."""
+    out = machine.succeed("journalctl -n 1 -o export --no-pager")
+    for line in out.splitlines():
+        if line.startswith("__CURSOR="):
+            return line[len("__CURSOR=") :]
+    raise AssertionError(f"journalctl produced no cursor: {out!r}")
+
+
+TERMINAL_RESOURCE_AUDITS = ("resource_checkin", "resource_usage_signal")
+ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
+
+
+def _journal_message(record):
+    """Decode journald's JSON string or byte-array MESSAGE representation."""
+    value = record.get("MESSAGE", "")
+    if isinstance(value, str):
+        message = value
+    elif isinstance(value, list) and all(
+        isinstance(byte, int) and 0 <= byte <= 255 for byte in value
+    ):
+        message = bytes(value).decode("utf-8", errors="replace")
+    else:
+        raise AssertionError(f"unexpected journal MESSAGE representation: {value!r}")
+    return ANSI_ESCAPE_RE.sub("", message)
+
+
+def underwrapd_terminal_records_since(cursor, wrapper, resource_id):
+    """Return complete records whose parsed terminal audit fields match exactly."""
+    output = machine.succeed(
+        "journalctl --no-pager "
+        f"--after-cursor={shlex.quote(cursor)} "
+        "-u underwrapd-local.service --output=json"
+    )
+    records = []
+    for line in output.splitlines():
+        record = json.loads(line)
+        message = _journal_message(record)
+        fields = dict(re.findall(r'(?:^|\s)([a-z_]+)="([^"]*)"', message))
+        if (
+            fields.get("wrapper") == wrapper
+            and fields.get("resource") == resource_id
+            and fields.get("audit") in TERMINAL_RESOURCE_AUDITS
+        ):
+            records.append(
+                {
+                    "journal_record": record,
+                    "message": message,
+                    "parsed_fields": fields,
+                }
+            )
+    return records
+
+
 def local_atomic_writeback():
     # ============================================================
     # LOCAL INSTANCE: atomic resource-blob writeback decision tree
@@ -2195,18 +2263,6 @@ def local_atomic_writeback():
         grant_local_unlocked("test-dir-write")
         machine.succeed(su("/run/wrappers/bin/underwrap-local test-dir-write seed"))
         return admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
-
-    def journal_cursor():
-        """Snapshot the current journal cursor so follow-up journal
-        queries can be scoped to events after this point. journalctl
-        prints the cursor on stderr with -o export
-        --show-cursor; the simplest reliable form is to read the very
-        last entry's cursor via -n 1 -o export."""
-        out = machine.succeed("journalctl -n 1 -o export --no-pager")
-        for line in out.splitlines():
-            if line.startswith("__CURSOR="):
-                return line[len("__CURSOR=") :]
-        raise AssertionError(f"journalctl produced no cursor: {out!r}")
 
     # ----------------------------------------------------------
     # Scenario 1: clean run with no changes
@@ -2547,6 +2603,221 @@ def local_atomic_writeback():
     machine.log(
         "PASS: scenario 6 — server rejects Checkin after mid-run grant flip; journal records server_rejected"
     )
+
+
+def f006_pre_exec_writeback_gate():
+    """Exercise pre-exec suppression and retained post-exec finalization."""
+
+    machine.succeed("install -d -m 0700 -o testuser -g users /home/testuser/.config")
+
+    def seed(resource, entries):
+        for key, value in entries.items():
+            admin_write_resource_value(
+                ADMIN_LOCAL, "local", resource, "files", key, value
+            )
+        return admin_get_blob(ADMIN_LOCAL, "local", resource)
+
+    def decoded(blob_b64):
+        return json.loads(base64.b64decode(blob_b64))
+
+    def expected_with_file(blob_b64, key, value):
+        value_blob = decoded(blob_b64)
+        value_blob["files"][key] = base64.b64encode(value).decode()
+        canonical = json.dumps(
+            value_blob,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        return base64.b64encode(canonical).decode()
+
+    def assert_no_terminal(cursor, wrapper, resource):
+        machine.sleep(0.2)
+        records = underwrapd_terminal_records_since(
+            cursor, wrapper, LOCAL_RESOURCE_IDS[resource]
+        )
+        assert records == [], (
+            f"{wrapper}: unexpected post-cursor {TERMINAL_RESOURCE_AUDITS!r} "
+            f"audit records: {records}"
+        )
+
+    def assert_single_terminal(cursor, wrapper, resource, expected_audit):
+        assert expected_audit in TERMINAL_RESOURCE_AUDITS, expected_audit
+        resource_id = LOCAL_RESOURCE_IDS[resource]
+        deadline = time.monotonic() + 2.0
+        while True:
+            records = underwrapd_terminal_records_since(cursor, wrapper, resource_id)
+            if records or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        parsed = [
+            {
+                "audit": record["parsed_fields"].get("audit"),
+                "wrapper": record["parsed_fields"].get("wrapper"),
+                "resource": record["parsed_fields"].get("resource"),
+            }
+            for record in records
+        ]
+        assert parsed == [
+            {
+                "audit": expected_audit,
+                "wrapper": wrapper,
+                "resource": resource_id,
+            }
+        ], records
+
+    unchanged_resource = "test/dir-a"
+    unchanged_wrapper = "test-dir-read"
+    grant_local_unlocked(unchanged_wrapper)
+    before = admin_get_blob(ADMIN_LOCAL, "local", unchanged_resource)
+    cursor = journal_cursor()
+    status, output = machine.execute(
+        su(f"/run/wrappers/bin/underwrap-local {unchanged_wrapper}") + " 2>&1"
+    )
+    assert status == 0, f"unchanged target returned {status}: {output}"
+    after = admin_get_blob(ADMIN_LOCAL, "local", unchanged_resource)
+    assert after == before, "unchanged target changed canonical blob bytes"
+    assert_single_terminal(
+        cursor,
+        unchanged_wrapper,
+        unchanged_resource,
+        "resource_usage_signal",
+    )
+    machine.log(
+        "PASS: F-006 unchanged successful target emits one exact UsageSignal audit record"
+    )
+
+    unroutable_resource = "test/f006-unroutable"
+    unroutable_wrapper = "test-f006-unroutable"
+    grant_local_unlocked(unroutable_wrapper)
+    machine.succeed("rm -f /tmp/f006-unroutable-target-ran")
+    before = seed(
+        unroutable_resource,
+        {
+            ".config/f006-unroutable/a-preserved": b"preserved-value",
+            ".config/z-f006-unroutable/missing": b"later-unroutable-value",
+        },
+    )
+    before_value = decoded(before)
+    assert base64.b64decode(
+        before_value["files"][".config/f006-unroutable/a-preserved"]
+    ) == b"preserved-value"
+    assert base64.b64decode(
+        before_value["files"][".config/z-f006-unroutable/missing"]
+    ) == b"later-unroutable-value"
+    cursor = journal_cursor()
+    status, output = machine.execute(
+        su(f"/run/wrappers/bin/underwrap-local {unroutable_wrapper}") + " 2>&1"
+    )
+    assert status != 0, "later-unroutable projection unexpectedly executed"
+    assert "no configured mount path is a prefix" in output, output
+    machine.fail("test -e /tmp/f006-unroutable-target-ran")
+    after = admin_get_blob(ADMIN_LOCAL, "local", unroutable_resource)
+    assert after == before, "later-unroutable projection changed canonical blob bytes"
+    after_value = decoded(after)
+    assert after_value["files"] == before_value["files"]
+    assert_no_terminal(cursor, unroutable_wrapper, unroutable_resource)
+    machine.log(
+        "PASS: F-006 later-unroutable projection is prevalidated with no target or terminal verb"
+    )
+
+    missing_resource = "test/f006-exec-missing"
+    missing_wrapper = "test-f006-exec-missing"
+    grant_local_unlocked(missing_wrapper)
+    before = seed(
+        missing_resource,
+        {".config/f006-exec-missing/token": b"exec-missing-original"},
+    )
+    cursor = journal_cursor()
+    status, output = machine.execute(
+        su(f"/run/wrappers/bin/underwrap-local {missing_wrapper}") + " 2>&1"
+    )
+    assert status == 1, f"missing target returned {status}: {output}"
+    assert output.count("underwrap-ns: exec failed:") == 1, output
+    assert "No such file or directory" in output, output
+    after = admin_get_blob(ADMIN_LOCAL, "local", missing_resource)
+    assert after == before, "returned exec error changed canonical blob bytes"
+    assert decoded(after)["files"] == decoded(before)["files"]
+    assert_no_terminal(cursor, missing_wrapper, missing_resource)
+    machine.log(
+        "PASS: F-006 returned exec error reports failure with no collection or terminal verb"
+    )
+
+    exit_resource = "test/f006-exit-37"
+    exit_wrapper = "test-f006-exit-37"
+    grant_local_unlocked(exit_wrapper)
+    before = seed(
+        exit_resource,
+        {".config/f006-exit-37/token": b"before-exit-37"},
+    )
+    expected = expected_with_file(
+        before,
+        ".config/f006-exit-37/token",
+        b"persisted-after-exit-37",
+    )
+    cursor = journal_cursor()
+    program = (
+        "import subprocess;"
+        f"r=subprocess.run({['/run/wrappers/bin/underwrap-local', exit_wrapper]!r});"
+        "print(r.returncode)"
+    )
+    direct_status = machine.succeed(
+        f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)}"
+    ).strip()
+    assert direct_status == "37", f"direct parent observed {direct_status!r}"
+    after = admin_get_blob(ADMIN_LOCAL, "local", exit_resource)
+    assert after == expected, "exit-37 target did not persist the exact expected blob"
+    assert base64.b64decode(
+        decoded(after)["files"][".config/f006-exit-37/token"]
+    ) == b"persisted-after-exit-37"
+    assert_single_terminal(
+        cursor, exit_wrapper, exit_resource, "resource_checkin"
+    )
+    machine.log("PASS: F-006 post-exec writeback persists before exact exit 37")
+
+    signal_resource = "test/f006-sigkill"
+    signal_wrapper = "test-f006-sigkill"
+    grant_local_unlocked(signal_wrapper)
+    before = seed(
+        signal_resource,
+        {".config/f006-sigkill/token": b"before-sigkill"},
+    )
+    expected = expected_with_file(
+        before,
+        ".config/f006-sigkill/token",
+        b"persisted-before-sigkill",
+    )
+    machine.succeed("rm -f /tmp/f006-sigkill-ready /tmp/f006-sigkill-status")
+    cursor = journal_cursor()
+    program = (
+        "import subprocess;"
+        f"r=subprocess.run({['/run/wrappers/bin/underwrap-local', signal_wrapper]!r});"
+        "open('/tmp/f006-sigkill-status','w').write(str(r.returncode))"
+    )
+    machine.succeed(
+        f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)} "
+        ">/tmp/f006-sigkill-parent.log 2>&1 &"
+    )
+    machine.wait_until_succeeds("test -e /tmp/f006-sigkill-ready")
+    target_pid = machine.succeed(
+        "pgrep -f '^/nix/store/.*/bin/sleep 6060$' | head -n 1"
+    ).strip()
+    assert target_pid, "could not find the ready SIGKILL target"
+    machine.succeed(f"kill -KILL {shlex.quote(target_pid)}")
+    machine.wait_until_succeeds("test -e /tmp/f006-sigkill-status")
+    direct_status = machine.succeed("cat /tmp/f006-sigkill-status").strip()
+    assert direct_status == str(-signal.SIGKILL), (
+        f"direct parent observed {direct_status!r}, expected {-signal.SIGKILL}"
+    )
+    after = admin_get_blob(ADMIN_LOCAL, "local", signal_resource)
+    assert after == expected, "SIGKILL target did not persist the exact expected blob"
+    assert base64.b64decode(
+        decoded(after)["files"][".config/f006-sigkill/token"]
+    ) == b"persisted-before-sigkill"
+    assert_single_terminal(
+        cursor, signal_wrapper, signal_resource, "resource_checkin"
+    )
+    machine.log("PASS: F-006 post-exec writeback persists before exact SIGKILL propagation")
 
 
 def plaintext_runtime_backend_url_is_rejected_before_io():
@@ -3585,6 +3856,7 @@ local_libsecret_mode()
 local_libsecret_two_slot_compatibility()
 local_directory_credentials()
 local_atomic_writeback()
+f006_pre_exec_writeback_gate()
 remote_service_lifecycle()
 instance_isolation()
 local_debug_subcommand()

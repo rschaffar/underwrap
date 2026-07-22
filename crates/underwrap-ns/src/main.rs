@@ -1,17 +1,22 @@
 //! underwrap-ns — PID namespace isolation stage.
 //!
-//! First authenticates the fixed fd-20 wrapper-resource channel as a
-//! socketpair created by the selected instance daemon. Only then does it read
-//! the `ExecBundle` on fd 3, drive `Checkout`, materialize any `files` slot into
-//! a tmpfs staging dir, and start a
-//! private dbus-daemon + secretsd in the namespace when the resource
-//! has the libsecret slot enabled, then forks into a fresh PID
-//! namespace to exec the target.
+//! First authenticates the fixed fd-20 wrapper-resource channel as a socketpair
+//! created by the selected instance daemon. After the secret-free idmap helper
+//! is reaped, it creates the private exec gate, reads the `ExecBundle` on fd 3,
+//! drives `Checkout`, and completely plans the files projection. The supervisor
+//! then unshares PID, mount, IPC, and UTS namespaces, makes mount propagation
+//! private, realizes idmapped caller-directory mounts, and forks.
 //!
-//! After waitpid, walks the staging tmpfs, reads the libsecret state
-//! file secretsd wrote, composes a new `ResourceBlob` and dispatches
-//! the end-of-run decision (`UsageSignal` / `Checkin` / drop+warn) on
-//! the channel.
+//! The child enters the new PID namespace, remounts `/proc`, switches to the
+//! dedicated target identity, realizes the planned files projection and any
+//! private libsecret service, and reports its final pre-exec gate state. The
+//! parent observes the gate through EOF and then reaps the child; both an
+//! accepted gate state and successful reap are required before it collects
+//! staging, composes the post-run `ResourceBlob`, and dispatches the end-of-run
+//! decision (`UsageSignal` / `Checkin` / drop+warn). This records an authorized
+//! lifecycle, not proof of exec: normal targets may finalize their changes, but
+//! the narrow false-positive pre-exec-death ambiguity can finalize at most the
+//! fully materialized unchanged state.
 
 #[cfg(test)]
 #[path = "main/tests.rs"]
@@ -21,6 +26,7 @@ mod boundary;
 mod caps;
 mod directory_credential;
 mod env;
+mod exec_gate;
 mod handoff;
 mod idmap;
 mod journal;
@@ -34,8 +40,12 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use caps::{drop_caps, set_no_new_privs};
-use directory_credential::{DirectoryMountPlan, plan_directory_mounts, realize_directory_mounts};
+use directory_credential::{
+    DirectoryMountPlan, DirectoryProjectionPlan, plan_directory_projection,
+    realize_directory_mounts,
+};
 use env::build_target_env;
+use exec_gate::{ExecGate, GateAuthorization, GateReader, GateWriter};
 use libsecret::setup_libsecret;
 use mounts::{
     make_mount_namespace_private, remount_proc, setup_directory_staging_tmpfs,
@@ -43,6 +53,7 @@ use mounts::{
 };
 use resource_channel::ResourceChannel;
 use underwrap_protocol::exec::{EXEC_BUNDLE_FD, ExecBundle, IDMAP_REQUIRED_ENV};
+use underwrap_protocol::resource_blob::ResourceBlob;
 use writeback::{WritebackInput, WritebackOutcome};
 
 pub(crate) const DIRECTORY_STAGING_ROOT: &str = "/tmp/.underwrap-ns-directories";
@@ -107,6 +118,11 @@ fn run() -> Result<(), String> {
         None
     };
 
+    // Create the private gate after the secret-free idmap helper is reaped and
+    // while fixed fd 3 and authenticated fd 20 are both still occupied. It is
+    // local to this privileged stage and carries no selectors or secret bytes.
+    let exec_gate = ExecGate::new()?;
+
     let (target, target_args) = parse_target_invocation(std::env::args().collect())?;
     let exec_bundle = read_secret_fd()
         .map_err(|e| format!("reading exec bundle from fd {EXEC_BUNDLE_FD}: {e}"))?;
@@ -133,10 +149,17 @@ fn run() -> Result<(), String> {
     // comes from the root-owned table (never the wire).
     let xdg_runtime_dir = target_runtime_dir(&exec_bundle.target_runtime_dir_base, isolation.uid)?;
 
-    // Compute the deterministic files-slot layout before privileged mount work.
-    // The parent keeps it to drive the end-of-run writeback walk; the child
-    // realizes it after switching to its dedicated uid X.
-    let directory_layout = plan_files_mounts(&resource_channel)?;
+    // Decode Checkout once and complete every files routing/shape decision
+    // before namespace, idmapped-mount, fork, staging, uid-switch, or helper
+    // effects. The child can therefore realize only a completed semantic plan.
+    let resource_blob = ResourceBlob::from_canonical_bytes(&resource_channel.original_canonical)
+        .map_err(|e| {
+            format!(
+                "decoding Checkout blob for '{}': {e}",
+                resource_channel.resource_id
+            )
+        })?;
+    let directory_plan = plan_files_projection(&resource_channel, resource_blob)?;
 
     let libsecret_state_path = if libsecret_enabled {
         Some(PathBuf::from(format!(
@@ -164,7 +187,8 @@ fn run() -> Result<(), String> {
 
     let pid = fork_into_namespace()?;
     if pid == 0 {
-        run_child(
+        run_namespace_child(
+            exec_gate.into_child(),
             target,
             target_args,
             &exec_bundle,
@@ -175,12 +199,13 @@ fn run() -> Result<(), String> {
             libsecret_state_path.as_deref(),
             isolation,
             has_files,
-            &directory_layout,
+            &directory_plan,
         )
     } else {
         run_parent(
             pid,
-            &directory_layout,
+            exec_gate.into_parent(),
+            directory_plan.mounts(),
             &resource_channel,
             has_files,
             isolation,
@@ -276,49 +301,30 @@ fn prepare_namespace() -> Result<(), String> {
     Ok(())
 }
 
-/// Compute the files-slot mount layout (pure). Returns an empty `Vec` when the
-/// wrapper does not project files.
-fn plan_files_mounts(
+/// Purely validate and route the complete files projection. Returns an empty
+/// plan when this wrapper does not project files; in that mode the blob's files
+/// section remains operator-owned and is preserved verbatim at finalization.
+fn plan_files_projection(
     resource_channel: &ResourceChannel,
-) -> Result<Vec<DirectoryMountPlan>, String> {
-    if resource_channel.files_target_paths.is_empty() {
-        return Ok(Vec::new());
-    }
-    plan_directory_mounts(
+    blob: ResourceBlob,
+) -> Result<DirectoryProjectionPlan, String> {
+    plan_directory_projection(
         &resource_channel.files_target_paths,
         &PathBuf::from(DIRECTORY_STAGING_ROOT),
+        &resource_channel.resource_id,
+        blob,
     )
-    .map_err(|e| format!("planning files-slot mounts: {e}"))
+    .map_err(|e| format!("planning complete files projection: {e}"))
 }
 
-/// Decode the Checkout blob and realize the planned files-slot bind-mounts
-/// (create + materialize + bind). Runs in the child after switching to the
-/// dedicated target uid, so fsuid is naturally X. No-ops when the wrapper does
-/// not project files.
-fn realize_files_mounts(
-    resource_channel: &ResourceChannel,
-    target_home: &Path,
-    plans: &[DirectoryMountPlan],
-) -> Result<(), String> {
-    if plans.is_empty() {
+/// Realize only a completed files projection after switching to the dedicated
+/// target uid, so fsuid is naturally X.
+fn realize_files_mounts(target_home: &Path, plan: &DirectoryProjectionPlan) -> Result<(), String> {
+    if plan.is_empty() {
         return Ok(());
     }
-    let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
-        &resource_channel.original_canonical,
-    )
-    .map_err(|e| {
-        format!(
-            "decoding Checkout blob for '{}': {e}",
-            resource_channel.resource_id
-        )
-    })?;
-    realize_directory_mounts(
-        resource_channel.resource_id.as_str(),
-        &blob,
-        target_home,
-        plans,
-    )
-    .map_err(|e| format!("realizing files-slot mounts: {e}"))
+    realize_directory_mounts(target_home, plan)
+        .map_err(|e| format!("realizing files-slot mounts: {e}"))
 }
 
 fn fork_into_namespace() -> Result<libc::pid_t, String> {
@@ -328,6 +334,48 @@ fn fork_into_namespace() -> Result<libc::pid_t, String> {
         return Err(format!("fork failed: {err}"));
     }
     Ok(pid)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_namespace_child(
+    mut gate_writer: GateWriter,
+    target: String,
+    target_args: Vec<String>,
+    exec_bundle: &ExecBundle,
+    target_identity: &TargetIdentity,
+    xdg_runtime_dir: &str,
+    resource_channel: &ResourceChannel,
+    libsecret_enabled: bool,
+    libsecret_state_path: Option<&Path>,
+    isolation: target_uid::Isolation,
+    has_files: bool,
+    directory_plan: &DirectoryProjectionPlan,
+) -> ! {
+    let error = run_child(
+        target,
+        target_args,
+        exec_bundle,
+        target_identity,
+        xdg_runtime_dir,
+        resource_channel,
+        libsecret_enabled,
+        libsecret_state_path,
+        isolation,
+        has_files,
+        directory_plan,
+        &mut gate_writer,
+    )
+    .expect_err("target exec does not return on success");
+
+    // Every controlled child-side return reports failure. If this write itself
+    // fails, EOF or a truncated stream still suppresses parent dispatch.
+    if let Err(gate_error) = gate_writer.send_failed() {
+        eprintln!("underwrap-ns: {gate_error}");
+    }
+    eprintln!("underwrap-ns: {error}");
+    // SAFETY: this is the post-fork child error path. `_exit` avoids running
+    // duplicated parent-side destructors; the kernel closes every owned fd.
+    unsafe { libc::_exit(1) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -342,7 +390,8 @@ fn run_child(
     libsecret_state_path: Option<&Path>,
     isolation: target_uid::Isolation,
     has_files: bool,
-    directory_layout: &[DirectoryMountPlan],
+    directory_plan: &DirectoryProjectionPlan,
+    gate_writer: &mut GateWriter,
 ) -> Result<(), String> {
     // Inside the new PID namespace: mount a fresh /proc in every mode so the
     // target only sees namespace-local PIDs.
@@ -362,7 +411,7 @@ fn run_child(
     if has_files {
         setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
             .map_err(|e| format!("directory staging setup (isolated): {e}"))?;
-        realize_files_mounts(resource_channel, &target_identity.home, directory_layout)?;
+        realize_files_mounts(&target_identity.home, directory_plan)?;
     }
 
     // Private libsecret bus: this runs after the switch, so the bus tmpfs is
@@ -408,7 +457,7 @@ fn run_child(
     if libsecret_enabled {
         let state_path = libsecret_state_path
             .ok_or_else(|| "libsecret enabled but no state path provided".to_string())?;
-        let section_bytes = libsecret_section_bytes(resource_channel)?;
+        let section_bytes = libsecret_section_bytes(resource_channel, directory_plan.blob())?;
         // The bus daemon and secretsd run with a sanitised environment drawn
         // from the trusted target env only, so caller-controlled
         // service-discovery paths cannot reach the private bus.
@@ -421,6 +470,7 @@ fn run_child(
             &mut cmd,
             EXEC_BUNDLE_FD,
             resource_channel.channel_fd,
+            gate_writer.raw_fd(),
             &helper_env,
             &section_bytes,
             state_path,
@@ -431,30 +481,27 @@ fn run_child(
         cmd.env(key, value);
     }
 
-    resource_channel::close_channel_fd_for_exec(resource_channel);
+    resource_channel::close_channel_fd(resource_channel)
+        .map_err(|e| format!("closing resource channel before exec: {e}"))?;
 
-    // Last fd touch before exec: sweep every inherited fd >= 3 to CLOEXEC so no
-    // privileged fd leaks across the boundary into the uid-X target.
+    // Last fd protection before exec: sweep every inherited fd >= 3 to CLOEXEC
+    // so no privileged fd leaks into the uid-X target. The gate was CLOEXEC at
+    // creation; Armed is written only after this final controlled operation.
     boundary::close_inherited_fds_for_exec()
-        .map_err(|e| format!("closing inherited fds before exec: {e}"))?;
+        .map_err(|e| format!("protecting inherited fds before exec: {e}"))?;
+    gate_writer.send_armed()?;
 
     let err = cmd.exec();
     Err(format!("exec failed: {err}"))
 }
 
-fn libsecret_section_bytes(channel: &ResourceChannel) -> Result<Vec<u8>, String> {
+fn libsecret_section_bytes(
+    channel: &ResourceChannel,
+    blob: &ResourceBlob,
+) -> Result<Vec<u8>, String> {
     if !channel.libsecret {
         return Err("libsecret enabled but resource does not project libsecret".to_string());
     }
-    let blob = underwrap_protocol::resource_blob::ResourceBlob::from_canonical_bytes(
-        &channel.original_canonical,
-    )
-    .map_err(|e| {
-        format!(
-            "decoding Checkout blob for libsecret resource '{}': {e}",
-            channel.resource_id
-        )
-    })?;
     blob.libsecret.to_canonical_bytes().map_err(|e| {
         format!(
             "canonicalizing libsecret section for '{}': {e}",
@@ -480,6 +527,7 @@ fn disable_core_dumps() -> Result<(), String> {
 
 fn run_parent(
     pid: libc::pid_t,
+    gate_reader: GateReader,
     directory_layout: &[DirectoryMountPlan],
     resource_channel: &ResourceChannel,
     has_files: bool,
@@ -494,11 +542,31 @@ fn run_parent(
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 
-    let status = wait_for_child(pid)?;
+    // Read through EOF before reaping. Successful exec closes the CLOEXEC
+    // writer; controlled returns append Failed. The later wait result is also
+    // required before this authorization can drive dispatch.
+    let authorization = gate_reader.observe();
+    let status = match wait_for_child(pid) {
+        Ok(status) => status,
+        Err(wait_error) => {
+            let close_error = resource_channel::close_channel_fd(resource_channel).err();
+            let drop_error = if needs_fsuid_window {
+                drop_caps()
+                    .err()
+                    .map(|e| format!("parent: dropping capabilities: {e}"))
+            } else {
+                None
+            };
+            return Err(format!(
+                "{wait_error}{}{}",
+                close_error
+                    .map(|e| format!("; closing resource channel: {e}"))
+                    .unwrap_or_default(),
+                drop_error.map(|e| format!("; {e}")).unwrap_or_default()
+            ));
+        }
+    };
 
-    // Compose and dispatch the end-of-run write while the staging tmpfs still
-    // lives in this namespace. It will be torn down with the namespace when the
-    // supervisor exits.
     let writeback_input = WritebackInput {
         channel: resource_channel,
         directory_layout,
@@ -509,23 +577,36 @@ fn run_parent(
         },
     };
 
-    // X-owned staging / libsecret state is read inside the single setfsuid(X)
-    // window (which also bounds the symlink-TOCTOU walk to uid X). Env-only
-    // targets have nothing X-owned to read and skip it.
-    let writeback_result = if needs_fsuid_window {
+    // The authorization gates the real collection/terminal dispatch call. A
+    // suppressed state never enters the fsuid window and never reads staging.
+    let writeback_result = if authorization != GateAuthorization::Accepted {
+        dispatch_after_gate(authorization, &[writeback_input])
+    } else if needs_fsuid_window {
         target_uid::with_target_fsuid(isolation, || {
-            writeback::dispatch_writeback(&[writeback_input])
+            dispatch_after_gate(authorization, &[writeback_input])
         })
         .and_then(|inner| inner)
     } else {
-        writeback::dispatch_writeback(&[writeback_input])
+        dispatch_after_gate(authorization, &[writeback_input])
     };
 
     match writeback_result {
-        Ok(outcomes) => report_outcomes(&outcomes),
-        Err(e) => {
-            eprintln!("underwrap-ns: end-of-run writeback: {e}");
+        Ok(Some(outcomes)) => report_outcomes(&outcomes),
+        Ok(None) => {
+            if !matches!(
+                authorization,
+                GateAuthorization::Suppressed(exec_gate::GateFailure::Failed)
+            ) {
+                eprintln!(
+                    "underwrap-ns: end-of-run dispatch suppressed by invalid exec gate state: {authorization:?}"
+                );
+            }
         }
+        Err(e) => eprintln!("underwrap-ns: end-of-run writeback: {e}"),
+    }
+
+    if let Err(e) = resource_channel::close_channel_fd(resource_channel) {
+        eprintln!("underwrap-ns: closing resource channel after target: {e}");
     }
 
     if needs_fsuid_window {
@@ -535,14 +616,35 @@ fn run_parent(
     propagate_exit_status(status)
 }
 
+fn dispatch_after_gate(
+    authorization: GateAuthorization,
+    inputs: &[WritebackInput<'_>],
+) -> Result<Option<Vec<WritebackOutcome>>, String> {
+    if authorization != GateAuthorization::Accepted {
+        return Ok(None);
+    }
+    writeback::dispatch_writeback(inputs).map(Some)
+}
+
 fn wait_for_child(pid: libc::pid_t) -> Result<libc::c_int, String> {
     let mut status: libc::c_int = 0;
-    let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
-    if ret < 0 {
-        let err = std::io::Error::last_os_error();
-        return Err(format!("waitpid failed: {err}"));
+    loop {
+        let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if ret == pid {
+            if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                return Ok(status);
+            }
+            return Err(format!("waitpid returned unexpected child state {status}"));
+        }
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("waitpid failed: {err}"));
+        }
+        return Err(format!("waitpid returned unexpected pid {ret}"));
     }
-    Ok(status)
 }
 
 /// `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` silences the stderr line

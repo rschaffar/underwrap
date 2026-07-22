@@ -79,11 +79,14 @@ fn send_checkout(fd: i32) -> Result<(Vec<u8>, bool), String> {
     }
 }
 
-/// Drop the wrapper-resource channel fd before exec'ing the target.
-/// The target must never inherit the daemon-facing IPC; if it did,
-/// a compromised target could replay Checkin against the daemon.
-pub fn close_channel_fd_for_exec(channel: &ResourceChannel) {
-    unsafe {
-        libc::close(channel.channel_fd);
+/// Close this process's inherited wrapper-resource channel endpoint. Parent
+/// and namespace child each call this once after `fork`; the numeric descriptor
+/// is never retried after `close(2)`, whose error leaves ownership ambiguous.
+pub fn close_channel_fd(channel: &ResourceChannel) -> Result<(), String> {
+    // SAFETY: fd 20 is the authenticated endpoint owned by this process. After
+    // this call no code in the same process uses the descriptor again.
+    if unsafe { libc::close(channel.channel_fd) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
     }
+    Ok(())
 }

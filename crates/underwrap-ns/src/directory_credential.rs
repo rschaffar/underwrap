@@ -16,7 +16,7 @@
 //! staging dir and re-prefixes the relative paths with the mount's
 //! target path to reconstruct the full keys for the Checkin blob.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -26,7 +26,7 @@ use underwrap_protocol::resource_blob::ResourceBlob;
 /// The pure layout for one files-slot mount: where its staging tmpfs
 /// subdirectory lives and where it binds into the target's home. Computed by
 /// the parent with **no filesystem side effects** (see
-/// [`plan_directory_mounts`]) so the same layout drives both the child-side
+/// [`plan_directory_projection`]) so the same layout drives both the child-side
 /// realize step (at fsuid X) and the parent-side end-of-run writeback walk
 /// (under a `setfsuid(X)` window).
 #[derive(Debug, Clone)]
@@ -40,71 +40,129 @@ pub struct DirectoryMountPlan {
     pub staging_path: PathBuf,
 }
 
-/// Compute the deterministic files-slot layout — one [`DirectoryMountPlan`]
-/// per configured mount path — with **no filesystem side effects**. The parent
-/// always computes this (so it can drive the writeback walk); the realize step
-/// ([`realize_directory_mounts`]) consumes it to actually create and bind the
-/// staging.
-///
-/// `staging_path` for mount `i` is `<staging_root>/mount-{i}`. Mount paths are
-/// validated clean/relative here so a malformed config fails before any mount
-/// is made; the realize step joins them under `<target_home>`.
-pub fn plan_directory_mounts(
+#[derive(Debug)]
+struct PlannedFile {
+    key: String,
+    mount_index: usize,
+    relative_path: String,
+}
+
+/// Complete, side-effect-free semantic plan for one files projection. Secret
+/// bytes remain solely in the decoded [`ResourceBlob`]; this plan retains only
+/// validated keys, mount indexes, and relative destinations.
+#[derive(Debug)]
+pub struct DirectoryProjectionPlan {
+    blob: ResourceBlob,
+    mounts: Vec<DirectoryMountPlan>,
+    files: Vec<PlannedFile>,
+}
+
+impl DirectoryProjectionPlan {
+    pub fn blob(&self) -> &ResourceBlob {
+        &self.blob
+    }
+
+    pub fn mounts(&self) -> &[DirectoryMountPlan] {
+        &self.mounts
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mounts.is_empty()
+    }
+}
+
+/// Compute the complete files projection with **no filesystem side effects**.
+/// Every mount and key is clean, every key routes to exactly one strict mount
+/// prefix, and no file key is an ancestor of another file key. Realization only
+/// accepts this completed plan and therefore cannot discover those semantic
+/// errors after staging writes begin.
+pub fn plan_directory_projection(
     target_paths: &[String],
     staging_root: &Path,
-) -> Result<Vec<DirectoryMountPlan>, String> {
+    resource_id: &str,
+    blob: ResourceBlob,
+) -> Result<DirectoryProjectionPlan, String> {
     if target_paths.is_empty() {
-        return Err("files-slot binding has no target paths".to_string());
+        return Ok(DirectoryProjectionPlan {
+            blob,
+            mounts: Vec::new(),
+            files: Vec::new(),
+        });
     }
-    let mut plans = Vec::with_capacity(target_paths.len());
+
+    let mut mounts = Vec::with_capacity(target_paths.len());
     for (index, mount_path) in target_paths.iter().enumerate() {
         validate_relative_path(mount_path)?;
-        plans.push(DirectoryMountPlan {
+        mounts.push(DirectoryMountPlan {
             mount_path: mount_path.clone(),
             staging_path: staging_root.join(format!("mount-{index}")),
         });
     }
-    Ok(plans)
-}
 
-/// Realize the planned files-slot mounts: create each mount's tmpfs staging
-/// subdirectory, materialize the blob files routed to it, ensure the mountpoint
-/// exists, and bind-mount the staging over it. The staging tmpfs **root** must
-/// already be mounted by the child after switching to uid X (see
-/// [`crate::mounts::setup_directory_staging_tmpfs`]); this only populates it.
-///
-/// Errors when a blob file key has no matching mount path or equals a mount
-/// path exactly: a file there would collide with a directory mountpoint, and
-/// silently dropping content the backend handed us would hide misconfiguration.
-pub fn realize_directory_mounts(
-    resource_id: &str,
-    blob: &ResourceBlob,
-    target_home: &Path,
-    plans: &[DirectoryMountPlan],
-) -> Result<(), String> {
-    // Phase 1: create per-mount staging directories.
-    for plan in plans {
-        create_dir_mode(&plan.staging_path, 0o700)?;
+    let keys: BTreeSet<&str> = blob.files.keys().map(String::as_str).collect();
+    for key in &keys {
+        validate_relative_path(key)?;
+        let mut prefix = String::new();
+        let components: Vec<&str> = key.split('/').collect();
+        for component in &components[..components.len() - 1] {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            if keys.contains(prefix.as_str()) {
+                return Err(format!(
+                    "resource '{resource_id}' has colliding file keys '{prefix}' and '{key}'; a regular file cannot also be a parent directory"
+                ));
+            }
+        }
     }
 
-    // Phase 2: route every blob file key to its mount and write it
-    // into that mount's staging dir.
-    let mount_paths: Vec<String> = plans.iter().map(|p| p.mount_path.clone()).collect();
-    for (key, content) in &blob.files {
-        validate_relative_path(key)?;
-        let mount_index = route_key_to_mount(key, &mount_paths, resource_id)?;
-        let relative = strip_mount_prefix(key, &plans[mount_index].mount_path);
+    let mut files = Vec::with_capacity(blob.files.len());
+    for key in blob.files.keys() {
+        let mount_index = route_key_to_mount(key, target_paths, resource_id)?;
+        files.push(PlannedFile {
+            key: key.clone(),
+            mount_index,
+            relative_path: strip_mount_prefix(key, &mounts[mount_index].mount_path).to_string(),
+        });
+    }
+
+    Ok(DirectoryProjectionPlan {
+        blob,
+        mounts,
+        files,
+    })
+}
+
+/// Realize a completed files projection. The staging tmpfs **root** must already
+/// be mounted by the child after switching to uid X. Environmental filesystem
+/// and mount operations can still fail, but routing, equality, cleanliness, and
+/// aggregate file-shape semantics were settled before this function is called.
+pub fn realize_directory_mounts(
+    target_home: &Path,
+    plan: &DirectoryProjectionPlan,
+) -> Result<(), String> {
+    // Phase 1: create per-mount staging directories.
+    for mount in &plan.mounts {
+        create_dir_mode(&mount.staging_path, 0o700)?;
+    }
+
+    // Phase 2: materialize only pre-routed files. The plan and blob originate
+    // from the same immutable Checkout decode in `run`, so indexing cannot
+    // introduce a new semantic failure during realization.
+    for file in &plan.files {
+        let content = &plan.blob.files[&file.key];
         materialize_file(
-            &plans[mount_index].staging_path,
-            relative,
+            &plan.mounts[file.mount_index].staging_path,
+            &file.relative_path,
             content.as_slice(),
         )?;
     }
 
     // Phase 3: bind-mount each staging dir at its target path.
-    for plan in plans {
-        let mountpoint = ensure_mount_target(target_home, &plan.mount_path)?;
-        bind_mount_dir(&plan.staging_path, &mountpoint)?;
+    for mount in &plan.mounts {
+        let mountpoint = ensure_mount_target(target_home, &mount.mount_path)?;
+        bind_mount_dir(&mount.staging_path, &mountpoint)?;
     }
 
     Ok(())
@@ -143,29 +201,33 @@ pub fn collect_staging_files(
     Ok(out)
 }
 
-/// Locate the single mount whose target path is a strict path-prefix
-/// of `key`. Errors when no mount matches or when the key equals a
-/// mount path exactly. Mount paths are validated non-overlapping by
-/// both the NixOS module and the daemon config loader, so at most one
-/// mount can ever match — first match is also only match.
+/// Locate the single mount whose target path is a strict path-prefix of `key`.
+/// Equality, no route, and multiple routes are all semantic planning errors.
 fn route_key_to_mount(
     key: &str,
     target_paths: &[String],
     resource_id: &str,
 ) -> Result<usize, String> {
-    for (index, mount) in target_paths.iter().enumerate() {
-        if key == mount.as_str() {
-            return Err(format!(
-                "resource '{resource_id}' has file key '{key}' that equals mount path '{mount}'; a file cannot share its name with a directory mountpoint"
-            ));
-        }
-        if is_path_prefix(mount, key) {
-            return Ok(index);
-        }
+    if let Some(mount) = target_paths.iter().find(|mount| key == mount.as_str()) {
+        return Err(format!(
+            "resource '{resource_id}' has file key '{key}' that equals mount path '{mount}'; a file cannot share its name with a directory mountpoint"
+        ));
     }
-    Err(format!(
-        "resource '{resource_id}' has file key '{key}' but no configured mount path is a prefix of it; either add the missing mount to files.paths or remove the file from the backend resource"
-    ))
+
+    let matches: Vec<usize> = target_paths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, mount)| is_path_prefix(mount, key).then_some(index))
+        .collect();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!(
+            "resource '{resource_id}' has file key '{key}' but no configured mount path is a prefix of it; either add the missing mount to files.paths or remove the file from the backend resource"
+        )),
+        _ => Err(format!(
+            "resource '{resource_id}' has file key '{key}' that routes to multiple configured mount paths; files.paths must provide exactly one strict route"
+        )),
+    }
 }
 
 /// True iff `full` is `prefix` followed by `/` and at least one more

@@ -145,6 +145,20 @@ let
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
     exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
   '';
+  f006MarkerScript = pkgs.writeShellScript "f006-marker-target" ''
+    ${pkgs.coreutils}/bin/touch /tmp/f006-unroutable-target-ran
+  '';
+  f006Exit37Script = pkgs.writeShellScript "f006-exit-37-target" ''
+    set -eu
+    printf 'persisted-after-exit-37' > "$HOME/.config/f006-exit-37/token"
+    exit 37
+  '';
+  f006SigkillScript = pkgs.writeShellScript "f006-sigkill-target" ''
+    set -eu
+    printf 'persisted-before-sigkill' > "$HOME/.config/f006-sigkill/token"
+    ${pkgs.coreutils}/bin/touch /tmp/f006-sigkill-ready
+    exec ${pkgs.coreutils}/bin/sleep 6060
+  '';
   # env-mode target whose DIRECT process is non-dumpable (incidental, via the
   # wrapper cap/namespace chain) but which spawns a CLEAN child that resets to
   # dumpable and inherits the secret env; mandatory target UID isolation must
@@ -583,6 +597,30 @@ in {
               HOME = "/tmp/underwrap-home-override";
               XDG_CONFIG_HOME = "/tmp/underwrap-config-override";
             };
+          };
+          test-f006-unroutable = {
+            target = "${f006MarkerScript}";
+            resource = "test/f006-unroutable";
+            files.paths = [ ".config/f006-unroutable" ];
+            accessPaths = [ "~/.config" ];
+          };
+          test-f006-exec-missing = {
+            target = "/run/underwrap-f006-missing-target";
+            resource = "test/f006-exec-missing";
+            files.paths = [ ".config/f006-exec-missing" ];
+            accessPaths = [ "~/.config" ];
+          };
+          test-f006-exit-37 = {
+            target = "${f006Exit37Script}";
+            resource = "test/f006-exit-37";
+            files.paths = [ ".config/f006-exit-37" ];
+            accessPaths = [ "~/.config" ];
+          };
+          test-f006-sigkill = {
+            target = "${f006SigkillScript}";
+            resource = "test/f006-sigkill";
+            files.paths = [ ".config/f006-sigkill" ];
+            accessPaths = [ "~/.config" ];
           };
         };
       };

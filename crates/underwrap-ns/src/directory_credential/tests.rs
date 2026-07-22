@@ -117,3 +117,108 @@ fn route_key_to_mount_rejects_key_equal_to_mount() {
     let err = route_key_to_mount(".config/gh", &mounts, "test").unwrap_err();
     assert!(err.contains("equals mount path"), "unexpected error: {err}");
 }
+
+fn blob_with_files(entries: &[(&str, &[u8])]) -> ResourceBlob {
+    let mut blob = ResourceBlob::empty();
+    for (key, value) in entries {
+        blob.files
+            .insert((*key).to_string(), SecretBytes::from((*value).to_vec()));
+    }
+    blob
+}
+
+fn plan_and_realize_for_test(
+    blob: ResourceBlob,
+    mount: &str,
+    staging_root: &Path,
+    target_home: &Path,
+) -> Result<(), String> {
+    let plan = plan_directory_projection(
+        &[mount.to_string()],
+        staging_root,
+        "complete-projection-test",
+        blob,
+    )?;
+    realize_directory_mounts(target_home, &plan)
+}
+
+#[test]
+fn complete_projection_later_unroutable_has_zero_staging_side_effects() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let staging_root = tempdir.path().join("staging");
+    let target_home = tempdir.path().join("home");
+    std::fs::create_dir(&target_home).unwrap();
+    let blob = blob_with_files(&[
+        (".config/f006/a-preserved", b"first"),
+        (".config/z-f006/missing", b"later"),
+    ]);
+
+    let error =
+        plan_and_realize_for_test(blob, ".config/f006", &staging_root, &target_home).unwrap_err();
+    assert!(
+        error.contains("no configured mount path is a prefix"),
+        "unexpected error: {error}"
+    );
+    assert!(!staging_root.exists());
+    assert_eq!(std::fs::read_dir(&target_home).unwrap().count(), 0);
+}
+
+#[test]
+fn complete_projection_file_descendant_collision_has_zero_staging_side_effects() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let staging_root = tempdir.path().join("staging");
+    let target_home = tempdir.path().join("home");
+    std::fs::create_dir(&target_home).unwrap();
+    let blob = blob_with_files(&[
+        (".config/f006/a", b"file"),
+        (".config/f006/a/b", b"descendant"),
+    ]);
+
+    let error =
+        plan_and_realize_for_test(blob, ".config/f006", &staging_root, &target_home).unwrap_err();
+    assert!(
+        error.contains("colliding file keys"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains(".config/f006/a"));
+    assert!(error.contains(".config/f006/a/b"));
+    assert!(!staging_root.exists());
+    assert_eq!(std::fs::read_dir(&target_home).unwrap().count(), 0);
+}
+
+#[test]
+fn complete_projection_valid_input_routes_every_file_exactly_once() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let blob = blob_with_files(&[
+        (".config/gh/hosts.yml", b"gh"),
+        (".config/git/config", b"git"),
+    ]);
+    let plan = plan_directory_projection(
+        &[".config/gh".to_string(), ".config/git".to_string()],
+        tempdir.path(),
+        "complete-projection-test",
+        blob,
+    )
+    .unwrap();
+
+    assert_eq!(plan.mounts.len(), 2);
+    assert_eq!(plan.files.len(), 2);
+    assert_eq!(plan.files[0].mount_index, 0);
+    assert_eq!(plan.files[0].relative_path, "hosts.yml");
+    assert_eq!(plan.files[1].mount_index, 1);
+    assert_eq!(plan.files[1].relative_path, "config");
+}
+
+#[test]
+fn complete_projection_rejects_multiple_strict_routes() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let blob = blob_with_files(&[("a/b/c", b"value")]);
+    let error = plan_directory_projection(
+        &["a".to_string(), "a/b".to_string()],
+        tempdir.path(),
+        "complete-projection-test",
+        blob,
+    )
+    .unwrap_err();
+    assert!(error.contains("multiple configured mount paths"));
+}

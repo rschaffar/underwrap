@@ -106,14 +106,24 @@ The detailed sequence is:
    trusting the wrapper selector and target argv on any mismatch.
 8. `underwrap-ns` resolves the dedicated target UID/GID from the root-owned
    `(instance, wrapper)` table. The UID/GID never comes from IPC or the daemon.
-9. `underwrap-ns` checks out the resource over authenticated fd 20, then creates
-   PID, mount, IPC, and UTS namespaces, prepares projections, switches the
-   target child to its dedicated UID, clears capabilities, and executes the
-   daemon-chosen target.
-10. After the target exits, the namespace supervisor compares the canonical
-    post-run resource with the Checkout bytes. It sends either `UsageSignal` or
-    `Checkin` over fd 20.
-11. `underwrapd` translates that request into the finalize API. The backend
+9. After the secret-free idmap helper has been reaped, `underwrap-ns` creates a
+   private CLOEXEC authorization gate while fd 3 and fd 20 remain occupied. It
+   reads fd 3, checks out and decodes the resource, and purely plans the complete
+   files projection before namespace preparation, idmapped mounts, PID fork,
+   staging, target-UID switching, or target-facing helpers.
+10. The supervisor unshares PID, mount, IPC, and UTS namespaces, makes mount
+    propagation private, realizes idmapped caller-directory mounts, and then
+    forks. The child enters the new PID namespace, remounts `/proc`, switches
+    identity, realizes the completed projection plan and remaining setup, and
+    reports `Armed` after final descriptor protection immediately before
+    executing the daemon-chosen target. Controlled returns report `Failed`.
+11. The supervisor observes the gate through EOF and then reaps the child. Only
+    exact `Armed` followed by CLOEXEC EOF without failure or extra bytes,
+    together with a successful reap, authorizes staging collection. It then
+    compares the canonical post-run resource with Checkout and sends either
+    `UsageSignal` or `Checkin`. Observed pre-exec failures and invalid gate/wait
+    states send neither terminal verb.
+12. `underwrapd` translates that request into the finalize API. The backend
     re-evaluates policy and, for a writeback, re-checks writability and env
     immutability before persisting.
 
@@ -168,22 +178,40 @@ does not raise it into the ambient set.
   root-provisioned daemon UID/GID;
 - rejects direct invocation before reading fd 3, trusting the wrapper selector
   or target argv, or performing namespace/mount/idmap work;
-- creates fresh PID, mount, IPC, and UTS namespaces;
-- makes mount propagation private and remounts `/proc` for the new PID
-  namespace;
-- resolves and switches to the dedicated target UID/GID;
-- creates the selected projections;
+- creates and reaps the optional secret-free idmap helper before reading fd 3
+  or Checkout bytes;
+- creates a private CLOEXEC authorization gate, reads fd 3, checks out the
+  resource, and completes semantic files planning before privileged projection
+  effects;
+- in the supervisor, unshares fresh PID, mount, IPC, and UTS namespaces, makes
+  mount propagation private, and realizes idmapped caller-directory mounts
+  before forking;
+- in the child, enters the new PID namespace, remounts `/proc`, switches to the
+  already resolved dedicated target UID/GID, and realizes the selected
+  projections from the completed plan;
 - sets `PR_SET_NO_NEW_PRIVS`, clears capabilities, verifies that root cannot be
   regained, disables core dumps, starts a new session, and closes inherited
   descriptors;
-- executes the target as PID 1 of the new PID namespace.
+- reports `Armed` after final fd protection and executes the target as PID 1 of
+  the new PID namespace; every controlled returned setup/exec error reports
+  `Failed`.
 
-The namespace supervisor remains outside the target PID namespace long enough
-to wait and finalize the resource. Env-only supervisors drop capabilities before
-waiting. Files/libsecret supervisors retain `CAP_SYS_ADMIN`, `CAP_SETUID`, and
-`CAP_SETGID` through target execution and the post-run fsuid read window, then
-drop them; the implementation does not selectively drop `CAP_SYS_ADMIN` before
-the wait.
+The namespace supervisor remains outside the target PID namespace to observe
+the gate through EOF and then reap the child. Finalization requires both exact
+`Armed` followed by EOF without `Failed` and a successful reap; malformed,
+truncated, early closed, failed-I/O, or failed-wait states suppress staging
+collection and both terminal verbs. The gate records an authorized lifecycle,
+not proof that exec succeeded. A normal successful exec may finalize changes
+made by the target. Only the false-positive case where the child dies after
+`Armed` but before either CLOEXEC exec closure or complete `Failed` observation
+is indistinguishable from closure; because no target ran, that narrow ambiguity
+can at most finalize the fully materialized unchanged state. Env-only
+supervisors drop capabilities before waiting. Files/libsecret supervisors
+retain `CAP_SYS_ADMIN`, `CAP_SETUID`, and `CAP_SETGID` through target execution
+and the post-run fsuid read window, then drop them; the implementation does not
+selectively drop `CAP_SYS_ADMIN` before the wait. After an authorized lifecycle,
+finalization remains diagnostic-only and precedes exact propagation of target
+exit codes and signals.
 
 ## Target environment and host access
 
@@ -235,7 +263,10 @@ them.
 `underwrap-ns` materializes the files slot in a namespace-private `noswap`
 tmpfs. Each configured `files.paths` entry becomes a bind mount rooted at the
 caller's passwd home path. Paths must be clean, relative, unique, and
-non-overlapping; every files-slot key must route to one configured path.
+non-overlapping. Before projection effects, every clean files-slot key must
+route to exactly one strict configured path, must not equal that mount path, and
+must not be an ancestor or descendant of another regular-file key. Realization
+consumes only that completed plan.
 
 The target sees writable mounts. If the permission is read-only, changed bytes
 are discarded and an audit event plus optional stderr warning records the

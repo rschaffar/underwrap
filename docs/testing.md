@@ -86,7 +86,12 @@ Workspace tests cover:
 - real daemon/backend integration flows.
 
 Some integration tests skip when the host cannot supply the required Linux
-capabilities. The VM test covers the deployed privileged path independently.
+capabilities. Focused `underwrap-ns` tests cover complete-plan zero-side-effect
+rejection, exact gate parsing, CLOEXEC/opposite-end ownership, returned-exec
+failure reporting, helper/target fd non-retention, wait failure, and the real
+parent dispatch seam. The gate tests establish only the observable `Armed`/EOF
+contract; they do not prove exec or address supervisor signal forwarding. The
+VM test covers the deployed privileged path independently.
 Daemon transport tests cover absolute HTTPS URL admission, base-path preservation,
 and HTTPS-to-HTTP redirect rejection through the production client. Applied
 root-policy unit tests record that the production client disables bundled
@@ -196,13 +201,18 @@ that root retains its documented visibility.
 It checks:
 
 - fresh PID and `/proc` views;
-- files projection, routing, staging, and writeback;
+- complete files-projection prevalidation, routing, staging, and writeback;
+- later-unroutable projection and returned-exec failures through the real
+  setgid/capability chain, including target non-execution, canonical blob byte
+  equality, and exact absence of terminal daemon audit verbs;
 - private D-Bus and Secret Service operation;
 - target-owned runtime directories;
 - idmapped caller access paths and resulting file ownership;
 - host-namespace inability to see private projection mounts or sockets;
 - read-only mutation discard and warning/audit behavior;
-- core-dump prevention and descriptor hygiene.
+- core-dump prevention and descriptor hygiene;
+- private exec-gate authorization and retained post-exec persistence/status for
+  a file-writing target that exits nonzero or dies by signal.
 
 ### Secret hygiene
 
