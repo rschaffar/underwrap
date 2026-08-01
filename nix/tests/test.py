@@ -389,10 +389,6 @@ LOCAL_WRAPPER_RESOURCES = {
 # Each wrapper now projects exactly one resource, so no secondary
 # grants are needed.
 
-REMOTE_WRAPPER_RESOURCES = {
-    "remote-echo": "remote/token",
-}
-
 # Resolved at boot from `GET /v1/admin/client-instances`. The backend
 # assigns runtime-client ids dynamically (see
 # `crates/underwrap-backend/src/runtime_clients.rs`), so we look them
