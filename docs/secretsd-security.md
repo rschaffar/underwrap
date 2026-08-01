@@ -35,10 +35,13 @@ underwrap-ns
    file on the private bus tmpfs.
 4. Every successful D-Bus mutation atomically replaces that state file before
    the D-Bus acknowledgement returns.
-5. When the target exits, the kernel terminates its PID-namespace siblings,
-   including secretsd and dbus-daemon.
-6. The namespace supervisor reads the final state file, composes the resource
-   blob, and performs UsageSignal or Checkin over fd 20.
+5. The trusted namespace PID-1 relay reaps the direct PID-2 target, frames its
+   status, and exits; the kernel then terminates every remaining namespace
+   process, including secretsd, dbus-daemon, and detached descendants.
+6. The host namespace supervisor cleanly reaps the relay, then parses and
+   validates the target-status frame. With valid gate and status results, it
+   reads the final state file, composes the resource blob, and performs
+   UsageSignal or Checkin over fd 20.
 
 The target, secretsd, and dbus-daemon never inherit fd 20.
 
@@ -71,7 +74,9 @@ allowlist is restored. Caller-controlled `DBUS_*`, `XDG_*`, and dynamic-linker
 variables do not select the private service.
 
 The process runs under the wrapper's dedicated target UID inside the private
-PID and mount namespaces.
+PID and mount namespaces as a relay descendant (and may later be adopted by
+namespace PID 1). It inherits neither liveness pipe, target-status writer,
+authorization gate, fd 3, nor fd 20.
 
 ## State size and atomicity
 

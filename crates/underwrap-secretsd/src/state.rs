@@ -1,12 +1,12 @@
 //! Atomic on-mutation persistence of the libsecret section to a
 //! tmpfs file in the namespace.
 //!
-//! The state file is the source of truth for the namespace parent
-//! (`underwrap-ns`) after the namespace dies. Because PID 1 (the
-//! target) exits and the kernel SIGKILLs every other namespace
-//! member immediately, secretsd never gets a chance to respond to
-//! a teardown signal — every mutation must be persisted before the
-//! ack returns to the D-Bus caller.
+//! The state file is the source of truth for host `underwrap-ns` after it
+//! cleanly reaps the trusted namespace PID-1 relay. The configured target is
+//! PID 2; the relay reaps it, frames its status, then exits so the kernel
+//! SIGKILLs any remaining helpers. Secretsd has no graceful teardown handshake,
+//! so every mutation must be persisted before the ack returns to the D-Bus
+//! caller.
 //!
 //! Writes are atomic: write to a sibling `.new` file, then rename
 //! over the canonical path. A torn write on the canonical path

@@ -18,24 +18,28 @@
 //!    variant, scope }`; receives the env bindings, the daemon-chosen
 //!    target binary, and one wrapper-resource channel fd via SCM_RIGHTS
 //! 5. Drops all elevated privileges
-//! 6. Relocates the received socket away from reserved descriptors, then
-//!    forks: the parent writes the descriptor-free `ExecBundle` to fd 3 and the
-//!    child maps the daemon-created socket to fixed fd 20 before execing
-//!    `underwrap-ns`
-//! 7. `underwrap-ns` authenticates fd 20's creation-time daemon credentials
-//!    before reading fd 3, setting up namespaces, or trusting target metadata
+//! 6. Relocates every child-carried descriptor above the reserved slots, then
+//!    forks: the waiting parent writes the descriptor-free `ExecBundle` to fd 3
+//!    and owns the sole liveness writer; the child maps the daemon-created socket
+//!    to fd 20 and the liveness reader to fd 21 before execing `underwrap-ns`
+//! 7. `underwrap-ns` authenticates fd 20's creation-time daemon credentials,
+//!    then validates/arms fd 21 before reading fd 3, setting up namespaces, or
+//!    trusting target metadata
 //!
 //! The wrapper never chooses the target binary: it execs whatever path
 //! the daemon returned in `ReadOk`. Secret material flows through the
 //! pipe on fd 3 — never argv, env, or filesystem between the two stages.
 
+mod supervision;
+
 use anyhow::{Context, Result, bail};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 use underwrap_protocol::config::AccessMode;
 use underwrap_protocol::exec::{
     EXEC_BUNDLE_FD, ExecBundle, ExecResourceBinding, IDMAP_REQUIRED_ENV,
-    WRAPPER_RESOURCE_CHANNEL_FD,
+    WRAPPER_PARENT_LIVENESS_FD, WRAPPER_RESOURCE_CHANNEL_FD,
 };
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
@@ -329,7 +333,8 @@ fn request_secret(
 /// temporary copy out of an accidental exec; the deliberate `dup2` to fd 20
 /// clears close-on-exec on the fixed destination.
 fn relocate_resource_channel_fd(fd: i32) -> Result<i32> {
-    let relocated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 21) };
+    let relocated =
+        unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, supervision::RELOCATED_FD_MIN) };
     if relocated < 0 {
         bail!(
             "relocating wrapper-resource channel fd {fd}: {}",
@@ -360,11 +365,9 @@ fn exec_via_ns(
         );
     }
 
-    // Make this process non-dumpable. Since we don't exec after this point
-    // (we fork and waitpid), the flag persists. This prevents same-UID
-    // processes from reading the secret out of our /proc/<pid>/mem.
-    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
-    if ret != 0 {
+    // Make this process non-dumpable. Since stage 1 waits rather than execing,
+    // the setting protects its in-memory handoff state for the full invocation.
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 {
         bail!(
             "prctl(PR_SET_DUMPABLE, 0) failed: {}",
             std::io::Error::last_os_error()
@@ -373,15 +376,34 @@ fn exec_via_ns(
 
     let mut resource_binding = read.resource_binding;
     resource_binding.channel_fd = relocate_resource_channel_fd(resource_binding.channel_fd)?;
+    // SAFETY: relocate_resource_channel_fd returned a new uniquely owned fd.
+    let resource_source = unsafe { OwnedFd::from_raw_fd(resource_binding.channel_fd) };
 
-    // Create the fd-3 ExecBundle pipe only after relocating the channel.
-    let mut pipe_fds = [0i32; 2];
-    let ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        bail!("pipe() failed: {err}");
+    let mut bundle_fds = [-1; 2];
+    // SAFETY: the array has room for both pipe2 results; successful descriptors
+    // are adopted exactly once below.
+    if unsafe { libc::pipe2(bundle_fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        bail!(
+            "pipe2() for exec bundle failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
-    let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
+    // SAFETY: successful pipe2 returned uniquely owned descriptors.
+    let bundle_reader = unsafe { OwnedFd::from_raw_fd(bundle_fds[0]) };
+    // SAFETY: same ownership invariant for the writer.
+    let bundle_writer = unsafe { OwnedFd::from_raw_fd(bundle_fds[1]) };
+    let liveness = supervision::LivenessPipe::new()?;
+
+    // All child-carried sources are above every fixed destination before fork,
+    // so mapping fd 3, 20, and 21 cannot clobber a later source.
+    let bundle_source = supervision::relocate_owned(bundle_reader.as_raw_fd(), "exec bundle")?;
+    let liveness_source =
+        supervision::relocate_owned(liveness.reader.as_raw_fd(), "parent liveness")?;
+    let resource_safe =
+        supervision::relocate_owned(resource_source.as_raw_fd(), "resource channel")?;
+    drop(bundle_reader);
+    drop(resource_source);
+    drop(liveness.reader);
 
     let exec_resource = ExecResourceBinding {
         resource_id: resource_binding.resource_id.clone(),
@@ -390,126 +412,111 @@ fn exec_via_ns(
         libsecret: resource_binding.libsecret,
         files_target_paths: resource_binding.files_target_paths.clone(),
     };
-
     let libsecret_in_scope = exec_resource.libsecret;
     let idmap_required = !read.access_paths.is_empty();
     let target = read.target;
 
+    let inherited_sigchld = supervision::SigchldState::capture()?;
+    inherited_sigchld.normalize_for_wait()?;
+
+    // SAFETY: underwrap-exec is single-threaded here. Both branches restrict
+    // post-fork work to owned-fd syscalls and the existing exec path.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        let err = std::io::Error::last_os_error();
-        bail!("fork failed: {err}");
+        let error = std::io::Error::last_os_error();
+        inherited_sigchld.restore()?;
+        bail!("fork failed: {error}");
     }
 
     if pid == 0 {
-        // === Child: exec underwrap-ns ===
+        // The namespace stage must never own either parent-only writer.
+        drop(bundle_writer);
+        drop(liveness.writer);
 
-        // Close write end of pipe.
-        unsafe { libc::close(pipe_write) };
+        let child_result = (|| -> Result<()> {
+            supervision::map_fixed(&bundle_source, EXEC_BUNDLE_FD, "exec bundle")?;
+            supervision::map_fixed(
+                &resource_safe,
+                WRAPPER_RESOURCE_CHANNEL_FD,
+                "wrapper-resource channel",
+            )?;
+            supervision::map_fixed(
+                &liveness_source,
+                WRAPPER_PARENT_LIVENESS_FD,
+                "wrapper-parent liveness",
+            )?;
+            drop(bundle_source);
+            drop(resource_safe);
+            drop(liveness_source);
+            inherited_sigchld.restore()?;
 
-        // Move read end to fd 3 (the expected fd for underwrap-ns).
-        if pipe_read != EXEC_BUNDLE_FD {
-            let ret = unsafe { libc::dup2(pipe_read, EXEC_BUNDLE_FD) };
-            if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                eprintln!("underwrap-exec: dup2 failed: {err}");
-                std::process::exit(1);
+            use std::os::unix::process::CommandExt;
+            let mut cmd = std::process::Command::new(ns_binary);
+            cmd.arg(&target);
+            cmd.env_remove("UNDERWRAP_LIBSECRET");
+            cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
+            cmd.env_remove("UNDERWRAP_SECRETSD");
+            cmd.env_remove("UNDERWRAP_ISOLATION_INSTANCE");
+            cmd.env_remove("UNDERWRAP_ISOLATION_WRAPPER");
+            cmd.env_remove(IDMAP_REQUIRED_ENV);
+            cmd.env("UNDERWRAP_ISOLATION_INSTANCE", instance);
+            cmd.env("UNDERWRAP_ISOLATION_WRAPPER", wrapper);
+            if idmap_required {
+                cmd.env(IDMAP_REQUIRED_ENV, "1");
             }
-            unsafe { libc::close(pipe_read) };
-        }
-
-        // Map the daemon-created wrapper-resource socket to the one fixed slot
-        // that underwrap-ns authenticates before trusting this handoff.
-        let ret = unsafe { libc::dup2(resource_binding.channel_fd, WRAPPER_RESOURCE_CHANNEL_FD) };
-        if ret < 0 {
-            let err = std::io::Error::last_os_error();
-            eprintln!("underwrap-exec: dup2 wrapper-resource channel fd failed: {err}");
-            std::process::exit(1);
-        }
-        unsafe { libc::close(resource_binding.channel_fd) };
-
-        // Build argv for underwrap-ns: <ns_binary> <target> [args...].
-        // The target is the daemon-chosen path, never a local choice.
-        use std::os::unix::process::CommandExt;
-        let mut cmd = std::process::Command::new(ns_binary);
-        cmd.arg(&target);
-
-        // ALWAYS strip internal env vars from the child — a malicious user
-        // could set these to inject code into the PID namespace.
-        cmd.env_remove("UNDERWRAP_LIBSECRET");
-        cmd.env_remove("UNDERWRAP_DBUS_DAEMON");
-        cmd.env_remove("UNDERWRAP_SECRETSD");
-        cmd.env_remove("UNDERWRAP_ISOLATION_INSTANCE");
-        cmd.env_remove("UNDERWRAP_ISOLATION_WRAPPER");
-        cmd.env_remove(IDMAP_REQUIRED_ENV);
-
-        // underwrap-ns resolves the dedicated UID from the `(instance, wrapper)`
-        // selector. The instance comes from the effective-GID gate and the daemon
-        // validated the wrapper name for this read. Only the selector travels;
-        // the root-owned table supplies the UID/GID. underwrap-ns removes both
-        // internal variables before target exec.
-        cmd.env("UNDERWRAP_ISOLATION_INSTANCE", instance);
-        cmd.env("UNDERWRAP_ISOLATION_WRAPPER", wrapper);
-        if idmap_required {
-            cmd.env(IDMAP_REQUIRED_ENV, "1");
-        }
-
-        if libsecret_in_scope {
-            cmd.env("UNDERWRAP_LIBSECRET", "1");
-            if let Some(ref bin) = config.dbus_daemon_binary {
-                cmd.env("UNDERWRAP_DBUS_DAEMON", bin);
+            if libsecret_in_scope {
+                cmd.env("UNDERWRAP_LIBSECRET", "1");
+                if let Some(ref bin) = config.dbus_daemon_binary {
+                    cmd.env("UNDERWRAP_DBUS_DAEMON", bin);
+                }
+                if let Some(ref bin) = config.secretsd_binary {
+                    cmd.env("UNDERWRAP_SECRETSD", bin);
+                }
             }
-            if let Some(ref bin) = config.secretsd_binary {
-                cmd.env("UNDERWRAP_SECRETSD", bin);
-            }
+            cmd.args(args);
+            Err(anyhow::anyhow!("exec underwrap-ns failed: {}", cmd.exec()))
+        })();
+        if let Err(error) = child_result {
+            eprintln!("underwrap-exec: {error:#}");
         }
-
-        cmd.args(args);
-
-        let err = cmd.exec();
-        eprintln!("underwrap-exec: exec underwrap-ns failed: {err}");
-        std::process::exit(1);
+        // SAFETY: this is the post-fork child error path; _exit avoids running
+        // duplicated parent-owned destructors.
+        unsafe { libc::_exit(1) }
     }
 
-    // === Parent: write ExecBundle to pipe, wait for child ===
+    // Parent owns the sole outer-liveness writer until underwrap-ns is reaped.
+    drop(bundle_source);
+    drop(resource_safe);
+    drop(liveness_source);
 
-    unsafe { libc::close(pipe_read) };
-
-    unsafe { libc::close(resource_binding.channel_fd) };
-
-    {
-        use std::os::unix::io::FromRawFd;
-        let mut pipe = unsafe { std::fs::File::from_raw_fd(pipe_write) };
-        let payload = ExecBundle {
-            env: read.env,
-            env_passthrough: read.env_passthrough,
-            env_set: read.env_set,
-            target_runtime_dir_base: read.target_runtime_dir_base,
-            resource: exec_resource,
-            access_paths: read.access_paths,
-        };
-        write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")?;
-        // pipe_write closed on drop.
+    let payload = ExecBundle {
+        env: read.env,
+        env_passthrough: read.env_passthrough,
+        env_set: read.env_set,
+        target_runtime_dir_base: read.target_runtime_dir_base,
+        resource: exec_resource,
+        access_paths: read.access_paths,
+    };
+    let write_result = {
+        let mut pipe = std::fs::File::from(bundle_writer);
+        write_frame_sync(&mut pipe, &payload).context("writing exec bundle to pipe")
+    };
+    if let Err(error) = write_result {
+        // SAFETY: pid is our unreaped child. SIGKILL bounds an error path; the
+        // EINTR-tolerant wait below consumes it before returning.
+        supervision::kill_and_reap(pid);
+        return Err(error);
     }
 
-    let mut status: libc::c_int = 0;
-    let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
-    if ret < 0 {
-        let err = std::io::Error::last_os_error();
-        bail!("waitpid failed: {err}");
-    }
-
-    if libc::WIFEXITED(status) {
-        std::process::exit(libc::WEXITSTATUS(status));
-    } else if libc::WIFSIGNALED(status) {
-        let sig = libc::WTERMSIG(status);
-        unsafe {
-            libc::signal(sig, libc::SIG_DFL);
-            libc::raise(sig);
+    let status = match supervision::wait_terminal(pid) {
+        Ok(status) => status,
+        Err(error) => {
+            supervision::kill_and_reap(pid);
+            return Err(error);
         }
-        std::process::exit(128 + sig);
-    }
-    std::process::exit(1);
+    };
+    drop(liveness.writer);
+    supervision::propagate_wait_status(status)
 }
 
 fn drop_privilege() -> Result<()> {

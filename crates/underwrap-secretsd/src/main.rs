@@ -7,13 +7,13 @@
 //! The whole libsecret keyring for this run is loaded once at startup
 //! from a one-shot pipe (`--init-fd`) and kept in memory. Every D-Bus
 //! mutation is persisted by atomically rewriting `--state-path` to the
-//! current JCS-canonical bytes of the section; `underwrap-ns` reads
-//! the state file after waitpid to compose the end-of-run blob.
+//! current JCS-canonical bytes of the section; host `underwrap-ns` reads
+//! the state file after cleanly reaping the trusted namespace PID-1 relay.
+//! The relay first reaps the configured target at PID 2, frames its status, then
+//! exits, causing the kernel to SIGKILL any remaining helpers.
 //!
-//! No socket to the daemon. The kernel SIGKILLs the namespace siblings
-//! the moment PID 1 (the target) exits, so there is no opportunity for
-//! a graceful teardown handshake — every mutation must already be on
-//! disk by the time the D-Bus ack returns.
+//! There is no socket to the daemon and no graceful teardown handshake, so
+//! every mutation must already be on disk by the time the D-Bus ack returns.
 
 use anyhow::{Context, Result, bail};
 use std::io::Read;

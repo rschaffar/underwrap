@@ -384,6 +384,8 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-f006-exec-missing": "test/f006-exec-missing",
     "test-f006-exit-37": "test/f006-exit-37",
     "test-f006-sigkill": "test/f006-sigkill",
+    "test-f007-lifecycle": "test/f007-lifecycle",
+    "test-f007-filecap": "test/f007-filecap",
 }
 
 # Each wrapper now projects exactly one resource, so no secondary
@@ -625,8 +627,14 @@ def local_socket_permissions():
     # underwrap-ns has the capabilities it needs for namespace setup and
     # attempts bounding-set cleanup where the kernel permits it.
     caps = machine.succeed("getcap /run/wrappers/bin/underwrap-ns").strip()
-    assert "cap_sys_admin" in caps, f"expected cap_sys_admin: {caps}"
-    assert "cap_setpcap" in caps, f"expected cap_setpcap: {caps}"
+    cap_names = set(re.findall(r"cap_[a-z0-9_]+", caps))
+    assert cap_names == {
+        "cap_setgid",
+        "cap_setpcap",
+        "cap_setuid",
+        "cap_sys_admin",
+    }, f"unexpected underwrap-ns capability set: {caps}"
+    assert "cap_kill" not in cap_names
 
 
 def local_store_and_basic_ops():
@@ -1241,8 +1249,8 @@ def local_target_uid_isolation():
     # fd hygiene: no leaked privileged fds inherited across the exec boundary.
     _assert_no_leaked_fds(direct_pid)
 
-    # The direct target is PID 1 of its namespace (ignores SIGTERM) and runs as
-    # uid X (a testuser pkill cannot reach it): SIGKILL as root from the host ns.
+    # The direct target is namespace PID 2 under the trusted PID-1 relay and
+    # runs as uid X; use host-ancestor SIGKILL for deterministic cleanup here.
     machine.execute("pkill -KILL -f '[s]leep 5252' || true")
     machine.execute("pkill -KILL -f iso-target || true")
     time.sleep(0.5)
@@ -1475,9 +1483,8 @@ def local_target_uid_files_libsecret():
         f"FAIL: host view exposes isolated staging files: {host_staging}"
     )
     machine.log("PASS: files staging is invisible to a same-caller host process")
-    # sleep 5353 is the isolated direct target (PID 1 of its namespace, runs as
-    # uid X), so it ignores SIGTERM and a testuser pkill can't reach it: SIGKILL
-    # as root from the host (ancestor) namespace.
+    # sleep 5353 is the isolated namespace-PID-2 direct target under the trusted
+    # relay and runs as uid X; use host-ancestor SIGKILL for cleanup.
     machine.execute("pkill -KILL -f '[s]leep 5353' || true")
     machine.execute("pkill -u testuser -x underwrap-ns || true")
     time.sleep(0.5)
@@ -1800,9 +1807,8 @@ def local_ancestor_attack():
     machine.log("PASS: ancestor ptrace-attach and /proc/mem both DENIED")
     machine.log("PASS: adversarial ancestor attack did not recover secret")
 
-    # Clean up as root (the target subtree runs as uid X, so a testuser pkill
-    # could not reach it; SIGKILL because the isoScript shell is PID 1 of its
-    # namespace and ignores SIGTERM).
+    # Clean up as root: the namespace-PID-2 target subtree runs as uid X, so a
+    # testuser pkill cannot reach it.
     machine.execute("pkill -KILL -f '[s]leep 5252' || true")
     machine.execute("pkill -KILL -f iso-target || true")
     time.sleep(0.5)
@@ -1863,8 +1869,8 @@ def local_proc_isolation_env_mode():
                     if line.strip().isdigit()]
     machine.log(f"PIDs visible inside env-mode namespace: {visible_pids}")
 
-    # A fresh /proc against the new PID namespace exposes only the target
-    # (PID 1) and its few transient children — definitely not host PIDs.
+    # A fresh /proc exposes only the trusted PID-1 relay, configured PID-2
+    # target, and transient namespace-local children — never host PIDs.
     assert len(visible_pids) < 20, \
         f"FAIL: too many PIDs visible ({len(visible_pids)}) — env-mode /proc may show host PIDs: {visible_pids}"
     assert "1" in visible_pids, \
@@ -1888,11 +1894,11 @@ def local_proc_isolation_libsecret_mode():
     machine.log(f"PIDs visible inside namespace: {visible_pids}")
 
     # In a proper PID namespace with fresh /proc, we should see only a few
-    # PIDs (PID 1 = target, plus dbus-daemon, secretsd, maybe a few more).
+    # PIDs (PID 1 = trusted relay, PID 2 = target, plus private helpers).
     # Definitely NOT hundreds of host PIDs.
     assert len(visible_pids) < 20, \
         f"FAIL: too many PIDs visible ({len(visible_pids)}) — /proc may show host PIDs: {visible_pids}"
-    # PID 1 must be visible (it's the target or the namespace init).
+    # Trusted relay PID 1 must be visible.
     assert "1" in visible_pids, \
         f"FAIL: PID 1 not visible in namespace — /proc mount may be wrong: {visible_pids}"
     machine.log("PASS: /proc in libsecret mode shows only namespace-local PIDs")
@@ -2814,6 +2820,367 @@ def f006_pre_exec_writeback_gate():
         cursor, signal_wrapper, signal_resource, "resource_checkin"
     )
     machine.log("PASS: F-006 post-exec writeback persists before exact SIGKILL propagation")
+
+
+def f007_supervisor_lifecycle():
+    """Check relay topology, cancellation teardown, and healthy status/writeback."""
+    wrapper = "test-f007-lifecycle"
+    resource = "test/f007-lifecycle"
+    grant_local_unlocked(wrapper)
+    admin_write_resource_value(
+        ADMIN_LOCAL,
+        "local",
+        resource,
+        "files",
+        ".config/f007/token",
+        b"f007-before",
+    )
+    resource_id = LOCAL_RESOURCE_IDS[resource]
+
+    def terminal_records(cursor):
+        return underwrapd_terminal_records_since(cursor, wrapper, resource_id)
+
+    def assert_no_terminal(cursor, label):
+        machine.sleep(0.2)
+        records = terminal_records(cursor)
+        assert records == [], f"{label}: cancellation emitted terminal records: {records}"
+
+    def assert_one_terminal(cursor, expected):
+        deadline = time.monotonic() + 3
+        while True:
+            records = terminal_records(cursor)
+            if records or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        audits = [r["parsed_fields"].get("audit") for r in records]
+        assert audits == [expected], records
+
+    def proc_identity(pid):
+        stat = machine.succeed(f"cat /proc/{pid}/stat").strip()
+        starttime = stat[stat.rfind(')') + 2:].split()[19]
+        return {
+            "pid": pid,
+            "start": starttime,
+            "pidns": machine.succeed(f"readlink /proc/{pid}/ns/pid").strip(),
+            "mntns": machine.succeed(f"readlink /proc/{pid}/ns/mnt").strip(),
+        }
+
+    def parent_of(pid):
+        return machine.succeed(
+            f"awk '/^PPid:/ {{print $2}}' /proc/{pid}/status"
+        ).strip()
+
+    def chain_for_sleep(seconds):
+        descendant = machine.succeed(
+            f"pgrep -f '^/nix/store/.*/bin/sleep {seconds}$' | head -n1"
+        ).strip()
+        assert descendant, f"missing F-007 descendant sleep {seconds}"
+        target = parent_of(descendant)
+        relay = parent_of(target)
+        host_ns = parent_of(relay)
+        stage1 = parent_of(host_ns)
+        chain = {
+            "descendant": proc_identity(descendant),
+            "target": proc_identity(target),
+            "relay": proc_identity(relay),
+            "host_ns": proc_identity(host_ns),
+            "stage1": proc_identity(stage1),
+        }
+        pidns = chain["target"]["pidns"]
+        helper_pids = machine.succeed(
+            "for p in /proc/[0-9]*; do "
+            f"[ \"$(readlink $p/ns/pid 2>/dev/null)\" = {shlex.quote(pidns)} ] || continue; "
+            "c=$(cat $p/comm 2>/dev/null || true); "
+            "case $c in dbus-daemon|underwrap-secre*) echo ${p##*/}:$c;; esac; done"
+        ).split()
+        assert len(helper_pids) >= 2, helper_pids
+        for helper in helper_pids:
+            pid, comm = helper.split(":", 1)
+            chain[f"helper-{comm}-{pid}"] = proc_identity(pid)
+        return chain
+
+    def identity_alive(identity):
+        pid = identity["pid"]
+        status, _ = machine.execute(
+            f"test -r /proc/{pid}/stat && "
+            f"test \"$(cat /proc/{pid}/stat | sed 's/.*) //')\" != '' && "
+            f"test \"$(readlink /proc/{pid}/ns/pid)\" = {shlex.quote(identity['pidns'])} && "
+            f"test \"$(readlink /proc/{pid}/ns/mnt)\" = {shlex.quote(identity['mntns'])}"
+        )
+        if status != 0:
+            return False
+        stat = machine.succeed(f"cat /proc/{pid}/stat").strip()
+        return stat[stat.rfind(')') + 2:].split()[19] == identity["start"]
+
+    def wait_gone(chain, label):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if not any(identity_alive(value) for value in chain.values()):
+                break
+            time.sleep(0.05)
+        survivors = [name for name, value in chain.items() if identity_alive(value)]
+        assert survivors == [], f"{label}: identity-bound survivors: {survivors}"
+        pidns = chain["target"]["pidns"]
+        for namespace_file in ("pid", "pid_for_children"):
+            holders = machine.succeed(
+                "for p in /proc/[0-9]*; do "
+                f"[ \"$(readlink $p/ns/{namespace_file} 2>/dev/null)\" = {shlex.quote(pidns)} ] && echo $p; "
+                "done; true"
+            ).strip()
+            assert holders == "", (
+                f"{label}: PID namespace {pidns} retained through "
+                f"ns/{namespace_file} by {holders}"
+            )
+        mntns = chain["target"]["mntns"]
+        holders = machine.succeed(
+            "for p in /proc/[0-9]*; do "
+            f"[ \"$(readlink $p/ns/mnt 2>/dev/null)\" = {shlex.quote(mntns)} ] && echo $p; "
+            "done; true"
+        ).strip()
+        assert holders == "", f"{label}: mount namespace {mntns} retained by {holders}"
+
+    def status_fields(pid):
+        text = machine.succeed(f"cat /proc/{pid}/status")
+        fields = {}
+        for line in text.splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                fields[key] = value.strip()
+        return fields
+
+    def assert_topology(chain):
+        target = chain["target"]["pid"]
+        relay = chain["relay"]["pid"]
+        target_fields = status_fields(target)
+        relay_fields = status_fields(relay)
+        assert target_fields["NSpid"].split()[-1] == "2", target_fields["NSpid"]
+        assert relay_fields["NSpid"].split()[-1] == "1", relay_fields["NSpid"]
+        assert target_fields["PPid"] == relay, (target_fields["PPid"], relay)
+        target_stat = machine.succeed(f"cat /proc/{target}/stat")
+        values = target_stat.rpartition(")")[2].split()
+        assert values[2] == target and values[3] == target and values[4] == "0", values[:5]
+        relay_uid = relay_fields["Uid"].split()
+        target_uid = target_fields["Uid"].split()
+        assert relay_uid == target_uid and len(set(target_uid)) == 1
+        assert relay_fields["Gid"].split() == target_fields["Gid"].split()
+        assert target_uid[0] not in ("0", "1099")
+        for fields, label in ((relay_fields, "relay"), (target_fields, "target")):
+            assert fields["NoNewPrivs"] == "1", (label, fields["NoNewPrivs"])
+            for cap in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
+                assert fields[cap] == "0000000000000000", (label, cap, fields[cap])
+        _assert_no_leaked_fds(target)
+        resource_socket = machine.succeed(
+            f"readlink /proc/{chain['host_ns']['pid']}/fd/20"
+        ).strip()
+        assert resource_socket.startswith("socket:["), resource_socket
+        internal_pipes = set()
+        for role in ("stage1", "host_ns", "relay"):
+            pid = chain[role]["pid"]
+            links = machine.succeed(
+                f"for f in /proc/{pid}/fd/*; do readlink $f 2>/dev/null || true; done"
+            ).splitlines()
+            internal_pipes.update(link for link in links if link.startswith("pipe:["))
+        helper_pids = [
+            identity["pid"]
+            for role, identity in chain.items()
+            if role.startswith("helper-")
+        ]
+        assert len(helper_pids) >= 2, helper_pids
+        for pid in helper_pids:
+            helper_fields = status_fields(pid)
+            assert helper_fields["Uid"].split() == target_uid, (pid, helper_fields["Uid"])
+            assert helper_fields["Gid"].split() == target_fields["Gid"].split(), (
+                pid,
+                helper_fields["Gid"],
+            )
+            assert helper_fields["NoNewPrivs"] == "1", (pid, helper_fields["NoNewPrivs"])
+            for cap in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
+                assert helper_fields[cap] == "0000000000000000", (
+                    pid,
+                    cap,
+                    helper_fields[cap],
+                )
+        for pid in [target, *helper_pids]:
+            links = machine.succeed(
+                f"for f in /proc/{pid}/fd/*; do readlink $f 2>/dev/null || true; done"
+            ).splitlines()
+            overlap = internal_pipes.intersection(links)
+            assert not overlap, f"PID {pid} retained lifecycle pipe(s) {overlap}"
+            assert resource_socket not in links, (
+                f"PID {pid} retained fd-20 resource channel {resource_socket}"
+            )
+
+    def launch(mode, seconds):
+        marker = f"/tmp/f007-ready-{mode}"
+        status_path = f"/tmp/f007-status-{mode}"
+        machine.succeed(f"rm -f {marker} {status_path}")
+        argv = [
+            "/run/current-system/sw/bin/env",
+            "--default-signal=INT",
+            "--default-signal=TERM",
+            "/run/wrappers/bin/underwrap-local",
+            wrapper,
+            mode,
+            str(seconds),
+        ]
+        program = (
+            "import subprocess;"
+            f"r=subprocess.run({argv!r});"
+            f"open({status_path!r},'w').write(str(r.returncode))"
+        )
+        machine.succeed(
+            f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)} "
+            f">/tmp/f007-parent-{mode}.log 2>&1 &"
+        )
+        machine.wait_until_succeeds(f"test -e {marker}")
+        return status_path, chain_for_sleep(str(seconds))
+
+    # Prime one canonical combined files/libsecret generation deliberately: the
+    # fresh empty libsecret state acquires its provider defaults on first use.
+    # All cancellation and unchanged comparisons bind to the resulting bytes.
+    cursor = journal_cursor()
+    machine.succeed(su(f"/run/wrappers/bin/underwrap-local {wrapper} seed"))
+    assert_one_terminal(cursor, "resource_checkin")
+    baseline = admin_get_blob(ADMIN_LOCAL, "local", resource)
+
+    cancellation_cases = [
+        ("stage1-kill", 6211, "stage1", signal.SIGKILL),
+        ("host-kill", 6212, "host_ns", signal.SIGKILL),
+        ("relay-kill", 6213, "relay", signal.SIGKILL),
+        ("stage1-int", 6214, "stage1", signal.SIGINT),
+        ("stage1-term", 6215, "stage1", signal.SIGTERM),
+        ("host-int", 6216, "host_ns", signal.SIGINT),
+        ("host-term", 6217, "host_ns", signal.SIGTERM),
+    ]
+    for index, (mode, seconds, victim, sig) in enumerate(cancellation_cases):
+        cursor = journal_cursor()
+        status_path, chain = launch(mode, seconds)
+        if index == 0:
+            assert_topology(chain)
+        assert identity_alive(chain["target"]), f"{mode}: target completed before cancellation"
+        machine.succeed(f"kill -{sig} {chain[victim]['pid']}")
+        machine.wait_until_succeeds(f"test -e {status_path}")
+        observed = machine.succeed(f"cat {status_path}").strip()
+        expected = 1 if victim == "relay" else -sig
+        assert observed == str(expected), (mode, observed, expected)
+        wait_gone(chain, mode)
+        assert_no_terminal(cursor, mode)
+        assert admin_get_blob(ADMIN_LOCAL, "local", resource) == baseline
+        machine.log(f"PASS: F-007 {mode} tears down complete namespace without terminal verb")
+
+    # A healthy unchanged projection emits exactly UsageSignal through the
+    # gate/status/clean-relay conjunction.
+    cursor = journal_cursor()
+    before_unchanged = admin_get_blob(ADMIN_LOCAL, "local", resource)
+    machine.succeed(su(f"/run/wrappers/bin/underwrap-local {wrapper} unchanged"))
+    assert admin_get_blob(ADMIN_LOCAL, "local", resource) == before_unchanged
+    assert_one_terminal(cursor, "resource_usage_signal")
+
+    # Healthy combined success and exit 37 retain exact writeback/status.
+    for mode, expected_status in (("success", 0), ("exit37", 37)):
+        cursor = journal_cursor()
+        program = (
+            "import subprocess;"
+            f"r=subprocess.run({['/run/wrappers/bin/underwrap-local', wrapper, mode]!r});"
+            "print(r.returncode)"
+        )
+        observed = machine.succeed(
+            f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)}"
+        ).strip()
+        assert observed == str(expected_status), (mode, observed)
+        assert_one_terminal(cursor, "resource_checkin")
+        blob = json.loads(base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", resource)))
+        assert base64.b64decode(blob["files"][".config/f007/token"]) == f"f007-file-{mode}".encode()
+        encoded_secret = base64.b64encode(f"f007-libsecret-{mode}".encode()).decode()
+        assert encoded_secret in json.dumps(blob["libsecret"]), blob["libsecret"]
+
+    # Direct target signals retain writeback and exact observer status.
+    for mode, seconds, sig in (
+        ("target-term", 6221, signal.SIGTERM),
+        ("target-kill", 6222, signal.SIGKILL),
+    ):
+        cursor = journal_cursor()
+        status_path, chain = launch(mode, seconds)
+        machine.succeed(f"kill -{sig} {chain['target']['pid']}")
+        machine.wait_until_succeeds(f"test -e {status_path}")
+        observed = machine.succeed(f"cat {status_path}").strip()
+        assert observed == str(-sig), (mode, observed)
+        wait_gone(chain, mode)
+        assert_one_terminal(cursor, "resource_checkin")
+
+    # Deterministically establish the documented late-dispatch race: stopping
+    # stage 1 does not cancel its live descendants, so the target can finish and
+    # Checkin can complete before stage 1 is subsequently killed. That completed
+    # backend mutation cannot be retracted.
+    cursor = journal_cursor()
+    status_path, chain = launch("late-dispatch", 6223)
+    machine.succeed(f"kill -STOP {chain['stage1']['pid']}")
+    assert identity_alive(chain["target"]), "SIGSTOP was incorrectly treated as termination"
+    stage1_stat = machine.succeed(f"cat /proc/{chain['stage1']['pid']}/stat").strip()
+    assert stage1_stat[stage1_stat.rfind(')') + 2:].split()[0] == "T", stage1_stat
+    machine.succeed(f"kill -TERM {chain['target']['pid']}")
+    assert_one_terminal(cursor, "resource_checkin")
+    late_blob = json.loads(base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", resource)))
+    assert base64.b64decode(late_blob["files"][".config/f007/token"]) == b"f007-file-late-dispatch"
+    encoded_secret = base64.b64encode(b"f007-libsecret-late-dispatch").decode()
+    assert encoded_secret in json.dumps(late_blob["libsecret"]), late_blob["libsecret"]
+    assert identity_alive(chain["stage1"]), "stopped stage 1 exited before late cancellation"
+    machine.succeed(f"kill -KILL {chain['stage1']['pid']}")
+    machine.wait_until_succeeds(f"test -e {status_path}")
+    assert machine.succeed(f"cat {status_path}").strip() == str(-signal.SIGKILL)
+    wait_gone(chain, "late-dispatch")
+    assert_one_terminal(cursor, "resource_checkin")
+    machine.log("PASS: completed late Checkin remains committed after stopped stage 1 is killed")
+
+    # A configured file-capability image executes with zero capabilities under
+    # no_new_privs and cannot outlive relay teardown.
+    filecap_wrapper = "test-f007-filecap"
+    filecap_resource = "test/f007-filecap"
+    filecap_target = "/run/underwrap-f007-filecap/sleep"
+    machine.succeed(
+        "install -d -m 0755 /run/underwrap-f007-filecap && "
+        f"install -m 0755 /run/current-system/sw/bin/sleep {filecap_target} && "
+        f"setcap cap_net_bind_service+ep {filecap_target}"
+    )
+    capability = machine.succeed(f"getcap {filecap_target}").strip()
+    assert capability == f"{filecap_target} cap_net_bind_service=ep", capability
+    grant_local_unlocked(filecap_wrapper)
+    cursor = journal_cursor()
+    machine.succeed(
+        "runuser -u testuser -- /run/wrappers/bin/underwrap-local "
+        "test-f007-filecap 6230 >/tmp/f007-filecap.log 2>&1 &"
+    )
+    machine.wait_until_succeeds(
+        f"pgrep -f '^{filecap_target} 6230$' >/dev/null"
+    )
+    target = machine.succeed(
+        f"pgrep -f '^{filecap_target} 6230$' | head -n1"
+    ).strip()
+    relay = parent_of(target)
+    host_ns = parent_of(relay)
+    stage1 = parent_of(host_ns)
+    filecap_chain = {
+        "target": proc_identity(target),
+        "relay": proc_identity(relay),
+        "host_ns": proc_identity(host_ns),
+        "stage1": proc_identity(stage1),
+    }
+    fields = status_fields(target)
+    assert fields["NoNewPrivs"] == "1"
+    for cap in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
+        assert fields[cap] == "0000000000000000", (cap, fields[cap])
+    assert machine.succeed(f"getcap {filecap_target}").strip() == capability
+    assert identity_alive(filecap_chain["target"])
+    machine.succeed(f"kill -KILL {stage1}")
+    wait_gone(filecap_chain, "filecap-stage1-kill")
+    machine.sleep(0.2)
+    records = underwrapd_terminal_records_since(
+        cursor, filecap_wrapper, LOCAL_RESOURCE_IDS[filecap_resource]
+    )
+    assert records == [], records
+    machine.log(
+        "PASS: configured file-capability target gains no caps and dies through stage1 cascade"
+    )
 
 
 def plaintext_runtime_backend_url_is_rejected_before_io():
@@ -3822,6 +4189,37 @@ def audit_and_no_secret_leaks():
     assert "libsecret_two_slot_value" not in logs, "two-slot secret leaked!"
     assert "iso_files_secret_val" not in logs, "isolated files secret leaked!"
     assert "iso_libsecret_val" not in logs, "isolated libsecret secret leaked!"
+
+    f007_modes = (
+        "seed",
+        "success",
+        "exit37",
+        "stage1-kill",
+        "host-kill",
+        "relay-kill",
+        "stage1-int",
+        "stage1-term",
+        "host-int",
+        "host-term",
+        "target-term",
+        "target-kill",
+        "late-dispatch",
+    )
+    f007_values = [("initial-files", b"f007-before")]
+    for mode in f007_modes:
+        f007_values.extend(
+            (
+                (f"files/{mode}", f"f007-file-{mode}".encode()),
+                (f"libsecret/{mode}", f"f007-libsecret-{mode}".encode()),
+            )
+        )
+    assert "f007-file-" not in logs, "F007 files fixture leaked in plaintext!"
+    assert "f007-libsecret-" not in logs, "F007 libsecret fixture leaked in plaintext!"
+    for label, value in f007_values:
+        plaintext = value.decode()
+        encoded = base64.b64encode(value).decode()
+        assert plaintext not in logs, f"F007 {label} fixture leaked in plaintext"
+        assert encoded not in logs, f"F007 {label} fixture leaked in base64 form"
     machine.log("PASS: audit events present, no secrets in logs")
 
     machine.log("ALL TESTS PASSED")
@@ -3853,6 +4251,7 @@ local_libsecret_two_slot_compatibility()
 local_directory_credentials()
 local_atomic_writeback()
 f006_pre_exec_writeback_gate()
+f007_supervisor_lifecycle()
 remote_service_lifecycle()
 instance_isolation()
 local_debug_subcommand()

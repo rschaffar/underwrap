@@ -691,12 +691,19 @@ in {
     );
 
     # Shared underwrap-ns (one world-executable capability wrapper for all
-    # instances). CAP_SETUID and CAP_SETGID are needed transiently for the
-    # dedicated target-ID switch and single-entry idmap; they are dropped before
-    # target exec. Because direct execution is possible, underwrap-ns
-    # authenticates fixed fd 20 against the selected instance daemon's
-    # creation-time SO_PEERCRED before reading fd 3 or using the root-owned
-    # target-identity table.
+    # instances). CAP_SETUID and CAP_SETGID support the single-entry idmap, the
+    # dedicated target-ID switch, and the host supervisor's later writeback
+    # fsuid window. For files/libsecret, the host supervisor retains the setup
+    # capabilities through target execution for that post-run window; env-only
+    # execution drops them before waiting. The namespace relay uses them only
+    # for privileged setup, then clears its active capability sets before
+    # forking target PID 2.
+    # Because direct execution is possible, underwrap-ns authenticates fixed fd
+    # 20 against the selected instance daemon's creation-time SO_PEERCRED, then
+    # validates the private stage-parent liveness link on fixed fd 21 before
+    # reading fd 3 or using the root-owned target-identity table. The trusted
+    # PID-1 relay supervises target PID 2 without active capabilities. This
+    # requires no CAP_KILL and does not change the file capability set below.
     security.wrappers = lib.mkMerge ([{
       underwrap-ns = {
         source = "${cfg.package}/bin/underwrap-ns";

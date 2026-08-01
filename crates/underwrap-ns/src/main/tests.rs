@@ -193,6 +193,83 @@ impl Drop for ChildGuard {
     }
 }
 
+fn run_target_liveness_wait_harness(reader: supervision::LivenessReader, hang: bool) -> i32 {
+    let target_pid = unsafe { libc::fork() };
+    if target_pid < 0 {
+        return 10;
+    }
+    if target_pid == 0 {
+        drop(reader);
+        if hang {
+            loop {
+                unsafe { libc::pause() };
+            }
+        }
+        unsafe { libc::_exit(37) }
+    }
+
+    let mut target = ChildGuard::new(target_pid);
+    let started = Instant::now();
+    let result = wait_for_target_with_liveness(target_pid, &reader);
+    // Do not leak a deliberately hanging target if the production wait returns
+    // an unexpected result; ChildGuard supplies bounded kill-and-reap cleanup.
+    match result {
+        Ok(status) if !hang && libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 37 => {
+            target.reaped = true;
+            // SAFETY: isolate the production helper's PDEATHSIG side effect in
+            // this forked harness and clear it before reporting success.
+            if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, 0) } == 0 {
+                0
+            } else {
+                11
+            }
+        }
+        Err(error)
+            if hang
+                && error.contains("parent liveness ended")
+                && started.elapsed() < Duration::from_secs(2) =>
+        {
+            0
+        }
+        _ => 12,
+    }
+}
+
+fn assert_target_liveness_wait(hang: bool) {
+    let liveness = supervision::LivenessPipe::new().unwrap();
+    let relay = unsafe { libc::fork() };
+    assert!(relay >= 0);
+    if relay == 0 {
+        let reader = liveness.into_relay();
+        let code = run_target_liveness_wait_harness(reader, hang);
+        unsafe { libc::_exit(code) }
+    }
+
+    let mut relay = ChildGuard::new(relay);
+    if hang {
+        drop(liveness);
+    } else {
+        let _writer = liveness.into_host();
+        let status = relay.wait_bounded(CHILD_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFEXITED(status), "relay status {status}");
+        assert_eq!(libc::WEXITSTATUS(status), 0, "relay status {status}");
+        return;
+    }
+    let status = relay.wait_bounded(CHILD_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status), "relay status {status}");
+    assert_eq!(libc::WEXITSTATUS(status), 0, "relay status {status}");
+}
+
+#[test]
+fn target_liveness_wait_returns_exact_healthy_status() {
+    assert_target_liveness_wait(false);
+}
+
+#[test]
+fn target_liveness_wait_rejects_hup_and_cleans_up_target() {
+    assert_target_liveness_wait(true);
+}
+
 fn run_parent_wait_failure_case(channel: &ResourceChannel, plans: &[DirectoryMountPlan]) -> i32 {
     let gate = match ExecGate::new_for_test() {
         Ok(gate) => gate,
@@ -222,7 +299,25 @@ fn run_parent_wait_failure_case(channel: &ResourceChannel, plans: &[DirectoryMou
         uid: unsafe { libc::getuid() },
         gid: unsafe { libc::getgid() },
     };
-    match run_parent(target_pid, reader, plans, channel, true, isolation, None) {
+    let liveness = match supervision::LivenessPipe::new() {
+        Ok(pipe) => pipe.into_host(),
+        Err(_) => return 15,
+    };
+    let status_reader = match target_status::TargetStatusPipe::new() {
+        Ok(pipe) => pipe.into_host(),
+        Err(_) => return 16,
+    };
+    match run_parent(
+        target_pid,
+        reader,
+        liveness,
+        status_reader,
+        plans,
+        channel,
+        true,
+        isolation,
+        None,
+    ) {
         Err(error) if error.contains("waitpid failed") => 0,
         _ => 15,
     }
@@ -374,4 +469,134 @@ fn exec_gate_wait_failure_is_reported() {
         error.contains("waitpid failed"),
         "unexpected error: {error}"
     );
+}
+
+#[derive(Clone, Copy)]
+enum LifecycleCase {
+    Accepted,
+    GateFailed,
+    InvalidStatus,
+    RelayNonzero,
+    RelaySignaled,
+}
+
+fn lifecycle_conjunction_case(
+    case: LifecycleCase,
+) -> (libc::c_int, Option<WrapperResourceRequest>) {
+    let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
+    daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    write_frame_sync(&mut daemon_end, &WrapperResourceResponse::CheckinOk).unwrap();
+    let (_staging, blob, plans) = changed_staging_fixture(b"before", b"after");
+    let mut channel =
+        test_resource_channel(channel_end.as_raw_fd(), blob.to_canonical_bytes().unwrap());
+    channel.writable = true;
+
+    // Isolate run_parent because exact target-status propagation exits.
+    let outer = unsafe { libc::fork() };
+    assert!(outer >= 0);
+    if outer == 0 {
+        drop(daemon_end);
+        let gate = ExecGate::new_for_test().unwrap();
+        let liveness = supervision::LivenessPipe::new().unwrap();
+        let target_status = target_status::TargetStatusPipe::new().unwrap();
+        let relay = unsafe { libc::fork() };
+        if relay == 0 {
+            let mut writer = gate.into_child();
+            let _liveness_reader = liveness.into_relay();
+            let status_writer = target_status.into_relay();
+            if matches!(case, LifecycleCase::GateFailed) {
+                writer.send_failed().unwrap();
+            } else {
+                writer.send_armed().unwrap();
+            }
+            drop(writer);
+            match case {
+                LifecycleCase::InvalidStatus => {
+                    status_writer.write_raw_for_test(b"bad").unwrap();
+                }
+                LifecycleCase::RelaySignaled => {
+                    status_writer
+                        .write(TargetStatus::Signaled(libc::SIGTERM))
+                        .unwrap();
+                    unsafe { libc::raise(libc::SIGKILL) };
+                }
+                _ => status_writer.write(TargetStatus::Exited(37)).unwrap(),
+            }
+            unsafe {
+                libc::_exit(if matches!(case, LifecycleCase::RelayNonzero) {
+                    2
+                } else {
+                    0
+                })
+            }
+        }
+        let isolation = target_uid::Isolation {
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        };
+        let result = run_parent(
+            relay,
+            gate.into_parent(),
+            liveness.into_host(),
+            target_status.into_host(),
+            &plans,
+            &channel,
+            false,
+            isolation,
+            None,
+        );
+        eprintln!("lifecycle conjunction returned: {result:?}");
+        unsafe { libc::_exit(1) }
+    }
+
+    drop(channel_end);
+    let request_result = if matches!(case, LifecycleCase::Accepted) {
+        Some(read_frame_sync(&mut daemon_end))
+    } else {
+        None
+    };
+    let mut guard = ChildGuard::new(outer);
+    let status = guard.wait_bounded(CHILD_WAIT_TIMEOUT).unwrap();
+    let request = if let Some(result) = request_result {
+        Some(result.unwrap_or_else(|error| panic!("status {status}: {error}")))
+    } else {
+        let mut byte = [0_u8; 1];
+        match daemon_end.read(&mut byte) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("invalid lifecycle cell wrote request data: {other:?}"),
+        }
+        None
+    };
+    (status, request)
+}
+
+#[test]
+fn lifecycle_conjunction_requires_gate_status_and_clean_relay_for_dispatch() {
+    let (status, request) = lifecycle_conjunction_case(LifecycleCase::Accepted);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 37);
+    assert!(matches!(
+        request,
+        Some(WrapperResourceRequest::Checkin { .. })
+    ));
+
+    let (status, request) = lifecycle_conjunction_case(LifecycleCase::GateFailed);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 37);
+    assert!(request.is_none(), "invalid gate dispatched a terminal verb");
+
+    for case in [
+        LifecycleCase::InvalidStatus,
+        LifecycleCase::RelayNonzero,
+        LifecycleCase::RelaySignaled,
+    ] {
+        let (status, request) = lifecycle_conjunction_case(case);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 1);
+        assert!(
+            request.is_none(),
+            "invalid relay/status dispatched a terminal verb"
+        );
+    }
 }

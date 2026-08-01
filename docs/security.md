@@ -198,9 +198,12 @@ read, the wrapper selector or target argv is trusted, or privileged namespace
 setup begins.
 
 The fd number is not carried in `ExecBundle`; fd 20 is part of the fixed local
-ABI. No bearer token in argv or environment re-authenticates later stages. A
-process holding a legitimate fd 20 already holds the scoped resource capability,
-so descriptor confidentiality remains load-bearing.
+ABI. Only after authenticating it, `underwrap-ns` admits fixed fd 21 as a
+read-only parent-liveness pipe, arms `PR_SET_PDEATHSIG(SIGKILL)`, and checks for
+an already-dead stage-1 parent. fd 21 carries no authority or metadata. No bearer
+token in argv or environment re-authenticates later stages. A process holding a
+legitimate fd 20 already holds the scoped resource capability, so descriptor
+confidentiality remains load-bearing.
 
 ### 5. Descriptors do not cross into the target
 
@@ -208,7 +211,9 @@ so descriptor confidentiality remains load-bearing.
   `underwrap-ns` and is read only after fd-20 peer authentication;
 - fixed fd 20 is the scoped resource channel between `underwrap-ns` and
   `underwrapd`; its number cannot be redirected through bundle data;
-- dbus-daemon and secretsd close fd 20;
+- the namespace relay closes fd 20 before the target/helper fork;
+- dbus-daemon, secretsd, and the target retain neither liveness pipe, target
+  status writer, authorization gate, fd 3, nor fd 20;
 - the final target closes or receives close-on-exec for every fd above stderr.
 
 Leaking fd 20 would give the target a direct authenticated resource capability
@@ -221,18 +226,30 @@ switching, capability drop, credential checks, and descriptor cleanup abort on
 failure.
 
 After the secret-free idmap helper is reaped, `underwrap-ns` creates a private
-CLOEXEC child-to-parent authorization gate while fixed fd 3 and fd 20 remain
-occupied. The supervisor then unshares PID, mount, IPC, and UTS namespaces,
-makes mount propagation private, realizes idmapped caller-directory mounts, and
-forks. The child enters the new PID namespace, remounts `/proc`, and performs
-the remaining controlled setup and projection materialization. It reports
-`Armed` only after resource-channel closure and final descriptor protection; a
-controlled return reports `Failed`. The supervisor observes the gate through
-EOF and then reaps the child. It collects staging and sends an end-of-run
-resource verb only when the exact `Armed` marker followed by EOF, with no
-failure or extra bytes, is paired with a successful reap. Early EOF, an observed
-failure, malformed or truncated input, gate I/O failure, or wait failure
-suppresses both collection and `Checkin`/`UsageSignal`.
+CLOEXEC child-to-parent authorization gate, an inner liveness pipe, and a direct-
+target status pipe while fixed fd 3 and fd 20 remain occupied. The host unshares
+PID, mount, IPC, and UTS namespaces and forks a trusted namespace PID-1 relay.
+The relay arms parent-death `SIGKILL`, remounts `/proc`, switches to the dedicated
+identity, immediately rearms because the credential switch clears the setting,
+and becomes non-dumpable before staging. It retains only the existing setup
+capabilities while realizing files/libsecret mounts, then sets `NoNewPrivs=1`,
+clears effective, permitted, inheritable, and ambient capability sets, verifies
+the identity drop, and performs a final liveness rearm after those credential
+transitions. It then closes fd 20 and forks the configured target as PID 2.
+PID 1 retains and polls the inner sole-writer pipe while waiting; this active
+observation is the authoritative parent-lifetime check, and any pipe event exits
+PID 1 fail-closed. `PR_SET_PDEATHSIG` remains defense in depth.
+
+Only PID 2 owns the gate writer. It reports `Armed` after final descriptor
+protection; a controlled return reports `Failed`. PID 1 reaps PID 2, writes one
+exact direct-child exit/signal frame, and exits so the kernel kills helpers and
+detached descendants. The host observes the gate, cleanly reaps PID 1, and
+then parses the status pipe nonblockingly. Collection and an end-of-run resource
+verb require exact `Armed` plus EOF, one valid status frame plus EOF, and a clean
+relay reap. Early EOF, failure, malformed/truncated/extra input, a retained
+writer (`EAGAIN`), I/O failure, unclean relay, or wait failure suppresses both
+collection and `Checkin`/`UsageSignal`. A valid controlled pre-exec status still
+propagates when the gate alone suppresses resources.
 
 This gate records an authorized lifecycle; it does not prove that exec
 succeeded. After a normal successful exec, finalization may include changes made
@@ -240,8 +257,14 @@ by the target. Only when the child dies after `Armed` but before either CLOEXEC
 exec closure or complete observation of `Failed` is pre-exec death
 indistinguishable from exec closure. In that narrow false-positive case, no
 target ran and finalization can include at most the already validated, fully
-materialized unchanged projection. The gate does not provide signal forwarding
-or prevent a supervisor from orphaning an executed target.
+materialized unchanged projection. The gate does not provide signal forwarding.
+The stage-1→host parent-death link terminates the host with uncatchable
+`SIGKILL`; PID 1 actively observes the host→relay sole-writer pipe and exits on
+any event, with its parent-death setting retained as defense in depth. Killing
+namespace PID 1 makes the kernel terminate every remaining member. Cancellation
+established before terminal dispatch sends no terminal verb. A terminal request
+completed before later stage-1 death cannot be retracted without a backend
+transaction.
 
 The older-kernel `SO_PEERCRED + /proc` peer-auth path is available only when an
 operator disables the default hardened posture. A failure while taking the
@@ -390,16 +413,20 @@ protects `environ`; the dedicated UID is.
 
 Every target uses fresh PID, mount, IPC, and UTS namespaces.
 
-- The target becomes PID 1 and sees a fresh `/proc` containing only its
-  namespace.
-- When PID 1 exits, the kernel terminates remaining namespace processes.
+- A trusted non-execing relay is PID 1; the configured target is PID 2 with PPID
+  1, in its own session, and sees a fresh namespace-local `/proc`.
+- When the relay exits, the kernel terminates all remaining namespace processes.
 - Private mount propagation keeps files/libsecret mounts out of the host mount
   namespace.
 - A separate IPC namespace prevents access to the caller's SysV IPC and POSIX
   message queues.
 
 Namespaces limit visibility and lifecycle; they do not replace the UID boundary
-for host-side `/proc` confidentiality.
+for host-side `/proc` confidentiality. Teardown is eventual and can be delayed
+by kernel scheduling or uninterruptible sleep; root-held external namespace
+references are outside the claim. Sharing the dedicated UID does not by itself
+let the target terminate namespace init because Linux restricts signals to PID
+1. Target-triggered resource exhaustion remains a denial-of-service non-goal.
 
 ### Target-to-caller hardening
 

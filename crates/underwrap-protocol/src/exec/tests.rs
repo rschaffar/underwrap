@@ -29,7 +29,20 @@ fn resource_binding_encoding_carries_no_descriptor_selector() {
     binding.files_target_paths.encode(&mut expected).unwrap();
 
     assert_eq!(encoded, expected);
+    assert_eq!(EXEC_BUNDLE_FD, 3);
     assert_eq!(WRAPPER_RESOURCE_CHANNEL_FD, 20);
+    assert_eq!(WRAPPER_PARENT_LIVENESS_FD, 21);
+    assert_eq!(
+        [
+            EXEC_BUNDLE_FD,
+            WRAPPER_RESOURCE_CHANNEL_FD,
+            WRAPPER_PARENT_LIVENESS_FD
+        ]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len(),
+        3
+    );
 }
 
 fn sample_binding() -> ExecResourceBinding {

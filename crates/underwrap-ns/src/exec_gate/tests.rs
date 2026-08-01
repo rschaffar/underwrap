@@ -372,13 +372,25 @@ fn exec_gate_writer_and_fd20_do_not_survive_target_exec() {
 
 #[test]
 fn exec_gate_owned_fds_close_on_error_drop() {
-    let gate = ExecGate::new_for_test().unwrap();
-    let reader = gate.reader.file.into_raw_fd();
-    let writer = gate.writer.file.into_raw_fd();
-    // SAFETY: recreate the unique owners only to exercise their RAII drop.
-    drop(unsafe { OwnedFd::from_raw_fd(reader) });
-    // SAFETY: same unique-ownership invariant for the writer.
-    drop(unsafe { OwnedFd::from_raw_fd(writer) });
-    assert_eq!(unsafe { libc::fcntl(reader, libc::F_GETFD) }, -1);
-    assert_eq!(unsafe { libc::fcntl(writer, libc::F_GETFD) }, -1);
+    // Isolate numeric-fd reuse from parallel test threads: after fork this child
+    // is single-threaded, so a successful F_GETFD cannot be an unrelated fd
+    // allocated between RAII drop and the assertion.
+    // SAFETY: the child performs only fd operations and exits with _exit.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        let gate = ExecGate::new_for_test().unwrap();
+        let reader = gate.reader.file.into_raw_fd();
+        let writer = gate.writer.file.into_raw_fd();
+        // SAFETY: recreate each unique owner only to exercise its RAII drop.
+        drop(unsafe { OwnedFd::from_raw_fd(reader) });
+        drop(unsafe { OwnedFd::from_raw_fd(writer) });
+        let closed = unsafe { libc::fcntl(reader, libc::F_GETFD) } == -1
+            && unsafe { libc::fcntl(writer, libc::F_GETFD) } == -1;
+        unsafe { libc::_exit(if closed { 0 } else { 1 }) }
+    }
+    let mut child = ChildGuard::new(pid);
+    let status = child.wait_bounded(CHILD_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
 }

@@ -159,6 +159,33 @@ let
     ${pkgs.coreutils}/bin/touch /tmp/f006-sigkill-ready
     exec ${pkgs.coreutils}/bin/sleep 6060
   '';
+  # Combined files+libsecret lifecycle target. Secret Service mutation bytes
+  # travel on stdin, never argv. Long-running modes keep a direct target and a
+  # descendant live so the VM can terminate each trusted supervisor stage and
+  # bind teardown assertions to exact process/namespace identities.
+  f007LifecycleScript = pkgs.writeShellScript "f007-lifecycle-target" ''
+    set -eu
+    mode="''${1:-success}"
+    if [ "$mode" = unchanged ]; then
+      ${pkgs.coreutils}/bin/cat "$HOME/.config/f007/token" >/dev/null
+      exit 0
+    fi
+    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/f007"
+    printf 'f007-file-%s' "$mode" > "$HOME/.config/f007/token"
+    printf 'f007-libsecret-%s' "$mode" \
+      | ${pkgs.libsecret}/bin/secret-tool store --label='F007 lifecycle' purpose f007 \
+      >/dev/null
+    case "$mode" in
+      seed|success) exit 0 ;;
+      exit37) exit 37 ;;
+      *)
+        seconds="''${2:-6200}"
+        ${pkgs.coreutils}/bin/sleep "$seconds" &
+        ${pkgs.coreutils}/bin/touch "/tmp/f007-ready-$mode"
+        wait
+        ;;
+    esac
+  '';
   # env-mode target whose DIRECT process is non-dumpable (incidental, via the
   # wrapper cap/namespace chain) but which spawns a CLEAN child that resets to
   # dumpable and inherits the secret env; mandatory target UID isolation must
@@ -621,6 +648,20 @@ in {
             resource = "test/f006-sigkill";
             files.paths = [ ".config/f006-sigkill" ];
             accessPaths = [ "~/.config" ];
+          };
+          test-f007-lifecycle = {
+            target = "${f007LifecycleScript}";
+            resource = "test/f007-lifecycle";
+            files.paths = [ ".config/f007" ];
+            libsecret = true;
+            accessPaths = [ "~/.config" ];
+          };
+          test-f007-filecap = {
+            # The VM test installs a real copied sleep image and applies its
+            # harmless file-capability xattr before invoking this target.
+            target = "/run/underwrap-f007-filecap/sleep";
+            resource = "test/f007-filecap";
+            env = true;
           };
         };
       };

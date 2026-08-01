@@ -97,7 +97,7 @@ pub(crate) fn mount_idmapped_dirs(
 /// so the parent can write its map files; it first closes fd 3 and fd 20 and is
 /// forked before either process has copied secret bytes into memory. Forking
 /// after `CLONE_NEWPID` would also consume the PID-1 slot intended for the
-/// target.
+/// trusted relay.
 pub(crate) fn create_idmap_userns(
     caller_uid: libc::uid_t,
     caller_gid: libc::gid_t,

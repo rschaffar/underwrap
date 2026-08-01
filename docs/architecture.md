@@ -96,14 +96,19 @@ The detailed sequence is:
 5. `underwrapd` chooses the target path: the configured target for `Real`, or
    `underwrap-debug-tool` for an authorized `Debug` invocation. It creates one
    scoped resource socketpair and sends the wrapper end with `SCM_RIGHTS`.
-6. `underwrap-exec` permanently drops its setgid identity, relocates the
-   received channel away from reserved descriptors, maps it to fixed fd 20, and
-   sends the descriptor-free execution bundle to `underwrap-ns` over fd 3.
+6. `underwrap-exec` permanently drops its setgid identity, relocates every
+   child-carried descriptor above the fixed slots, maps the resource channel to
+   fd 20 and a private parent-liveness reader to fd 21, and sends the
+   descriptor-free execution bundle over fd 3. Its waiting parent is the sole
+   fd-21 pipe writer until `underwrap-ns` is reaped.
 7. Because the capability-bearing `underwrap-ns` entry point is system-wide, it
    first resolves the selected instance's root-provisioned daemon account and
    requires fd 20 to be an `AF_UNIX` stream socket whose immutable
-   `SO_PEERCRED` UID/GID matches that account. It rejects before reading fd 3 or
-   trusting the wrapper selector and target argv on any mismatch.
+   `SO_PEERCRED` UID/GID matches that account. Only after this authority check it
+   validates fd 21, arms parent-death `SIGKILL`, and checks for an already-dead
+   parent. It retains that reader for one checked rearm immediately before the
+   namespace fork, then closes it. It rejects before reading fd 3 or trusting the
+   wrapper selector and target argv on any mismatch.
 8. `underwrap-ns` resolves the dedicated target UID/GID from the root-owned
    `(instance, wrapper)` table. The UID/GID never comes from IPC or the daemon.
 9. After the secret-free idmap helper has been reaped, `underwrap-ns` creates a
@@ -111,19 +116,27 @@ The detailed sequence is:
    reads fd 3, checks out and decodes the resource, and purely plans the complete
    files projection before namespace preparation, idmapped mounts, PID fork,
    staging, target-UID switching, or target-facing helpers.
-10. The supervisor unshares PID, mount, IPC, and UTS namespaces, makes mount
-    propagation private, realizes idmapped caller-directory mounts, and then
-    forks. The child enters the new PID namespace, remounts `/proc`, switches
-    identity, realizes the completed projection plan and remaining setup, and
-    reports `Armed` after final descriptor protection immediately before
-    executing the daemon-chosen target. Controlled returns report `Failed`.
-11. The supervisor observes the gate through EOF and then reaps the child. Only
-    exact `Armed` followed by CLOEXEC EOF without failure or extra bytes,
-    together with a successful reap, authorizes staging collection. It then
-    compares the canonical post-run resource with Checkout and sends either
-    `UsageSignal` or `Checkin`. Observed pre-exec failures and invalid gate/wait
-    states send neither terminal verb.
-12. `underwrapd` translates that request into the finalize API. The backend
+10. The host supervisor unshares PID, mount, IPC, and UTS namespaces, makes
+    mount propagation private, realizes idmapped caller-directory mounts, and
+    forks a trusted namespace PID-1 relay. A second private sole-writer
+    liveness pipe links the relay to the host. The relay also arms parent-death
+    `SIGKILL` and rearms it immediately after the dedicated-UID switch because
+    credential changes clear the setting. It keeps the reader through
+    staging/setup, performs a final arm/check after capability/credential
+    transitions, and actively polls it while waiting for PID 2; parent-death
+    signals remain defense in depth.
+11. The non-execing, zero-active-capability relay closes fd 20 and forks the
+    configured target as namespace PID 2. PID 2 creates its own session, starts
+    private helpers, owns the gate writer, and reports `Armed` immediately before
+    exec; controlled returns report `Failed`. PID 1 reaps that direct child,
+    writes one exact private target-status frame, and exits so the kernel
+    terminates helpers and detached descendants.
+12. The host observes the gate, cleanly reaps the relay, and only then parses one
+    nonblocking status frame followed by EOF. Accepted gate, valid target status,
+    and clean relay reap are all required for collection and one `UsageSignal`
+    or `Checkin`. A valid controlled pre-exec status remains eligible for exact
+    propagation when the gate suppresses resources.
+13. `underwrapd` translates that request into the finalize API. The backend
     re-evaluates policy and, for a writeback, re-checks writability and env
     immutability before persisting.
 
@@ -160,8 +173,9 @@ capabilities have different privilege lifecycles.
 - attempts to clear supplementary groups (`EPERM` is tolerated because a
   setgid-only process normally lacks `CAP_SETGID`) and permanently restores the
   caller's real, effective, and saved UID/GID;
-- transfers the execution bundle through fd 3;
-- executes the capability-bearing namespace helper.
+- transfers the execution bundle through fd 3 and a private parent-liveness
+  reader through fixed fd 21 while its waiting process owns the sole writer;
+- executes and exactly reaps the capability-bearing namespace helper.
 
 ### `underwrap-ns`
 
@@ -176,8 +190,9 @@ does not raise it into the ambient set.
 - authenticates fixed fd 20 from its socket domain/type and creation-time
   `SO_PEERCRED`, using the selected instance only to resolve the expected
   root-provisioned daemon UID/GID;
-- rejects direct invocation before reading fd 3, trusting the wrapper selector
-  or target argv, or performing namespace/mount/idmap work;
+- after fd-20 authentication, validates fd 21 and race-closes the stage-1
+  parent-death link before reading fd 3, trusting the wrapper selector or target
+  argv, or performing namespace/mount/idmap work;
 - creates and reaps the optional secret-free idmap helper before reading fd 3
   or Checkout bytes;
 - creates a private CLOEXEC authorization gate, reads fd 3, checks out the
@@ -186,21 +201,25 @@ does not raise it into the ambient set.
 - in the supervisor, unshares fresh PID, mount, IPC, and UTS namespaces, makes
   mount propagation private, and realizes idmapped caller-directory mounts
   before forking;
-- in the child, enters the new PID namespace, remounts `/proc`, switches to the
-  already resolved dedicated target UID/GID, and realizes the selected
-  projections from the completed plan;
-- sets `PR_SET_NO_NEW_PRIVS`, clears capabilities, verifies that root cannot be
-  regained, disables core dumps, starts a new session, and closes inherited
-  descriptors;
-- reports `Armed` after final fd protection and executes the target as PID 1 of
-  the new PID namespace; every controlled returned setup/exec error reports
-  `Failed`.
+- keeps trusted code as namespace PID 1, arms a private host-parent death link,
+  remounts `/proc`, switches to the resolved dedicated UID/GID, immediately
+  rearms after that credential change, and realizes the selected projections;
+- after projection setup, sets `PR_SET_NO_NEW_PRIVS`, clears and verifies the
+  relay's active capability sets, closes fd 20, and forks the configured target
+  as PID 2;
+- closes PID 2's inherited relay-only lifecycle descriptors first, restores its
+  target-visible `SIGCHLD` state, starts its separate session and private
+  helpers, and reports `Armed` after final fd protection;
+- has PID 1 poll the sole-writer host-liveness pipe while waiting for PID 2,
+  fail closed on any event, reap PID 2, frame its exact status only after a final
+  liveness check, and exit without exec, tearing down remaining namespace
+  processes before host collection.
 
-The namespace supervisor remains outside the target PID namespace to observe
-the gate through EOF and then reap the child. Finalization requires both exact
-`Armed` followed by EOF without `Failed` and a successful reap; malformed,
-truncated, early closed, failed-I/O, or failed-wait states suppress staging
-collection and both terminal verbs. The gate records an authorized lifecycle,
+The host namespace supervisor observes the gate through EOF and then reaps PID
+1. Finalization requires exact `Armed` followed by EOF without `Failed`, one
+valid direct-target status frame followed by EOF, and a clean relay reap;
+malformed, truncated, retained-writer, early-closed, failed-I/O, or failed-wait
+states suppress staging collection and both terminal verbs. The gate records an authorized lifecycle,
 not proof that exec succeeded. A normal successful exec may finalize changes
 made by the target. Only the false-positive case where the child dies after
 `Armed` but before either CLOEXEC exec closure or complete `Failed` observation
@@ -211,7 +230,10 @@ retain `CAP_SYS_ADMIN`, `CAP_SETUID`, and `CAP_SETGID` through target execution
 and the post-run fsuid read window, then drop them; the implementation does not
 selectively drop `CAP_SYS_ADMIN` before the wait. After an authorized lifecycle,
 finalization remains diagnostic-only and precedes exact propagation of target
-exit codes and signals.
+exit codes and signals. Supervisor termination cascades inward with `SIGKILL`;
+there is no graceful forwarding. Cancellation established before terminal
+dispatch sends no terminal verb, but a request completed before later stage-1
+death cannot be retracted without a backend transaction.
 
 ## Target environment and host access
 
@@ -279,23 +301,28 @@ Libsecret mode runs a private `dbus-daemon` and `underwrap-secretsd` beside the
 target:
 
 ```text
-underwrap-ns (owns fd 20 to underwrapd)
-  ├── dbus-daemon
-  ├── underwrap-secretsd
-  │     ├── one-shot initial section from underwrap-ns
-  │     └── canonical state file on namespace-private tmpfs
-  └── target → private DBUS_SESSION_BUS_ADDRESS
+host underwrap-ns (owns fd 20 to underwrapd)
+  └── namespace PID-1 relay (closes fd 20 before the next fork)
+      └── PID-2 setup process → configured target
+          ├── dbus-daemon
+          └── underwrap-secretsd
+                ├── one-shot initial section from PID-2 setup
+                └── canonical state file on namespace-private tmpfs
 ```
+
+The private helpers start as PID 2's descendants and are adopted by namespace
+PID 1 if PID 2 exits first; they are not necessarily direct relay children.
 
 `underwrap-secretsd` has no daemon socket. `underwrap-ns` sends the initial
 libsecret section through a one-shot pipe. secretsd keeps the keyring in memory
 and atomically rewrites a tmpfs state file before acknowledging each D-Bus
-mutation. When the target exits, the kernel terminates its PID-namespace
-siblings; the supervisor reads the state file and performs final writeback over
-fd 20.
+mutation. PID 1 reaps the direct target, frames its status, and exits; the kernel
+then terminates every remaining namespace process before the host supervisor
+reads the state file and performs final writeback over fd 20.
 
-The target, dbus-daemon, and secretsd all close fd 20 before exec. See
-[secretsd security](secretsd-security.md) for the target-input boundary.
+The relay closes fd 20 before forking PID 2, so the target, dbus-daemon, and
+secretsd never inherit that resource-channel socket. See [secretsd
+security](secretsd-security.md) for the target-input boundary.
 
 ## Backend
 

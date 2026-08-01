@@ -1,22 +1,26 @@
 //! underwrap-ns — PID namespace isolation stage.
 //!
-//! First authenticates the fixed fd-20 wrapper-resource channel as a socketpair
-//! created by the selected instance daemon. After the secret-free idmap helper
-//! is reaped, it creates the private exec gate, reads the `ExecBundle` on fd 3,
-//! drives `Checkout`, and completely plans the files projection. The supervisor
-//! then unshares PID, mount, IPC, and UTS namespaces, makes mount propagation
-//! private, realizes idmapped caller-directory mounts, and forks.
+//! First authenticates fixed fd 20, then validates and arms the private fd-21
+//! stage-parent liveness link before trusting the remaining handoff. It retains
+//! fd 21 through a checked pre-namespace rearm. After the secret-free idmap
+//! helper, it creates the pre-exec authorization gate, an inner liveness pipe,
+//! and an exact direct-target status pipe; reads fd 3; drives Checkout; and
+//! completely plans the files projection.
 //!
-//! The child enters the new PID namespace, remounts `/proc`, switches to the
-//! dedicated target identity, realizes the planned files projection and any
-//! private libsecret service, and reports its final pre-exec gate state. The
-//! parent observes the gate through EOF and then reaps the child; both an
-//! accepted gate state and successful reap are required before it collects
-//! staging, composes the post-run `ResourceBlob`, and dispatches the end-of-run
-//! decision (`UsageSignal` / `Checkin` / drop+warn). This records an authorized
-//! lifecycle, not proof of exec: normal targets may finalize their changes, but
-//! the narrow false-positive pre-exec-death ambiguity can finalize at most the
-//! fully materialized unchanged state.
+//! The host supervisor creates the namespaces and forks a trusted non-execing
+//! namespace PID-1 relay. The relay arms/rearms parent-death SIGKILL around its
+//! dedicated-identity switch, becomes non-dumpable, realizes files/libsecret
+//! projection state with its bounded setup capabilities, then sets no-new-privs,
+//! drops and verifies active capability sets, performs its final liveness check,
+//! closes fd 20, and forks the configured target as PID 2 in a separate session.
+//! PID 2 alone owns the gate writer. PID 1 actively polls the inner sole-writer
+//! liveness pipe as the authoritative parent-lifetime check; parent-death
+//! SIGKILL remains defense in depth. PID 1 reaps its direct child, frames that
+//! status, and exits so the kernel tears down helpers and descendants. The host
+//! authorizes collection only after exact gate acceptance, a clean relay reap,
+//! and one valid status frame followed by EOF. These channels record an
+//! authorized lifecycle, not proof of exec; the narrow pre-exec ambiguity
+//! remains unchanged.
 
 #[cfg(test)]
 #[path = "main/tests.rs"]
@@ -33,6 +37,8 @@ mod journal;
 mod libsecret;
 mod mounts;
 mod resource_channel;
+mod supervision;
+mod target_status;
 mod target_uid;
 mod writeback;
 
@@ -52,6 +58,8 @@ use mounts::{
     setup_mount_namespace,
 };
 use resource_channel::ResourceChannel;
+use supervision::{LivenessWriter, SigchldState};
+use target_status::{TargetStatus, TargetStatusReader, TargetStatusWriter};
 use underwrap_protocol::exec::{EXEC_BUNDLE_FD, ExecBundle, IDMAP_REQUIRED_ENV};
 use underwrap_protocol::resource_blob::ResourceBlob;
 use writeback::{WritebackInput, WritebackOutcome};
@@ -84,6 +92,24 @@ fn run() -> Result<(), String> {
     let iso_instance = require_isolation_selector("UNDERWRAP_ISOLATION_INSTANCE")?;
     let daemon_identity = handoff::authenticate_instance_channel(&iso_instance)
         .map_err(|e| format!("authenticating exec handoff: {e}"))?;
+
+    // fd 20 remains the first authority decision. Only after it authenticates
+    // stage 1 do we adopt the private fd-21 liveness reader, arm the parent-death
+    // link, and close the already-dead-parent race. The reader remains owned
+    // through the checked pre-namespace rearm below, then is discarded before
+    // the namespace fork. No selector other than the instance used for
+    // daemon-account lookup, target metadata, fd 3, identity table, or
+    // privileged namespace input is trusted before this point.
+    let outer_liveness = supervision::adopt_outer_liveness()
+        .map_err(|e| format!("adopting wrapper-parent liveness: {e}"))?;
+    supervision::arm_and_check(&outer_liveness)
+        .map_err(|e| format!("arming wrapper-parent lifetime: {e}"))?;
+
+    // Each supervisor must reliably reap even when the caller inherited an
+    // ignored/SA_NOCLDWAIT or blocked SIGCHLD. PID 2 restores this exact state
+    // before any target-facing helper fork or configured-target exec.
+    let target_sigchld = SigchldState::capture()?;
+    target_sigchld.normalize_for_wait()?;
 
     // The root-owned table must assign this `(instance, wrapper)` pair a
     // dedicated UID. Only the instance has been used before channel
@@ -122,6 +148,8 @@ fn run() -> Result<(), String> {
     // while fixed fd 3 and authenticated fd 20 are both still occupied. It is
     // local to this privileged stage and carries no selectors or secret bytes.
     let exec_gate = ExecGate::new()?;
+    let namespace_liveness = supervision::LivenessPipe::new()?;
+    let target_status = target_status::TargetStatusPipe::new()?;
 
     let (target, target_args) = parse_target_invocation(std::env::args().collect())?;
     let exec_bundle = read_secret_fd()
@@ -174,6 +202,14 @@ fn run() -> Result<(), String> {
     // configuration in the exec bundle.
     let idmap_paths = exec_bundle.access_paths.clone();
 
+    // Re-arm after all pre-namespace helper and handoff work. Linux clears the
+    // setting across several credential transitions; retaining the private
+    // reader through this second check also closes any already-dead-parent race
+    // before the namespace fork. The reader never enters the target namespace.
+    supervision::arm_and_check(&outer_liveness)
+        .map_err(|e| format!("rearming wrapper-parent lifetime before namespace fork: {e}"))?;
+    drop(outer_liveness);
+
     prepare_namespace()?;
 
     // Apply the idmapped bind mounts now: fsuid is still the caller (so open_tree
@@ -187,8 +223,11 @@ fn run() -> Result<(), String> {
 
     let pid = fork_into_namespace()?;
     if pid == 0 {
-        run_namespace_child(
+        run_relay(
             exec_gate.into_child(),
+            namespace_liveness.into_relay(),
+            target_status.into_relay(),
+            target_sigchld,
             target,
             target_args,
             &exec_bundle,
@@ -205,6 +244,8 @@ fn run() -> Result<(), String> {
         run_parent(
             pid,
             exec_gate.into_parent(),
+            namespace_liveness.into_host(),
+            target_status.into_host(),
             directory_plan.mounts(),
             &resource_channel,
             has_files,
@@ -337,8 +378,11 @@ fn fork_into_namespace() -> Result<libc::pid_t, String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_namespace_child(
+fn run_relay(
     mut gate_writer: GateWriter,
+    liveness_reader: supervision::LivenessReader,
+    status_writer: TargetStatusWriter,
+    target_sigchld: SigchldState,
     target: String,
     target_args: Vec<String>,
     exec_bundle: &ExecBundle,
@@ -351,148 +395,203 @@ fn run_namespace_child(
     has_files: bool,
     directory_plan: &DirectoryProjectionPlan,
 ) -> ! {
-    let error = run_child(
-        target,
-        target_args,
-        exec_bundle,
-        target_identity,
-        xdg_runtime_dir,
-        resource_channel,
-        libsecret_enabled,
-        libsecret_state_path,
-        isolation,
-        has_files,
-        directory_plan,
-        &mut gate_writer,
-    )
-    .expect_err("target exec does not return on success");
+    let prepared = (|| -> Result<_, String> {
+        // The host owns the sole writer. Arm before namespace-local setup as
+        // defense in depth; retaining the reader closes already-dead-parent
+        // races through each checked rearm and later authoritative polling.
+        supervision::arm_and_check(&liveness_reader)?;
 
-    // Every controlled child-side return reports failure. If this write itself
-    // fails, EOF or a truncated stream still suppresses parent dispatch.
-    if let Err(gate_error) = gate_writer.send_failed() {
-        eprintln!("underwrap-ns: {gate_error}");
+        remount_proc().map_err(|e| format!("remounting /proc failed: {e}"))?;
+        target_uid::switch_to(isolation)
+            .map_err(|e| format!("switching to dedicated target uid: {e}"))?;
+
+        // Credential changes clear PDEATHSIG. Rearm/check immediately before
+        // any staging, helper, or PID-2 target fork.
+        supervision::arm_and_check(&liveness_reader)
+            .map_err(|e| format!("rearming namespace lifetime after credential switch: {e}"))?;
+        make_process_non_dumpable()?;
+
+        if has_files {
+            setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
+                .map_err(|e| format!("directory staging setup (isolated): {e}"))?;
+            realize_files_mounts(&target_identity.home, directory_plan)?;
+        }
+        if libsecret_enabled {
+            setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
+        }
+
+        set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
+        boundary::join_session_keyring().map_err(|e| format!("joining session keyring: {e}"))?;
+        drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
+        target_uid::verify_switched().map_err(|e| format!("verifying target uid switch: {e}"))?;
+        disable_core_dumps()?;
+        make_process_non_dumpable()?;
+        boundary::sever_controlling_tty()
+            .map_err(|e| format!("severing relay controlling tty: {e}"))?;
+
+        let mut cmd = std::process::Command::new(&target);
+        cmd.args(&target_args);
+        cmd.env_clear();
+        let host_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+        let target_env = build_target_env(
+            &host_env,
+            exec_bundle,
+            &target_identity.home,
+            xdg_runtime_dir,
+        )?;
+        let helper_env: std::collections::HashMap<String, String> =
+            ["HOME", "PATH", "LANG", "LC_ALL", "TZ"]
+                .iter()
+                .filter_map(|key| {
+                    target_env
+                        .get(*key)
+                        .map(|value| ((*key).to_string(), value.clone()))
+                })
+                .collect();
+        let libsecret_bytes = if libsecret_enabled {
+            Some(libsecret_section_bytes(
+                resource_channel,
+                directory_plan.blob(),
+            )?)
+        } else {
+            None
+        };
+
+        // Capability and related credential transitions can clear PDEATHSIG.
+        // Keep the private reader through all relay setup, then perform the
+        // final race-closed arm/check immediately before fd-20 closure and the
+        // target fork. PID 1 retains the reader because polling the sole-writer
+        // pipe is the authoritative parent-lifetime check; PDEATHSIG is defense
+        // in depth. PID 2 closes its inherited copy before target-visible work.
+        supervision::arm_and_check(&liveness_reader)
+            .map_err(|e| format!("final rearm of namespace lifetime: {e}"))?;
+
+        // Relay and target must not hold the authenticated daemon capability.
+        // The host has an independent process copy for finalization.
+        resource_channel::close_channel_fd(resource_channel)
+            .map_err(|e| format!("closing resource channel before target fork: {e}"))?;
+        Ok((cmd, target_env, helper_env, libsecret_bytes))
+    })();
+
+    let (mut cmd, target_env, helper_env, libsecret_bytes) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            if let Err(gate_error) = gate_writer.send_failed() {
+                eprintln!("underwrap-ns: {gate_error}");
+            }
+            eprintln!("underwrap-ns: {error}");
+            // SAFETY: post-fork relay setup failure must not unwind host state.
+            unsafe { libc::_exit(1) }
+        }
+    };
+
+    // SAFETY: the relay is single-threaded and performs only owned-fd/process
+    // operations before the PID-2 branch execs or exits via _exit.
+    let target_pid = unsafe { libc::fork() };
+    if target_pid < 0 {
+        let error = format!(
+            "forking configured target: {}",
+            std::io::Error::last_os_error()
+        );
+        if let Err(gate_error) = gate_writer.send_failed() {
+            eprintln!("underwrap-ns: {gate_error}");
+        }
+        eprintln!("underwrap-ns: {error}");
+        // SAFETY: no PID 2 exists and this post-fork relay must not unwind.
+        unsafe { libc::_exit(1) }
     }
-    eprintln!("underwrap-ns: {error}");
-    // SAFETY: this is the post-fork child error path. `_exit` avoids running
-    // duplicated parent-side destructors; the kernel closes every owned fd.
-    unsafe { libc::_exit(1) }
+
+    if target_pid == 0 {
+        // First branch action: descendants and helpers must never inherit the
+        // relay-only target-status writer.
+        drop(status_writer);
+        drop(liveness_reader);
+        if let Err(error) = run_target(
+            &mut gate_writer,
+            &target_sigchld,
+            &mut cmd,
+            target_env,
+            &helper_env,
+            libsecret_bytes.as_deref(),
+            libsecret_state_path,
+            libsecret_enabled,
+        ) {
+            if let Err(gate_error) = gate_writer.send_failed() {
+                eprintln!("underwrap-ns: {gate_error}");
+            }
+            eprintln!("underwrap-ns: {error}");
+        }
+        // SAFETY: PID 2 controlled-return path must not unwind relay state.
+        unsafe { libc::_exit(1) }
+    }
+
+    // PID 1 owns only the exact status writer while it waits for and reaps
+    // direct PID 2. Closing its gate copy makes EOF reflect PID 2 alone.
+    drop(gate_writer);
+    let raw_status = match wait_for_target_with_liveness(target_pid, &liveness_reader) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("underwrap-ns: relay waiting for target: {error}");
+            // SAFETY: an unclean relay exit is intentionally fail-closed and
+            // causes kernel SIGKILL of all remaining namespace members.
+            unsafe { libc::_exit(1) }
+        }
+    };
+    let status = match TargetStatus::from_wait_status(raw_status) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("underwrap-ns: {error}");
+            unsafe { libc::_exit(1) }
+        }
+    };
+    if let Err(error) = status_writer.write(status) {
+        eprintln!("underwrap-ns: {error}");
+        unsafe { libc::_exit(1) }
+    }
+    // Exiting namespace init makes the kernel SIGKILL every helper or detached
+    // descendant before the host can reap this relay.
+    unsafe { libc::_exit(0) }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_child(
-    target: String,
-    target_args: Vec<String>,
-    exec_bundle: &ExecBundle,
-    target_identity: &TargetIdentity,
-    xdg_runtime_dir: &str,
-    resource_channel: &ResourceChannel,
-    libsecret_enabled: bool,
-    libsecret_state_path: Option<&Path>,
-    isolation: target_uid::Isolation,
-    has_files: bool,
-    directory_plan: &DirectoryProjectionPlan,
+fn run_target(
     gate_writer: &mut GateWriter,
+    target_sigchld: &SigchldState,
+    cmd: &mut std::process::Command,
+    target_env: std::collections::HashMap<String, String>,
+    helper_env: &std::collections::HashMap<String, String>,
+    libsecret_bytes: Option<&[u8]>,
+    libsecret_state_path: Option<&Path>,
+    libsecret_enabled: bool,
 ) -> Result<(), String> {
-    // Inside the new PID namespace: mount a fresh /proc in every mode so the
-    // target only sees namespace-local PIDs.
-    remount_proc().map_err(|e| format!("remounting /proc failed: {e}"))?;
-
-    // Switch the target subtree to its dedicated UID before dropping
-    // CAP_SETUID/CAP_SETGID. The switch precedes target-facing mount setup so
-    // those files are created under the target's natural fsuid. Any failure
-    // aborts the run.
-    target_uid::switch_to(isolation)
-        .map_err(|e| format!("switching to dedicated target uid: {e}"))?;
-
-    // Files projection: realize the staging here, at fsuid X, so the tmpfs root,
-    // its materialized files, and the mountpoints are X-owned and the uid-X
-    // target can read/write them; the bind lands over any idmapped home set up
-    // pre-fork.
-    if has_files {
-        setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
-            .map_err(|e| format!("directory staging setup (isolated): {e}"))?;
-        realize_files_mounts(&target_identity.home, directory_plan)?;
-    }
-
-    // Private libsecret bus: this runs after the switch, so the bus tmpfs is
-    // X-owned and the dbus-daemon / secretsd the child forks (also X) can create
-    // the socket and write the state file.
-    if libsecret_enabled {
-        setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
-    }
-
-    set_no_new_privs().map_err(|e| format!("setting no_new_privs: {e}"))?;
-
-    // Give the target a fresh session keyring rather than the caller's.
-    boundary::join_session_keyring().map_err(|e| format!("joining session keyring: {e}"))?;
-
-    drop_caps().map_err(|e| format!("dropping capabilities: {e}"))?;
-
-    // Verify the drop is real before exec (Setuid Demystified): ids fully
-    // switched, caps gone, regain impossible. Bail otherwise.
-    target_uid::verify_switched().map_err(|e| format!("verifying target uid switch: {e}"))?;
-
-    disable_core_dumps()?;
-    // Belt-and-suspenders: the upcoming exec resets dumpable to SUID_DUMP_USER
-    // for an isolated (real==eff==saved==X) target — the uid gate (caller != X),
-    // not dumpable, is the real protection. This only covers the brief pre-exec
-    // window.
-    make_process_non_dumpable()?;
-
-    // Sever the controlling tty (TIOCSTI guard) just before building argv/env.
-    boundary::sever_controlling_tty().map_err(|e| format!("severing controlling tty: {e}"))?;
-
-    let mut cmd = std::process::Command::new(&target);
-    cmd.args(&target_args);
-    cmd.env_clear();
-
-    let host_env: std::collections::HashMap<String, String> = std::env::vars().collect();
-    let target_env = build_target_env(
-        &host_env,
-        exec_bundle,
-        &target_identity.home,
-        xdg_runtime_dir,
-    )?;
+    target_sigchld.restore()?;
+    boundary::sever_controlling_tty()
+        .map_err(|e| format!("severing target controlling tty: {e}"))?;
 
     if libsecret_enabled {
         let state_path = libsecret_state_path
             .ok_or_else(|| "libsecret enabled but no state path provided".to_string())?;
-        let section_bytes = libsecret_section_bytes(resource_channel, directory_plan.blob())?;
-        // The bus daemon and secretsd run with a sanitised environment drawn
-        // from the trusted target env only, so caller-controlled
-        // service-discovery paths cannot reach the private bus.
-        let helper_env: std::collections::HashMap<String, String> =
-            ["HOME", "PATH", "LANG", "LC_ALL", "TZ"]
-                .iter()
-                .filter_map(|k| target_env.get(*k).map(|v| ((*k).to_string(), v.clone())))
-                .collect();
+        let section_bytes = libsecret_bytes
+            .ok_or_else(|| "libsecret enabled but no initial section provided".to_string())?;
         setup_libsecret(
-            &mut cmd,
-            EXEC_BUNDLE_FD,
-            resource_channel.channel_fd,
+            cmd,
             gate_writer.raw_fd(),
-            &helper_env,
-            &section_bytes,
+            helper_env,
+            section_bytes,
             state_path,
         )?;
     }
-
     for (key, value) in target_env {
         cmd.env(key, value);
     }
 
-    resource_channel::close_channel_fd(resource_channel)
-        .map_err(|e| format!("closing resource channel before exec: {e}"))?;
-
-    // Last fd protection before exec: sweep every inherited fd >= 3 to CLOEXEC
-    // so no privileged fd leaks into the uid-X target. The gate was CLOEXEC at
-    // creation; Armed is written only after this final controlled operation.
+    // Every internal descriptor is explicitly owned/closed before this final
+    // backstop; CLOEXEC then protects against an accidental future descriptor.
     boundary::close_inherited_fds_for_exec()
         .map_err(|e| format!("protecting inherited fds before exec: {e}"))?;
     gate_writer.send_armed()?;
-
-    let err = cmd.exec();
-    Err(format!("exec failed: {err}"))
+    let error = cmd.exec();
+    Err(format!("exec failed: {error}"))
 }
 
 fn libsecret_section_bytes(
@@ -525,45 +624,55 @@ fn disable_core_dumps() -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_parent(
     pid: libc::pid_t,
     gate_reader: GateReader,
+    namespace_liveness: LivenessWriter,
+    target_status_reader: TargetStatusReader,
     directory_layout: &[DirectoryMountPlan],
     resource_channel: &ResourceChannel,
     has_files: bool,
     isolation: target_uid::Isolation,
     libsecret_state_path: Option<&Path>,
 ) -> Result<(), String> {
-    // Keep CAP_SETUID/CAP_SETGID through writeback only when the supervisor must
-    // read X-owned files/libsecret state. Env-only targets have no X-owned
-    // checkout surface to read, so drop caps before waiting.
+    debug_assert!(namespace_liveness.raw_fd() >= 0);
     let needs_fsuid_window = has_files || resource_channel.libsecret;
     if !needs_fsuid_window {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
 
-    // Read through EOF before reaping. Successful exec closes the CLOEXEC
-    // writer; controlled returns append Failed. The later wait result is also
-    // required before this authorization can drive dispatch.
+    // Gate EOF is observed first. The sole inner writer stays live until the
+    // relay is reaped, so any host-supervisor death before then kills PID 1.
     let authorization = gate_reader.observe();
-    let status = match wait_for_child(pid) {
+    let relay_status = match wait_for_child(pid) {
         Ok(status) => status,
-        Err(wait_error) => {
-            let close_error = resource_channel::close_channel_fd(resource_channel).err();
-            let drop_error = if needs_fsuid_window {
-                drop_caps()
-                    .err()
-                    .map(|e| format!("parent: dropping capabilities: {e}"))
-            } else {
-                None
-            };
-            return Err(format!(
-                "{wait_error}{}{}",
-                close_error
-                    .map(|e| format!("; closing resource channel: {e}"))
-                    .unwrap_or_default(),
-                drop_error.map(|e| format!("; {e}")).unwrap_or_default()
-            ));
+        Err(error) => {
+            drop(namespace_liveness);
+            return parent_supervisor_failure(
+                resource_channel,
+                needs_fsuid_window,
+                format!("relay wait failed: {error}"),
+            );
+        }
+    };
+    drop(namespace_liveness);
+
+    if !libc::WIFEXITED(relay_status) || libc::WEXITSTATUS(relay_status) != 0 {
+        return parent_supervisor_failure(
+            resource_channel,
+            needs_fsuid_window,
+            format!("namespace relay exited uncleanly with wait status {relay_status}"),
+        );
+    }
+    let target_status = match target_status_reader.read_after_clean_relay() {
+        Ok(status) => status,
+        Err(error) => {
+            return parent_supervisor_failure(
+                resource_channel,
+                needs_fsuid_window,
+                format!("invalid direct-target status after clean relay reap: {error}"),
+            );
         }
     };
 
@@ -577,8 +686,9 @@ fn run_parent(
         },
     };
 
-    // The authorization gates the real collection/terminal dispatch call. A
-    // suppressed state never enters the fsuid window and never reads staging.
+    // Real collection and terminal dispatch require all three independent
+    // facts: exact pre-exec gate acceptance, a valid direct-target frame, and a
+    // cleanly reaped relay. Gate suppression still retains the framed status.
     let writeback_result = if authorization != GateAuthorization::Accepted {
         dispatch_after_gate(authorization, &[writeback_input])
     } else if needs_fsuid_window {
@@ -608,12 +718,34 @@ fn run_parent(
     if let Err(e) = resource_channel::close_channel_fd(resource_channel) {
         eprintln!("underwrap-ns: closing resource channel after target: {e}");
     }
-
     if needs_fsuid_window {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
     }
+    propagate_target_status(target_status)
+}
 
-    propagate_exit_status(status)
+fn parent_supervisor_failure(
+    resource_channel: &ResourceChannel,
+    needs_fsuid_window: bool,
+    reason: String,
+) -> Result<(), String> {
+    let close_error = resource_channel::close_channel_fd(resource_channel).err();
+    let drop_error = if needs_fsuid_window {
+        drop_caps()
+            .err()
+            .map(|error| format!("parent: dropping capabilities: {error}"))
+    } else {
+        None
+    };
+    Err(format!(
+        "{reason}{}{}",
+        close_error
+            .map(|error| format!("; closing resource channel: {error}"))
+            .unwrap_or_default(),
+        drop_error
+            .map(|error| format!("; {error}"))
+            .unwrap_or_default()
+    ))
 }
 
 fn dispatch_after_gate(
@@ -624,6 +756,41 @@ fn dispatch_after_gate(
         return Ok(None);
     }
     writeback::dispatch_writeback(inputs).map(Some)
+}
+
+fn wait_for_target_with_liveness(
+    pid: libc::pid_t,
+    liveness_reader: &supervision::LivenessReader,
+) -> Result<libc::c_int, String> {
+    loop {
+        // A short blocking poll avoids busy-spinning while bounding cancellation
+        // observation. Any event is invalid because the sole writer never sends
+        // application data.
+        supervision::poll_parent_alive(liveness_reader, 50)?;
+        let mut status = 0;
+        // SAFETY: status is writable and pid names the direct PID-2 child.
+        let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if result == 0 {
+            continue;
+        }
+        if result == pid {
+            if !libc::WIFEXITED(status) && !libc::WIFSIGNALED(status) {
+                return Err(format!("waitpid returned unexpected target state {status}"));
+            }
+            // Close the race between the final poll and accepting/framing the
+            // target status. This also restores PDEATHSIG defense in depth.
+            supervision::arm_and_check(liveness_reader)?;
+            return Ok(status);
+        }
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("waitpid for direct target failed: {error}"));
+        }
+        return Err(format!("waitpid returned unexpected target pid {result}"));
+    }
 }
 
 fn wait_for_child(pid: libc::pid_t) -> Result<libc::c_int, String> {
@@ -723,19 +890,11 @@ fn emit_audit_event(reason: &str, resource_id: &str, resource_name: &str) {
     }
 }
 
-fn propagate_exit_status(status: libc::c_int) -> Result<(), String> {
-    if libc::WIFEXITED(status) {
-        std::process::exit(libc::WEXITSTATUS(status));
+fn propagate_target_status(status: TargetStatus) -> Result<(), String> {
+    match status {
+        TargetStatus::Exited(code) => std::process::exit(code.into()),
+        TargetStatus::Signaled(signal) => supervision::propagate_signal(signal),
     }
-    if libc::WIFSIGNALED(status) {
-        let sig = libc::WTERMSIG(status);
-        unsafe {
-            libc::signal(sig, libc::SIG_DFL);
-            libc::raise(sig);
-        }
-        std::process::exit(128 + sig);
-    }
-    std::process::exit(1);
 }
 
 fn resolve_target_identity() -> Result<TargetIdentity, std::io::Error> {

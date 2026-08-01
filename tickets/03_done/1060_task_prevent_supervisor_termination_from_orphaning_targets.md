@@ -35,9 +35,29 @@ Approval of this ticket explicitly selects an observable first-release topology
 change: the trusted relay is namespace PID 1 and the configured target is PID 2
 with PPID 1. It also approves one new fixed private liveness fd on the existing
 `underwrap-exec → underwrap-ns` handoff, one always-present relay process inside
-`underwrap-ns`, unconditional `SIGKILL` cascading on parent death, and the abrupt
-cancellation semantics above. The two existing binaries and configured target
-selection remain unchanged; no new executable is introduced.
+`underwrap-ns`, fail-closed inward teardown, and the abrupt cancellation semantics
+above. The two existing binaries and configured target selection remain unchanged;
+no new executable is introduced.
+
+## Implemented evidence correction
+
+The initially approved close-after-final-arm inner-link design did not satisfy the
+deployed boundary. The PDEATHSIG-only implementation remained in place across four
+VM attempts: pass 1 stopped first on an unrelated `CapBnd` overclaim, while passes
+2–4 reached synchronized stage-1 cancellation and each left the identity-bound
+`descendant`, `target`, and `relay` alive. This evidence establishes that the final
+`PR_SET_PDEATHSIG(SIGKILL)` arm/rearm/check is not by itself a sufficient recursive
+cascade in the deployed topology; it does not establish a kernel cause.
+
+The controller therefore approved the deployed correction represented by this
+completed ticket: namespace PID 1 retains and actively polls the inner private
+reader at bounded cadence while reaping PID 2 with `waitpid(WNOHANG)`. Every pipe
+event/data/HUP/error, poll/read failure, or wait failure exits PID 1 fail closed
+without a status frame, and liveness is checked once more before PID 2's status is
+accepted and framed. PID 2 closes its inherited status writer first and liveness
+reader second before signal restoration, helper launch, or target work.
+`PR_SET_PDEATHSIG(SIGKILL)` remains layered defense in depth. Final deployed VM
+pass 12 proves the corrected stage-1, host-supervisor, and relay teardown paths.
 
 ## Scope
 
@@ -67,8 +87,13 @@ selection remain unchanged; no new executable is introduced.
   fork. Because the dedicated UID/GID transition clears the setting, it repeats
   the arm-and-check immediately after the complete credential switch and before
   staging, projection materialization, target-facing helpers, or target fork.
-  It then closes the liveness reader. PID 1 never execs, so arbitrary
-  configured-target exec behavior cannot clear this final parent-death link.
+  PID 1 then retains and actively polls the reader while reaping PID 2 with
+  bounded-cadence `waitpid(WNOHANG)`. Any pipe event/data/HUP/error, poll/read
+  failure, or wait failure exits fail closed without a status frame; a final
+  liveness check precedes status acceptance and framing. PID 2 closes its
+  inherited reader before signal restoration, helper launch, or target work.
+  PID 1 never execs, so arbitrary configured-target exec behavior cannot clear
+  its defense-in-depth parent-death setting or inherit the liveness authority.
 - Make trusted `underwrap-ns` code remain namespace PID 1 as a minimal relay. It
   performs the existing controlled namespace, mount, projection, target-identity,
   `no_new_privs`, capability-drop, keyring, core-limit, dumpability, and
@@ -125,9 +150,11 @@ selection remain unchanged; no new executable is introduced.
   Finalization errors remain diagnostic-only and subordinate to the framed
   direct-target status.
 - Treat actual death of `underwrap-exec`, the host `underwrap-ns` supervisor, or
-  the PID-1 relay while the target namespace is live as cancellation. The inward
-  cascade uses `SIGKILL`, cannot be caught or blocked, and eventually destroys
-  the complete PID namespace. If cancellation/relay failure is established
+  the PID-1 relay while the target namespace is live as cancellation. Direct
+  parent-death signaling and final namespace-member teardown use uncatchable
+  `SIGKILL`; host-supervisor death is authoritatively detected through the inner
+  sole-writer pipe and makes PID 1 exit fail closed. The resulting cascade
+  eventually destroys the complete PID namespace. If cancellation/relay failure is established
   before resource-terminal dispatch, collect nothing and send neither `Checkin`
   nor `UsageSignal`. Do not retract a request already completed before a later
   stage-1 death, and document the unavoidable dispatch-to-wrapper-exit race.
@@ -210,11 +237,14 @@ selection remain unchanged; no new executable is introduced.
   environment, argv, or wire state. Anonymous creation and sole-writer ownership
   are construction/branch invariants, not properties inferred from the reader.
 - Both parent-death links use production `PR_SET_PDEATHSIG(SIGKILL)` arm/check
-  helpers plus sole-writer liveness pipes. Deterministic bounded tests cover
-  parent death before arm, after arm, and across the inner credential-clear/rearm
-  window; every test reaps or kills all survivors. The deployed file-capability
-  `underwrap-ns` boundary is rearmed, and a configured file-capability target
-  cannot escape relay teardown or gain capabilities under `no_new_privs`.
+  helpers plus sole-writer liveness pipes. The inner pipe remains actively polled
+  by PID 1 through target reap and a final pre-frame liveness check; PDEATHSIG is
+  defense in depth rather than the sole recursive authority. Deterministic
+  bounded tests cover parent death before arm, after arm, across the inner
+  credential-clear/rearm window, and during active target supervision; every
+  test reaps or kills all survivors. The deployed file-capability `underwrap-ns`
+  boundary is rearmed, and a configured file-capability target cannot escape
+  relay teardown or gain capabilities under `no_new_privs`.
 - The relay is dedicated-target UID/GID, non-dumpable, `NoNewPrivs=1`, and zero
   capability after setup. The configured target and helpers retain the existing
   identity, capability, namespace, keyring, core, environment, mount, D-Bus,

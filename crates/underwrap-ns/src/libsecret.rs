@@ -38,8 +38,6 @@ fn apply_helper_env(cmd: &mut Command, helper_env: &HashMap<String, String>) {
 
 pub(crate) fn setup_libsecret(
     cmd: &mut Command,
-    secret_fd: i32,
-    channel_fd: i32,
     exec_gate_fd: i32,
     helper_env: &HashMap<String, String>,
     section_bytes: &[u8],
@@ -93,8 +91,6 @@ pub(crate) fn setup_libsecret(
     }
     if dbus_pid == 0 {
         unsafe {
-            libc::close(secret_fd);
-            libc::close(channel_fd);
             libc::close(exec_gate_fd);
             libc::close(ready_read);
             libc::close(ready_write);
@@ -152,8 +148,6 @@ pub(crate) fn setup_libsecret(
     }
     if secretsd_pid == 0 {
         unsafe {
-            libc::close(secret_fd);
-            libc::close(channel_fd);
             libc::close(exec_gate_fd);
             libc::close(ready_read);
             libc::close(init_write);

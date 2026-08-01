@@ -88,10 +88,14 @@ Workspace tests cover:
 Some integration tests skip when the host cannot supply the required Linux
 capabilities. Focused `underwrap-ns` tests cover complete-plan zero-side-effect
 rejection, exact gate parsing, CLOEXEC/opposite-end ownership, returned-exec
-failure reporting, helper/target fd non-retention, wait failure, and the real
-parent dispatch seam. The gate tests establish only the observable `Armed`/EOF
-contract; they do not prove exec or address supervisor signal forwarding. The
-VM test covers the deployed privileged path independently.
+failure reporting, helper/target fd non-retention, parent death before/after
+arming and after credential-clear rearming, inherited SIGCHLD restoration,
+exact nonblocking target-status framing, wait failure, and the real gate ×
+status × relay dispatch seam. The gate and status channels remain observable
+lifecycle evidence, not proof of exec. The VM test independently covers the
+deployed privileged chain, relay/PID-2 topology, supervisor/relay termination,
+complete namespace teardown, status/writeback preservation, and descriptor and
+capability posture.
 Daemon transport tests cover absolute HTTPS URL admission, base-path preservation,
 and HTTPS-to-HTTP redirect rejection through the production client. Applied
 root-policy unit tests record that the production client disables bundled

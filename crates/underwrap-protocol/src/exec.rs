@@ -12,6 +12,11 @@ pub const EXEC_BUNDLE_FD: i32 = 3;
 /// ABI, not data carried in the untrusted exec bundle.
 pub const WRAPPER_RESOURCE_CHANNEL_FD: i32 = 20;
 
+/// Fixed read-only pipe on which `underwrap-ns` observes the waiting
+/// `underwrap-exec` parent. This is a private local lifecycle ABI descriptor,
+/// not execution-bundle or wire metadata.
+pub const WRAPPER_PARENT_LIVENESS_FD: i32 = 21;
+
 /// Trusted exec-stage hint that tells `underwrap-ns` to create its idmap helper
 /// before reading the secret-bearing fd-3 bundle. `underwrap-exec` always
 /// removes caller input under this name and sets exactly `1` when access paths
