@@ -5,17 +5,6 @@ export const fetchLibsecretTree = (storeId: string, rid: string) =>
     params: { path: { sid: storeId, rid } },
   });
 
-export const fetchLibsecretItemSecret = (
-  storeId: string,
-  rid: string,
-  cid: string,
-  iid: string,
-) =>
-  api.GET(
-    "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}/secret",
-    { params: { path: { sid: storeId, rid, cid, iid } } },
-  );
-
 export const postLibsecretItem = (
   storeId: string,
   rid: string,

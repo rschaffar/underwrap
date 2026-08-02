@@ -1,10 +1,5 @@
 import { api, type S } from "./core";
 
-export const fetchWrapperPermissions = (storeId: string) =>
-  api.GET("/v1/admin/stores/{id}/wrapper-permissions", {
-    params: { path: { id: storeId } },
-  });
-
 export const fetchWrapperPermissionsView = (storeId: string) =>
   api.GET("/v1/admin/stores/{id}/wrapper-permissions-view", {
     params: { path: { id: storeId } },

@@ -1,10 +1,5 @@
 import { api, type S } from "./core";
 
-export const fetchResources = (storeId: string) =>
-  api.GET("/v1/admin/stores/{id}/resources", {
-    params: { path: { id: storeId } },
-  });
-
 export const postResourceCreate = (
   storeId: string,
   body: S["AdminResourceCreateRequest"],

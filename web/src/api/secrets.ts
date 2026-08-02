@@ -40,13 +40,3 @@ export const postSecretRename = (
     params: { path: { id: storeId, rid, slot, key: fromKey } },
     body,
   });
-
-export const deleteSecret = (
-  storeId: string,
-  rid: string,
-  slot: KvSecretSlot,
-  key: string,
-) =>
-  api.DELETE("/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}", {
-    params: { path: { id: storeId, rid, slot, key } },
-  });

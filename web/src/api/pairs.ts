@@ -1,10 +1,5 @@
 import { api, type S } from "./core";
 
-export const fetchPairs = (storeId: string) =>
-  api.GET("/v1/admin/stores/{id}/pairs", {
-    params: { path: { id: storeId } },
-  });
-
 export const postPairCreate = (
   storeId: string,
   body: S["AdminPairCreateRequest"],
