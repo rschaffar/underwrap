@@ -4,175 +4,140 @@
 bus used by a libsecret-enabled wrapper.
 
 The configured target is trusted with its projected libsecret data, but every
-D-Bus message is still treated as untrusted input for process robustness,
-resource bounds, object-path integrity, and canonical backend state.
+D-Bus message remains untrusted input for process robustness, resource bounds,
+object-path integrity, and canonical backend state.
 
 ## Data flow
 
-secretsd does not connect to `underwrapd`.
+secretsd does not connect to `underwrapd` and never receives fd 20.
 
 ```text
-underwrapd
-   │ scoped resource channel (fd 20)
-   ▼
-underwrap-ns
-   │ one-shot init pipe                 namespace-private tmpfs
-   ├──────────────────────► secretsd ─────────────────────────┐
-   │                              ▲                            │
-   │                              │ private D-Bus              │ canonical state
-   │                              │                            │ rewritten on each
-   │                           target                          │ successful mutation
-   │                                                           │
-   └──────────────────── reads final state after target exit ◄─┘
+underwrapd ◄──────── scoped resource channel fd 20 ───────► host underwrap-ns
+                                                               ▲
+                            private publication socket          │ validate,
+                    ACK/REJECT each exact generation            │ retain,
+                                                               │ finalize
+namespace PID 1 ── PID 2 setup ── underwrap-secretsd ──────────┘
+                          │               ▲
+                          │ init pipe     │ private D-Bus
+                          ├──────────────►│
+                          ├─ dbus-daemon  │
+                          └─ target ──────┘
 ```
 
-1. `underwrap-ns` authenticates fixed fd 20 against the selected instance
-   daemon's creation-time Unix peer credentials, then checks out the complete
+1. `underwrap-ns` authenticates fixed fd 20 and checks out the complete
    canonical resource blob.
-2. It extracts the libsecret section and sends those canonical bytes to
-   secretsd through a one-shot anonymous pipe.
-3. secretsd loads the section into memory and writes an initial canonical state
-   file on the private bus tmpfs.
-4. Every successful D-Bus mutation atomically replaces that state file before
-   the D-Bus acknowledgement returns.
-5. The trusted namespace PID-1 relay reaps the direct PID-2 target, frames its
-   status, and exits; the kernel then terminates every remaining namespace
-   process, including secretsd, dbus-daemon, and detached descendants.
-6. The host namespace supervisor cleanly reaps the relay, then parses and
-   validates the target-status frame. With valid gate and status results, it
-   reads the final state file, composes the resource blob, and performs
-   UsageSignal or Checkin over fd 20.
+2. After Checkout establishes that libsecret is enabled and before the PID
+   namespace fork, it creates one invocation-private CLOEXEC Unix stream
+   socketpair. The host owns the receiver and secretsd becomes the sole
+   long-lived publisher.
+3. PID 2 sends the initial libsecret section through a separate one-shot pipe.
+   secretsd loads it into memory, publishes generation 0, and waits for complete
+   host `ACK(0)` before reporting readiness. The target cannot execute first.
+4. Every D-Bus mutation keeps the existing store write lock while secretsd
+   canonicalizes and publishes the next exact attempt generation. D-Bus success
+   waits for a complete generation-matched host ACK. A complete canonical or
+   semantic rejection receives `REJECT`; framing, sequencing, EOF, or transport
+   failure returns `Failed` where the caller can observe it.
+5. The host incrementally bounds, parses, exact-canonical-byte checks, and
+   semantically validates each generation. It retains a candidate before writing
+   ACK and selects it as latest only after the complete ACK is written.
+6. Namespace PID 1 reaps direct PID 2, frames its exact status, and exits so the
+   kernel terminates secretsd, dbus-daemon, descendants, and other helpers. The
+   host requires terminal publication EOF after clean relay reap.
+7. Libsecret collection and a terminal resource verb require all four facts:
+   exact `Armed`, one valid direct-target status, clean relay reap, and terminal
+   publication EOF with at least ACK-written generation 0.
 
-The target, secretsd, and dbus-daemon never inherit fd 20.
+The host's ACK means invocation-local validated retention. It does not prove
+that the D-Bus caller received its response or that the backend committed the
+resource. secretsd can die after the host completely writes ACK and before the
+caller sees success; that ACK-written generation remains eligible after terminal
+EOF. A later ordinary rejected, partial, response-failed, or publisher-death
+attempt also preserves the previous ACK-written generation. A final
+nonblocking `EAGAIN` is different: it proves a publisher endpoint remains open,
+so no generation fallback, collection, Checkin, or UsageSignal is allowed.
 
-## Trust boundaries
+The generic resource channel still has a separate 64-KiB frame limit. A private
+publication near the 1-MiB cap can receive a host ACK and later fail Checkin; the
+ACK is not a backend-durability promise.
 
-### Target to secretsd
+## Descriptor ownership
 
-All D-Bus arguments are untrusted. Handlers must reject malformed values,
-bound growth, and avoid panics or ambiguous object-path construction.
+The socketpair is created atomically CLOEXEC. The namespace branch closes its
+receiver immediately and the host closes its publisher immediately. PID 1 drops
+its publisher copy immediately after forking PID 2. PID 2 keeps its copy only
+while forking secretsd and drops it before readiness, `Armed`, or target exec.
+dbus-daemon explicitly closes it.
 
-### underwrap-ns to secretsd
+The secretsd exec child is the one reviewed CLOEXEC exception: it clears
+CLOEXEC only on its publication, init, and readiness descriptors for that exec.
+secretsd becomes non-dumpable, adopts the publication descriptor through RAII,
+and immediately restores CLOEXEC before reading initialization bytes. It closes
+the init and readiness descriptors after their one-shot roles. The target,
+descendants, namespace PID 1, dbus-daemon, and other helpers retain neither
+publication endpoint. `close_range(..., CLOEXEC)` remains a final backstop.
 
-The init pipe, bus address, state path, and readiness fd come from the trusted
-namespace stage before target exec. The initial section is bounded by the
-resource blob returned by the backend and is required to be canonical.
+## Host validation and bounds
 
-### secretsd state file
+A publication request carries fixed magic, version, `PUBLISH` tag, big-endian
+`u64` attempt generation, big-endian `u32` body length, and exactly that body.
+Responses carry fixed magic/version, exact `ACK` or `REJECT`, and the matching
+generation. Generation 0 is mandatory; every sent attempt consumes the next
+generation. Replay, gap, overflow, malformed framing, over-cap declaration, and
+transport truncation poison the stream rather than resynchronize.
 
-secretsd is the only writer. The file lives on a `0700`, namespace-private,
-size-limited tmpfs and is created with mode `0600`. It is invocation state, not
-persistent storage; the backend remains the only durable secret store.
+The body cap is inclusive at 1,048,576 bytes and is checked before allocation.
+For every host-selectable generation, the host requires:
+
+- parse as `LibsecretSection` and byte-identical JCS re-encoding;
+- collection ids and alias names that are nonempty, at most 128 bytes, and only
+  ASCII letters, digits, or underscore;
+- item ids that are exactly 32 lowercase hexadecimal bytes;
+- alias targets that are valid existing collection ids;
+- the exact derived one-segment collection, item, and alias path shapes;
+- every collection/item `created` and `modified` at most `2^53 - 1`.
+
+Labels, content types, attribute keys/values, and secret bytes remain arbitrary.
+No created-before-modified, future-time, or collection/item temporal relation is
+imposed. A rejected mutation may remain in secretsd memory and poison later
+whole-state attempts; publication rejection does not promise rollback.
 
 ## Process hardening
 
-secretsd calls `prctl(PR_SET_DUMPABLE, 0)` before reading the init pipe. A
-failure aborts startup.
+secretsd calls `prctl(PR_SET_DUMPABLE, 0)` before adopting the publication
+capability or reading initialization secrets. Its environment is cleared by
+`underwrap-ns`; only a small trusted helper allowlist is restored.
+Caller-controlled `DBUS_*`, `XDG_*`, and dynamic-linker variables do not select
+the private service.
 
-Its environment is cleared by `underwrap-ns`; only a small trusted helper
-allowlist is restored. Caller-controlled `DBUS_*`, `XDG_*`, and dynamic-linker
-variables do not select the private service.
-
-The process runs under the wrapper's dedicated target UID inside the private
-PID and mount namespaces as a relay descendant (and may later be adopted by
-namespace PID 1). It inherits neither liveness pipe, target-status writer,
-authorization gate, fd 3, nor fd 20.
-
-## State size and atomicity
-
-Every mutation projects the in-memory keyring back to a
-`LibsecretSection` and JCS-canonicalizes it.
-
-- The default maximum canonical state is 1 MiB.
-- The bus tmpfs is capped at 4 MiB.
-- The cap is checked before opening or truncating a state file.
-- State is written to a sibling `.new` file, synchronized, and renamed over the
-  canonical path.
-- A mutation that exceeds the cap returns a D-Bus `Failed` error and leaves the
-  preceding valid state intact.
-
-This bounds persistent tmpfs growth from repeated `CreateItem` and `SetSecret`
-calls. It does not attempt to prevent CPU-level denial of service by a target,
-which is outside underwrap's threat model.
-
-## Canonicalization
-
-Target-controlled values include:
-
-- collection and item labels;
-- attribute keys and values;
-- content types;
-- arbitrary secret bytes, including NUL and non-UTF-8 bytes.
-
-Secret payloads are represented as base64 in the canonical resource format.
-The conversion between the in-memory `SecretStore` and protocol
-`LibsecretSection` is tested to canonicalize and round-trip target-modifiable
-values stably.
-
-## Object paths and identifiers
-
-D-Bus object paths are built through `ObjectPath::try_from`. Invalid paths are
-rejected or skipped instead of panicking.
-
-Item identifiers are generated by secretsd as 16 random bytes encoded as 32
-lowercase hexadecimal characters. They are valid object-path segments and have
-negligible collision probability. Target input cannot inject path separators
-through an item id.
-
-Collection names are target-controlled because common Go clients derived from
-`99designs/keyring` locate collections by a stable object path. Collection
-creation validates the name before changing state:
-
-- non-empty;
-- at most 128 bytes;
-- ASCII letters, digits, and underscore only.
-
-Invalid names return `InvalidArgs`; they are never sanitized into a possibly
-colliding path. Collection creation is idempotent by validated name.
+The process runs under the wrapper's dedicated target UID inside private PID
+and mount namespaces. The target-facing tmpfs contains the filesystem D-Bus
+socket and helper logs, but no final-state pathname used by host writeback.
+Target-caused indefinite D-Bus stalls remain a denial-of-service non-goal.
 
 ## Handler behavior
 
-### Service interface
+Collection creation validates a nonempty, at-most-128-byte ASCII
+alphanumeric/underscore name before mutation. Item identifiers are generated as
+16 random bytes encoded to 32 lowercase hexadecimal characters. Object paths
+are constructed fallibly.
 
-- **OpenSession** accepts only the `plain` algorithm. Other algorithms return
-  `NotSupported`; the input variant is ignored.
-- **CreateCollection** validates the target-supplied collection name, creates it
-  idempotently, and persists through the capped atomic state writer.
-- **SearchItems**, **GetSecrets**, **ReadAlias**, and **Collections** are
-  read-only. Unknown or malformed item paths are skipped.
-- **SetAlias** persists through the capped writer.
-- **Unlock** and **Lock** are no-ops because this private service has no
-  independent lock state.
-
-### Collection interface
-
-- **CreateItem** accepts target-controlled label, attributes, secret bytes, and
-  content type. `replace` updates an item with matching attributes; otherwise a
-  random item id is generated. Persistence is capped and atomic.
-- **Delete** and **SetLabel** persist through the same path.
-- Read-only properties and searches do not mutate state.
-
-### Item interface
-
-- **SetSecret**, **SetAttributes**, and **SetLabel** update the in-memory item and
-  persist before success is returned.
-- **Delete** is idempotent and persists.
-- **GetSecret** returns the stored bytes or `Failed` when the item no longer
-  exists.
+Mutation handlers update the in-memory store, publish while retaining the
+existing write lock, and wait for ACK/REJECT before success. They do not clone,
+rollback, or provide side-effect-free failure. `SetAlias` publication can be
+rejected by whole-state alias/reference validation after its in-memory mutation.
+Wrong-typed item properties that become semantically valid empty values are not
+distinguishable at this boundary.
 
 ## Backend authorization
 
-secretsd does not decide backend writability. It records target mutations in the
-invocation's tmpfs state. At teardown:
-
-- a read-only Checkout causes `underwrap-ns` to discard changed state and emit a
-  writeback-rejected audit event;
-- a writable Checkout submits the complete canonical blob;
-- the backend re-evaluates the permission and writable flag before persistence.
-
-A D-Bus client can therefore observe a successful local mutation that is later
-not persisted because backend policy is read-only or changed during the run.
-The wrapper emits the documented warning unless the caller suppresses it.
+secretsd does not decide backend writability. With the four-way lifecycle
+conjunction, unchanged state sends UsageSignal, changed state from a read-only
+Checkout is discarded with the documented audit/warning and sends UsageSignal,
+and changed writable state attempts Checkin. The backend re-evaluates permission
+and writability. Finalization errors remain diagnostic and do not replace valid
+target exit or signal status.
 
 ## Related documentation
 

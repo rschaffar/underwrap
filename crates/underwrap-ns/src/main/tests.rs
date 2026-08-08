@@ -1,13 +1,13 @@
 use super::*;
-use std::collections::HashMap;
-use std::io::Read;
+use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 use underwrap_protocol::exec::ExecResourceBinding;
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{SecretBytes, WrapperResourceRequest, WrapperResourceResponse};
-use underwrap_protocol::resource_blob::{LibsecretSection, ResourceBlob};
+use underwrap_protocol::resource_blob::{Collection, LibsecretSection, ResourceBlob};
 
 const TEST_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const CHILD_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -124,7 +124,7 @@ fn pre_exec_failure_skips_collection_and_terminal_verbs() {
     let input = WritebackInput {
         channel: &channel,
         directory_layout: &plans,
-        libsecret_state_path: None,
+        libsecret_generation: None,
     };
 
     let authorization = observed_gate(b"Failed\n");
@@ -369,8 +369,6 @@ fn accepted_combined_dispatch(
 ) -> (Option<Vec<WritebackOutcome>>, WrapperResourceRequest) {
     let staging = tempfile::TempDir::new().unwrap();
     std::fs::write(staging.path().join("token"), staged_file).unwrap();
-    let state = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(state.path(), staged_libsecret.to_canonical_bytes().unwrap()).unwrap();
     let plans = [DirectoryMountPlan {
         mount_path: ".config/f006".to_string(),
         staging_path: staging.path().to_path_buf(),
@@ -388,7 +386,7 @@ fn accepted_combined_dispatch(
     let input = WritebackInput {
         channel: &channel,
         directory_layout: &plans,
-        libsecret_state_path: Some(state.path()),
+        libsecret_generation: Some(staged_libsecret),
     };
 
     let outcomes = dispatch_after_gate(GateAuthorization::Accepted, &[input]).unwrap();
@@ -463,6 +461,320 @@ fn accepted_dispatch_preserves_combined_files_libsecret_and_env_semantics() {
 }
 
 #[test]
+fn old_same_uid_state_path_is_irrelevant_to_selected_libsecret() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let old_path = dir.path().join("old-final-state");
+    let mut attacker = LibsecretSection::default();
+    attacker.aliases.insert(
+        "attacker_selected".to_string(),
+        "missing_collection".to_string(),
+    );
+    std::fs::write(&old_path, attacker.to_canonical_bytes().unwrap()).unwrap();
+
+    let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
+    daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    write_frame_sync(&mut daemon_end, &WrapperResourceResponse::UsageSignalOk).unwrap();
+    let original = ResourceBlob::empty();
+    let mut channel = test_resource_channel(
+        channel_end.as_raw_fd(),
+        original.to_canonical_bytes().unwrap(),
+    );
+    channel.libsecret = true;
+    channel.files_target_paths.clear();
+    let input = WritebackInput {
+        channel: &channel,
+        directory_layout: &[],
+        libsecret_generation: Some(&original.libsecret),
+    };
+
+    assert_eq!(
+        dispatch_after_gate(GateAuthorization::Accepted, &[input]).unwrap(),
+        Some(vec![WritebackOutcome::Unchanged])
+    );
+    assert_eq!(
+        read_frame_sync::<WrapperResourceRequest>(&mut daemon_end).unwrap(),
+        WrapperResourceRequest::UsageSignal
+    );
+    assert_eq!(
+        LibsecretSection::from_canonical_bytes(&std::fs::read(old_path).unwrap()).unwrap(),
+        attacker
+    );
+}
+
+#[test]
+fn run_parent_without_publication_preserves_nonempty_libsecret_and_propagates_status() {
+    let mut original = ResourceBlob::empty();
+    original.libsecret.collections.insert(
+        "main".to_string(),
+        Collection {
+            label: "Main collection".to_string(),
+            created: 1,
+            modified: 2,
+            items: BTreeMap::new(),
+        },
+    );
+    original
+        .libsecret
+        .aliases
+        .insert("default".to_string(), "main".to_string());
+    let original_canonical = original.to_canonical_bytes().unwrap();
+    original.libsecret.validate_publication_semantics().unwrap();
+
+    let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
+    daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    write_frame_sync(&mut daemon_end, &WrapperResourceResponse::UsageSignalOk).unwrap();
+    let mut channel = test_resource_channel(channel_end.as_raw_fd(), original_canonical);
+    channel.libsecret = true;
+    channel.files_target_paths.clear();
+
+    // Isolate run_parent because exact target-status propagation exits.
+    let outer = unsafe { libc::fork() };
+    assert!(outer >= 0);
+    if outer == 0 {
+        drop(daemon_end);
+        let gate = ExecGate::new_for_test().unwrap();
+        let liveness = supervision::LivenessPipe::new().unwrap();
+        let target_status = target_status::TargetStatusPipe::new().unwrap();
+        let relay = unsafe { libc::fork() };
+        if relay == 0 {
+            let mut gate_writer = gate.into_child();
+            gate_writer.send_armed().unwrap();
+            drop(gate_writer);
+            let _liveness_reader = liveness.into_relay();
+            target_status
+                .into_relay()
+                .write(TargetStatus::Exited(37))
+                .unwrap();
+            unsafe { libc::_exit(0) }
+        }
+
+        let isolation = target_uid::Isolation {
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        };
+        let result = run_parent(
+            relay,
+            gate.into_parent(),
+            liveness.into_host(),
+            target_status.into_host(),
+            &[],
+            &channel,
+            false,
+            isolation,
+            None,
+        );
+        eprintln!("publication-disabled lifecycle returned: {result:?}");
+        unsafe { libc::_exit(1) }
+    }
+
+    drop(channel_end);
+    let mut guard = ChildGuard::new(outer);
+    assert_eq!(
+        read_frame_sync::<WrapperResourceRequest>(&mut daemon_end).unwrap(),
+        WrapperResourceRequest::UsageSignal,
+        "an unprojected libsecret slot must remain byte-identical"
+    );
+    let status = guard.wait_bounded(CHILD_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status), "outer status {status}");
+    assert_eq!(libc::WEXITSTATUS(status), 37, "outer status {status}");
+    let mut byte = [0];
+    assert_eq!(daemon_end.read(&mut byte).unwrap(), 0);
+}
+
+#[test]
+fn lifecycle_conjunction_retained_publisher_suppresses_terminal_but_propagates_status() {
+    let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
+    daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    let mut channel = test_resource_channel(
+        channel_end.as_raw_fd(),
+        ResourceBlob::empty().to_canonical_bytes().unwrap(),
+    );
+    channel.libsecret = true;
+    channel.files_target_paths.clear();
+
+    let outer = unsafe { libc::fork() };
+    assert!(outer >= 0);
+    if outer == 0 {
+        drop(daemon_end);
+        let publication = PublicationPair::new().unwrap();
+        let retained_publisher = publication.publisher.try_clone().unwrap();
+        let gate = ExecGate::new_for_test().unwrap();
+        let liveness = supervision::LivenessPipe::new().unwrap();
+        let target_status = target_status::TargetStatusPipe::new().unwrap();
+        let relay = unsafe { libc::fork() };
+        if relay == 0 {
+            drop(publication.host);
+            drop(retained_publisher);
+            let mut publisher = publication.publisher;
+            let section = LibsecretSection::default().to_canonical_bytes().unwrap();
+            publisher
+                .write_all(
+                    &underwrap_protocol::libsecret_publication::encode_request_header(
+                        0,
+                        section.len(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            publisher.write_all(&section).unwrap();
+            let mut response = [0; underwrap_protocol::libsecret_publication::RESPONSE_LEN];
+            publisher.read_exact(&mut response).unwrap();
+            assert_eq!(
+                underwrap_protocol::libsecret_publication::decode_response(&response).unwrap(),
+                (
+                    underwrap_protocol::libsecret_publication::ResponseKind::Ack,
+                    0
+                )
+            );
+            let mut gate_writer = gate.into_child();
+            gate_writer.send_armed().unwrap();
+            drop(gate_writer);
+            let _liveness_reader = liveness.into_relay();
+            target_status
+                .into_relay()
+                .write(TargetStatus::Exited(37))
+                .unwrap();
+            unsafe { libc::_exit(0) }
+        }
+        drop(publication.publisher);
+        // Deliberately retain the duplicate outside the relay namespace until
+        // exact status propagation exits this process.
+        let _retained_publisher = retained_publisher;
+        let isolation = target_uid::Isolation {
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        };
+        let result = run_parent(
+            relay,
+            gate.into_parent(),
+            liveness.into_host(),
+            target_status.into_host(),
+            &[],
+            &channel,
+            false,
+            isolation,
+            Some(publication.host),
+        );
+        eprintln!("retained publication lifecycle returned: {result:?}");
+        unsafe { libc::_exit(1) }
+    }
+
+    drop(channel_end);
+    let mut guard = ChildGuard::new(outer);
+    let status = guard.wait_bounded(CHILD_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status), "outer status {status}");
+    assert_eq!(libc::WEXITSTATUS(status), 37, "outer status {status}");
+    let mut byte = [0];
+    assert_eq!(daemon_end.read(&mut byte).unwrap(), 0);
+}
+
+fn initial_publication_failure_case(semantic_reject: bool) {
+    let marker_dir = tempfile::TempDir::new().unwrap();
+    let marker = marker_dir.path().join("target-ran");
+    let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
+    daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    let mut channel = test_resource_channel(
+        channel_end.as_raw_fd(),
+        ResourceBlob::empty().to_canonical_bytes().unwrap(),
+    );
+    channel.libsecret = true;
+    channel.files_target_paths.clear();
+
+    let outer = unsafe { libc::fork() };
+    assert!(outer >= 0);
+    if outer == 0 {
+        drop(daemon_end);
+        let publication = PublicationPair::new().unwrap();
+        let gate = ExecGate::new_for_test().unwrap();
+        let liveness = supervision::LivenessPipe::new().unwrap();
+        let target_status = target_status::TargetStatusPipe::new().unwrap();
+        let relay = unsafe { libc::fork() };
+        if relay == 0 {
+            drop(publication.host);
+            let mut publisher = publication.publisher;
+            if semantic_reject {
+                let mut invalid = LibsecretSection::default();
+                invalid.aliases.insert("bad".into(), "missing".into());
+                let body = invalid.to_canonical_bytes().unwrap();
+                publisher
+                    .write_all(
+                        &underwrap_protocol::libsecret_publication::encode_request_header(
+                            0,
+                            body.len(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                publisher.write_all(&body).unwrap();
+                let mut response = [0; underwrap_protocol::libsecret_publication::RESPONSE_LEN];
+                publisher.read_exact(&mut response).unwrap();
+                let decoded =
+                    underwrap_protocol::libsecret_publication::decode_response(&response).unwrap();
+                if decoded.0 == underwrap_protocol::libsecret_publication::ResponseKind::Ack {
+                    std::fs::write(&marker, b"target executed").unwrap();
+                }
+                assert_eq!(
+                    decoded,
+                    (
+                        underwrap_protocol::libsecret_publication::ResponseKind::Reject,
+                        0
+                    )
+                );
+            } else {
+                publisher.write_all(b"partial").unwrap();
+            }
+            drop(publisher);
+            gate.into_child().send_failed().unwrap();
+            let _liveness_reader = liveness.into_relay();
+            target_status
+                .into_relay()
+                .write(TargetStatus::Exited(if semantic_reject { 23 } else { 24 }))
+                .unwrap();
+            unsafe { libc::_exit(0) }
+        }
+        drop(publication.publisher);
+        let isolation = target_uid::Isolation {
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        };
+        let result = run_parent(
+            relay,
+            gate.into_parent(),
+            liveness.into_host(),
+            target_status.into_host(),
+            &[],
+            &channel,
+            false,
+            isolation,
+            Some(publication.host),
+        );
+        eprintln!("initial publication failure returned: {result:?}");
+        unsafe { libc::_exit(1) }
+    }
+
+    drop(channel_end);
+    let mut guard = ChildGuard::new(outer);
+    let status = guard.wait_bounded(CHILD_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status), "outer status {status}");
+    assert_eq!(
+        libc::WEXITSTATUS(status),
+        if semantic_reject { 23 } else { 24 }
+    );
+    assert!(
+        !marker.exists(),
+        "target marker exists after initial failure"
+    );
+    let mut byte = [0];
+    assert_eq!(daemon_end.read(&mut byte).unwrap(), 0);
+}
+
+#[test]
+fn initial_publication_reject_and_channel_failure_are_pre_exec_no_terminal() {
+    initial_publication_failure_case(true);
+    initial_publication_failure_case(false);
+}
+
+#[test]
 fn exec_gate_wait_failure_is_reported() {
     let error = wait_for_child(libc::pid_t::MAX).unwrap_err();
     assert!(
@@ -490,6 +802,7 @@ fn lifecycle_conjunction_case(
     let mut channel =
         test_resource_channel(channel_end.as_raw_fd(), blob.to_canonical_bytes().unwrap());
     channel.writable = true;
+    channel.libsecret = true;
 
     // Isolate run_parent because exact target-status propagation exits.
     let outer = unsafe { libc::fork() };
@@ -499,8 +812,32 @@ fn lifecycle_conjunction_case(
         let gate = ExecGate::new_for_test().unwrap();
         let liveness = supervision::LivenessPipe::new().unwrap();
         let target_status = target_status::TargetStatusPipe::new().unwrap();
+        let publication = PublicationPair::new().unwrap();
         let relay = unsafe { libc::fork() };
         if relay == 0 {
+            drop(publication.host);
+            let mut publisher = publication.publisher;
+            let section = LibsecretSection::default().to_canonical_bytes().unwrap();
+            publisher
+                .write_all(
+                    &underwrap_protocol::libsecret_publication::encode_request_header(
+                        0,
+                        section.len(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            publisher.write_all(&section).unwrap();
+            let mut response = [0; underwrap_protocol::libsecret_publication::RESPONSE_LEN];
+            publisher.read_exact(&mut response).unwrap();
+            assert_eq!(
+                underwrap_protocol::libsecret_publication::decode_response(&response).unwrap(),
+                (
+                    underwrap_protocol::libsecret_publication::ResponseKind::Ack,
+                    0
+                )
+            );
+            drop(publisher);
             let mut writer = gate.into_child();
             let _liveness_reader = liveness.into_relay();
             let status_writer = target_status.into_relay();
@@ -530,6 +867,7 @@ fn lifecycle_conjunction_case(
                 })
             }
         }
+        drop(publication.publisher);
         let isolation = target_uid::Isolation {
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
@@ -543,7 +881,7 @@ fn lifecycle_conjunction_case(
             &channel,
             false,
             isolation,
-            None,
+            Some(publication.host),
         );
         eprintln!("lifecycle conjunction returned: {result:?}");
         unsafe { libc::_exit(1) }

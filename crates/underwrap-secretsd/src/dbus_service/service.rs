@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -12,7 +11,7 @@ use underwrap_secretsd_store::SecretStore;
 
 use crate::BASE_PATH;
 use crate::metadata_trace_enabled;
-use crate::state;
+use crate::publication::{self, SharedPublisher};
 
 use super::{
     CollectionInterface, Secret, SessionInterface, collection_path, empty_path, item_path,
@@ -21,12 +20,12 @@ use super::{
 
 pub struct SecretService {
     store: Arc<RwLock<SecretStore>>,
-    state_path: Arc<PathBuf>,
+    publisher: SharedPublisher,
 }
 
 impl SecretService {
-    pub fn new(store: Arc<RwLock<SecretStore>>, state_path: Arc<PathBuf>) -> Self {
-        Self { store, state_path }
+    pub fn new(store: Arc<RwLock<SecretStore>>, publisher: SharedPublisher) -> Self {
+        Self { store, publisher }
     }
 }
 
@@ -87,12 +86,12 @@ impl SecretService {
         let col_id = {
             let mut store = self.store.write().await;
             let id = store.create_collection(name, alias);
-            state::dump_or_log(&store, &self.state_path)?;
+            publication::publish_store(&self.publisher, &store)?;
             id
         };
 
         let path = collection_path(&col_id)?;
-        let col = CollectionInterface::new(col_id, self.store.clone(), self.state_path.clone());
+        let col = CollectionInterface::new(col_id, self.store.clone(), self.publisher.clone());
         if let Err(e) = object_server.at(&path, col).await {
             tracing::warn!(%path, error = %e, "registering collection interface failed");
         }
@@ -215,7 +214,7 @@ impl SecretService {
                 "secretsd Service.SetAlias"
             );
         }
-        state::dump_or_log(&store, &self.state_path)?;
+        publication::publish_store(&self.publisher, &store)?;
         Ok(())
     }
 

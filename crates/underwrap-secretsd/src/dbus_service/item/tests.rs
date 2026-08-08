@@ -1,9 +1,8 @@
 use super::*;
-use crate::dbus_service::test_support::service_with_state;
-use underwrap_protocol::resource_blob::LibsecretSection;
+use crate::dbus_service::test_support::service_with_publisher;
 
 #[tokio::test]
-async fn set_secret_bumps_modified_and_persists_state() {
+async fn set_secret_bumps_modified_and_publishes_state() {
     let mut store = SecretStore::new_default();
     let item_id = store
         .create_item(
@@ -26,13 +25,12 @@ async fn set_secret_bumps_modified_and_persists_state() {
         .unwrap()
         .modified = 1;
 
-    let (_service, store_arc, tempdir) = service_with_state(store);
-    let state_path = tempdir.path().join("libsecret-state.jcs");
-    let item = ItemInterface::new(
+    let (service, store_arc, publisher, published, responder) = service_with_publisher(store);
+    let item_interface = ItemInterface::new(
         item_id.clone(),
         "default".to_string(),
         store_arc.clone(),
-        Arc::new(state_path.clone()),
+        publisher,
     );
 
     let secret = super::super::Secret {
@@ -41,7 +39,7 @@ async fn set_secret_bumps_modified_and_persists_state() {
         value: b"updated".to_vec(),
         content_type: "text/plain".to_string(),
     };
-    item.set_secret(secret).await.unwrap();
+    item_interface.set_secret(secret).await.unwrap();
 
     let store_guard = store_arc.read().await;
     let item = store_guard
@@ -51,13 +49,17 @@ async fn set_secret_bumps_modified_and_persists_state() {
         .unwrap();
     assert!(item.modified > 1);
     assert_eq!(item.secret, b"updated");
+    drop(store_guard);
 
-    let bytes = std::fs::read(&state_path).unwrap();
-    let section = LibsecretSection::from_canonical_bytes(&bytes).unwrap();
+    let section = published.lock().unwrap().last().unwrap().clone();
     let item = section
         .collections
         .get("default")
         .and_then(|c| c.items.get(&item_id))
         .unwrap();
     assert_eq!(item.secret.as_slice(), b"updated");
+
+    drop(item_interface);
+    drop(service);
+    responder.join().unwrap();
 }

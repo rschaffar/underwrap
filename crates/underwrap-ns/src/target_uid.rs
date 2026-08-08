@@ -217,8 +217,8 @@ pub(crate) fn verify_switched() -> Result<(), String> {
 
 /// Run `f` with the process's **filesystem** uid/gid temporarily set to the
 /// isolated target's `iso`, then restore them. The supervisor uses this one
-/// bounded fsuid window to read target-owned staging and libsecret state during
-/// writeback.
+/// bounded fsuid window to read target-owned files staging during writeback.
+/// Libsecret selection is descriptor-based and never enters this window.
 ///
 /// `setfsuid`/`setfsgid` change only the credentials used for filesystem access
 /// checks; they do not affect process ownership, signal permissions, or the

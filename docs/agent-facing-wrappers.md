@@ -119,9 +119,10 @@ no swap. Lowering the Yama value weakens the ATTACH-mode claim. See
 ### Central resource and policy
 
 Persistent secret material stays in the backend's `StorageBackend`. The target
-host sees the projection in memory and, for files/libsecret modes, in
-namespace-private tmpfs for one invocation. Under the hardened posture, swap is
-absent or encrypted.
+host sees the projection in memory. Files bytes are staged on namespace-private
+tmpfs for one invocation; libsecret state stays in secretsd/host memory while a
+private tmpfs carries only its filesystem bus socket and helper logs. Under the
+hardened posture, swap is absent or encrypted.
 
 The backend can revoke a permission without reconfiguring the frontend host.
 

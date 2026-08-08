@@ -166,6 +166,43 @@ let
   f007LifecycleScript = pkgs.writeShellScript "f007-lifecycle-target" ''
     set -eu
     mode="''${1:-success}"
+    case "$mode" in
+      f008-old-canonical)
+        printf '%s' '{"aliases":{},"collections":{}}' \
+          > /tmp/.underwrap-ns-bus/libsecret-state.jcs
+        exit 0
+        ;;
+      f008-old-noncanonical)
+        printf '%s' ' { "aliases": {}, "collections": {} } ' \
+          > /tmp/.underwrap-ns-bus/libsecret-state.jcs
+        exit 0
+        ;;
+      f008-old-semantic)
+        printf '%s' '{"aliases":{"bad":"missing"},"collections":{}}' \
+          > /tmp/.underwrap-ns-bus/libsecret-state.jcs
+        exit 0
+        ;;
+      f008-old-oversized)
+        {
+          printf '%s' '{"aliases":{"default":"default"},"collections":{"default":{"created":0,"items":{},"label":"'
+          ${pkgs.coreutils}/bin/head -c 1048577 /dev/zero | ${pkgs.coreutils}/bin/tr '\0' x
+          printf '%s' '","modified":0}}}'
+        } > /tmp/.underwrap-ns-bus/libsecret-state.jcs
+        exit 0
+        ;;
+      f008-near-cap)
+        i=1
+        while [ "$i" -le 170 ]; do
+          {
+            printf '%s' 'f008-cap-secret-xx'
+            ${pkgs.coreutils}/bin/head -c 3982 /dev/zero | ${pkgs.coreutils}/bin/tr '\0' x
+          } | ${pkgs.libsecret}/bin/secret-tool store --label='F008 near cap' \
+            purpose f008 index "$i" >/dev/null
+          i=$((i + 1))
+        done
+        exit 0
+        ;;
+    esac
     if [ "$mode" = unchanged ]; then
       ${pkgs.coreutils}/bin/cat "$HOME/.config/f007/token" >/dev/null
       exit 0
@@ -526,10 +563,10 @@ in {
             files.paths = [ "iso-files/dir-a" ];
             accessPaths = [ "~/iso-files" ];
           };
-          # Libsecret target: dbus-daemon and secretsd run as
-          # the dedicated uid X on an X-owned private bus tmpfs; the supervisor
-          # reads the X-owned state file at writeback inside the setfsuid(X)
-          # window.
+          # Libsecret target: dbus-daemon and secretsd run as the dedicated uid
+          # X on an X-owned private bus tmpfs. The host selects only validated
+          # generations received over its private publication socket; no target
+          # fsuid collection window or target-owned final-state path is used.
           test-iso-libsecret = {
             target = "${isoSecretTool}";
             resource = "test/iso-libsecret-store";

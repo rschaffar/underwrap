@@ -69,28 +69,58 @@ pub(crate) fn parse_item_path(path: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
     use tokio::sync::RwLock;
 
+    use underwrap_protocol::libsecret_publication::{
+        REQUEST_HEADER_LEN, ResponseKind, decode_request_header, encode_response,
+    };
+    use underwrap_protocol::resource_blob::LibsecretSection;
     use underwrap_secretsd_store::SecretStore;
 
     use super::SecretService;
+    use crate::publication::{Publisher, SharedPublisher};
 
-    /// Build a `SecretService` with a temporary state path. Caller owns
-    /// the `TempDir`; dropping it cleans up the file.
-    pub(crate) fn service_with_state(
-        store: SecretStore,
-    ) -> (SecretService, Arc<RwLock<SecretStore>>, tempfile::TempDir) {
-        let tempdir = tempfile::TempDir::new().unwrap();
-        let state_path: Arc<PathBuf> = Arc::new(tempdir.path().join("libsecret-state.jcs"));
-        // Materialize an initial state file so tests can re-read it
-        // after the first mutation.
-        let initial = crate::section_store::section_from_store(&store);
-        std::fs::write(&*state_path, initial.to_canonical_bytes().unwrap()).unwrap();
+    type ServiceHarness = (
+        SecretService,
+        Arc<RwLock<SecretStore>>,
+        SharedPublisher,
+        Arc<Mutex<Vec<LibsecretSection>>>,
+        JoinHandle<()>,
+    );
+
+    pub(crate) fn service_with_publisher(store: SecretStore) -> ServiceHarness {
+        let (publisher_stream, mut host) = UnixStream::pair().unwrap();
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let observed = published.clone();
+        let responder = std::thread::spawn(move || {
+            loop {
+                let mut header = [0; REQUEST_HEADER_LEN];
+                if host.read_exact(&mut header).is_err() {
+                    break;
+                }
+                let header = decode_request_header(&header).unwrap();
+                let mut body = vec![0; header.body_len];
+                if host.read_exact(&mut body).is_err() {
+                    break;
+                }
+                let section = LibsecretSection::from_strict_publication_bytes(&body).unwrap();
+                observed.lock().unwrap().push(section);
+                if host
+                    .write_all(&encode_response(ResponseKind::Ack, header.generation))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let publisher = Arc::new(Mutex::new(Publisher::from_stream(publisher_stream)));
         let store = Arc::new(RwLock::new(store));
-        let service = SecretService::new(store.clone(), state_path);
-        (service, store, tempdir)
+        let service = SecretService::new(store.clone(), publisher.clone());
+        (service, store, publisher, published, responder)
     }
 }
 

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -11,22 +10,22 @@ use zbus::{
 use underwrap_secretsd_store::SecretStore;
 
 use crate::metadata_trace_enabled;
-use crate::state;
+use crate::publication::{self, SharedPublisher};
 
 use super::{ItemInterface, Secret, empty_path, item_path};
 
 pub struct CollectionInterface {
     id: String,
     store: Arc<RwLock<SecretStore>>,
-    state_path: Arc<PathBuf>,
+    publisher: SharedPublisher,
 }
 
 impl CollectionInterface {
-    pub fn new(id: String, store: Arc<RwLock<SecretStore>>, state_path: Arc<PathBuf>) -> Self {
+    pub fn new(id: String, store: Arc<RwLock<SecretStore>>, publisher: SharedPublisher) -> Self {
         Self {
             id,
             store,
-            state_path,
+            publisher,
         }
     }
 }
@@ -36,7 +35,7 @@ impl CollectionInterface {
     async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
         let mut store = self.store.write().await;
         store.delete_collection(&self.id);
-        state::dump_or_log(&store, &self.state_path)?;
+        publication::publish_store(&self.publisher, &store)?;
         Ok(empty_path())
     }
 
@@ -95,7 +94,7 @@ impl CollectionInterface {
                     replace,
                 )
                 .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
-            state::dump_or_log(&store, &self.state_path)?;
+            publication::publish_store(&self.publisher, &store)?;
             (id, replaced)
         };
 
@@ -121,7 +120,7 @@ impl CollectionInterface {
                 item_id,
                 self.id.clone(),
                 self.store.clone(),
-                self.state_path.clone(),
+                self.publisher.clone(),
             );
             if let Err(e) = object_server.at(&item_path, item).await {
                 tracing::warn!(path = %item_path, error = %e, "registering item interface failed");
@@ -154,7 +153,7 @@ impl CollectionInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_collection_label(&self.id, &label);
-        state::dump_or_log(&store, &self.state_path)?;
+        publication::publish_store(&self.publisher, &store)?;
         Ok(())
     }
 

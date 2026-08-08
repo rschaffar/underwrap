@@ -79,9 +79,8 @@ pub fn store_from_section(section: &LibsecretSection) -> SecretStore {
     store
 }
 
-/// Project the current `SecretStore` back into a `LibsecretSection`
-/// for write-back. Used to dump state to the on-tmpfs state file on
-/// every mutation, and to compose the final teardown blob.
+/// Project the current `SecretStore` into the complete `LibsecretSection`
+/// published to the trusted host after every mutation.
 pub fn section_from_store(store: &SecretStore) -> LibsecretSection {
     let mut section = LibsecretSection::default();
     for (col_id, col) in &store.collections {

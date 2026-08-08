@@ -57,16 +57,80 @@ pub struct LibsecretSection {
 }
 
 impl LibsecretSection {
-    /// Serialize this section to JCS-canonical JSON bytes. Used by
-    /// the ns↔secretsd init/teardown pipes so the section can be
-    /// exchanged independently of the surrounding `ResourceBlob`.
+    /// Serialize this section to JCS-canonical JSON bytes.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>> {
         serde_jcs::to_vec(self).context("serializing libsecret section (JCS)")
     }
 
-    /// Deserialize a section from JCS-canonical JSON bytes.
+    /// Deserialize a section from JSON. Call
+    /// [`Self::from_strict_publication_bytes`] at the publication boundary.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
         serde_json::from_slice(bytes).context("parsing libsecret section JSON")
+    }
+
+    /// Parse one host-selectable publication and require exact canonical bytes
+    /// plus the complete identifier, reference, path-segment, and timestamp
+    /// invariants of the private publication channel.
+    pub fn from_strict_publication_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > crate::libsecret_publication::MAX_BODY_BYTES {
+            return Err(anyhow!("libsecret publication exceeds the 1 MiB cap"));
+        }
+        let section: Self =
+            serde_json::from_slice(bytes).context("parsing libsecret publication JSON")?;
+        let canonical = section.to_canonical_bytes()?;
+        if canonical != bytes {
+            return Err(anyhow!(
+                "libsecret publication is not exact JCS canonical bytes"
+            ));
+        }
+        section.validate_publication_semantics()?;
+        Ok(section)
+    }
+
+    pub fn validate_publication_semantics(&self) -> Result<()> {
+        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+        fn segment(kind: &str, value: &str) -> Result<()> {
+            if value.is_empty()
+                || value.len() > 128
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Err(anyhow!("invalid {kind} path segment"));
+            }
+            Ok(())
+        }
+        fn timestamp(value: u64) -> Result<()> {
+            if value > MAX_SAFE_INTEGER {
+                return Err(anyhow!("libsecret timestamp exceeds 2^53 - 1"));
+            }
+            Ok(())
+        }
+
+        for (collection_id, collection) in &self.collections {
+            segment("collection id", collection_id)?;
+            timestamp(collection.created)?;
+            timestamp(collection.modified)?;
+            for (item_id, item) in &collection.items {
+                if item_id.len() != 32
+                    || !item_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(anyhow!("invalid item id"));
+                }
+                timestamp(item.created)?;
+                timestamp(item.modified)?;
+            }
+        }
+        for (alias, target) in &self.aliases {
+            segment("alias", alias)?;
+            segment("alias target", target)?;
+            if !self.collections.contains_key(target) {
+                return Err(anyhow!("libsecret alias names a missing collection"));
+            }
+        }
+        Ok(())
     }
 }
 

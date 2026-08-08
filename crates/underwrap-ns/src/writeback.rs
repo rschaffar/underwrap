@@ -1,8 +1,8 @@
 //! End-of-run decision and dispatch on the wrapper-resource channels.
 //!
 //! For every resource in scope, ns composes the post-run `ResourceBlob`
-//! from (env captured at Checkout, files walked from the staging tmpfs,
-//! libsecret read from the on-tmpfs state file) and JCS-canonicalizes
+//! from env captured at Checkout, files walked from staging tmpfs, and the
+//! host supervisor's latest validated libsecret generation, then canonicalizes
 //! it. The byte-comparison against the Checkout's `original_canonical`
 //! drives the dispatch:
 //!
@@ -14,8 +14,6 @@
 
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
-
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
 use underwrap_protocol::message::{
     ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse,
@@ -57,10 +55,9 @@ pub struct WritebackInput<'a> {
     /// target this walk runs inside a `setfsuid(X)` window (see
     /// [`crate::run_parent`]), which bounds the cross-uid read to uid X.
     pub directory_layout: &'a [DirectoryMountPlan],
-    /// Path to the libsecret state file written by secretsd, or `None`
-    /// when this resource is not the libsecret resource. The path is
-    /// only consulted when present.
-    pub libsecret_state_path: Option<&'a Path>,
+    /// Latest complete host-validated generation whose exact ACK was fully
+    /// written, or `None` when this resource does not project libsecret.
+    pub libsecret_generation: Option<&'a LibsecretSection>,
 }
 
 pub fn dispatch_writeback(inputs: &[WritebackInput<'_>]) -> Result<Vec<WritebackOutcome>, String> {
@@ -93,31 +90,10 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
         })?
     };
 
-    let new_libsecret = if let Some(path) = input.libsecret_state_path
-        && path.exists()
-    {
-        match std::fs::read(path) {
-            Ok(bytes) => match LibsecretSection::from_canonical_bytes(&bytes) {
-                Ok(section) => section,
-                Err(e) => {
-                    eprintln!(
-                        "underwrap-ns: libsecret state at {} failed to parse ({e}); falling back to Checkout bytes",
-                        path.display(),
-                    );
-                    original.libsecret.clone()
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "underwrap-ns: reading libsecret state {} failed: {e}; falling back to Checkout bytes",
-                    path.display(),
-                );
-                original.libsecret.clone()
-            }
-        }
-    } else {
-        original.libsecret.clone()
-    };
+    let new_libsecret = input
+        .libsecret_generation
+        .cloned()
+        .unwrap_or_else(|| original.libsecret.clone());
 
     let mut new_blob = original;
     new_blob.files = new_files;

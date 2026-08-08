@@ -3,6 +3,7 @@ pub mod control;
 pub mod entities;
 pub mod exec;
 pub mod ipc;
+pub mod libsecret_publication;
 pub mod message;
 pub mod policy;
 pub mod resource;

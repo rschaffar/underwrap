@@ -248,6 +248,206 @@ fn raw_byte_secrets_round_trip() {
     assert_eq!(decoded, blob);
 }
 
+fn strict_publication_fixture() -> LibsecretSection {
+    let mut section = LibsecretSection::default();
+    section.collections.insert(
+        "default".into(),
+        Collection {
+            label: "arbitrary label / unicode ✓".into(),
+            created: 1,
+            modified: 2,
+            items: BTreeMap::from([(
+                "0123456789abcdef0123456789abcdef".into(),
+                Item {
+                    label: "item".into(),
+                    content_type: "application/octet-stream".into(),
+                    created: 3,
+                    modified: 4,
+                    attributes: BTreeMap::from([("arbitrary/key".into(), "value".into())]),
+                    secret: SecretBytes::from(vec![0, 255]),
+                },
+            )]),
+        },
+    );
+    section.aliases.insert("default".into(), "default".into());
+    section
+}
+
+#[test]
+fn libsecret_strict_publication_accepts_exact_canonical_safe_graph() {
+    let section = strict_publication_fixture();
+    let bytes = section.to_canonical_bytes().unwrap();
+    assert_eq!(
+        LibsecretSection::from_strict_publication_bytes(&bytes).unwrap(),
+        section
+    );
+}
+
+#[test]
+fn libsecret_strict_publication_rejects_independent_noncanonical_forms() {
+    let canonical = strict_publication_fixture().to_canonical_bytes().unwrap();
+    let text = std::str::from_utf8(&canonical).unwrap();
+
+    let whitespace = format!(" {text}\n");
+    assert!(LibsecretSection::from_strict_publication_bytes(whitespace.as_bytes()).is_err());
+
+    let inner = &text[1..text.len() - 1];
+    let aliases_end = inner.find(",\"collections\":").unwrap();
+    let aliases = &inner[..aliases_end];
+    let collections = &inner[aliases_end + 1..];
+    let reordered = format!("{{{collections},{aliases}}}");
+    assert_eq!(
+        LibsecretSection::from_canonical_bytes(reordered.as_bytes()).unwrap(),
+        strict_publication_fixture()
+    );
+    assert!(LibsecretSection::from_strict_publication_bytes(reordered.as_bytes()).is_err());
+
+    let escaped = text.replace("unicode ✓", "unicode \\u2713");
+    assert_ne!(escaped, text);
+    assert_eq!(
+        LibsecretSection::from_canonical_bytes(escaped.as_bytes()).unwrap(),
+        strict_publication_fixture()
+    );
+    assert!(LibsecretSection::from_strict_publication_bytes(escaped.as_bytes()).is_err());
+
+    assert!(
+        LibsecretSection::from_strict_publication_bytes(
+            br#"{"aliases":{},"collections":{},"unknown":1}"#
+        )
+        .is_err()
+    );
+    assert!(LibsecretSection::from_strict_publication_bytes(br#"{"collections":{}}"#).is_err());
+    assert!(
+        LibsecretSection::from_strict_publication_bytes(
+            br#"{"aliases":{},"aliases":{},"collections":{}}"#
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn libsecret_strict_publication_validates_segments_items_aliases_and_references() {
+    for bad in ["", "bad/slash", "bad-dash", "naïve"] {
+        let mut section = strict_publication_fixture();
+        let collection = section.collections.remove("default").unwrap();
+        section.collections.insert(bad.into(), collection);
+        section.aliases.clear();
+        let bytes = section.to_canonical_bytes().unwrap();
+        assert!(
+            LibsecretSection::from_strict_publication_bytes(&bytes).is_err(),
+            "{bad:?}"
+        );
+    }
+    let mut long = strict_publication_fixture();
+    let collection = long.collections.remove("default").unwrap();
+    long.collections.insert("x".repeat(129), collection);
+    long.aliases.clear();
+    assert!(
+        LibsecretSection::from_strict_publication_bytes(&long.to_canonical_bytes().unwrap())
+            .is_err()
+    );
+
+    for bad in [
+        "0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0",
+        "0123456789abcdef0123456789abcdeF",
+        "0123456789abcdef0123456789abcdeg",
+        "0123456789abcdef/123456789abcdef",
+    ] {
+        let mut section = strict_publication_fixture();
+        let collection = section.collections.get_mut("default").unwrap();
+        let item = collection.items.pop_first().unwrap().1;
+        collection.items.insert(bad.into(), item);
+        assert!(
+            LibsecretSection::from_strict_publication_bytes(&section.to_canonical_bytes().unwrap())
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+
+    for bad_alias in ["", "bad/alias", "bad-alias"] {
+        let mut section = strict_publication_fixture();
+        section.aliases.clear();
+        section.aliases.insert(bad_alias.into(), "default".into());
+        assert!(
+            LibsecretSection::from_strict_publication_bytes(&section.to_canonical_bytes().unwrap())
+                .is_err()
+        );
+    }
+    let mut long_alias = strict_publication_fixture();
+    long_alias.aliases.clear();
+    long_alias.aliases.insert("a".repeat(129), "default".into());
+    assert!(
+        LibsecretSection::from_strict_publication_bytes(&long_alias.to_canonical_bytes().unwrap())
+            .is_err()
+    );
+
+    let mut exact_boundaries = strict_publication_fixture();
+    let collection = exact_boundaries.collections.remove("default").unwrap();
+    let collection_id = "c".repeat(128);
+    exact_boundaries
+        .collections
+        .insert(collection_id.clone(), collection);
+    exact_boundaries.aliases.clear();
+    exact_boundaries
+        .aliases
+        .insert("a".repeat(128), collection_id);
+    let bytes = exact_boundaries.to_canonical_bytes().unwrap();
+    assert_eq!(
+        LibsecretSection::from_strict_publication_bytes(&bytes).unwrap(),
+        exact_boundaries
+    );
+
+    let mut dangling = strict_publication_fixture();
+    dangling.aliases.insert("other".into(), "missing".into());
+    assert!(
+        LibsecretSection::from_strict_publication_bytes(&dangling.to_canonical_bytes().unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn libsecret_strict_publication_accepts_exact_cap_minus_one_and_cap_bodies() {
+    for wanted in [
+        crate::libsecret_publication::MAX_BODY_BYTES - 1,
+        crate::libsecret_publication::MAX_BODY_BYTES,
+    ] {
+        let mut section = strict_publication_fixture();
+        section
+            .collections
+            .get_mut("default")
+            .unwrap()
+            .label
+            .clear();
+        let base_len = section.to_canonical_bytes().unwrap().len();
+        section.collections.get_mut("default").unwrap().label = "x".repeat(wanted - base_len);
+        let bytes = section.to_canonical_bytes().unwrap();
+        assert_eq!(bytes.len(), wanted);
+        assert_eq!(
+            LibsecretSection::from_strict_publication_bytes(&bytes).unwrap(),
+            section
+        );
+    }
+}
+
+#[test]
+fn libsecret_strict_publication_enforces_safe_timestamp_without_temporal_rules() {
+    let max = (1_u64 << 53) - 1;
+    let mut section = strict_publication_fixture();
+    let collection = section.collections.get_mut("default").unwrap();
+    collection.created = max;
+    collection.modified = 0;
+    let item = collection.items.values_mut().next().unwrap();
+    item.created = max;
+    item.modified = 0;
+    let bytes = section.to_canonical_bytes().unwrap();
+    LibsecretSection::from_strict_publication_bytes(&bytes).unwrap();
+
+    section.collections.get_mut("default").unwrap().created = max + 1;
+    let bytes = section.to_canonical_bytes().unwrap();
+    assert!(LibsecretSection::from_strict_publication_bytes(&bytes).is_err());
+}
+
 #[test]
 fn garbage_input_rejected() {
     let err = ResourceBlob::from_canonical_bytes(b"not json").unwrap_err();

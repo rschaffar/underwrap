@@ -4,27 +4,19 @@
 //! `org.freedesktop.secrets` on a private D-Bus session bus so that
 //! tools using libsecret (e.g., `gh`) can store and retrieve credentials.
 //!
-//! The whole libsecret keyring for this run is loaded once at startup
-//! from a one-shot pipe (`--init-fd`) and kept in memory. Every D-Bus
-//! mutation is persisted by atomically rewriting `--state-path` to the
-//! current JCS-canonical bytes of the section; host `underwrap-ns` reads
-//! the state file after cleanly reaping the trusted namespace PID-1 relay.
-//! The relay first reaps the configured target at PID 2, frames its status, then
-//! exits, causing the kernel to SIGKILL any remaining helpers.
-//!
-//! There is no socket to the daemon and no graceful teardown handshake, so
-//! every mutation must already be on disk by the time the D-Bus ack returns.
+//! The keyring is loaded once from `--init-fd` and kept in memory. Generation
+//! zero and every mutation are published on `--publication-fd` and wait for
+//! the trusted host's exact ACK.
 
 use anyhow::{Context, Result, bail};
 use std::io::Read;
 use std::os::unix::io::FromRawFd;
-use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::RwLock;
 
 mod dbus_service;
+mod publication;
 mod section_store;
-mod state;
 
 use underwrap_protocol::resource_blob::LibsecretSection;
 
@@ -41,19 +33,15 @@ pub(crate) fn metadata_trace_enabled() -> bool {
 struct Args {
     bus_address: String,
     init_fd: i32,
-    state_path: PathBuf,
+    publication_fd: i32,
     ready_fd: Option<i32>,
-    /// Optional override for the persisted-state size cap. `None` keeps the
-    /// built-in `state::DEFAULT_MAX_STATE_BYTES`.
-    max_state_bytes: Option<u64>,
 }
 
 fn parse_args_from(args: &[String]) -> Result<Args> {
     let mut bus_address = None;
     let mut init_fd = None;
-    let mut state_path = None;
+    let mut publication_fd = None;
     let mut ready_fd = None;
-    let mut max_state_bytes = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -74,13 +62,14 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
                         .context("--init-fd must be a number")?,
                 );
             }
-            "--state-path" => {
+            "--publication-fd" => {
                 i += 1;
-                state_path = Some(PathBuf::from(
+                publication_fd = Some(
                     args.get(i)
-                        .context("--state-path requires a value")?
-                        .clone(),
-                ));
+                        .context("--publication-fd requires a value")?
+                        .parse()
+                        .context("--publication-fd must be a number")?,
+                );
             }
             "--ready-fd" => {
                 i += 1;
@@ -91,15 +80,6 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
                         .context("--ready-fd must be a number")?,
                 );
             }
-            "--max-state-bytes" => {
-                i += 1;
-                max_state_bytes = Some(
-                    args.get(i)
-                        .context("--max-state-bytes requires a value")?
-                        .parse()
-                        .context("--max-state-bytes must be a number")?,
-                );
-            }
             other => bail!("unknown argument: {other}"),
         }
         i += 1;
@@ -107,9 +87,8 @@ fn parse_args_from(args: &[String]) -> Result<Args> {
     Ok(Args {
         bus_address: bus_address.context("--bus-address is required")?,
         init_fd: init_fd.context("--init-fd is required")?,
-        state_path: state_path.context("--state-path is required")?,
+        publication_fd: publication_fd.context("--publication-fd is required")?,
         ready_fd,
-        max_state_bytes,
     })
 }
 
@@ -119,6 +98,8 @@ fn parse_args() -> Result<Args> {
 }
 
 fn read_init_section(init_fd: i32) -> Result<LibsecretSection> {
+    // SAFETY: --init-fd names the sole inherited one-shot read endpoint. This
+    // function is called exactly once and transfers ownership into File RAII.
     let mut file = unsafe { std::fs::File::from_raw_fd(init_fd) };
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
@@ -153,10 +134,6 @@ async fn main() -> Result<()> {
 
     let args = parse_args()?;
 
-    if let Some(max) = args.max_state_bytes {
-        state::configure_max_state_bytes(max);
-    }
-
     if metadata_trace_enabled() {
         tracing::info!(
             env_var = METADATA_TRACE_ENV,
@@ -164,18 +141,19 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Read the entire libsecret section from the one-shot init pipe,
-    // then build the in-memory store. The pipe is closed implicitly
-    // when `read_init_section`'s `File` drops.
+    // Immediately adopt the sole reviewed exec-inherited capability and restore
+    // CLOEXEC before reading the secret-bearing one-shot initialization pipe.
+    let publisher = Arc::new(Mutex::new(
+        publication::Publisher::adopt(args.publication_fd).context("adopting --publication-fd")?,
+    ));
+    // Read the entire libsecret section from the one-shot init pipe, then build
+    // the in-memory store. The File closes the init descriptor immediately.
     let section =
         read_init_section(args.init_fd).context("loading libsecret section from --init-fd")?;
     let store = Arc::new(RwLock::new(section_store::store_from_section(&section)));
-    let state_path = Arc::new(args.state_path.clone());
-
-    // Persist the initial state immediately so the ns parent observes a
-    // valid file even if no mutations happen during the run. A torn
-    // initial write would make the end-of-run read fail.
-    state::dump(&*store.read().await, &state_path).context("persisting initial libsecret state")?;
+    publication::publish_store(&publisher, &*store.read().await)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
+        .context("publishing initial libsecret generation")?;
 
     // Connect to the private D-Bus session bus.
     let connection = zbus::ConnectionBuilder::address(args.bus_address.as_str())?
@@ -189,7 +167,7 @@ async fn main() -> Result<()> {
     );
 
     // Register the Secret Service on the bus.
-    let service = dbus_service::SecretService::new(store.clone(), state_path.clone());
+    let service = dbus_service::SecretService::new(store.clone(), publisher.clone());
 
     connection
         .object_server()
@@ -204,7 +182,7 @@ async fn main() -> Result<()> {
             let col = dbus_service::CollectionInterface::new(
                 col_id.to_string(),
                 store.clone(),
-                state_path.clone(),
+                publisher.clone(),
             );
             let path = format!("{BASE_PATH}/collection/{col_id}");
             match zbus::zvariant::ObjectPath::try_from(path.clone()) {
@@ -221,7 +199,7 @@ async fn main() -> Result<()> {
                     item_id.to_string(),
                     col_id.to_string(),
                     store.clone(),
-                    state_path.clone(),
+                    publisher.clone(),
                 );
                 let item_path = format!("{BASE_PATH}/collection/{col_id}/{item_id}");
                 match zbus::zvariant::ObjectPath::try_from(item_path.clone()) {
@@ -239,7 +217,7 @@ async fn main() -> Result<()> {
             let col = dbus_service::CollectionInterface::new(
                 col_id.clone(),
                 store.clone(),
-                state_path.clone(),
+                publisher.clone(),
             );
             let alias_path = format!("{BASE_PATH}/aliases/{alias}");
             match zbus::zvariant::ObjectPath::try_from(alias_path.clone()) {
@@ -264,6 +242,8 @@ async fn main() -> Result<()> {
     // Signal readiness to underwrap-ns.
     if let Some(ready_fd) = args.ready_fd {
         use std::io::Write;
+        // SAFETY: --ready-fd names the sole inherited one-shot write endpoint.
+        // This branch runs once and transfers ownership into File RAII.
         let mut ready_file = unsafe { std::fs::File::from_raw_fd(ready_fd) };
         if let Err(e) = ready_file.write_all(b"R") {
             eprintln!("underwrap-secretsd: failed to signal readiness: {e}");

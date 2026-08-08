@@ -147,7 +147,9 @@ All durable secret material is written through `underwrap-backend`'s
 in memory for the lifetime of a resource channel.
 
 The documented ephemeral exception is namespace-private tmpfs used to stage
-files and libsecret state during one invocation. The frontend must not add:
+files and to host the private libsecret bus socket/helper logs during one
+invocation. Libsecret state remains in secretsd and host-supervisor memory. The
+frontend must not add:
 
 - ordinary temporary files containing secrets;
 - JSON sidecars or local databases;
@@ -212,6 +214,9 @@ confidentiality remains load-bearing.
 - fixed fd 20 is the scoped resource channel between `underwrap-ns` and
   `underwrapd`; its number cannot be redirected through bundle data;
 - the namespace relay closes fd 20 before the target/helper fork;
+- for libsecret, the host alone retains the publication receiver and secretsd
+  alone retains the publisher; PID 1, PID 2 setup, dbus-daemon, the target,
+  descendants, and other helpers close both endpoints after their bounded role;
 - dbus-daemon, secretsd, and the target retain neither liveness pipe, target
   status writer, authorization gate, fd 3, nor fd 20;
 - the final target closes or receives close-on-exec for every fd above stderr.
@@ -246,10 +251,13 @@ exact direct-child exit/signal frame, and exits so the kernel kills helpers and
 detached descendants. The host observes the gate, cleanly reaps PID 1, and
 then parses the status pipe nonblockingly. Collection and an end-of-run resource
 verb require exact `Armed` plus EOF, one valid status frame plus EOF, and a clean
-relay reap. Early EOF, failure, malformed/truncated/extra input, a retained
-writer (`EAGAIN`), I/O failure, unclean relay, or wait failure suppresses both
-collection and `Checkin`/`UsageSignal`. A valid controlled pre-exec status still
-propagates when the gate alone suppresses resources.
+relay reap. Libsecret additionally requires terminal publication EOF and at
+least generation zero that passed strict host validation and whose ACK was
+completely written. Early EOF, failure, malformed/truncated/extra lifecycle
+input, a retained lifecycle or publication endpoint (`EAGAIN`), I/O failure,
+unclean relay, or wait failure suppresses both collection and
+`Checkin`/`UsageSignal`. Valid direct target status still propagates when gate or
+publication evidence suppresses resources.
 
 This gate records an authorized lifecycle; it does not prove that exec
 succeeded. After a normal successful exec, finalization may include changes made
@@ -383,10 +391,10 @@ The target child:
 - clears ambient, permitted, effective, and inheritable capabilities;
 - verifies the complete ID switch and verifies that a return to UID 0 fails.
 
-For env-only runs, the namespace supervisor drops all capabilities before it
-waits. For files or libsecret runs, it retains `CAP_SYS_ADMIN`, `CAP_SETUID`, and
-`CAP_SETGID` while the target runs and through the bounded post-run fsuid window,
-then drops them. `CAP_SETPCAP` is named on the NixOS security wrapper only so the
+For runs without files projection, the namespace supervisor drops all
+capabilities before it waits. Files runs retain `CAP_SYS_ADMIN`, `CAP_SETUID`,
+and `CAP_SETGID` while the target runs and through the bounded files-only
+post-run fsuid window, then drop them. `CAP_SETPCAP` is named on the NixOS security wrapper only so the
 wrapper can raise the other capabilities; NixOS does not pass it to
 `underwrap-ns`. The supervisor does not selectively discard the now-unneeded
 `CAP_SYS_ADMIN` before waiting.
@@ -554,25 +562,34 @@ backend-managed secret storage.
 
 ### Libsecret
 
-Libsecret mode uses two distinct channels:
+Libsecret mode uses three distinct channels:
 
-1. fd 20 remains between `underwrap-ns` and `underwrapd` for Checkout and final
-   UsageSignal/Checkin;
-2. a one-shot anonymous pipe carries only the initial libsecret section from
-   `underwrap-ns` to `underwrap-secretsd`.
+1. fd 20 remains between host `underwrap-ns` and `underwrapd` for Checkout and
+   final UsageSignal/Checkin;
+2. a one-shot anonymous pipe carries only the initial libsecret section from PID
+   2 setup to `underwrap-secretsd`;
+3. one invocation-private CLOEXEC Unix stream socketpair carries versioned
+   generations from secretsd to the host and exact ACK/REJECT responses back.
 
-Inside the namespace:
+The host owns the sole receiver and secretsd owns the sole long-lived publisher.
+Generation zero is strictly validated and ACKed before readiness. Every mutation
+publishes while its store write lock remains held and waits for exact ACK or
+REJECT before D-Bus success or failure. Host validation enforces the inclusive
+1-MiB cap, exact JCS bytes, collection/item/alias segment shapes, alias
+references, and safe timestamps.
 
-- a private dbus-daemon listens on a filesystem socket in a private tmpfs;
-- secretsd loads the canonical initial section into memory;
-- the target receives the private `DBUS_SESSION_BUS_ADDRESS`;
-- every successful mutation is atomically reflected in a canonical tmpfs state
-  file before the D-Bus acknowledgement returns;
-- the target's exit terminates dbus-daemon and secretsd;
-- the namespace supervisor reads final state and submits writeback through fd
-  20.
+PID 1 independently supervises target liveness while the host drains
+publication and polls relay exit. After clean reap, idle EOF permits the latest
+validated generation whose complete ACK was written. A later ordinary rejected,
+partial, response-failed, or publisher-death attempt preserves that prior
+generation after EOF. Final `EAGAIN` proves endpoint retention and suppresses
+all collection and terminal resource verbs without fallback. ACK means host
+retention, not caller response delivery or backend durability; generic Checkin
+still has a separate 64-KiB frame limit.
 
-secretsd never holds the daemon resource channel. The target never inherits it.
+The private tmpfs contains the filesystem D-Bus socket and helper logs, not a
+final-state pathname consumed by the host. secretsd never holds fd 20, and the
+target never inherits fd 20 or either publication endpoint.
 
 The private filesystem socket and mount namespace keep normal NixOS path-based
 session buses out of the target's view. Abstract Unix sockets are not hidden by

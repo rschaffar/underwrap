@@ -83,6 +83,9 @@ Workspace tests cover:
 - backend runtime policy and writeback validation;
 - target environment, capability, UID, idmap, mount, and writeback helpers;
 - Secret Service data model and D-Bus handler behavior;
+- private libsecret framing, strict canonical/semantic validation, exact
+  generation ACK/REJECT, fallback, terminal EOF/EAGAIN, and near-cap
+  backpressure;
 - real daemon/backend integration flows.
 
 Some integration tests skip when the host cannot supply the required Linux
@@ -90,12 +93,15 @@ capabilities. Focused `underwrap-ns` tests cover complete-plan zero-side-effect
 rejection, exact gate parsing, CLOEXEC/opposite-end ownership, returned-exec
 failure reporting, helper/target fd non-retention, parent death before/after
 arming and after credential-clear rearming, inherited SIGCHLD restoration,
-exact nonblocking target-status framing, wait failure, and the real gate ×
-status × relay dispatch seam. The gate and status channels remain observable
-lifecycle evidence, not proof of exec. The VM test independently covers the
-deployed privileged chain, relay/PID-2 topology, supervisor/relay termination,
-complete namespace teardown, status/writeback preservation, and descriptor and
-capability posture.
+exact nonblocking target-status framing, wait failure, the real gate × status ×
+relay dispatch seam, and libsecret publication framing/selection. The gate,
+status, and publication channels are independent evidence; none authorizes a
+lifecycle by itself. The VM independently covers the deployed privileged chain,
+relay/PID-2 topology, supervisor/relay termination, complete namespace teardown,
+status/writeback preservation, old same-UID pathname irrelevance, legitimate
+mutation persistence, near-cap publication without a backend-durability claim,
+host-only receiver/secretsd-only publisher ownership, and plaintext/exact-base64
+log hygiene.
 Daemon transport tests cover absolute HTTPS URL admission, base-path preservation,
 and HTTPS-to-HTTP redirect rejection through the production client. Applied
 root-policy unit tests record that the production client disables bundled

@@ -60,7 +60,7 @@ fn client_named_collection_survives_checkout_roundtrip() {
         )
         .unwrap();
 
-    // Dump to a section (state file / teardown blob) and re-load it.
+    // Publish to a section and re-load it in a later invocation.
     let section = section_from_store(&store);
     let reloaded = store_from_section(&section);
 
@@ -94,7 +94,7 @@ fn reload_then_create_item_does_not_overwrite_existing() {
         )
         .unwrap();
 
-    // Invocation B: fresh secretsd reloads A's persisted state...
+    // Invocation B: fresh secretsd reloads A's backend-returned state...
     let section = section_from_store(&store_a);
     let mut store_b = store_from_section(&section);
     // ...and writes a different item (different attributes → no replace).

@@ -1,12 +1,11 @@
 use super::*;
-use crate::dbus_service::test_support::service_with_state;
-use underwrap_protocol::resource_blob::LibsecretSection;
+use crate::dbus_service::test_support::service_with_publisher;
 
 #[tokio::test]
 async fn read_and_set_alias_roundtrip() {
     let mut store = SecretStore::new_default();
     let work_id = store.create_collection("Work", None);
-    let (service, store, _tempdir) = service_with_state(store);
+    let (service, store, publisher, published, responder) = service_with_publisher(store);
 
     let path = service.read_alias("default").await.unwrap();
     assert_eq!(path.as_str(), format!("{BASE_PATH}/collection/default"));
@@ -21,10 +20,12 @@ async fn read_and_set_alias_roundtrip() {
     );
     assert_eq!(store.read().await.get_alias("work"), Some(work_id.as_str()));
 
-    // The state file mirrors the in-memory store.
-    let bytes = std::fs::read(&*service.state_path).unwrap();
-    let section = LibsecretSection::from_canonical_bytes(&bytes).unwrap();
+    let section = published.lock().unwrap().last().unwrap().clone();
     assert_eq!(section.aliases.get("work"), Some(&work_id));
+
+    drop(service);
+    drop(publisher);
+    responder.join().unwrap();
 }
 
 // Mirrors the order the `create_collection` D-Bus handler uses: validate
@@ -107,7 +108,7 @@ async fn search_items_and_get_secrets_use_in_memory_values() {
         )
         .unwrap();
 
-    let (service, _, _tempdir) = service_with_state(store);
+    let (service, _, publisher, _published, responder) = service_with_publisher(store);
 
     let (unlocked, locked) = service.search_items(attributes).await.unwrap();
     assert!(locked.is_empty());
@@ -131,4 +132,8 @@ async fn search_items_and_get_secrets_use_in_memory_values() {
         .unwrap();
     assert_eq!(secret.value, b"in-memory-secret");
     assert_eq!(secret.content_type, "text/plain");
+
+    drop(service);
+    drop(publisher);
+    responder.join().unwrap();
 }

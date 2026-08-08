@@ -26,17 +26,28 @@ For a libsecret-enabled wrapper, `underwrap-ns`:
 1. authenticates fixed fd 20 against the selected instance daemon's
    creation-time Unix peer credentials, then checks out the resource;
 2. extracts the resource's libsecret section;
-3. creates a private bus tmpfs and starts dbus-daemon;
-4. passes the initial canonical section to `underwrap-secretsd` through a
+3. creates a CLOEXEC private publication socketpair before the namespace fork;
+4. creates the private bus tmpfs and starts dbus-daemon;
+5. passes the initial canonical section to `underwrap-secretsd` through a
    one-shot pipe;
-5. points the target at the private bus with `DBUS_SESSION_BUS_ADDRESS`;
-6. waits for the target;
-7. reads secretsd's canonical tmpfs state file;
-8. sends UsageSignal or Checkin over fd 20.
+6. validates and ACKs generation 0 before secretsd readiness and target exec;
+7. points the target at the private bus with `DBUS_SESSION_BUS_ADDRESS`;
+8. drains and validates each mutation generation while supervising the target;
+9. after valid gate/status/reap evidence and terminal publisher EOF, composes
+   the latest fully ACK-written generation and sends UsageSignal or Checkin over
+   fd 20.
 
-secretsd has no direct daemon channel. It keeps the keyring in memory and
-atomically updates the tmpfs state file before acknowledging each successful
-D-Bus mutation. The target never inherits fd 20.
+secretsd has no direct daemon channel. It keeps the keyring in memory and waits
+for exact host ACK/REJECT before returning each D-Bus mutation. The host accepts
+only bounded exact-canonical state with valid identifiers, aliases/references,
+and timestamps. The target never inherits fd 20 or the publication socket.
+
+ACK means the host retained one invocation generation; it does not prove D-Bus
+response delivery or backend commitment. If secretsd dies after ACK but before
+the caller sees success, that generation remains eligible after terminal EOF.
+A retained publisher endpoint fails closed with no fallback. Private publication
+accepts at most 1 MiB, but the generic resource channel still limits complete
+Checkin frames to 64 KiB.
 
 ## Split authentication and action wrappers
 
@@ -93,8 +104,8 @@ method. Never place a token directly on the command line.
 The target-facing Secret Service remains writable so normal keyring clients do
 not fail during local mutation. When the permission is non-writable:
 
-- secretsd records mutations in invocation-local tmpfs state;
-- `underwrap-ns` discards the changed state at teardown;
+- secretsd publishes mutations into invocation-local host-retained state;
+- `underwrap-ns` discards the changed generation at teardown;
 - one structured writeback-rejected event is emitted;
 - one stderr warning is emitted unless the caller set
   `UNDERWRAP_SUPPRESS_READONLY_WARNING=1`.

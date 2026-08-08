@@ -217,18 +217,20 @@ does not raise it into the ambient set.
 
 The host namespace supervisor observes the gate through EOF and then reaps PID
 1. Finalization requires exact `Armed` followed by EOF without `Failed`, one
-valid direct-target status frame followed by EOF, and a clean relay reap;
-malformed, truncated, retained-writer, early-closed, failed-I/O, or failed-wait
-states suppress staging collection and both terminal verbs. The gate records an authorized lifecycle,
+valid direct-target status frame followed by EOF, and a clean relay reap.
+Libsecret additionally requires terminal publication EOF and an ACK-written
+validated generation; a retained publication endpoint suppresses collection and
+both terminal verbs. Malformed, truncated, retained-writer, early-closed,
+failed-I/O, or failed-wait lifecycle states also suppress dispatch. The gate records an authorized lifecycle,
 not proof that exec succeeded. A normal successful exec may finalize changes
 made by the target. Only the false-positive case where the child dies after
 `Armed` but before either CLOEXEC exec closure or complete `Failed` observation
 is indistinguishable from closure; because no target ran, that narrow ambiguity
-can at most finalize the fully materialized unchanged state. Env-only
-supervisors drop capabilities before waiting. Files/libsecret supervisors
-retain `CAP_SYS_ADMIN`, `CAP_SETUID`, and `CAP_SETGID` through target execution
-and the post-run fsuid read window, then drop them; the implementation does not
-selectively drop `CAP_SYS_ADMIN` before the wait. After an authorized lifecycle,
+can at most finalize the fully materialized unchanged state. Supervisors without
+files projection drop capabilities before waiting. Files supervisors retain
+`CAP_SYS_ADMIN`, `CAP_SETUID`, and `CAP_SETGID` through target execution and the
+post-run files-only fsuid read window, then drop them; the implementation does
+not selectively drop `CAP_SYS_ADMIN` before the wait. After an authorized lifecycle,
 finalization remains diagnostic-only and precedes exact propagation of target
 exit codes and signals. Supervisor termination cascades inward with `SIGKILL`;
 there is no graceful forwarding. Cancellation established before terminal
@@ -301,28 +303,43 @@ Libsecret mode runs a private `dbus-daemon` and `underwrap-secretsd` beside the
 target:
 
 ```text
-host underwrap-ns (owns fd 20 to underwrapd)
-  └── namespace PID-1 relay (closes fd 20 before the next fork)
-      └── PID-2 setup process → configured target
-          ├── dbus-daemon
-          └── underwrap-secretsd
-                ├── one-shot initial section from PID-2 setup
-                └── canonical state file on namespace-private tmpfs
+host underwrap-ns
+  ├── fd 20 to underwrapd
+  └── sole publication receiver ◄══════════════════════════════╗
+      namespace PID-1 relay                                    ║
+        └── PID-2 setup process → configured target            ║
+            ├── dbus-daemon                                    ║
+            └── underwrap-secretsd ── sole publisher ═════════╝
+                  └── one-shot initial section from PID-2 setup
 ```
 
-The private helpers start as PID 2's descendants and are adopted by namespace
-PID 1 if PID 2 exits first; they are not necessarily direct relay children.
+The CLOEXEC stream socketpair is created before the PID namespace fork. The
+host closes its publisher copy. PID 1 closes its copy immediately after forking
+PID 2, PID 2 closes its copy immediately after forking secretsd, and dbus-daemon
+explicitly closes it. Only the secretsd exec child temporarily clears CLOEXEC
+for that exact endpoint; secretsd restores CLOEXEC immediately. The target and
+other helpers retain neither endpoint.
 
-`underwrap-secretsd` has no daemon socket. `underwrap-ns` sends the initial
-libsecret section through a one-shot pipe. secretsd keeps the keyring in memory
-and atomically rewrites a tmpfs state file before acknowledging each D-Bus
-mutation. PID 1 reaps the direct target, frames its status, and exits; the kernel
-then terminates every remaining namespace process before the host supervisor
-reads the state file and performs final writeback over fd 20.
+`underwrap-secretsd` has no daemon socket. PID 2 sends the initial section
+through a one-shot pipe. secretsd publishes generation 0 and waits for complete
+host ACK before readiness; every later mutation publishes the next complete
+canonical generation and waits for exact ACK or REJECT while retaining the
+store write lock. The host validates canonical bytes, identifiers, aliases,
+references, timestamps, and the inclusive 1-MiB bound before ACK.
 
-The relay closes fd 20 before forking PID 2, so the target, dbus-daemon, and
-secretsd never inherit that resource-channel socket. See [secretsd
-security](secretsd-security.md) for the target-input boundary.
+After the unchanged blocking gate observation, the host drains publication while
+polling relay `waitpid(WNOHANG)`. PID 1 independently polls liveness and reaps
+PID 2. Following clean reap, terminal EOF permits the latest validated generation
+whose ACK was completely written; final `EAGAIN` proves endpoint retention and
+fails closed without fallback. ACK is invocation-local retention, not D-Bus
+response delivery or backend durability. Generic resource Checkin remains
+limited to 64-KiB frames.
+
+The private helpers start as PID 2 descendants and can be adopted by namespace
+PID 1. PID 1 exit terminates every helper and descendant. The relay closes fd 20
+before forking PID 2, so target, dbus-daemon, and secretsd never inherit that
+resource channel. See [secretsd security](secretsd-security.md) for validation
+and failure semantics.
 
 ## Backend
 

@@ -1418,11 +1418,10 @@ def local_target_uid_files_libsecret():
     # ============================================================
     # LOCAL INSTANCE: files + libsecret projection under mandatory target UID
     # ============================================================
-    # An isolated (dedicated-uid X) target can still project a files slot and a
-    # libsecret slot. The X-owned staging / private bus is created by the child
-    # AFTER the switch to X (so the uid-X target can read/write it), and the
-    # supervisor reads it back through the single setfsuid(X) window. This is the
-    # required cross-UID projection path.
+    # An isolated (dedicated-uid X) target can still project files and libsecret.
+    # Files staging is created after the switch to X and collected through the
+    # bounded files-only setfsuid(X) window. Libsecret uses host-validated socket
+    # publication; the X-owned private bus tmpfs is never a writeback source.
 
     # --- Files slot under mandatory target UID ---
     grant_local_unlocked("test-iso-dir")
@@ -2980,12 +2979,55 @@ def f007_supervisor_lifecycle():
                 f"for f in /proc/{pid}/fd/*; do readlink $f 2>/dev/null || true; done"
             ).splitlines()
             internal_pipes.update(link for link in links if link.startswith("pipe:["))
-        helper_pids = [
-            identity["pid"]
+        helper_roles = {
+            role: identity["pid"]
             for role, identity in chain.items()
             if role.startswith("helper-")
-        ]
+        }
+        helper_pids = list(helper_roles.values())
         assert len(helper_pids) >= 2, helper_pids
+
+        secretsd_pids = [
+            pid for role, pid in helper_roles.items() if "underwrap-secre" in role
+        ]
+        assert len(secretsd_pids) == 1, helper_roles
+        secretsd_pid = secretsd_pids[0]
+        secretsd_argv = machine.succeed(
+            f"tr '\\0' '\\n' < /proc/{secretsd_pid}/cmdline"
+        ).splitlines()
+        publication_index = secretsd_argv.index("--publication-fd") + 1
+        publication_fd = secretsd_argv[publication_index]
+        publisher_socket = machine.succeed(
+            f"readlink /proc/{secretsd_pid}/fd/{publication_fd}"
+        ).strip()
+        assert publisher_socket.startswith("socket:["), publisher_socket
+
+        host_socket_fds = machine.succeed(
+            f"for f in /proc/{chain['host_ns']['pid']}/fd/*; do "
+            "l=$(readlink $f 2>/dev/null || true); "
+            "case $l in socket:*) echo ${f##*/}:$l;; esac; done"
+        ).splitlines()
+        host_sockets = dict(entry.split(":", 1) for entry in host_socket_fds)
+        assert host_sockets.get("20") == resource_socket, host_sockets
+        receiver_sockets = [link for fd, link in host_sockets.items() if fd != "20"]
+        assert len(receiver_sockets) == 1, host_sockets
+        receiver_socket = receiver_sockets[0]
+        assert receiver_socket != publisher_socket
+
+        for socket_link, expected_pid, label in (
+            (publisher_socket, secretsd_pid, "publisher"),
+            (receiver_socket, chain["host_ns"]["pid"], "receiver"),
+        ):
+            holders = machine.succeed(
+                "for p in /proc/[0-9]*; do for f in $p/fd/*; do "
+                f"[ \"$(readlink $f 2>/dev/null)\" = {shlex.quote(socket_link)} ] "
+                "&& echo ${p##*/}; done; done; true"
+            ).split()
+            assert holders == [expected_pid], (label, socket_link, holders)
+        machine.log(
+            "PASS: host alone owns the publication receiver and secretsd alone "
+            "owns the publisher; relay, target, dbus-daemon, and descendants retain neither"
+        )
         for pid in helper_pids:
             helper_fields = status_fields(pid)
             assert helper_fields["Uid"].split() == target_uid, (pid, helper_fields["Uid"])
@@ -3042,6 +3084,45 @@ def f007_supervisor_lifecycle():
     machine.succeed(su(f"/run/wrappers/bin/underwrap-local {wrapper} seed"))
     assert_one_terminal(cursor, "resource_checkin")
     baseline = admin_get_blob(ADMIN_LOCAL, "local", resource)
+
+    # The dedicated-UID target can still create the former predictable entry,
+    # but canonical, noncanonical, oversized, and semantically invalid bytes at
+    # that path are never an input to host selection.
+    for mode in (
+        "f008-old-canonical",
+        "f008-old-noncanonical",
+        "f008-old-semantic",
+        "f008-old-oversized",
+    ):
+        cursor = journal_cursor()
+        machine.succeed(su(f"/run/wrappers/bin/underwrap-local {wrapper} {mode}"))
+        assert admin_get_blob(ADMIN_LOCAL, "local", resource) == baseline, mode
+        assert_one_terminal(cursor, "resource_usage_signal")
+    machine.log(
+        "PASS: live same-UID writes to every old final-state path attack shape "
+        "are irrelevant to selected libsecret state"
+    )
+
+    # A legitimate generation near the private 1-MiB canonical cap must make
+    # publication/ACK progress through socket backpressure. The complete
+    # resource still exceeds generic 64-KiB Checkin framing, so this deliberately
+    # asserts target status and unchanged backend state, not backend durability.
+    cursor = journal_cursor()
+    program = (
+        "import subprocess;"
+        f"r=subprocess.run({['/run/wrappers/bin/underwrap-local', wrapper, 'f008-near-cap']!r});"
+        "print(r.returncode)"
+    )
+    near_cap_status = machine.succeed(
+        f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)}"
+    ).strip()
+    assert near_cap_status == "0", near_cap_status
+    assert admin_get_blob(ADMIN_LOCAL, "local", resource) == baseline
+    assert_no_terminal(cursor, "F-008 near-cap generic-channel limitation")
+    machine.log(
+        "PASS: near-cap libsecret publication receives its host ACK without "
+        "socket deadlock; no >64-KiB backend durability claim is made"
+    )
 
     cancellation_cases = [
         ("stage1-kill", 6211, "stage1", signal.SIGKILL),
@@ -4189,6 +4270,12 @@ def audit_and_no_secret_leaks():
     assert "libsecret_two_slot_value" not in logs, "two-slot secret leaked!"
     assert "iso_files_secret_val" not in logs, "isolated files secret leaked!"
     assert "iso_libsecret_val" not in logs, "isolated libsecret secret leaked!"
+    f008_near_cap_prefix = b"f008-cap-secret-xx"
+    f008_near_cap_value = f008_near_cap_prefix + b"x" * 3982
+    assert f008_near_cap_prefix.decode() not in logs, "F008 near-cap fixture leaked in plaintext!"
+    assert base64.b64encode(f008_near_cap_value).decode() not in logs, (
+        "F008 complete near-cap item leaked in exact base64 form!"
+    )
 
     f007_modes = (
         "seed",

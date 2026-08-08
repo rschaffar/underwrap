@@ -18,9 +18,10 @@
 //! SIGKILL remains defense in depth. PID 1 reaps its direct child, frames that
 //! status, and exits so the kernel tears down helpers and descendants. The host
 //! authorizes collection only after exact gate acceptance, a clean relay reap,
-//! and one valid status frame followed by EOF. These channels record an
-//! authorized lifecycle, not proof of exec; the narrow pre-exec ambiguity
-//! remains unchanged.
+//! and one valid status frame followed by EOF. Libsecret also requires terminal
+//! publisher EOF and a strictly validated ACK-written generation. These
+//! channels record an authorized lifecycle, not proof of exec; the narrow
+//! pre-exec ambiguity remains unchanged.
 
 #[cfg(test)]
 #[path = "main/tests.rs"]
@@ -36,6 +37,7 @@ mod idmap;
 mod journal;
 mod libsecret;
 mod mounts;
+mod publication;
 mod resource_channel;
 mod supervision;
 mod target_status;
@@ -57,6 +59,7 @@ use mounts::{
     make_mount_namespace_private, remount_proc, setup_directory_staging_tmpfs,
     setup_mount_namespace,
 };
+use publication::{PublicationPair, Receiver};
 use resource_channel::ResourceChannel;
 use supervision::{LivenessWriter, SigchldState};
 use target_status::{TargetStatus, TargetStatusReader, TargetStatusWriter};
@@ -65,8 +68,6 @@ use underwrap_protocol::resource_blob::ResourceBlob;
 use writeback::{WritebackInput, WritebackOutcome};
 
 pub(crate) const DIRECTORY_STAGING_ROOT: &str = "/tmp/.underwrap-ns-directories";
-const LIBSECRET_BUS_DIR: &str = "/tmp/.underwrap-ns-bus";
-const LIBSECRET_STATE_FILENAME: &str = "libsecret-state.jcs";
 
 struct TargetIdentity {
     uid: libc::uid_t,
@@ -188,11 +189,8 @@ fn run() -> Result<(), String> {
             )
         })?;
     let directory_plan = plan_files_projection(&resource_channel, resource_blob)?;
-
-    let libsecret_state_path = if libsecret_enabled {
-        Some(PathBuf::from(format!(
-            "{LIBSECRET_BUS_DIR}/{LIBSECRET_STATE_FILENAME}"
-        )))
+    let publication = if libsecret_enabled {
+        Some(PublicationPair::new()?)
     } else {
         None
     };
@@ -223,6 +221,10 @@ fn run() -> Result<(), String> {
 
     let pid = fork_into_namespace()?;
     if pid == 0 {
+        let publisher = publication.map(|pair| {
+            drop(pair.host);
+            pair.publisher
+        });
         run_relay(
             exec_gate.into_child(),
             namespace_liveness.into_relay(),
@@ -235,12 +237,16 @@ fn run() -> Result<(), String> {
             &xdg_runtime_dir,
             &resource_channel,
             libsecret_enabled,
-            libsecret_state_path.as_deref(),
+            publisher,
             isolation,
             has_files,
             &directory_plan,
         )
     } else {
+        let receiver = publication.map(|pair| {
+            drop(pair.publisher);
+            pair.host
+        });
         run_parent(
             pid,
             exec_gate.into_parent(),
@@ -250,7 +256,7 @@ fn run() -> Result<(), String> {
             &resource_channel,
             has_files,
             isolation,
-            libsecret_state_path.as_deref(),
+            receiver,
         )
     }
 }
@@ -390,7 +396,7 @@ fn run_relay(
     xdg_runtime_dir: &str,
     resource_channel: &ResourceChannel,
     libsecret_enabled: bool,
-    libsecret_state_path: Option<&Path>,
+    mut publisher: Option<std::os::unix::net::UnixStream>,
     isolation: target_uid::Isolation,
     has_files: bool,
     directory_plan: &DirectoryProjectionPlan,
@@ -513,7 +519,7 @@ fn run_relay(
             target_env,
             &helper_env,
             libsecret_bytes.as_deref(),
-            libsecret_state_path,
+            publisher.take(),
             libsecret_enabled,
         ) {
             if let Err(gate_error) = gate_writer.send_failed() {
@@ -525,8 +531,9 @@ fn run_relay(
         unsafe { libc::_exit(1) }
     }
 
-    // PID 1 owns only the exact status writer while it waits for and reaps
-    // direct PID 2. Closing its gate copy makes EOF reflect PID 2 alone.
+    // PID 1 must not retain publication authority after the PID-2 setup branch
+    // exists. Closing its gate copy makes EOF reflect PID 2 alone.
+    drop(publisher);
     drop(gate_writer);
     let raw_status = match wait_for_target_with_liveness(target_pid, &liveness_reader) {
         Ok(status) => status,
@@ -561,7 +568,7 @@ fn run_target(
     target_env: std::collections::HashMap<String, String>,
     helper_env: &std::collections::HashMap<String, String>,
     libsecret_bytes: Option<&[u8]>,
-    libsecret_state_path: Option<&Path>,
+    publisher: Option<std::os::unix::net::UnixStream>,
     libsecret_enabled: bool,
 ) -> Result<(), String> {
     target_sigchld.restore()?;
@@ -569,8 +576,8 @@ fn run_target(
         .map_err(|e| format!("severing target controlling tty: {e}"))?;
 
     if libsecret_enabled {
-        let state_path = libsecret_state_path
-            .ok_or_else(|| "libsecret enabled but no state path provided".to_string())?;
+        let publisher = publisher
+            .ok_or_else(|| "libsecret enabled but no publisher endpoint provided".to_string())?;
         let section_bytes = libsecret_bytes
             .ok_or_else(|| "libsecret enabled but no initial section provided".to_string())?;
         setup_libsecret(
@@ -578,8 +585,10 @@ fn run_target(
             gate_writer.raw_fd(),
             helper_env,
             section_bytes,
-            state_path,
+            publisher,
         )?;
+    } else {
+        drop(publisher);
     }
     for (key, value) in target_env {
         cmd.env(key, value);
@@ -634,18 +643,35 @@ fn run_parent(
     resource_channel: &ResourceChannel,
     has_files: bool,
     isolation: target_uid::Isolation,
-    libsecret_state_path: Option<&Path>,
+    mut publication_receiver: Option<Receiver>,
 ) -> Result<(), String> {
     debug_assert!(namespace_liveness.raw_fd() >= 0);
-    let needs_fsuid_window = has_files || resource_channel.libsecret;
+    let needs_fsuid_window = has_files;
     if !needs_fsuid_window {
         drop_caps().map_err(|e| format!("parent: dropping capabilities: {e}"))?;
+    }
+
+    let publication_enabled = publication_receiver.is_some();
+
+    // Generation zero is synchronously decided before the unchanged blocking
+    // gate parser. secretsd cannot report ready, and therefore the target cannot
+    // publish a mutation, until ACK(0) has been completely written.
+    let initial_publication = if let Some(receiver) = publication_receiver.as_mut() {
+        receiver.receive_initial()
+    } else {
+        Ok(())
+    };
+    if let Err(error) = &initial_publication {
+        eprintln!("underwrap-ns: initial libsecret publication failed: {error}");
     }
 
     // Gate EOF is observed first. The sole inner writer stays live until the
     // relay is reaped, so any host-supervisor death before then kills PID 1.
     let authorization = gate_reader.observe();
-    let relay_status = match wait_for_child(pid) {
+    let relay_status = match match publication_receiver.as_mut() {
+        Some(receiver) => publication::wait_for_relay_with_publication(pid, receiver),
+        None => wait_for_child(pid),
+    } {
         Ok(status) => status,
         Err(error) => {
             drop(namespace_liveness);
@@ -676,39 +702,59 @@ fn run_parent(
         }
     };
 
+    // After clean reap, one final nonblocking drain distinguishes terminal EOF
+    // from a retained publisher endpoint. WouldBlock fails closed immediately.
+    let terminal_publication = if let Some(receiver) = publication_receiver.as_mut() {
+        match receiver.drain_available() {
+            Ok(would_block) => receiver.terminal_generation(would_block).map(Some),
+            Err(error) => Err(error),
+        }
+    } else {
+        Ok(None)
+    };
+    if let Err(error) = &terminal_publication {
+        eprintln!("underwrap-ns: libsecret terminal publication invalid: {error}");
+    }
+    let selected_generation = terminal_publication.as_ref().ok().and_then(Option::as_ref);
+    let _selected_publication_generation =
+        selected_generation.map(|generation| generation.generation);
+
+    let selected_libsecret = selected_generation.map(|generation| &generation.section);
     let writeback_input = WritebackInput {
         channel: resource_channel,
         directory_layout,
-        libsecret_state_path: if resource_channel.libsecret {
-            libsecret_state_path
-        } else {
-            None
-        },
+        libsecret_generation: selected_libsecret,
     };
 
-    // Real collection and terminal dispatch require all three independent
-    // facts: exact pre-exec gate acceptance, a valid direct-target frame, and a
-    // cleanly reaped relay. Gate suppression still retains the framed status.
-    let writeback_result = if authorization != GateAuthorization::Accepted {
-        dispatch_after_gate(authorization, &[writeback_input])
+    // Dispatch requires the F-006/F-007 conjunction plus valid terminal
+    // publication for libsecret. Suppression never replaces exact target status.
+    let publication_authorized =
+        !publication_enabled || (initial_publication.is_ok() && selected_generation.is_some());
+    let effective_authorization = if publication_authorized {
+        authorization
+    } else {
+        GateAuthorization::Suppressed(exec_gate::GateFailure::Failed)
+    };
+    let writeback_result = if effective_authorization != GateAuthorization::Accepted {
+        dispatch_after_gate(effective_authorization, &[writeback_input])
     } else if needs_fsuid_window {
         target_uid::with_target_fsuid(isolation, || {
-            dispatch_after_gate(authorization, &[writeback_input])
+            dispatch_after_gate(effective_authorization, &[writeback_input])
         })
         .and_then(|inner| inner)
     } else {
-        dispatch_after_gate(authorization, &[writeback_input])
+        dispatch_after_gate(effective_authorization, &[writeback_input])
     };
 
     match writeback_result {
         Ok(Some(outcomes)) => report_outcomes(&outcomes),
         Ok(None) => {
             if !matches!(
-                authorization,
+                effective_authorization,
                 GateAuthorization::Suppressed(exec_gate::GateFailure::Failed)
             ) {
                 eprintln!(
-                    "underwrap-ns: end-of-run dispatch suppressed by invalid exec gate state: {authorization:?}"
+                    "underwrap-ns: end-of-run dispatch suppressed by invalid exec gate state: {effective_authorization:?}"
                 );
             }
         }

@@ -6,12 +6,13 @@
 //! section at Checkout time). ns writes those bytes into a one-shot
 //! pipe and passes the read end as `--init-fd` to secretsd; secretsd
 //! holds the section entirely in memory and persists each D-Bus
-//! mutation atomically to `--state-path` so ns can read the final
-//! state after the namespace dies.
+//! mutation on the private publication capability and waits for the host's
+//! exact generation-matched response.
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::process::Command;
 
 pub(crate) fn require_absolute_env_path(var_name: &str) -> Result<String, String> {
@@ -36,12 +37,46 @@ fn apply_helper_env(cmd: &mut Command, helper_env: &HashMap<String, String>) {
     }
 }
 
+fn cloexec_pipe(role: &str) -> Result<(OwnedFd, OwnedFd), String> {
+    let mut fds = [-1; 2];
+    // SAFETY: fds points to two writable integers; on success pipe2 initializes
+    // both descriptors with CLOEXEC atomically and ownership transfers below.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(format!(
+            "pipe2(O_CLOEXEC) for {role} failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: successful pipe2 returned two fresh descriptors, each adopted
+    // exactly once by OwnedFd for branch-local RAII.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+fn set_cloexec(fd: RawFd, cloexec: bool) -> Result<(), String> {
+    // SAFETY: F_GETFD reads flags from the live descriptor named by fd.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let updated = if cloexec {
+        flags | libc::FD_CLOEXEC
+    } else {
+        flags & !libc::FD_CLOEXEC
+    };
+    // SAFETY: F_SETFD changes only descriptor flags; `updated` preserves every
+    // bit except the deliberately selected CLOEXEC state.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, updated) } < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn setup_libsecret(
     cmd: &mut Command,
     exec_gate_fd: i32,
     helper_env: &HashMap<String, String>,
     section_bytes: &[u8],
-    state_path: &Path,
+    publisher: UnixStream,
 ) -> Result<(), String> {
     let dbus_daemon = require_absolute_env_path("UNDERWRAP_DBUS_DAEMON")?;
     let secretsd = require_absolute_env_path("UNDERWRAP_SECRETSD")?;
@@ -50,37 +85,10 @@ pub(crate) fn setup_libsecret(
     let bus_socket = format!("{bus_dir}/bus");
     let bus_address = format!("unix:path={bus_socket}");
 
-    let mut ready_fds = [0i32; 2];
-    let ret = unsafe { libc::pipe(ready_fds.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(format!(
-            "pipe() for readiness failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let (ready_read, ready_write) = (ready_fds[0], ready_fds[1]);
-
-    let mut dbus_addr_fds = [0i32; 2];
-    let ret = unsafe { libc::pipe(dbus_addr_fds.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(format!(
-            "pipe() for dbus address failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let (dbus_addr_read, dbus_addr_write) = (dbus_addr_fds[0], dbus_addr_fds[1]);
-
-    // One-shot init pipe carrying the libsecret section bytes. Writer
-    // closes after writing so secretsd sees EOF on the read end.
-    let mut init_fds = [0i32; 2];
-    let ret = unsafe { libc::pipe(init_fds.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(format!(
-            "pipe() for libsecret init failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let (init_read, init_write) = (init_fds[0], init_fds[1]);
+    let (ready_read, ready_write) = cloexec_pipe("readiness")?;
+    let (dbus_addr_read, dbus_addr_write) = cloexec_pipe("dbus address")?;
+    // One-shot init pipe carrying the libsecret section bytes.
+    let (init_read, init_write) = cloexec_pipe("libsecret init")?;
 
     let dbus_pid = unsafe { libc::fork() };
     if dbus_pid < 0 {
@@ -92,11 +100,16 @@ pub(crate) fn setup_libsecret(
     if dbus_pid == 0 {
         unsafe {
             libc::close(exec_gate_fd);
-            libc::close(ready_read);
-            libc::close(ready_write);
-            libc::close(dbus_addr_read);
-            libc::close(init_read);
-            libc::close(init_write);
+            libc::close(ready_read.as_raw_fd());
+            libc::close(ready_write.as_raw_fd());
+            libc::close(dbus_addr_read.as_raw_fd());
+            libc::close(init_read.as_raw_fd());
+            libc::close(init_write.as_raw_fd());
+            libc::close(publisher.as_raw_fd());
+        }
+        if let Err(error) = set_cloexec(dbus_addr_write.as_raw_fd(), false) {
+            eprintln!("underwrap-ns: preparing dbus address fd: {error}");
+            std::process::exit(1);
         }
         use std::os::unix::process::CommandExt;
         let mut dbus_cmd = Command::new(&dbus_daemon);
@@ -105,7 +118,7 @@ pub(crate) fn setup_libsecret(
             .arg(format!("--address={bus_address}"))
             .arg("--nofork")
             .arg("--nopidfile")
-            .arg(format!("--print-address={dbus_addr_write}"))
+            .arg(format!("--print-address={}", dbus_addr_write.as_raw_fd()))
             .stderr({
                 let log = std::fs::File::create(format!("{bus_dir}/dbus-daemon.log"))
                     .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
@@ -117,12 +130,11 @@ pub(crate) fn setup_libsecret(
         std::process::exit(1);
     }
 
-    unsafe { libc::close(dbus_addr_write) };
+    drop(dbus_addr_write);
 
     let actual_bus_address = {
         use std::io::BufRead;
-        use std::os::unix::io::FromRawFd;
-        let file = unsafe { std::fs::File::from_raw_fd(dbus_addr_read) };
+        let file = std::fs::File::from(dbus_addr_read);
         let mut reader = std::io::BufReader::new(file);
         let mut addr = String::new();
         reader
@@ -134,11 +146,6 @@ pub(crate) fn setup_libsecret(
         return Err("dbus-daemon did not print its address (crashed?)".to_string());
     }
 
-    let state_path_str = state_path
-        .to_str()
-        .ok_or_else(|| format!("--state-path {} is not valid UTF-8", state_path.display()))?
-        .to_string();
-
     let secretsd_pid = unsafe { libc::fork() };
     if secretsd_pid < 0 {
         return Err(format!(
@@ -149,8 +156,18 @@ pub(crate) fn setup_libsecret(
     if secretsd_pid == 0 {
         unsafe {
             libc::close(exec_gate_fd);
-            libc::close(ready_read);
-            libc::close(init_write);
+            libc::close(ready_read.as_raw_fd());
+            libc::close(init_write.as_raw_fd());
+        }
+        for fd in [
+            init_read.as_raw_fd(),
+            ready_write.as_raw_fd(),
+            publisher.as_raw_fd(),
+        ] {
+            if let Err(error) = set_cloexec(fd, false) {
+                eprintln!("underwrap-ns: preparing secretsd inherited fd {fd}: {error}");
+                std::process::exit(1);
+            }
         }
         use std::os::unix::process::CommandExt;
         let mut secretsd_cmd = Command::new(&secretsd);
@@ -158,11 +175,11 @@ pub(crate) fn setup_libsecret(
             .arg("--bus-address")
             .arg(&actual_bus_address)
             .arg("--init-fd")
-            .arg(init_read.to_string())
-            .arg("--state-path")
-            .arg(&state_path_str)
+            .arg(init_read.as_raw_fd().to_string())
+            .arg("--publication-fd")
+            .arg(publisher.as_raw_fd().to_string())
             .arg("--ready-fd")
-            .arg(ready_write.to_string())
+            .arg(ready_write.as_raw_fd().to_string())
             .stderr({
                 let log = std::fs::File::create(format!("{bus_dir}/secretsd.log"))
                     .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
@@ -174,14 +191,13 @@ pub(crate) fn setup_libsecret(
         std::process::exit(1);
     }
 
-    // Parent (ns): close fds the child owns and feed the init bytes.
-    unsafe {
-        libc::close(init_read);
-        libc::close(ready_write);
-    }
+    // PID-2 setup retains no publisher after the secretsd fork, before waiting
+    // for readiness or exposing any helper to the target.
+    drop(publisher);
+    drop(init_read);
+    drop(ready_write);
     {
-        use std::os::unix::io::FromRawFd;
-        let mut writer = unsafe { std::fs::File::from_raw_fd(init_write) };
+        let mut writer = std::fs::File::from(init_write);
         writer
             .write_all(section_bytes)
             .map_err(|e| format!("writing libsecret section to init pipe: {e}"))?;
@@ -190,7 +206,13 @@ pub(crate) fn setup_libsecret(
 
     let mut ready_buf = [0u8; 1];
     loop {
-        let n = unsafe { libc::read(ready_read, ready_buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        let n = unsafe {
+            libc::read(
+                ready_read.as_raw_fd(),
+                ready_buf.as_mut_ptr() as *mut libc::c_void,
+                1,
+            )
+        };
         if n > 0 {
             break;
         }
@@ -203,7 +225,7 @@ pub(crate) fn setup_libsecret(
         }
         return Err(format!("reading secretsd readiness: {err}"));
     }
-    unsafe { libc::close(ready_read) };
+    drop(ready_read);
 
     cmd.env("DBUS_SESSION_BUS_ADDRESS", &actual_bus_address);
 

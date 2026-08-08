@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -8,7 +7,7 @@ use zbus::{fdo, interface, zvariant::ObjectPath};
 use underwrap_secretsd_store::SecretStore;
 
 use crate::metadata_trace_enabled;
-use crate::state;
+use crate::publication::{self, SharedPublisher};
 
 use super::{Secret, empty_path};
 
@@ -16,7 +15,7 @@ pub struct ItemInterface {
     id: String,
     collection_id: String,
     store: Arc<RwLock<SecretStore>>,
-    state_path: Arc<PathBuf>,
+    publisher: SharedPublisher,
 }
 
 impl ItemInterface {
@@ -24,13 +23,13 @@ impl ItemInterface {
         id: String,
         collection_id: String,
         store: Arc<RwLock<SecretStore>>,
-        state_path: Arc<PathBuf>,
+        publisher: SharedPublisher,
     ) -> Self {
         Self {
             id,
             collection_id,
             store,
-            state_path,
+            publisher,
         }
     }
 }
@@ -40,7 +39,7 @@ impl ItemInterface {
     async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
         let mut store = self.store.write().await;
         store.delete_item(&self.collection_id, &self.id);
-        state::dump_or_log(&store, &self.state_path)?;
+        publication::publish_store(&self.publisher, &store)?;
         Ok(empty_path())
     }
 
@@ -88,7 +87,7 @@ impl ItemInterface {
             item.content_type = secret.content_type.clone();
             item.modified = now;
         }
-        state::dump_or_log(&store, &self.state_path)?;
+        publication::publish_store(&self.publisher, &store)?;
         if metadata_trace_enabled() {
             tracing::info!(
                 collection = %self.collection_id,
@@ -128,7 +127,7 @@ impl ItemInterface {
     async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_attributes(&self.collection_id, &self.id, attributes.clone());
-        state::dump_or_log(&store, &self.state_path)?;
+        publication::publish_store(&self.publisher, &store)?;
         if metadata_trace_enabled() {
             tracing::info!(
                 collection = %self.collection_id,
@@ -153,7 +152,7 @@ impl ItemInterface {
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
         store.set_label(&self.collection_id, &self.id, &label);
-        state::dump_or_log(&store, &self.state_path)?;
+        publication::publish_store(&self.publisher, &store)?;
         Ok(())
     }
 

@@ -692,10 +692,10 @@ in {
 
     # Shared underwrap-ns (one world-executable capability wrapper for all
     # instances). CAP_SETUID and CAP_SETGID support the single-entry idmap, the
-    # dedicated target-ID switch, and the host supervisor's later writeback
-    # fsuid window. For files/libsecret, the host supervisor retains the setup
-    # capabilities through target execution for that post-run window; env-only
-    # execution drops them before waiting. The namespace relay uses them only
+    # dedicated target-ID switch, and the host supervisor's files-only
+    # writeback fsuid window. A files supervisor retains the setup capabilities
+    # through target execution for that post-run window; env-only and
+    # libsecret-only execution drop them before waiting. The namespace relay uses them only
     # for privileged setup, then clears its active capability sets before
     # forking target PID 2.
     # Because direct execution is possible, underwrap-ns authenticates fixed fd
