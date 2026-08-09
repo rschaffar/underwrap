@@ -32,7 +32,7 @@ pub(crate) fn read_resource_entry(
         return store.read(secret_id);
     };
     let blob = load_resource_blob(store, parsed.resource_id)?;
-    let entries = expand_blob_to_entries(parsed.resource_id, &blob)?;
+    let entries = expand_blob_to_entries(parsed.resource_id, &blob);
     Ok(entries.get(secret_id).cloned())
 }
 
@@ -107,7 +107,7 @@ pub(crate) fn list_secret_entries(
     let mut entries: Vec<AdminSecretEntry> = Vec::new();
     for resource_id in &resources {
         let blob = load_resource_blob(store, resource_id)?;
-        let blob_entries = expand_blob_to_entries(resource_id, &blob)?;
+        let blob_entries = expand_blob_to_entries(resource_id, &blob);
         for entry_key in blob_entries.into_keys() {
             // `expand_blob_to_entries` only produces env/files entries,
             // so the `KvSecretSlot` conversion below cannot fail. Any
@@ -143,7 +143,7 @@ pub(crate) fn resource_blob_entries(
     resource_name: &str,
 ) -> Result<Vec<String>> {
     let blob = load_resource_blob(store, resource_name)?;
-    let entries = expand_blob_to_entries(resource_name, &blob)?;
+    let entries = expand_blob_to_entries(resource_name, &blob);
     let mut ids: Vec<String> = entries.into_keys().collect();
     ids.sort();
     Ok(ids)

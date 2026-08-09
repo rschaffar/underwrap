@@ -79,7 +79,7 @@ pub fn delete_resource_blob(store: &dyn StorageBackend, resource_id: &str) -> Re
 pub fn expand_blob_to_entries(
     resource_id: &str,
     blob: &ResourceBlob,
-) -> Result<HashMap<String, SecretBytes>> {
+) -> HashMap<String, SecretBytes> {
     let mut out = HashMap::new();
     for (name, value) in &blob.env {
         out.insert(format!("{resource_id}/env/{name}"), value.clone());
@@ -87,7 +87,7 @@ pub fn expand_blob_to_entries(
     for (path, value) in &blob.files {
         out.insert(format!("{resource_id}/files/{path}"), value.clone());
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]

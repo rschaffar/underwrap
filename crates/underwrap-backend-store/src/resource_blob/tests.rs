@@ -251,7 +251,7 @@ fn populated_blob() -> ResourceBlob {
 #[test]
 fn expand_emits_only_env_and_files_entries() {
     let blob = populated_blob();
-    let entries = expand_blob_to_entries("github/token", &blob).unwrap();
+    let entries = expand_blob_to_entries("github/token", &blob);
 
     assert_eq!(
         entries.get("github/token/env/GH_TOKEN").unwrap(),
