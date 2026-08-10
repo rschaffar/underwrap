@@ -9,7 +9,7 @@ use underwrap_protocol::libsecret_publication::{
     MAX_BODY_BYTES, REQUEST_HEADER_LEN, RESPONSE_LEN, ResponseKind, decode_request_header,
     encode_response,
 };
-use underwrap_protocol::resource_blob::LibsecretSection;
+use underwrap_protocol::resource_blob::{LibsecretSection, ResourceBlob};
 
 pub struct PublicationPair {
     pub host: Receiver,
@@ -73,6 +73,9 @@ pub struct Receiver {
     pending: Option<PendingResponse>,
     poisoned: bool,
     eof: bool,
+    /// Immutable Checkout env/files baseline used to check the complete
+    /// candidate before ACK. Publication never owns persistence.
+    composition_baseline: ResourceBlob,
     #[cfg(test)]
     response_failure_after: Option<usize>,
 }
@@ -87,9 +90,23 @@ impl Receiver {
             pending: None,
             poisoned: false,
             eof: false,
+            composition_baseline: ResourceBlob::empty(),
             #[cfg(test)]
             response_failure_after: None,
         }
+    }
+
+    pub fn set_composition_baseline(&mut self, checkout: &ResourceBlob) {
+        self.composition_baseline = checkout.clone();
+    }
+
+    fn validate_candidate(&self, section: LibsecretSection) -> Result<LibsecretSection, String> {
+        let mut complete = self.composition_baseline.clone();
+        complete.libsecret = section.clone();
+        complete
+            .to_canonical_bytes()
+            .map_err(|error| error.to_string())?;
+        Ok(section)
     }
 
     pub fn receive_initial(&mut self) -> Result<(), String> {
@@ -117,7 +134,10 @@ impl Receiver {
             self.poison(format!("reading initial publication body: {error}"));
             return Err("initial publication body failed".into());
         }
-        match LibsecretSection::from_strict_publication_bytes(&body) {
+        match LibsecretSection::from_strict_publication_bytes(&body)
+            .map_err(|error| error.to_string())
+            .and_then(|section| self.validate_candidate(section))
+        {
             Ok(section) => {
                 if let Err(error) = self
                     .stream
@@ -220,7 +240,10 @@ impl Receiver {
             }
             let body = self.input[REQUEST_HEADER_LEN..frame_len].to_vec();
             self.input.drain(..frame_len);
-            let (kind, candidate) = match LibsecretSection::from_strict_publication_bytes(&body) {
+            let (kind, candidate) = match LibsecretSection::from_strict_publication_bytes(&body)
+                .map_err(|error| error.to_string())
+                .and_then(|section| self.validate_candidate(section))
+            {
                 Ok(section) => (
                     ResponseKind::Ack,
                     Some(ValidatedGeneration {

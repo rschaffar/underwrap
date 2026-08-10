@@ -69,6 +69,8 @@ pub enum RuntimeInvalidBlobReason {
     SchemaUnknown,
     /// The decoded blob is not byte-for-byte JCS-canonical.
     NoncanonicalBlob,
+    /// The writeback exceeded the complete canonical resource limit.
+    ResourceTooLarge,
     /// The writeback tried to change the immutable `env` section.
     EnvSectionImmutable,
 }
@@ -80,6 +82,7 @@ impl RuntimeInvalidBlobReason {
             Self::DecodeFailed => "decode-failed",
             Self::SchemaUnknown => "schema-unknown",
             Self::NoncanonicalBlob => "noncanonical-blob",
+            Self::ResourceTooLarge => "resource-too-large",
             Self::EnvSectionImmutable => "env-section-immutable",
         }
     }
@@ -205,7 +208,8 @@ pub struct RuntimeWrapperInvocationFinalizeRequest {
 /// `Locked` operator reason). `InvalidBlob` covers writeback validation
 /// failures (`InvalidBlob.reason` is a [`RuntimeInvalidBlobReason`]
 /// discriminator: `decode-failed`, `schema-unknown`, `noncanonical-blob`,
-/// `env-section-immutable`). They are split apart because a `Deny` may
+/// `resource-too-large`, `env-section-immutable`). They are split apart because
+/// a `Deny` may
 /// flip to `Allow` after an operator edits the policy, whereas
 /// `InvalidBlob` is a client bug that won't change on retry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

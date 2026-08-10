@@ -814,7 +814,9 @@ async fn underwrapd_binary_start_and_read() {
         // Surface the daemon's own diagnostics — otherwise a startup
         // refusal (e.g. a failed validation) is invisible in CI logs.
         let _ = child.start_kill();
+        let _ = backend_child.start_kill();
         let out = child.wait_with_output().await.unwrap();
+        let _ = backend_child.wait_with_output().await.unwrap();
         panic!(
             "wrapper socket never appeared\n--- daemon stdout ---\n{}\n--- daemon stderr ---\n{}",
             String::from_utf8_lossy(&out.stdout),
@@ -866,34 +868,28 @@ async fn underwrapd_binary_start_and_read() {
         .unwrap();
     assert!(policy_resp.status().is_success());
 
-    let mut stream = tokio::net::UnixStream::connect(&wrapper_sock)
-        .await
-        .unwrap();
-    let req = WrapperRequest::Read {
-        wrapper_name: "w".to_string(),
-        variant: underwrap_protocol::variant::WrapperVariant::Real,
-        scope: None,
-    };
-    underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
-        .await
-        .unwrap();
-    let resp: WrapperResponse = match tokio::time::timeout(
+    let (_, blob, _) = match tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        underwrap_protocol::ipc::read_frame_async(&mut stream),
+        checkout_resource(wrapper_sock.clone(), "w"),
     )
     .await
     {
-        Ok(Ok(resp)) => resp,
-        Ok(Err(e)) => panic!("wrapper read failed: {e:#}"),
+        Ok(result) => result,
         Err(_) => {
             let _ = child.start_kill();
             let _ = backend_child.start_kill();
+            let _ = child.wait_with_output().await.unwrap();
+            let _ = backend_child.wait_with_output().await.unwrap();
             panic!("wrapper read timed out");
         }
     };
 
-    assert_eq!(expect_single_env_string(resp), "value");
+    assert_eq!(expect_single_env_string(blob), "value");
 
-    child.start_kill().unwrap();
-    backend_child.start_kill().unwrap();
+    let child_kill = child.start_kill();
+    let backend_kill = backend_child.start_kill();
+    let _ = child.wait_with_output().await.unwrap();
+    let _ = backend_child.wait_with_output().await.unwrap();
+    child_kill.unwrap();
+    backend_kill.unwrap();
 }

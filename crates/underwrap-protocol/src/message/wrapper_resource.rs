@@ -15,7 +15,7 @@
 //! end via `SCM_RIGHTS`. The `resource_id` is implicit per channel and
 //! not on the wire.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 
@@ -31,6 +31,7 @@ impl WireEncode for WrapperResourceRequest {
         match self {
             Self::Checkout => 0u8.encode(out),
             Self::Checkin { blob } => {
+                ensure_resource_blob_size(blob.len())?;
                 1u8.encode(out)?;
                 blob.encode(out)
             }
@@ -44,7 +45,7 @@ impl WireDecode for WrapperResourceRequest {
         match u8::decode(reader)? {
             0 => Ok(Self::Checkout),
             1 => Ok(Self::Checkin {
-                blob: Vec::<u8>::decode(reader)?,
+                blob: reader.read_canonical_resource_bytes()?,
             }),
             2 => Ok(Self::UsageSignal),
             other => Err(anyhow!(
@@ -72,6 +73,7 @@ impl WireEncode for WrapperResourceResponse {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
             Self::CheckoutOk { blob, writable } => {
+                ensure_resource_blob_size(blob.len())?;
                 0u8.encode(out)?;
                 blob.encode(out)?;
                 writable.encode(out)
@@ -91,7 +93,7 @@ impl WireDecode for WrapperResourceResponse {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         match u8::decode(reader)? {
             0 => Ok(Self::CheckoutOk {
-                blob: Vec::<u8>::decode(reader)?,
+                blob: reader.read_canonical_resource_bytes()?,
                 writable: bool::decode(reader)?,
             }),
             1 => Ok(Self::CheckinOk),
@@ -105,6 +107,15 @@ impl WireDecode for WrapperResourceResponse {
             )),
         }
     }
+}
+
+fn ensure_resource_blob_size(len: usize) -> Result<()> {
+    ensure!(
+        len <= crate::resource_blob::MAX_CANONICAL_RESOURCE_BYTES,
+        "resource blob exceeds maximum of {} bytes (got {len})",
+        crate::resource_blob::MAX_CANONICAL_RESOURCE_BYTES,
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

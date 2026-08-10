@@ -143,6 +143,25 @@ The module rejects:
 - `XDG_RUNTIME_DIR` in `envSet`;
 - relative `HOME` or base XDG values in `envSet`.
 
+### Resource size and transport contract
+
+Every wrapper resource is one complete JCS-canonical blob with an inclusive
+2,097,152-byte cap. This is independent of HTTP base64/JSON envelopes and the
+inclusive 1,048,576-byte private libsecret publication-body cap. Admin mutations
+that would exceed the complete-resource cap fail with HTTP 400
+`resource_too_large`; runtime writeback uses its separate stable
+`resource-too-large` invalid-blob reason and leaves the prior resource in place.
+
+The authenticated fd-20 Checkout/Checkin channel carries complete resources
+under its dedicated bulk bound. Wrapper selection, fd-3 execution metadata, and
+other local control messages remain limited to 64 KiB. Resource env values
+travel only in authenticated Checkout and are selected into the cleared target
+environment; they are not copied through control metadata. A libsecret ACK means
+that the host retained a validated candidate, not that the D-Bus caller received
+success or that the backend durably saved it. See [Security](security.md#resource-projections)
+and [Backend](backend.md#resource-blob-storage) for the normative lifecycle and
+persistence rules.
+
 ### Target environment
 
 The target starts from `env_clear()`.

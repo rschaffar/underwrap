@@ -42,12 +42,14 @@ for exact host ACK/REJECT before returning each D-Bus mutation. The host accepts
 only bounded exact-canonical state with valid identifiers, aliases/references,
 and timestamps. The target never inherits fd 20 or the publication socket.
 
-ACK means the host retained one invocation generation; it does not prove D-Bus
-response delivery or backend commitment. If secretsd dies after ACK but before
+ACK means the host retained one invocation generation; it is neither caller
+response delivery nor backend durability. If secretsd dies after ACK but before
 the caller sees success, that generation remains eligible after terminal EOF.
-A retained publisher endpoint fails closed with no fallback. Private publication
-accepts at most 1 MiB, but the generic resource channel still limits complete
-Checkin frames to 64 KiB.
+A retained publisher endpoint fails closed with no fallback. A complete
+JCS-canonical resource is inclusively limited to 2,097,152 bytes. The private
+publication body has its separate inclusive 1,048,576-byte limit. The 64-KiB
+limit applies only to unrelated control frames; Checkout and Checkin use the
+resource channel's complete-resource bound.
 
 ## Split authentication and action wrappers
 

@@ -30,8 +30,8 @@ async fn upsert_permission_allows_read_against_fresh_store() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "ghp_test123");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "ghp_test123");
 
     daemon.stop().await.unwrap();
 }
@@ -52,8 +52,8 @@ async fn deleting_permission_revokes_future_reads() {
     let permission = daemon.current_permission("gh-authorized", "github/token");
     daemon.upsert_permission("test", &permission).await.unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "ghp_test123");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "ghp_test123");
 
     daemon
         .delete_permission(
@@ -226,8 +226,8 @@ async fn upsert_replaces_mode_on_existing_permission_tuple() {
     // Re-upsert with `Unlocked` — the daemon should now allow reads.
     permission.mode = WrapperApprovalMode::Unlocked;
     daemon.upsert_permission("test", &permission).await.unwrap();
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "ghp_test123");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "ghp_test123");
     daemon.stop().await.unwrap();
 }
 

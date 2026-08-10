@@ -21,6 +21,11 @@ use crate::admin_api::AdminError;
 /// of KB; 2 MiB leaves plenty of headroom while still bounding memory.
 pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Resource-bearing requests need room for a 2-MiB canonical blob after
+/// base64/JSON encoding, without raising unrelated request limits.
+pub(crate) const MAX_RESOURCE_REQUEST_BODY_BYTES: usize =
+    underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES.div_ceil(3) * 4 + 64 * 1024;
+
 /// JSON request extractor. Reads the body up to
 /// [`MAX_REQUEST_BODY_BYTES`], parses it as `T`, and rejects with the
 /// canonical `invalid_request` 400 envelope on either failure.
@@ -46,6 +51,33 @@ where
         serde_json::from_slice(&bytes).map(Body).map_err(|e| {
             AdminError::bad_request("invalid_request", format!("invalid JSON request body: {e}"))
                 .into_response()
+        })
+    }
+}
+
+/// JSON extractor for admin resource mutations. This is deliberately opt-in:
+/// login, policy, and other control requests keep [`MAX_REQUEST_BODY_BYTES`].
+pub(crate) struct ResourceBody<T>(pub(crate) T);
+
+impl<S, T> FromRequest<S> for ResourceBody<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = to_bytes(req.into_body(), MAX_RESOURCE_REQUEST_BODY_BYTES)
+            .await
+            .map_err(|_| {
+                AdminError::bad_request(
+                    "invalid_request",
+                    "resource request body exceeds its limit",
+                )
+                .into_response()
+            })?;
+        serde_json::from_slice(&bytes).map(Self).map_err(|_| {
+            AdminError::bad_request("invalid_request", "invalid JSON request body").into_response()
         })
     }
 }

@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use underwrap_protocol::exec::ExecBundle;
+use underwrap_protocol::resource::validate_env_name;
+use underwrap_protocol::resource_blob::ResourceBlob;
 use underwrap_protocol::target_env::{
     CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name,
 };
@@ -41,9 +43,31 @@ fn joined_path(base: &str, tail: &str) -> Result<String, String> {
         .ok_or_else(|| format!("derived path under {:?} is not valid UTF-8", base))
 }
 
+/// Validate the environment exactly as it will be passed to the target.
+///
+/// All sources must be composed first so precedence and forced paths stay
+/// unchanged while no final key/value can make process setup fail after
+/// projection planning has completed.
+fn validate_final_target_env(target_env: &HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in target_env {
+        if key.contains('=') || key.contains('\0') {
+            return Err(format!(
+                "target environment key {key:?} contains '=' or NUL"
+            ));
+        }
+        if value.contains('\0') {
+            return Err(format!(
+                "target environment value for key {key:?} contains NUL"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn build_target_env(
     host_env: &HashMap<String, String>,
     exec_bundle: &ExecBundle,
+    checkout_blob: &ResourceBlob,
     passwd_home: &Path,
     xdg_runtime_dir: &str,
 ) -> Result<HashMap<String, String>, String> {
@@ -122,13 +146,21 @@ pub(crate) fn build_target_env(
         target_env.insert(key.clone(), value.clone());
     }
 
-    for (key, value) in &exec_bundle.env {
-        let value = value.as_utf8().map_err(|e| {
-            format!("env binding '{key}' is not valid UTF-8 and cannot be exported: {e}")
-        })?;
-        target_env.insert(key.clone(), value.to_string());
+    if exec_bundle.resource.env_projection {
+        for (key, value) in &checkout_blob.env {
+            validate_env_name(key).map_err(|reason| {
+                format!("Checkout env binding '{key}' is invalid for projection: {reason}")
+            })?;
+            let value = value.as_utf8().map_err(|e| {
+                format!(
+                    "Checkout env binding '{key}' is not valid UTF-8 and cannot be exported: {e}"
+                )
+            })?;
+            target_env.insert(key.clone(), value.to_string());
+        }
     }
 
+    validate_final_target_env(&target_env)?;
     Ok(target_env)
 }
 

@@ -730,6 +730,18 @@ impl TestDaemon {
         Ok(())
     }
 
+    /// Directly inject bytes to exercise corrupt-storage fail-closed paths.
+    pub fn put_raw_resource_bytes(&self, store: &str, id: &str, bytes: &[u8]) -> Result<()> {
+        let dir = self.store_dir_for(store);
+        let backend = underwrap_backend_store::PlainBackend::open(&dir)?;
+        underwrap_backend_store::StorageBackend::write(
+            &backend,
+            &format!("resources/{id}"),
+            bytes,
+        )?;
+        Ok(())
+    }
+
     pub async fn delete_pair(
         &self,
         store: &str,

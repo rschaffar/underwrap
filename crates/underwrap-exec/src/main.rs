@@ -15,7 +15,7 @@
 //!    the name and the backend authorises the variant
 //! 3. Loads the trusted instance sidecar (socket + helper binary paths)
 //! 4. Connects to the instance socket and sends `Read { wrapper_name,
-//!    variant, scope }`; receives the env bindings, the daemon-chosen
+//!    variant, scope }`; receives projection metadata, the daemon-chosen
 //!    target binary, and one wrapper-resource channel fd via SCM_RIGHTS
 //! 5. Drops all elevated privileges
 //! 6. Relocates every child-carried descriptor above the reserved slots, then
@@ -27,8 +27,9 @@
 //!    trusting target metadata
 //!
 //! The wrapper never chooses the target binary: it execs whatever path
-//! the daemon returned in `ReadOk`. Secret material flows through the
-//! pipe on fd 3 — never argv, env, or filesystem between the two stages.
+//! the daemon returned in `ReadOk`. fd 3 carries only descriptor-free execution
+//! metadata; brokered resource bytes flow over the authenticated fd-20 channel,
+//! never argv or an inter-stage environment variable.
 
 mod supervision;
 
@@ -42,7 +43,7 @@ use underwrap_protocol::exec::{
     WRAPPER_PARENT_LIVENESS_FD, WRAPPER_RESOURCE_CHANNEL_FD,
 };
 use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
-use underwrap_protocol::message::{SecretBytes, WrapperRequest, WrapperResponse};
+use underwrap_protocol::message::{WrapperRequest, WrapperResponse};
 use underwrap_protocol::variant::WrapperVariant;
 
 /// Fixed directory holding one trusted sidecar per instance. No
@@ -72,7 +73,7 @@ struct Invocation {
 /// channel fd. `target` is the daemon-chosen binary — the wrapper never
 /// picks it.
 struct ReadResult {
-    env: std::collections::HashMap<String, SecretBytes>,
+    env_projection: bool,
     target: String,
     env_passthrough: Vec<String>,
     env_set: std::collections::HashMap<String, String>,
@@ -258,7 +259,7 @@ fn request_secret(
     let response: WrapperResponse = read_frame_sync(&mut stream)?;
 
     let (
-        env,
+        env_projection,
         resource_id,
         resource_name,
         access,
@@ -271,7 +272,7 @@ fn request_secret(
         access_paths,
     ) = match response {
         WrapperResponse::ReadOk {
-            env,
+            env_projection,
             resource_id,
             resource_name,
             access,
@@ -283,7 +284,7 @@ fn request_secret(
             target_runtime_dir_base,
             access_paths,
         } => (
-            env,
+            env_projection,
             resource_id,
             resource_name,
             access,
@@ -310,7 +311,7 @@ fn request_secret(
     })?;
 
     Ok(ReadResult {
-        env,
+        env_projection,
         target: target.to_string_lossy().into_owned(),
         env_passthrough,
         env_set,
@@ -409,6 +410,7 @@ fn exec_via_ns(
         resource_id: resource_binding.resource_id.clone(),
         resource_name: resource_binding.resource_name.clone(),
         access: resource_binding.access,
+        env_projection: read.env_projection,
         libsecret: resource_binding.libsecret,
         files_target_paths: resource_binding.files_target_paths.clone(),
     };
@@ -490,7 +492,6 @@ fn exec_via_ns(
     drop(liveness_source);
 
     let payload = ExecBundle {
-        env: read.env,
         env_passthrough: read.env_passthrough,
         env_set: read.env_set,
         target_runtime_dir_base: read.target_runtime_dir_base,

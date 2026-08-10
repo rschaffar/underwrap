@@ -20,7 +20,7 @@ use underwrap_protocol::service::{
     AdminClientInstanceUpdateRequest, RuntimeWrapperInvocationFinalizeRequest,
     RuntimeWrapperInvocationFinalizeResponse, RuntimeWrapperInvocationOpenRequest,
     RuntimeWrapperInvocationOpenResponse, RuntimeWrapperRegisterPair,
-    RuntimeWrapperRegisterRequest, RuntimeWrapperRegisterResponse,
+    RuntimeWrapperRegisterRequest, RuntimeWrapperRegisterResponse, ServiceErrorResponse,
 };
 use underwrap_protocol::variant::WrapperVariant;
 
@@ -643,6 +643,167 @@ async fn finalize_denies_with_unregistered_pair_for_unknown_resource() {
         }
         other => panic!("expected Deny(unregistered-pair), got {other:?}"),
     }
+    daemon.stop().await.unwrap();
+}
+
+async fn seed_writable_runtime_resource(daemon: &TestDaemon, blob: &ResourceBlob) {
+    daemon.ensure_pair("gh-authorized", "github/token").unwrap();
+    daemon
+        .put_resource_blob("test", "github/token", blob)
+        .unwrap();
+    let mut permission = daemon.current_permission("gh-authorized", "github/token");
+    permission.writable = true;
+    daemon.upsert_permission("test", &permission).await.unwrap();
+}
+
+async fn pair_last_used(daemon: &TestDaemon) -> Option<u64> {
+    daemon
+        .list_pairs("test")
+        .await
+        .unwrap()
+        .pairs
+        .into_iter()
+        .find(|pair| pair.wrapper == "gh-authorized" && pair.resource_id == "github/token")
+        .unwrap()
+        .last_used_at
+}
+
+#[tokio::test]
+async fn exact_max_blob_survives_runtime_open_finalize_and_open() {
+    let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
+        .await
+        .unwrap();
+    let initial = blob_with_exact_canonical_len(
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES,
+    );
+    seed_writable_runtime_resource(&daemon, &initial).await;
+
+    let opened = allow_blob(&daemon, "gh-authorized", "github/token").await;
+    let opened_bytes = base64::engine::general_purpose::STANDARD
+        .decode(opened)
+        .unwrap();
+    assert_eq!(
+        opened_bytes.len(),
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES
+    );
+
+    let mut mutated = initial.clone();
+    let (key, value) = mutated.files.pop_first().unwrap();
+    let mut key = key.into_bytes();
+    *key.last_mut().unwrap() = b'y';
+    mutated.files.insert(String::from_utf8(key).unwrap(), value);
+    assert_eq!(
+        mutated.to_canonical_bytes().unwrap().len(),
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES
+    );
+    assert!(matches!(
+        direct_finalize(
+            &daemon,
+            "gh-authorized",
+            "github/token",
+            Some(blob_b64(&mutated)),
+        )
+        .await,
+        RuntimeWrapperInvocationFinalizeResponse::Ok
+    ));
+    assert_eq!(
+        decoded_blob(&allow_blob(&daemon, "gh-authorized", "github/token").await),
+        mutated
+    );
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_one_byte_over_max_reaches_semantic_finalize_rejection() {
+    let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
+        .await
+        .unwrap();
+    let prior = ResourceBlob::empty();
+    seed_writable_runtime_resource(&daemon, &prior).await;
+    let _ = allow_blob(&daemon, "gh-authorized", "github/token").await;
+    let last_used = pair_last_used(&daemon).await;
+
+    let response = direct_finalize(
+        &daemon,
+        "gh-authorized",
+        "github/token",
+        Some(base64::engine::general_purpose::STANDARD.encode(canonical_one_byte_over_limit())),
+    )
+    .await;
+    assert_eq!(
+        response,
+        RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+            reason: "resource-too-large".to_string()
+        }
+    );
+    assert_eq!(
+        daemon.get_resource_blob("test", "github/token").unwrap(),
+        prior
+    );
+    assert_eq!(pair_last_used(&daemon).await, last_used);
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn runtime_resource_and_generic_body_extractors_keep_distinct_bounds() {
+    let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
+        .await
+        .unwrap();
+    let client = daemon.direct_service_client().unwrap();
+    let resource_envelope_limit =
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES.div_ceil(3) * 4 + 64 * 1024;
+    let response = client
+        .post(format!(
+            "{}/v1/wrapper-invocations/finalize",
+            daemon.service_url()
+        ))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(vec![b'x'; resource_envelope_limit + 1])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let error: ServiceErrorResponse = response.json().await.unwrap();
+    assert_eq!(error.code, "invalid_request");
+
+    let response = client
+        .post(format!("{}/v1/wrappers", daemon.service_url()))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(vec![b'x'; 2 * 1024 * 1024 + 1])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let error: ServiceErrorResponse = response.json().await.unwrap();
+    assert_eq!(error.code, "invalid_request");
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn runtime_open_fails_closed_for_directly_injected_oversized_storage() {
+    let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
+        .await
+        .unwrap();
+    seed_writable_runtime_resource(&daemon, &ResourceBlob::empty()).await;
+    daemon
+        .put_raw_resource_bytes("test", "github/token", &canonical_one_byte_over_limit())
+        .unwrap();
+
+    let client = daemon.direct_service_client().unwrap();
+    let response = client
+        .post(format!("{}/v1/wrapper-invocations", daemon.service_url()))
+        .json(&RuntimeWrapperInvocationOpenRequest {
+            wrapper_name: "gh-authorized".into(),
+            resource_name: "github/token".into(),
+            variant: WrapperVariant::Real,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_server_error());
+    let body = response.text().await.unwrap();
+    assert!(!body.contains("\"outcome\":\"allow\""));
+    assert_eq!(pair_last_used(&daemon).await, None);
     daemon.stop().await.unwrap();
 }
 

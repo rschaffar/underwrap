@@ -189,6 +189,14 @@ fn run() -> Result<(), String> {
             )
         })?;
     let directory_plan = plan_files_projection(&resource_channel, resource_blob)?;
+    let host_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let target_env = build_target_env(
+        &host_env,
+        &exec_bundle,
+        directory_plan.blob(),
+        &target_identity.home,
+        &xdg_runtime_dir,
+    )?;
     let publication = if libsecret_enabled {
         Some(PublicationPair::new()?)
     } else {
@@ -232,9 +240,8 @@ fn run() -> Result<(), String> {
             target_sigchld,
             target,
             target_args,
-            &exec_bundle,
             &target_identity,
-            &xdg_runtime_dir,
+            target_env,
             &resource_channel,
             libsecret_enabled,
             publisher,
@@ -391,9 +398,8 @@ fn run_relay(
     target_sigchld: SigchldState,
     target: String,
     target_args: Vec<String>,
-    exec_bundle: &ExecBundle,
     target_identity: &TargetIdentity,
-    xdg_runtime_dir: &str,
+    target_env: std::collections::HashMap<String, String>,
     resource_channel: &ResourceChannel,
     libsecret_enabled: bool,
     mut publisher: Option<std::os::unix::net::UnixStream>,
@@ -438,13 +444,6 @@ fn run_relay(
         let mut cmd = std::process::Command::new(&target);
         cmd.args(&target_args);
         cmd.env_clear();
-        let host_env: std::collections::HashMap<String, String> = std::env::vars().collect();
-        let target_env = build_target_env(
-            &host_env,
-            exec_bundle,
-            &target_identity.home,
-            xdg_runtime_dir,
-        )?;
         let helper_env: std::collections::HashMap<String, String> =
             ["HOME", "PATH", "LANG", "LC_ALL", "TZ"]
                 .iter()
@@ -652,6 +651,11 @@ fn run_parent(
     }
 
     let publication_enabled = publication_receiver.is_some();
+    if let Some(receiver) = publication_receiver.as_mut() {
+        let checkout = ResourceBlob::from_canonical_bytes(&resource_channel.original_canonical)
+            .map_err(|error| format!("decoding Checkout baseline for publication: {error}"))?;
+        receiver.set_composition_baseline(&checkout);
+    }
 
     // Generation zero is synchronously decided before the unchanged blocking
     // gate parser. secretsd cannot report ready, and therefore the target cannot
@@ -881,43 +885,157 @@ fn read_only_warning_suppressed() -> bool {
 }
 
 fn report_outcomes(outcomes: &[WritebackOutcome]) {
-    let suppress = read_only_warning_suppressed();
+    let suppress_readonly_warning = read_only_warning_suppressed();
     for outcome in outcomes {
-        let (resource_id, resource_name, reason) = match outcome {
+        match outcome {
             WritebackOutcome::Unchanged | WritebackOutcome::Persisted => continue,
-            // Wrapper-local decision: the Checkout's writability bit
-            // was already false, so no Checkin was attempted.
+            // Wrapper-local decision: the Checkout's writability bit was
+            // already false, so no Checkin was attempted.
             WritebackOutcome::DroppedReadOnly {
                 resource_id,
                 resource_name,
-            } => (resource_id, resource_name, "grant_readonly"),
-            // Server-side rejection: Checkin was sent but the daemon
-            // refused it (e.g. the grant flipped mid-run).
+            } => {
+                emit_audit_event("grant_readonly", resource_id, resource_name, None);
+                if !suppress_readonly_warning {
+                    eprintln!(
+                        "underwrap: changes to resource '{}' ({}) were not persisted \
+                         (grant is read-only). Set {SUPPRESS_READONLY_WARNING_ENV}=1 to \
+                         silence this message.",
+                        one_line_display(resource_name),
+                        one_line_display(resource_id),
+                    );
+                }
+            }
+            // Server-side rejection: Checkin was sent but the daemon refused
+            // it (for example, the grant flipped mid-run).
             WritebackOutcome::RejectedReadOnly {
                 resource_id,
                 resource_name,
-            } => (resource_id, resource_name, "server_rejected"),
-        };
-
-        emit_audit_event(reason, resource_id, resource_name);
-
-        if !suppress {
-            eprintln!(
-                "underwrap: changes to resource '{resource_name}' ({resource_id}) \
-                 were not persisted (grant is read-only). Set \
-                 {SUPPRESS_READONLY_WARNING_ENV}=1 to silence this message.",
-            );
+            } => {
+                emit_audit_event("server_rejected", resource_id, resource_name, None);
+                if !suppress_readonly_warning {
+                    eprintln!(
+                        "underwrap: changes to resource '{}' ({}) were not persisted \
+                         (grant is read-only). Set {SUPPRESS_READONLY_WARNING_ENV}=1 to \
+                         silence this message.",
+                        one_line_display(resource_name),
+                        one_line_display(resource_id),
+                    );
+                }
+            }
+            WritebackOutcome::RejectedTooLarge {
+                resource_id,
+                resource_name,
+                attempted_len,
+                maximum_len,
+            } => {
+                emit_audit_event(
+                    "resource_too_large",
+                    resource_id,
+                    resource_name,
+                    Some((*attempted_len, *maximum_len)),
+                );
+                // This is not a read-only warning: a caller cannot suppress a
+                // rejected complete-resource composition diagnostic.
+                eprintln!(
+                    "underwrap-ns: end-of-run writeback: post-run resource for '{}' \
+                     exceeds the complete resource size limit: resource blob exceeds \
+                     maximum of {maximum_len} bytes (got {attempted_len}); resource name \
+                     '{}'; reason=resource_too_large",
+                    one_line_display(resource_id),
+                    one_line_display(resource_name),
+                );
+            }
         }
     }
 }
 
+/// Escape one UTF-8 string as a JSON string without a serialization
+/// dependency. JSON permits non-ASCII UTF-8 directly; quotes, backslashes,
+/// standard controls, and every remaining C0 control are escaped.
+fn json_string(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() + 2);
+    encoded.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\u{08}' => encoded.push_str("\\b"),
+            '\u{0C}' => encoded.push_str("\\f"),
+            '\n' => encoded.push_str("\\n"),
+            '\r' => encoded.push_str("\\r"),
+            '\t' => encoded.push_str("\\t"),
+            character if character <= '\u{1F}' => {
+                use std::fmt::Write as _;
+                write!(encoded, "\\u{:04x}", character as u32).expect("writing to String");
+            }
+            character => encoded.push(character),
+        }
+    }
+    encoded.push('"');
+    encoded
+}
+
+/// Render metadata in one physical display line. Ordinary safe names retain
+/// their existing text; quotes, backslashes, and controls cannot alter the
+/// surrounding warning or forge an additional terminal line.
+fn one_line_display(value: &str) -> String {
+    let encoded = json_string(value);
+    encoded[1..encoded.len() - 1].to_string()
+}
+
+fn audit_json_line(
+    reason: &str,
+    resource_id: &str,
+    resource_name: &str,
+    size: Option<(usize, usize)>,
+) -> String {
+    let mut line = format!(
+        r#"{{"audit":"writeback_rejected","reason":{},"resource_id":{},"resource_name":{}}}"#,
+        json_string(reason),
+        json_string(resource_id),
+        json_string(resource_name),
+    );
+    if let Some((attempted_len, maximum_len)) = size {
+        line.pop();
+        line.push_str(&format!(
+            ",\"maximum_length\":{maximum_len},\"attempted_length\":{attempted_len}}}"
+        ));
+    }
+    line
+}
+
 /// Send the `writeback_rejected` event to journald. On non-systemd
-/// hosts (or if the journal socket send fails), fall back to a
-/// stderr-JSON line so the audit trail is not lost on dev / test runs.
-fn emit_audit_event(reason: &str, resource_id: &str, resource_name: &str) {
-    let message =
-        format!("writeback rejected for resource '{resource_name}' ({resource_id}): {reason}");
-    let fields = [
+/// hosts (or if the journal socket send fails), fall back to a valid one-line
+/// stderr JSON record so the audit trail is not lost on dev / test runs.
+fn emit_audit_event(
+    reason: &str,
+    resource_id: &str,
+    resource_name: &str,
+    size: Option<(usize, usize)>,
+) {
+    let (message, maximum_length, attempted_length) = match size {
+        Some((attempted_len, maximum_len)) => (
+            format!(
+                "writeback rejected for resource '{}' ({}): {reason}; \
+                 maximum_length={maximum_len}; attempted_length={attempted_len}",
+                one_line_display(resource_name),
+                one_line_display(resource_id),
+            ),
+            Some(maximum_len.to_string()),
+            Some(attempted_len.to_string()),
+        ),
+        None => (
+            format!(
+                "writeback rejected for resource '{}' ({}): {reason}",
+                one_line_display(resource_name),
+                one_line_display(resource_id),
+            ),
+            None,
+            None,
+        ),
+    };
+    let mut fields = vec![
         ("MESSAGE", message.as_str()),
         ("PRIORITY", JOURNAL_PRIORITY_WARNING),
         ("SYSLOG_IDENTIFIER", JOURNAL_SYSLOG_IDENTIFIER),
@@ -926,12 +1044,19 @@ fn emit_audit_event(reason: &str, resource_id: &str, resource_name: &str) {
         ("RESOURCE_ID", resource_id),
         ("RESOURCE_NAME", resource_name),
     ];
+    if let (Some(maximum_len), Some(attempted_len)) =
+        (maximum_length.as_deref(), attempted_length.as_deref())
+    {
+        fields.push(("MAXIMUM_LENGTH", maximum_len));
+        fields.push(("ATTEMPTED_LENGTH", attempted_len));
+    }
     if journal::send_record(&fields).is_err() {
-        // Fallback: emit the same record as one JSON line on stderr.
-        // The journal field names map 1:1 to the JSON keys so log
-        // pipelines can be written once.
+        // The journal field names map 1:1 to the JSON keys so log pipelines
+        // can be written once. `audit_json_line` keeps arbitrary UTF-8
+        // metadata valid JSON and physically confined to this one line.
         eprintln!(
-            r#"{{"audit":"writeback_rejected","reason":"{reason}","resource_id":"{resource_id}","resource_name":"{resource_name}"}}"#,
+            "{}",
+            audit_json_line(reason, resource_id, resource_name, size)
         );
     }
 }

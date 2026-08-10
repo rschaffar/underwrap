@@ -12,6 +12,11 @@ use std::collections::HashMap;
 
 /// Maximum allowed frame size (64 KiB). Prevents allocation bombs.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
+/// Payload capacity of the authenticated wrapper-resource channel: a complete
+/// resource plus the largest (`CheckoutOk`) six-byte message envelope. The
+/// four-byte outer frame prefix is separate.
+pub const MAX_WRAPPER_RESOURCE_FRAME_SIZE: usize =
+    crate::resource_blob::MAX_CANONICAL_RESOURCE_BYTES + 6;
 
 pub trait WireEncode {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()>;
@@ -80,6 +85,17 @@ impl<'a> WireReader<'a> {
 
     pub fn read_bytes(&mut self) -> Result<Vec<u8>> {
         let len = self.read_u32()? as usize;
+        Ok(self.read_exact(len)?.to_vec())
+    }
+
+    /// Read one canonical resource blob after enforcing its inclusive byte cap.
+    ///
+    /// The length check precedes both reading and copying the blob body so a
+    /// wrapper-resource payload cannot turn an over-limit inner vector length
+    /// into a truncation error or allocation/copy attempt.
+    pub fn read_canonical_resource_bytes(&mut self) -> Result<Vec<u8>> {
+        let len = self.read_u32()? as usize;
+        crate::resource_blob::ensure_resource_size(len)?;
         Ok(self.read_exact(len)?.to_vec())
     }
 
@@ -278,9 +294,25 @@ impl<T: WireDecode> WireDecode for HashMap<String, T> {
 
 /// Write a length-prefixed binary frame to a std stream.
 pub fn write_frame_sync(stream: &mut impl std::io::Write, msg: &impl WireEncode) -> Result<()> {
+    write_frame_sync_bounded(stream, msg, MAX_FRAME_SIZE)
+}
+
+/// Write a frame for the authenticated wrapper-resource channel only.
+pub fn write_wrapper_resource_frame_sync(
+    stream: &mut impl std::io::Write,
+    msg: &impl WireEncode,
+) -> Result<()> {
+    write_frame_sync_bounded(stream, msg, MAX_WRAPPER_RESOURCE_FRAME_SIZE)
+}
+
+fn write_frame_sync_bounded(
+    stream: &mut impl std::io::Write,
+    msg: &impl WireEncode,
+    max: usize,
+) -> Result<()> {
     let payload = encode_to_vec(msg)?;
     ensure!(
-        payload.len() <= MAX_FRAME_SIZE,
+        payload.len() <= max,
         "frame too large: {} bytes",
         payload.len()
     );
@@ -292,10 +324,24 @@ pub fn write_frame_sync(stream: &mut impl std::io::Write, msg: &impl WireEncode)
 
 /// Read a length-prefixed binary frame from a std stream.
 pub fn read_frame_sync<T: WireDecode>(stream: &mut impl std::io::Read) -> Result<T> {
+    read_frame_sync_bounded(stream, MAX_FRAME_SIZE)
+}
+
+/// Read a frame for the authenticated wrapper-resource channel only.
+pub fn read_wrapper_resource_frame_sync<T: WireDecode>(
+    stream: &mut impl std::io::Read,
+) -> Result<T> {
+    read_frame_sync_bounded(stream, MAX_WRAPPER_RESOURCE_FRAME_SIZE)
+}
+
+fn read_frame_sync_bounded<T: WireDecode>(
+    stream: &mut impl std::io::Read,
+    max: usize,
+) -> Result<T> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    ensure!(len <= MAX_FRAME_SIZE, "frame too large: {len} bytes");
+    ensure!(len <= max, "frame too large: {len} bytes");
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
     decode_from_slice(&buf)
@@ -310,9 +356,25 @@ pub async fn write_frame_async(
     stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
     msg: &impl WireEncode,
 ) -> Result<()> {
+    write_frame_async_bounded(stream, msg, MAX_FRAME_SIZE).await
+}
+
+/// Write a frame for the authenticated wrapper-resource channel only.
+pub async fn write_wrapper_resource_frame_async(
+    stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
+    msg: &impl WireEncode,
+) -> Result<()> {
+    write_frame_async_bounded(stream, msg, MAX_WRAPPER_RESOURCE_FRAME_SIZE).await
+}
+
+async fn write_frame_async_bounded(
+    stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
+    msg: &impl WireEncode,
+    max: usize,
+) -> Result<()> {
     let payload = encode_to_vec(msg)?;
     ensure!(
-        payload.len() <= MAX_FRAME_SIZE,
+        payload.len() <= max,
         "frame too large: {} bytes",
         payload.len()
     );
@@ -328,10 +390,24 @@ pub async fn write_frame_async(
 pub async fn read_frame_async<T: WireDecode>(
     stream: &mut (impl tokio::io::AsyncReadExt + Unpin),
 ) -> Result<T> {
+    read_frame_async_bounded(stream, MAX_FRAME_SIZE).await
+}
+
+/// Read a frame for the authenticated wrapper-resource channel only.
+pub async fn read_wrapper_resource_frame_async<T: WireDecode>(
+    stream: &mut (impl tokio::io::AsyncReadExt + Unpin),
+) -> Result<T> {
+    read_frame_async_bounded(stream, MAX_WRAPPER_RESOURCE_FRAME_SIZE).await
+}
+
+async fn read_frame_async_bounded<T: WireDecode>(
+    stream: &mut (impl tokio::io::AsyncReadExt + Unpin),
+    max: usize,
+) -> Result<T> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    ensure!(len <= MAX_FRAME_SIZE, "frame too large: {len} bytes");
+    ensure!(len <= max, "frame too large: {len} bytes");
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
     decode_from_slice(&buf)

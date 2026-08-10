@@ -29,7 +29,7 @@ fn wrapper_request_debug_variant_roundtrip() {
 #[test]
 fn wrapper_response_readok_roundtrip() {
     let resp = WrapperResponse::ReadOk {
-        env: std::collections::HashMap::new(),
+        env_projection: true,
         resource_id: "res_abc".to_string(),
         resource_name: "github/token".to_string(),
         access: crate::config::AccessMode::ReadWrite,

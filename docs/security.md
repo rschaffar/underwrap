@@ -504,8 +504,10 @@ Secret buffers are zeroized after handoff where practical.
 ## Resource projections
 
 Every resource is one JCS-canonical JSON blob containing env, files, and
-libsecret sections. The daemon treats it as opaque canonical bytes and caches it
-only for the scoped resource channel.
+libsecret sections. Its inclusive complete-resource limit is 2,097,152 bytes;
+this covers the canonical blob itself, independently of HTTP base64/JSON and
+local wire envelopes. The daemon treats it as opaque canonical bytes and caches
+it only for the scoped resource channel.
 
 ### Env
 
@@ -574,18 +576,20 @@ Libsecret mode uses three distinct channels:
 The host owns the sole receiver and secretsd owns the sole long-lived publisher.
 Generation zero is strictly validated and ACKed before readiness. Every mutation
 publishes while its store write lock remains held and waits for exact ACK or
-REJECT before D-Bus success or failure. Host validation enforces the inclusive
-1-MiB cap, exact JCS bytes, collection/item/alias segment shapes, alias
-references, and safe timestamps.
+REJECT before D-Bus success or failure. Host validation enforces the inclusive 1-MiB private publication-body cap,
+exact JCS bytes, collection/item/alias segment shapes, alias references, safe
+timestamps, and composition with Checkout env/files under the 2-MiB complete
+resource cap.
 
 PID 1 independently supervises target liveness while the host drains
 publication and polls relay exit. After clean reap, idle EOF permits the latest
 validated generation whose complete ACK was written. A later ordinary rejected,
 partial, response-failed, or publisher-death attempt preserves that prior
 generation after EOF. Final `EAGAIN` proves endpoint retention and suppresses
-all collection and terminal resource verbs without fallback. ACK means host
-retention, not caller response delivery or backend durability; generic Checkin
-still has a separate 64-KiB frame limit.
+all collection and terminal resource verbs without fallback. ACK means host retention, not caller response delivery or backend durability.
+Checkout and Checkin use a dedicated bulk frame bound of complete resource bytes
+plus their small message envelope; all unrelated control protocols retain their
+64-KiB bound.
 
 The private tmpfs contains the filesystem D-Bus socket and helper logs, not a
 final-state pathname consumed by the host. secretsd never holds fd 20, and the
@@ -771,11 +775,14 @@ resource blobs.
 
 When an authorized lifecycle changes a files/libsecret projection that cannot
 be persisted, `underwrap-ns` emits one structured `writeback_rejected` event
-containing the resource id, resource name, and reason. Once the private gate
-authorizes finalization, collection and canonical comparison still occur for
-target exit 0, nonzero exit, and signal death. Finalization failures remain
-diagnostic and do not replace the target's exit or signal status. It also
-writes one human-readable stderr warning unless the caller set:
+containing the resource id, resource name, and reason. A
+`resource_too_large` rejection also records the attempted complete canonical
+length and the public maximum; it writes an unsuppressible human-readable
+stderr diagnostic with the same safe metadata. Once the private gate authorizes
+finalization, collection and canonical comparison still occur for target exit
+0, nonzero exit, and signal death. Finalization failures remain diagnostic and
+do not replace the target's exit or signal status. Read-only warnings alone can
+be silenced when the caller sets:
 
 ```text
 UNDERWRAP_SUPPRESS_READONLY_WARNING=1
@@ -783,7 +790,7 @@ UNDERWRAP_SUPPRESS_READONLY_WARNING=1
 
 That variable is consumed by the wrapper and never passed into the target. If
 the journald native socket is unavailable, the audit event falls back to a JSON
-line on stderr even when the human warning is suppressed.
+line on stderr even when the read-only warning is suppressed.
 
 underwrap relies on service logs; it does not provide a persistent audit-ledger
 product.

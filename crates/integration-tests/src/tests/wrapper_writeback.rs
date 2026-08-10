@@ -27,7 +27,10 @@ use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 
-use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
+use underwrap_protocol::ipc::{
+    read_frame_sync, read_wrapper_resource_frame_sync, write_frame_sync,
+    write_wrapper_resource_frame_sync,
+};
 use underwrap_protocol::message::{
     ResourceErrorCode, SecretBytes, WrapperRequest, WrapperResourceRequest,
     WrapperResourceResponse, WrapperResponse,
@@ -53,13 +56,20 @@ fn open_run(socket_path: &Path, wrapper_name: &str) -> StdUnixStream {
     )
     .unwrap();
     let resp: WrapperResponse = read_frame_sync(&mut stream).unwrap();
+    assert!(underwrap_protocol::ipc::encode_to_vec(&resp).unwrap().len() < 1024);
     let resource_id = match resp {
-        WrapperResponse::ReadOk { resource_id, .. } => resource_id,
+        WrapperResponse::ReadOk {
+            resource_id,
+            env_projection: true,
+            ..
+        } => resource_id,
         other => panic!("expected ReadOk, got {other:?}"),
     };
 
     let fd =
         scm_rights::recv_fd(&stream).unwrap_or_else(|e| panic!("recv_fd for '{resource_id}': {e}"));
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(stream);
     // SAFETY: the fd was just received via SCM_RIGHTS and is owned
     // by this process; wrapping it in a UnixStream gives us a
     // standard owned handle for the channel.
@@ -67,8 +77,8 @@ fn open_run(socket_path: &Path, wrapper_name: &str) -> StdUnixStream {
 }
 
 fn send_checkout(stream: &mut StdUnixStream) -> (Vec<u8>, bool) {
-    write_frame_sync(stream, &WrapperResourceRequest::Checkout).unwrap();
-    let resp: WrapperResourceResponse = read_frame_sync(stream).unwrap();
+    write_wrapper_resource_frame_sync(stream, &WrapperResourceRequest::Checkout).unwrap();
+    let resp: WrapperResourceResponse = read_wrapper_resource_frame_sync(stream).unwrap();
     match resp {
         WrapperResourceResponse::CheckoutOk { blob, writable } => (blob, writable),
         other => panic!("expected CheckoutOk, got {other:?}"),
@@ -76,19 +86,19 @@ fn send_checkout(stream: &mut StdUnixStream) -> (Vec<u8>, bool) {
 }
 
 fn send_checkin(stream: &mut StdUnixStream, blob: &[u8]) -> WrapperResourceResponse {
-    write_frame_sync(
+    write_wrapper_resource_frame_sync(
         stream,
         &WrapperResourceRequest::Checkin {
             blob: blob.to_vec(),
         },
     )
     .unwrap();
-    read_frame_sync(stream).unwrap()
+    read_wrapper_resource_frame_sync(stream).unwrap()
 }
 
 fn send_usage_signal(stream: &mut StdUnixStream) -> WrapperResourceResponse {
-    write_frame_sync(stream, &WrapperResourceRequest::UsageSignal).unwrap();
-    read_frame_sync(stream).unwrap()
+    write_wrapper_resource_frame_sync(stream, &WrapperResourceRequest::UsageSignal).unwrap();
+    read_wrapper_resource_frame_sync(stream).unwrap()
 }
 
 fn writeback_wrapper_config() -> HashMap<String, underwrap_protocol::config::WrapperDef> {
@@ -148,9 +158,145 @@ fn blob_with_files_entry(key: &str, value: &[u8]) -> ResourceBlob {
     blob
 }
 
+fn close_channel(stream: StdUnixStream) {
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(stream);
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
+
+#[tokio::test]
+async fn env_above_generic_frame_limit_checks_out_over_scoped_fd() {
+    let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
+    let value = "x".repeat(70_000);
+    daemon
+        .store_secret("test", "gh-writeback", "github/token", &value)
+        .await
+        .unwrap();
+
+    let socket = daemon.instance_socket.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut channel = open_run(&socket, "gh-writeback");
+        let (bytes, _) = send_checkout(&mut channel);
+        let blob = ResourceBlob::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(expect_single_env_bytes(blob).len(), 70_000);
+        assert!(matches!(
+            send_usage_signal(&mut channel),
+            WrapperResourceResponse::UsageSignalOk
+        ));
+        close_channel(channel);
+    })
+    .await
+    .unwrap();
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn exact_max_checkout_checkin_and_followup_checkout_round_trip() {
+    let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
+    let initial = blob_with_exact_canonical_len(
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES,
+    );
+    let initial_bytes = put_blob(&daemon, "github/token", &initial);
+    daemon
+        .put_policy(
+            "test",
+            &PolicyDocument {
+                permissions: vec![make_permission(
+                    &daemon,
+                    "gh-writeback",
+                    "github/token",
+                    true,
+                )],
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut mutated = initial.clone();
+    let (key, value) = mutated.files.pop_first().unwrap();
+    let mut changed_key = key.into_bytes();
+    *changed_key.last_mut().unwrap() = b'y';
+    mutated
+        .files
+        .insert(String::from_utf8(changed_key).unwrap(), value);
+    let mutated_bytes = mutated.to_canonical_bytes().unwrap();
+    assert_eq!(mutated_bytes.len(), initial_bytes.len());
+
+    let socket = daemon.instance_socket.clone();
+    let expected = mutated_bytes.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut first = open_run(&socket, "gh-writeback");
+        assert_eq!(send_checkout(&mut first).0, initial_bytes);
+        assert!(matches!(
+            send_checkin(&mut first, &expected),
+            WrapperResourceResponse::CheckinOk
+        ));
+        close_channel(first);
+
+        let mut second = open_run(&socket, "gh-writeback");
+        let (checked_out, _) = send_checkout(&mut second);
+        assert_eq!(
+            checked_out.len(),
+            underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES
+        );
+        assert_eq!(checked_out, expected);
+        assert!(matches!(
+            send_usage_signal(&mut second),
+            WrapperResourceResponse::UsageSignalOk
+        ));
+        close_channel(second);
+    })
+    .await
+    .unwrap();
+    assert_eq!(get_blob(&daemon, "github/token"), mutated);
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn one_byte_over_max_is_not_written_and_prior_state_remains() {
+    let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
+    let initial = blob_with_files_entry("state", b"prior");
+    put_blob(&daemon, "github/token", &initial);
+    daemon
+        .put_policy(
+            "test",
+            &PolicyDocument {
+                permissions: vec![make_permission(
+                    &daemon,
+                    "gh-writeback",
+                    "github/token",
+                    true,
+                )],
+            },
+        )
+        .await
+        .unwrap();
+    let oversized = canonical_one_byte_over_limit();
+    let socket = daemon.instance_socket.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut channel = open_run(&socket, "gh-writeback");
+        let _ = send_checkout(&mut channel);
+        let error = write_wrapper_resource_frame_sync(
+            &mut channel,
+            &WrapperResourceRequest::Checkin { blob: oversized },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("resource blob exceeds"));
+        assert!(matches!(
+            send_usage_signal(&mut channel),
+            WrapperResourceResponse::UsageSignalOk
+        ));
+        close_channel(channel);
+    })
+    .await
+    .unwrap();
+    assert_eq!(get_blob(&daemon, "github/token"), initial);
+    daemon.stop().await.unwrap();
+}
 
 #[tokio::test]
 async fn clean_run_only_sends_usage_signal() {
@@ -185,6 +331,7 @@ async fn clean_run_only_sends_usage_signal() {
 
         let resp = send_usage_signal(&mut channel);
         assert!(matches!(resp, WrapperResourceResponse::UsageSignalOk));
+        close_channel(channel);
     })
     .await
     .unwrap();
@@ -228,6 +375,7 @@ async fn writable_grant_persists_checkin() {
         assert!(blob != mutated_bytes);
         let resp = send_checkin(&mut channel, &mutated_bytes);
         assert!(matches!(resp, WrapperResourceResponse::CheckinOk));
+        close_channel(channel);
     })
     .await;
     result.unwrap();
@@ -277,6 +425,7 @@ async fn readonly_grant_rejects_checkin() {
             } => {}
             other => panic!("expected Unauthorized, got {other:?}"),
         }
+        close_channel(channel);
     })
     .await
     .unwrap();
@@ -329,6 +478,7 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
         // Block until the test thread has flipped the grant.
         flip_rx.recv().unwrap();
         let resp = send_checkin(&mut channel, &mutated_bytes);
+        close_channel(channel);
         done_tx.send(resp).unwrap();
     });
 
@@ -408,6 +558,7 @@ async fn noncanonical_checkin_rejected() {
             ),
             other => panic!("expected InvalidRequest, got {other:?}"),
         }
+        close_channel(channel);
     })
     .await
     .unwrap();
@@ -483,6 +634,7 @@ async fn checkout_bumps_last_used() {
     tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let _ = send_checkout(&mut channel);
+        close_channel(channel);
     })
     .await
     .unwrap();
@@ -511,6 +663,7 @@ async fn checkin_keeps_last_used_at_least_at_checkout_value() {
         let _ = send_checkout(&mut channel);
         let resp = send_checkin(&mut channel, &mutated_bytes);
         assert!(matches!(resp, WrapperResourceResponse::CheckinOk));
+        close_channel(channel);
     })
     .await
     .unwrap();
@@ -537,6 +690,7 @@ async fn usage_signal_bumps_last_used() {
         // bump from any other backend read.
         let resp = send_usage_signal(&mut channel);
         assert!(matches!(resp, WrapperResourceResponse::UsageSignalOk));
+        close_channel(channel);
     })
     .await
     .unwrap();
@@ -577,6 +731,7 @@ async fn rejected_checkin_still_bumps_last_used() {
         ));
         let resp = send_usage_signal(&mut channel);
         assert!(matches!(resp, WrapperResourceResponse::UsageSignalOk));
+        close_channel(channel);
     });
 
     tokio::task::spawn_blocking(move || checkout_done_rx.recv().unwrap())

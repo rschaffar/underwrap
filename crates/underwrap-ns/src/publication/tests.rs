@@ -1,7 +1,55 @@
 use super::*;
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::thread;
 use underwrap_protocol::libsecret_publication::{decode_response, encode_request_header};
+use underwrap_protocol::resource_blob::Collection;
+
+fn section_with_collection(id: &str, label: String) -> LibsecretSection {
+    LibsecretSection {
+        aliases: BTreeMap::new(),
+        collections: BTreeMap::from([(
+            id.to_string(),
+            Collection {
+                label,
+                created: 1_700_000_000,
+                modified: 1_700_000_000,
+                items: BTreeMap::new(),
+            },
+        )]),
+    }
+}
+
+fn section_with_exact_body_len(len: usize) -> LibsecretSection {
+    let mut section = section_with_collection("c", String::new());
+    let base = section.to_canonical_bytes().unwrap().len();
+    section.collections.get_mut("c").unwrap().label = "x".repeat(len - base);
+    assert_eq!(section.to_canonical_bytes().unwrap().len(), len);
+    section
+}
+
+fn baseline_for_exact_composition(section: &LibsecretSection) -> ResourceBlob {
+    let mut complete = ResourceBlob::empty();
+    complete.libsecret = section.clone();
+    complete.files.insert(
+        "padding".into(),
+        underwrap_protocol::message::SecretBytes::from(Vec::<u8>::new()),
+    );
+    let base = complete.to_canonical_bytes().unwrap().len();
+    complete.files = BTreeMap::from([(
+        format!(
+            "padding{}",
+            "x".repeat(underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES - base)
+        ),
+        underwrap_protocol::message::SecretBytes::from(Vec::<u8>::new()),
+    )]);
+    assert_eq!(
+        complete.to_canonical_bytes().unwrap().len(),
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES
+    );
+    complete.libsecret = LibsecretSection::default();
+    complete
+}
 
 fn publish(stream: &mut UnixStream, generation: u64, body: &[u8]) -> ResponseKind {
     stream
@@ -13,6 +61,51 @@ fn publish(stream: &mut UnixStream, generation: u64, body: &[u8]) -> ResponseKin
     let (kind, actual) = decode_response(&response).unwrap();
     assert_eq!(actual, generation);
     kind
+}
+
+#[test]
+fn publication_complete_composition_exact_max_acks_and_one_over_rejects() {
+    let exact = section_with_collection("a", "value".into());
+    let oversized = section_with_collection("aa", "value".into());
+    let baseline = baseline_for_exact_composition(&exact);
+    let exact_body = exact.to_canonical_bytes().unwrap();
+    let oversized_body = oversized.to_canonical_bytes().unwrap();
+
+    let pair = PublicationPair::new().unwrap();
+    let mut publisher = pair.publisher;
+    let join = thread::spawn(move || {
+        assert_eq!(publish(&mut publisher, 0, &exact_body), ResponseKind::Ack);
+        assert_eq!(
+            publish(&mut publisher, 1, &oversized_body),
+            ResponseKind::Reject
+        );
+        drop(publisher);
+    });
+    let mut receiver = pair.host;
+    receiver.set_composition_baseline(&baseline);
+    receiver.receive_initial().unwrap();
+    receiver.set_nonblocking().unwrap();
+    while !receiver.eof {
+        receiver.drain_available().unwrap();
+        thread::yield_now();
+    }
+    join.join().unwrap();
+    let latest = receiver.terminal_generation(false).unwrap();
+    assert_eq!(latest.generation, 0);
+    assert_eq!(latest.section, exact);
+}
+
+#[test]
+fn exact_one_mib_publication_body_remains_ack_eligible() {
+    let section = section_with_exact_body_len(MAX_BODY_BYTES);
+    let body = section.to_canonical_bytes().unwrap();
+    let pair = PublicationPair::new().unwrap();
+    let mut publisher = pair.publisher;
+    let join = thread::spawn(move || publish(&mut publisher, 0, &body));
+    let mut receiver = pair.host;
+    receiver.receive_initial().unwrap();
+    assert_eq!(join.join().unwrap(), ResponseKind::Ack);
+    assert_eq!(receiver.latest.unwrap().section, section);
 }
 
 #[test]

@@ -35,8 +35,8 @@ async fn pair_last_used_is_bumped_on_successful_wrapper_read() {
         .store_secret("test", "gh-authorized", &resource_id, "ghp_test123")
         .await
         .unwrap();
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "ghp_test123");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "ghp_test123");
 
     let after = daemon.list_pairs("test").await.unwrap();
     let after_pair = after

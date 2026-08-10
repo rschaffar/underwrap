@@ -148,6 +148,38 @@ let
   f006MarkerScript = pkgs.writeShellScript "f006-marker-target" ''
     ${pkgs.coreutils}/bin/touch /tmp/f006-unroutable-target-ran
   '';
+  # F-009 env-only target: reports only the byte length and digest of its
+  # resource-projected value, never the value itself.
+  f009EnvScript = pkgs.writeShellScript "f009-env-target" ''
+    set -eu
+    length="$(${pkgs.coreutils}/bin/printf '%s' "$F009_ENV_BULK" | ${pkgs.coreutils}/bin/wc -c)"
+    digest="$(${pkgs.coreutils}/bin/printf '%s' "$F009_ENV_BULK" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)"
+    ${pkgs.coreutils}/bin/printf 'length=%s sha256=%s\n' "$length" "$digest"
+  '';
+  # F-009 files-only target. It uses only absolute Nix-store tools because the
+  # target starts with env_clear(); mutation modes intentionally print nothing.
+  f009FilesScript = pkgs.writeShellScript "f009-files-target" ''
+    set -eu
+    file="$HOME/.config/f009-boundary/token"
+    case "''${1:-verify}" in
+      verify)
+        length="$(${pkgs.coreutils}/bin/wc -c < "$file")"
+        digest="$(${pkgs.coreutils}/bin/sha256sum "$file" | ${pkgs.coreutils}/bin/cut -d' ' -f1)"
+        ${pkgs.coreutils}/bin/printf 'length=%s sha256=%s\n' "$length" "$digest"
+        ;;
+      replace)
+        length="$(${pkgs.coreutils}/bin/wc -c < "$file")"
+        ${pkgs.coreutils}/bin/head -c "$length" /dev/zero | ${pkgs.coreutils}/bin/tr '\0' r > "$file"
+        ;;
+      append)
+        ${pkgs.coreutils}/bin/printf x >> "$file"
+        ;;
+      *)
+        ${pkgs.coreutils}/bin/printf 'unknown f009 mode\n' >&2
+        exit 1
+        ;;
+    esac
+  '';
   f006Exit37Script = pkgs.writeShellScript "f006-exit-37-target" ''
     set -eu
     printf 'persisted-after-exit-37' > "$HOME/.config/f006-exit-37/token"
@@ -200,6 +232,12 @@ let
             purpose f008 index "$i" >/dev/null
           i=$((i + 1))
         done
+        exit 0
+        ;;
+      f008-near-cap-readback)
+        expected="$(printf '%s' 'f008-cap-secret-xx'; ${pkgs.coreutils}/bin/head -c 3982 /dev/zero | ${pkgs.coreutils}/bin/tr '\0' x)"
+        actual="$(${pkgs.libsecret}/bin/secret-tool lookup purpose f008 index 170)"
+        test "$actual" = "$expected"
         exit 0
         ;;
     esac
@@ -666,6 +704,17 @@ in {
             target = "${f006MarkerScript}";
             resource = "test/f006-unroutable";
             files.paths = [ ".config/f006-unroutable" ];
+            accessPaths = [ "~/.config" ];
+          };
+          test-f009-env = {
+            target = "${f009EnvScript}";
+            resource = "test/f009-env";
+            env = true;
+          };
+          test-f009-files = {
+            target = "${f009FilesScript}";
+            resource = "test/f009-files";
+            files.paths = [ ".config/f009-boundary" ];
             accessPaths = [ "~/.config" ];
           };
           test-f006-exec-missing = {

@@ -1,5 +1,61 @@
 use super::*;
 
+fn blob_with_exact_canonical_len(len: usize) -> ResourceBlob {
+    let mut blob = ResourceBlob::empty();
+    let base = blob.to_canonical_bytes().unwrap().len();
+    // Item labels are ordinary JCS strings, so ASCII padding gives exact byte
+    // control without relying on an unrelated raw-byte vector.
+    let padding = len
+        .checked_sub(base + 52)
+        .expect("test length below fixture overhead");
+    blob.libsecret.collections.insert(
+        "c".to_string(),
+        Collection {
+            label: "x".repeat(padding),
+            created: 0,
+            modified: 0,
+            items: BTreeMap::new(),
+        },
+    );
+    assert_eq!(serde_jcs::to_vec(&blob).unwrap().len(), len);
+    blob
+}
+
+#[test]
+fn complete_resource_size_boundary_is_inclusive_and_checked_before_parse() {
+    for len in [
+        MAX_CANONICAL_RESOURCE_BYTES - 1,
+        MAX_CANONICAL_RESOURCE_BYTES,
+    ] {
+        let blob = blob_with_exact_canonical_len(len);
+        let bytes = blob.to_canonical_bytes().unwrap();
+        assert_eq!(ResourceBlob::from_canonical_bytes(&bytes).unwrap(), blob);
+    }
+    let oversized = blob_with_exact_canonical_len(MAX_CANONICAL_RESOURCE_BYTES + 1);
+    let bytes = serde_jcs::to_vec(&oversized).unwrap();
+    let error = ResourceBlob::from_canonical_bytes(&bytes).unwrap_err();
+    assert!(is_resource_too_large_error(&error));
+    let size = resource_too_large_error(&error).expect("typed resource-size error");
+    assert_eq!(size.attempted_len(), MAX_CANONICAL_RESOURCE_BYTES + 1);
+    assert_eq!(size.maximum_len(), MAX_CANONICAL_RESOURCE_BYTES);
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "resource blob exceeds maximum of {MAX_CANONICAL_RESOURCE_BYTES} bytes (got {})",
+            MAX_CANONICAL_RESOURCE_BYTES + 1
+        )
+    );
+
+    let serialization_error = oversized.to_canonical_bytes().unwrap_err();
+    assert!(is_resource_too_large_error(&serialization_error));
+    assert_eq!(
+        resource_too_large_error(&serialization_error)
+            .expect("typed serialization-size error")
+            .attempted_len(),
+        MAX_CANONICAL_RESOURCE_BYTES + 1
+    );
+}
+
 fn populated_blob() -> ResourceBlob {
     let mut blob = ResourceBlob::empty();
     blob.env

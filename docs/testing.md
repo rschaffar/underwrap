@@ -99,9 +99,11 @@ status, and publication channels are independent evidence; none authorizes a
 lifecycle by itself. The VM independently covers the deployed privileged chain,
 relay/PID-2 topology, supervisor/relay termination, complete namespace teardown,
 status/writeback preservation, old same-UID pathname irrelevance, legitimate
-mutation persistence, near-cap publication without a backend-durability claim,
-host-only receiver/secretsd-only publisher ownership, and plaintext/exact-base64
-log hygiene.
+mutation persistence, near-cap publication persisted through Checkin and
+subsequent D-Bus readback, exact-2-MiB files round trips, rejected oversize
+admin/files mutations with byte-identical prior storage, host-only
+receiver/secretsd-only publisher ownership, and plaintext/exact-base64 log
+hygiene.
 Daemon transport tests cover absolute HTTPS URL admission, base-path preservation,
 and HTTPS-to-HTTP redirect rejection through the production client. Applied
 root-policy unit tests record that the production client disables bundled
@@ -222,7 +224,11 @@ It checks:
 - read-only mutation discard and warning/audit behavior;
 - core-dump prevention and descriptor hygiene;
 - private exec-gate authorization and retained post-exec persistence/status for
-  a file-writing target that exits nonzero or dies by signal.
+  a file-writing target that exits nonzero or dies by signal;
+- a resource env value above 64 KiB through the deployed authenticated bulk
+  Checkout path, and exact-2-MiB files-resource Checkout/Checkin, oversize
+  finalization suppression, stable admin size rejection, and byte-identical
+  retained storage.
 
 ### Secret hygiene
 

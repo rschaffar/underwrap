@@ -65,16 +65,17 @@ async fn directory_binding_is_returned_on_read() {
         .upsert_permission("test", &daemon.current_permission("dir-w", "gws/state"))
         .await
         .unwrap();
-    let resp = daemon.read_request("dir-w").await.unwrap();
+    let (resp, blob, _) = checkout_resource(daemon.instance_socket.clone(), "dir-w").await;
+    assert_eq!(blob, ResourceBlob::empty());
     match resp {
         WrapperResponse::ReadOk {
-            env,
+            env_projection,
             resource_id,
             files_target_paths,
             libsecret,
             ..
         } => {
-            assert!(env.is_empty());
+            assert!(!env_projection);
             assert_eq!(resource_id, "gws/state");
             assert!(!libsecret);
             assert_eq!(

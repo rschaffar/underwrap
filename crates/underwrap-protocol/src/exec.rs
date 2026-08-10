@@ -1,6 +1,5 @@
 use crate::config::AccessMode;
 use crate::ipc::{WireDecode, WireEncode, WireReader};
-use crate::message::SecretBytes;
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -18,9 +17,10 @@ pub const WRAPPER_RESOURCE_CHANNEL_FD: i32 = 20;
 pub const WRAPPER_PARENT_LIVENESS_FD: i32 = 21;
 
 /// Trusted exec-stage hint that tells `underwrap-ns` to create its idmap helper
-/// before reading the secret-bearing fd-3 bundle. `underwrap-exec` always
-/// removes caller input under this name and sets exactly `1` when access paths
-/// are configured; `underwrap-ns` verifies the hint against the decoded bundle.
+/// before reading untrusted execution metadata from fd 3 or secret bytes from
+/// the authenticated fd-20 Checkout. `underwrap-exec` always removes caller
+/// input under this name and sets exactly `1` when access paths are configured;
+/// `underwrap-ns` verifies the hint against the decoded bundle.
 pub const IDMAP_REQUIRED_ENV: &str = "UNDERWRAP_IDMAP_REQUIRED";
 
 /// The wrapper-resource binding flowing through the exec → ns handoff.
@@ -34,6 +34,8 @@ pub struct ExecResourceBinding {
     /// can name the resource in journal and stderr diagnostics.
     pub resource_name: String,
     pub access: AccessMode,
+    /// Whether the authenticated Checkout blob's env section is projected.
+    pub env_projection: bool,
     /// Whether secretsd should be launched for this resource.
     pub libsecret: bool,
     /// Target-home-relative paths at which the files staging dir for
@@ -47,6 +49,7 @@ impl WireEncode for ExecResourceBinding {
         self.resource_id.encode(out)?;
         self.resource_name.encode(out)?;
         self.access.encode(out)?;
+        self.env_projection.encode(out)?;
         self.libsecret.encode(out)?;
         self.files_target_paths.encode(out)
     }
@@ -58,6 +61,7 @@ impl WireDecode for ExecResourceBinding {
             resource_id: String::decode(reader)?,
             resource_name: String::decode(reader)?,
             access: AccessMode::decode(reader)?,
+            env_projection: bool::decode(reader)?,
             libsecret: bool::decode(reader)?,
             files_target_paths: Vec::<String>::decode(reader)?,
         })
@@ -74,7 +78,6 @@ impl WireDecode for ExecResourceBinding {
 /// absence is load-bearing. See `exec_bundle_carries_no_target_identity`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecBundle {
-    pub env: HashMap<String, SecretBytes>,
     pub env_passthrough: Vec<String>,
     pub env_set: HashMap<String, String>,
     /// Base directory under which each isolated target's own runtime
@@ -93,7 +96,6 @@ pub struct ExecBundle {
 
 impl WireEncode for ExecBundle {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        self.env.encode(out)?;
         self.env_passthrough.encode(out)?;
         self.env_set.encode(out)?;
         self.target_runtime_dir_base.encode(out)?;
@@ -105,7 +107,6 @@ impl WireEncode for ExecBundle {
 impl WireDecode for ExecBundle {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         Ok(Self {
-            env: HashMap::<String, SecretBytes>::decode(reader)?,
             env_passthrough: Vec::<String>::decode(reader)?,
             env_set: HashMap::<String, String>::decode(reader)?,
             target_runtime_dir_base: String::decode(reader)?,

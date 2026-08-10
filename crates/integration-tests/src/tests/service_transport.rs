@@ -72,8 +72,8 @@ async fn service_mode_roundtrip_reads_secret() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "ghp_service");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "ghp_service");
 
     daemon.stop().await.unwrap();
 }

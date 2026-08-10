@@ -15,7 +15,9 @@ use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 
 use underwrap_protocol::exec::{ExecResourceBinding, WRAPPER_RESOURCE_CHANNEL_FD};
-use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
+use underwrap_protocol::ipc::{
+    read_wrapper_resource_frame_sync, write_wrapper_resource_frame_sync,
+};
 use underwrap_protocol::message::{WrapperResourceRequest, WrapperResourceResponse};
 
 /// The resource's state captured at Checkout, used by the end-of-run
@@ -66,10 +68,10 @@ fn send_checkout(fd: i32) -> Result<(Vec<u8>, bool), String> {
         ));
     }
     let mut stream = unsafe { UnixStream::from_raw_fd(dup_fd) };
-    write_frame_sync(&mut stream, &WrapperResourceRequest::Checkout)
+    write_wrapper_resource_frame_sync(&mut stream, &WrapperResourceRequest::Checkout)
         .map_err(|e| format!("sending Checkout: {e}"))?;
-    let resp: WrapperResourceResponse =
-        read_frame_sync(&mut stream).map_err(|e| format!("reading CheckoutOk: {e}"))?;
+    let resp: WrapperResourceResponse = read_wrapper_resource_frame_sync(&mut stream)
+        .map_err(|e| format!("reading CheckoutOk: {e}"))?;
     match resp {
         WrapperResourceResponse::CheckoutOk { blob, writable } => Ok((blob, writable)),
         WrapperResourceResponse::Error { code, message } => {

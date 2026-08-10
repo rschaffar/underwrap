@@ -259,7 +259,8 @@ runtime tree is not mounted automatically.
 ## Resource model
 
 Each wrapper projects exactly one backend resource. A resource is one
-JCS-canonical JSON blob with three slots:
+JCS-canonical JSON blob with an inclusive 2,097,152-byte complete-resource cap
+and three slots:
 
 ```text
 resource
@@ -275,8 +276,9 @@ permission to another secret.
 
 ### Environment projection
 
-Selected env entries are inserted only into the final target environment.
-Runtime finalize rejects a submitted env section that differs from the resource
+Selected env entries are carried only in the authenticated fd-20 Checkout blob
+and inserted into the final target environment; the small wrapper and fd-3
+control messages carry only the env-projection selector. Runtime finalize rejects a submitted env section that differs from the resource
 snapshot it loads, so the admin API/UI is the intended editor. The compare and
 whole-blob save are not a transaction: concurrent writers are last-writer-wins,
 and a stale runtime writeback can overwrite an admin edit that races between
@@ -325,15 +327,18 @@ through a one-shot pipe. secretsd publishes generation 0 and waits for complete
 host ACK before readiness; every later mutation publishes the next complete
 canonical generation and waits for exact ACK or REJECT while retaining the
 store write lock. The host validates canonical bytes, identifiers, aliases,
-references, timestamps, and the inclusive 1-MiB bound before ACK.
+references, timestamps, the inclusive 1-MiB publication-body bound, and its
+composition with immutable Checkout env/files under the complete-resource cap
+before ACK.
 
 After the unchanged blocking gate observation, the host drains publication while
 polling relay `waitpid(WNOHANG)`. PID 1 independently polls liveness and reaps
 PID 2. Following clean reap, terminal EOF permits the latest validated generation
 whose ACK was completely written; final `EAGAIN` proves endpoint retention and
 fails closed without fallback. ACK is invocation-local retention, not D-Bus
-response delivery or backend durability. Generic resource Checkin remains
-limited to 64-KiB frames.
+response delivery or backend durability. Resource Checkout/Checkin use a
+separate bulk bound of the complete resource plus their message envelope; other
+local control IPC remains limited to 64-KiB frames.
 
 The private helpers start as PID 2 descendants and can be adopted by namespace
 PID 1. PID 1 exit terminates every helper and descendant. The relay closes fd 20

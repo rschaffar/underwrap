@@ -41,7 +41,7 @@ use crate::admin_api::audit::{AuditEntity, LibsecretEntityKind, log_admin_event,
 use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
-use crate::http::responses::Body;
+use crate::http::responses::{Body, ResourceBody};
 use crate::runtime_state::ListenerState;
 use crate::time::now_epoch_secs;
 
@@ -132,7 +132,7 @@ fn with_blob<R>(
     let (result, dirty) = f(&mut blob)?;
     if dirty {
         save_resource_blob(store.as_ref(), resource_id, &blob)
-            .into_internal("saving resource blob")?;
+            .map_err(|error| AdminError::from_resource_write(error, "saving resource blob"))?;
     }
     Ok(result)
 }
@@ -342,7 +342,7 @@ pub(crate) async fn handle_post_item(
     State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, cid)): Path<(String, String, String)>,
-    Body(body): Body<AdminLibsecretItemCreateRequest>,
+    ResourceBody(body): ResourceBody<AdminLibsecretItemCreateRequest>,
 ) -> Result<Json<AdminLibsecretItemCreateResponse>, AdminError> {
     let outcome = (|| -> Result<AdminLibsecretItemCreateResponse, AdminError> {
         let secret = decode_b64(&body.secret_b64).map(SecretBytes::from)?;

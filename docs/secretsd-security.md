@@ -58,8 +58,10 @@ attempt also preserves the previous ACK-written generation. A final
 nonblocking `EAGAIN` is different: it proves a publisher endpoint remains open,
 so no generation fallback, collection, Checkin, or UsageSignal is allowed.
 
-The generic resource channel still has a separate 64-KiB frame limit. A private
-publication near the 1-MiB cap can receive a host ACK and later fail Checkin; the
+The authenticated resource channel has a dedicated 2-MiB complete-resource
+bound plus its message envelope; unrelated control IPC remains capped at 64 KiB.
+A private publication near the 1-MiB cap is eligible for Checkin when its
+composition with Checkout env/files remains within the complete-resource cap; the
 ACK is not a backend-durability promise.
 
 ## Descriptor ownership

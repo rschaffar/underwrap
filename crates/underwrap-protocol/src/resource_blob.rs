@@ -32,6 +32,51 @@ use crate::message::SecretBytes;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
+/// Inclusive maximum for the complete JCS-canonical resource blob.
+///
+/// This is deliberately independent of the private libsecret publication
+/// body limit and all transport envelopes.
+pub const MAX_CANONICAL_RESOURCE_BYTES: usize = 2 * 1024 * 1024;
+
+/// A complete canonical resource exceeded the public size authority.
+///
+/// This preserves the stable diagnostic text while allowing callers that need
+/// safe size metadata to classify the failure without inspecting a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceTooLargeError {
+    attempted_len: usize,
+    maximum_len: usize,
+}
+
+impl ResourceTooLargeError {
+    const fn new(attempted_len: usize) -> Self {
+        Self {
+            attempted_len,
+            maximum_len: MAX_CANONICAL_RESOURCE_BYTES,
+        }
+    }
+
+    pub const fn attempted_len(self) -> usize {
+        self.attempted_len
+    }
+
+    pub const fn maximum_len(self) -> usize {
+        self.maximum_len
+    }
+}
+
+impl std::fmt::Display for ResourceTooLargeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "resource blob exceeds maximum of {} bytes (got {})",
+            self.maximum_len, self.attempted_len
+        )
+    }
+}
+
+impl std::error::Error for ResourceTooLargeError {}
+
 /// Full content of one resource at one point in time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceBlob {
@@ -168,13 +213,16 @@ impl ResourceBlob {
     /// Serialize to JCS-canonical JSON bytes. Two `ResourceBlob`s
     /// that are `==` produce byte-identical output here.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>> {
-        serde_jcs::to_vec(self).context("serializing resource blob (JCS)")
+        let bytes = serde_jcs::to_vec(self).context("serializing resource blob (JCS)")?;
+        ensure_resource_size(bytes.len())?;
+        Ok(bytes)
     }
 
     /// Deserialize from JCS-canonical JSON bytes. Rejects unknown
     /// `schema_version` with a clear error so older daemons can't
     /// silently mis-parse a future-format blob.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        ensure_resource_size(bytes.len())?;
         let blob: ResourceBlob =
             serde_json::from_slice(bytes).context("parsing resource blob JSON")?;
         if blob.schema_version != CURRENT_SCHEMA_VERSION {
@@ -186,6 +234,27 @@ impl ResourceBlob {
         }
         Ok(blob)
     }
+}
+
+/// Reject a complete canonical resource that exceeds the protocol authority.
+pub fn ensure_resource_size(len: usize) -> Result<()> {
+    if len > MAX_CANONICAL_RESOURCE_BYTES {
+        return Err(ResourceTooLargeError::new(len).into());
+    }
+    Ok(())
+}
+
+/// Return complete-resource size metadata when the error came from the shared
+/// size authority.
+pub fn resource_too_large_error(error: &anyhow::Error) -> Option<&ResourceTooLargeError> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<ResourceTooLargeError>())
+}
+
+/// Whether an error came from the complete-resource size authority.
+pub fn is_resource_too_large_error(error: &anyhow::Error) -> bool {
+    resource_too_large_error(error).is_some()
 }
 
 impl Default for ResourceBlob {

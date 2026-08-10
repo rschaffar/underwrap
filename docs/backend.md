@@ -239,8 +239,9 @@ open), then:
   and returns `{ "outcome": "ok" }`. Always allowed if the open
   would have been allowed.
 - `blob_b64 = Some(_)` — writeback. The backend re-checks the
-  `writable` flag (deny `not-writable` if false), decodes the blob,
-  re-canonicalizes it (deny `noncanonical-blob` if it doesn't match
+  `writable` flag (deny `not-writable` if false), rejects decoded complete
+  blobs above 2,097,152 bytes with `resource-too-large` before parsing or
+  persistence, then re-canonicalizes the blob (deny `noncanonical-blob` if it doesn't match
   the submitted bytes), rejects unknown `schema_version` values, then
   compares the submitted `env` section with the resource blob loaded during
   finalize. A difference rejects with
@@ -264,7 +265,7 @@ Tagged response variants:
 ```
 
 Structured `InvalidBlob` reasons: `decode-failed`, `noncanonical-blob`,
-`schema-unknown`, `env-section-immutable`. They are split apart from
+`schema-unknown`, `resource-too-large`, `env-section-immutable`. They are split apart from
 `Deny` because a `Deny` may flip to `Allow` after an operator edits
 the policy, whereas `InvalidBlob` is a client bug that won't change
 on retry.
@@ -683,7 +684,8 @@ and the pair record does not store them.
 
 Every resource is stored as **one** opaque key in the
 `StorageBackend` at `resources/<resource_id>`. The value is the
-JCS-canonical (RFC 8785) JSON bytes of a `ResourceBlob` carrying the
+JCS-canonical (RFC 8785) JSON bytes of a `ResourceBlob`, capped inclusively at
+2,097,152 bytes as a complete resource, carrying the
 three slots inline:
 
 ```json

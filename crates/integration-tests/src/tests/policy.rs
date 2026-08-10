@@ -122,8 +122,8 @@ async fn wrapper_read_succeeds_when_grant_is_unlocked() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "ghp_test123");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "ghp_test123");
 
     daemon.stop().await.unwrap();
 }

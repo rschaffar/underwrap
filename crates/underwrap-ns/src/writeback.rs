@@ -11,10 +11,15 @@
 //!   the change is dropped locally; one warning is emitted.
 //! - bytes differ + readonly  → drop the change; one warning is
 //!   emitted; `UsageSignal` is still sent so the daemon records use.
+//! - complete composition too large → drop the change with attempted/max
+//!   diagnostics and send no terminal resource verb. The caller retains the
+//!   already-authoritative target status.
 
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
-use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
+use underwrap_protocol::ipc::{
+    read_wrapper_resource_frame_sync, write_wrapper_resource_frame_sync,
+};
 use underwrap_protocol::message::{
     ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse,
 };
@@ -43,6 +48,14 @@ pub enum WritebackOutcome {
     DroppedReadOnly {
         resource_id: String,
         resource_name: String,
+    },
+    /// Bytes changed but composing the complete canonical resource exceeded
+    /// the public size authority. No terminal resource verb was attempted.
+    RejectedTooLarge {
+        resource_id: String,
+        resource_name: String,
+        attempted_len: usize,
+        maximum_len: usize,
     },
 }
 
@@ -98,12 +111,24 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
     let mut new_blob = original;
     new_blob.files = new_files;
     new_blob.libsecret = new_libsecret;
-    let new_canonical = new_blob.to_canonical_bytes().map_err(|e| {
-        format!(
-            "canonicalizing post-run blob for '{}': {e}",
-            channel.resource_id
-        )
-    })?;
+    let new_canonical = match new_blob.to_canonical_bytes() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            if let Some(size) = underwrap_protocol::resource_blob::resource_too_large_error(&error)
+            {
+                return Ok(WritebackOutcome::RejectedTooLarge {
+                    resource_id: channel.resource_id.clone(),
+                    resource_name: channel.resource_name.clone(),
+                    attempted_len: size.attempted_len(),
+                    maximum_len: size.maximum_len(),
+                });
+            }
+            return Err(format!(
+                "canonicalizing post-run blob for '{}': {error}",
+                channel.resource_id
+            ));
+        }
+    };
 
     if new_canonical == channel.original_canonical {
         signal_usage(channel.channel_fd, &channel.resource_id)?;
@@ -140,14 +165,14 @@ enum CheckinOutcome {
 
 fn send_checkin(fd: i32, blob: &[u8], resource_id: &str) -> Result<CheckinOutcome, String> {
     let mut stream = open_stream(fd, resource_id)?;
-    write_frame_sync(
+    write_wrapper_resource_frame_sync(
         &mut stream,
         &WrapperResourceRequest::Checkin {
             blob: blob.to_vec(),
         },
     )
     .map_err(|e| format!("sending Checkin for '{resource_id}': {e}"))?;
-    let resp: WrapperResourceResponse = read_frame_sync(&mut stream)
+    let resp: WrapperResourceResponse = read_wrapper_resource_frame_sync(&mut stream)
         .map_err(|e| format!("reading Checkin response for '{resource_id}': {e}"))?;
     match resp {
         WrapperResourceResponse::CheckinOk => Ok(CheckinOutcome::Persisted),
@@ -166,9 +191,9 @@ fn send_checkin(fd: i32, blob: &[u8], resource_id: &str) -> Result<CheckinOutcom
 
 fn signal_usage(fd: i32, resource_id: &str) -> Result<(), String> {
     let mut stream = open_stream(fd, resource_id)?;
-    write_frame_sync(&mut stream, &WrapperResourceRequest::UsageSignal)
+    write_wrapper_resource_frame_sync(&mut stream, &WrapperResourceRequest::UsageSignal)
         .map_err(|e| format!("sending UsageSignal for '{resource_id}': {e}"))?;
-    let resp: WrapperResourceResponse = read_frame_sync(&mut stream)
+    let resp: WrapperResourceResponse = read_wrapper_resource_frame_sync(&mut stream)
         .map_err(|e| format!("reading UsageSignal response for '{resource_id}': {e}"))?;
     match resp {
         WrapperResourceResponse::UsageSignalOk => Ok(()),

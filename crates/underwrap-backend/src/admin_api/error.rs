@@ -46,6 +46,19 @@ impl AdminError {
         Self::new(StatusCode::BAD_REQUEST, code, message)
     }
 
+    pub(crate) fn resource_too_large(
+        size: underwrap_protocol::resource_blob::ResourceTooLargeError,
+    ) -> Self {
+        Self::bad_request(
+            "resource_too_large",
+            format!(
+                "complete canonical resource exceeds public maximum of {} bytes (got {})",
+                size.maximum_len(),
+                size.attempted_len(),
+            ),
+        )
+    }
+
     pub(crate) fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", message)
     }
@@ -115,6 +128,14 @@ impl AdminError {
             "rotation_recovery_required",
             "the canonical encrypted generation is unavailable; stop the backend and restore a retained generation using the documented trusted-host recovery procedure",
         )
+    }
+
+    pub(crate) fn from_resource_write(error: anyhow::Error, context: &'static str) -> Self {
+        if let Some(size) = underwrap_protocol::resource_blob::resource_too_large_error(&error) {
+            Self::resource_too_large(*size)
+        } else {
+            Self::internal(context, error)
+        }
     }
 
     #[cfg(test)]

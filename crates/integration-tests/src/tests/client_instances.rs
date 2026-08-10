@@ -48,7 +48,7 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
         .await
         .unwrap();
 
-    let first = daemon.read_request("gh-authorized").await.unwrap();
+    let (_, first, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
     assert_eq!(expect_single_env_string(first), "ghp_before_disable");
     daemon.direct_service_status().await.unwrap();
 
@@ -99,7 +99,7 @@ async fn disabling_runtime_client_instance_blocks_next_wrapper_read_without_rest
         .await
         .unwrap();
 
-    let first = daemon.read_request("gh-authorized").await.unwrap();
+    let (_, first, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
     assert_eq!(expect_single_env_string(first), "ghp_before_disable");
 
     let client_id = daemon.list_client_instances().await.unwrap().items[0]
@@ -145,7 +145,7 @@ async fn deleting_runtime_client_instance_blocks_next_wrapper_read_without_resta
         .await
         .unwrap();
 
-    let first = daemon.read_request("gh-authorized").await.unwrap();
+    let (_, first, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
     assert_eq!(expect_single_env_string(first), "ghp_before_delete");
 
     let client_id = daemon.list_client_instances().await.unwrap().items[0]
@@ -198,7 +198,7 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
         .await
         .unwrap();
 
-    let first = daemon.read_request("gh-authorized").await.unwrap();
+    let (_, first, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
     assert_eq!(expect_single_env_string(first), "ghp_original");
 
     let client_id = daemon.list_client_instances().await.unwrap().items[0]
@@ -218,7 +218,7 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
         .await
         .unwrap();
 
-    let second = daemon.read_request("gh-authorized").await.unwrap();
+    let (_, second, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
     assert_eq!(expect_single_env_string(second), "ghp_remapped");
 
     daemon.stop().await.unwrap();

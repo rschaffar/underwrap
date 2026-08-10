@@ -23,7 +23,9 @@ use tokio::net::UnixStream;
 use tracing::{debug, error, info, warn};
 
 use underwrap_protocol::config::AccessMode;
-use underwrap_protocol::ipc::{read_frame_async, write_frame_async};
+use underwrap_protocol::ipc::{
+    read_wrapper_resource_frame_async, write_wrapper_resource_frame_async,
+};
 use underwrap_protocol::message::{
     ResourceErrorCode, WrapperResourceRequest, WrapperResourceResponse,
 };
@@ -84,7 +86,8 @@ async fn channel_loop(
     ctx: &ChannelContext,
 ) -> Result<()> {
     loop {
-        let req: WrapperResourceRequest = match read_frame_async(&mut stream).await {
+        let req: WrapperResourceRequest = match read_wrapper_resource_frame_async(&mut stream).await
+        {
             Ok(req) => req,
             Err(e) => {
                 let msg = format!("{e}");
@@ -124,7 +127,7 @@ async fn channel_loop(
             code: ResourceErrorCode::Internal,
             message: format!("channel handler panicked: {join_err}"),
         });
-        write_frame_async(&mut stream, &resp).await?;
+        write_wrapper_resource_frame_async(&mut stream, &resp).await?;
     }
 }
 

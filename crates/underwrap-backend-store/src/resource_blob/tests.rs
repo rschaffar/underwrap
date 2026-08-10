@@ -1,18 +1,23 @@
 use super::*;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use underwrap_protocol::message::SecretBytes;
-use underwrap_protocol::resource_blob::{Collection, Item, LibsecretSection};
+use underwrap_protocol::resource_blob::{
+    Collection, Item, LibsecretSection, MAX_CANONICAL_RESOURCE_BYTES,
+};
 
 /// Minimal in-memory backend, just for these helpers.
 struct MemStore {
     data: Mutex<HashMap<String, Vec<u8>>>,
+    writes: AtomicUsize,
 }
 
 impl MemStore {
     fn new() -> Self {
         Self {
             data: Mutex::new(HashMap::new()),
+            writes: AtomicUsize::new(0),
         }
     }
 }
@@ -28,6 +33,7 @@ impl StorageBackend for MemStore {
             .map(SecretBytes::from))
     }
     fn write(&self, secret_id: &str, material: &[u8]) -> Result<()> {
+        self.writes.fetch_add(1, Ordering::Relaxed);
         self.data
             .lock()
             .unwrap()
@@ -94,6 +100,117 @@ fn sample_blob(env_value: &str) -> ResourceBlob {
     let mut blob = ResourceBlob::empty();
     blob.env.insert("TOK".into(), SecretBytes::from(env_value));
     blob
+}
+
+fn blob_with_canonical_len(len: usize) -> ResourceBlob {
+    let mut blob = ResourceBlob::empty();
+    blob.files
+        .insert("padding".into(), SecretBytes::from(Vec::<u8>::new()));
+    let base = blob.to_canonical_bytes().unwrap().len();
+    blob.files = BTreeMap::from([(
+        format!("padding{}", "x".repeat(len - base)),
+        SecretBytes::from(Vec::<u8>::new()),
+    )]);
+    if len <= MAX_CANONICAL_RESOURCE_BYTES {
+        assert_eq!(blob.to_canonical_bytes().unwrap().len(), len);
+    }
+    blob
+}
+
+fn canonical_one_byte_over_limit() -> Vec<u8> {
+    let exact = blob_with_canonical_len(MAX_CANONICAL_RESOURCE_BYTES)
+        .to_canonical_bytes()
+        .unwrap();
+    let mut oversized = exact.clone();
+    let marker = br#""files":{"padding"#;
+    let position = oversized
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .unwrap()
+        + marker.len();
+    // The sole files key contains only unescaped ASCII. Extending that JSON
+    // string by one ASCII byte preserves both JSON validity and JCS ordering.
+    oversized.insert(position, b'x');
+    assert_eq!(oversized.len(), MAX_CANONICAL_RESOURCE_BYTES + 1);
+    assert!(std::str::from_utf8(&oversized).is_ok());
+    let mut restored = oversized.clone();
+    assert_eq!(restored.remove(position), b'x');
+    assert_eq!(restored, exact);
+    oversized
+}
+
+fn assert_backend_resource_boundaries(backend: &dyn StorageBackend) {
+    for len in [
+        MAX_CANONICAL_RESOURCE_BYTES - 1,
+        MAX_CANONICAL_RESOURCE_BYTES,
+    ] {
+        let blob = blob_with_canonical_len(len);
+        save_resource_blob(backend, "boundary", &blob).unwrap();
+        assert_eq!(load_resource_blob(backend, "boundary").unwrap(), blob);
+        assert_eq!(
+            backend
+                .read("resources/boundary")
+                .unwrap()
+                .unwrap()
+                .as_ref()
+                .len(),
+            len
+        );
+    }
+
+    let prior = backend
+        .read("resources/boundary")
+        .unwrap()
+        .expect("prior bytes");
+    let oversized = blob_with_canonical_len(MAX_CANONICAL_RESOURCE_BYTES + 1);
+    let error = save_resource_blob(backend, "boundary", &oversized).unwrap_err();
+    assert!(error.to_string().contains("exceeds maximum"));
+    assert_eq!(
+        backend.read("resources/boundary").unwrap().unwrap(),
+        prior,
+        "rejected save changed prior bytes"
+    );
+
+    backend
+        .write("resources/injected", &canonical_one_byte_over_limit())
+        .unwrap();
+    let error = load_resource_blob(backend, "injected").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("exceeds maximum"),
+        "unexpected load error: {error:#}"
+    );
+}
+
+#[test]
+fn plain_and_encrypted_backends_enforce_complete_resource_boundaries() {
+    let plain_tmp = tempfile::TempDir::new().unwrap();
+    let plain = crate::PlainBackend::open(plain_tmp.path()).unwrap();
+    assert_backend_resource_boundaries(&plain);
+
+    let encrypted_tmp = tempfile::TempDir::new().unwrap();
+    let encrypted =
+        crate::EncryptedBackend::create_with_key(&encrypted_tmp.path().join("store"), [7; 32])
+            .unwrap();
+    assert_backend_resource_boundaries(&encrypted);
+}
+
+#[test]
+fn oversized_save_is_rejected_before_storage_write() {
+    let store = MemStore::new();
+    save_resource_blob(&store, "boundary", &sample_blob("prior")).unwrap();
+    let prior = store
+        .data
+        .lock()
+        .unwrap()
+        .get("resources/boundary")
+        .unwrap()
+        .clone();
+    let writes = store.writes.load(Ordering::Relaxed);
+
+    let oversized = blob_with_canonical_len(MAX_CANONICAL_RESOURCE_BYTES + 1);
+    assert!(save_resource_blob(&store, "boundary", &oversized).is_err());
+    assert_eq!(store.writes.load(Ordering::Relaxed), writes);
+    assert_eq!(store.data.lock().unwrap()["resources/boundary"], prior);
 }
 
 #[test]

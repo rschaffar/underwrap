@@ -5,7 +5,9 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 use underwrap_protocol::exec::ExecResourceBinding;
-use underwrap_protocol::ipc::{read_frame_sync, write_frame_sync};
+use underwrap_protocol::ipc::{
+    read_wrapper_resource_frame_sync, write_wrapper_resource_frame_sync,
+};
 use underwrap_protocol::message::{SecretBytes, WrapperResourceRequest, WrapperResourceResponse};
 use underwrap_protocol::resource_blob::{Collection, LibsecretSection, ResourceBlob};
 
@@ -14,7 +16,6 @@ const CHILD_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn bundle(access_paths: Vec<String>) -> ExecBundle {
     ExecBundle {
-        env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
         target_runtime_dir_base: "/run/underwrap-runtime".to_string(),
@@ -22,6 +23,7 @@ fn bundle(access_paths: Vec<String>) -> ExecBundle {
             resource_id: "res_x_y".to_string(),
             resource_name: "x/y".to_string(),
             access: underwrap_protocol::config::AccessMode::ReadOnly,
+            env_projection: false,
             libsecret: false,
             files_target_paths: Vec::new(),
         },
@@ -52,6 +54,7 @@ fn build_target_env_uses_the_resolved_runtime_dir_verbatim() {
     let env = crate::env::build_target_env(
         &HashMap::new(),
         &b,
+        &ResourceBlob::empty(),
         Path::new("/home/alice"),
         "/run/underwrap-runtime/underwrap-target-abc",
     )
@@ -376,7 +379,7 @@ fn accepted_combined_dispatch(
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
     channel_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
     daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-    write_frame_sync(&mut daemon_end, &response).unwrap();
+    write_wrapper_resource_frame_sync(&mut daemon_end, &response).unwrap();
     let mut channel = test_resource_channel(
         channel_end.as_raw_fd(),
         original.to_canonical_bytes().unwrap(),
@@ -390,8 +393,131 @@ fn accepted_combined_dispatch(
     };
 
     let outcomes = dispatch_after_gate(GateAuthorization::Accepted, &[input]).unwrap();
-    let request = read_frame_sync(&mut daemon_end).unwrap();
+    let request = read_wrapper_resource_frame_sync(&mut daemon_end).unwrap();
     (outcomes, request)
+}
+
+fn writeback_baseline_for_exact_candidate(candidate: &LibsecretSection) -> ResourceBlob {
+    let mut complete = ResourceBlob::empty();
+    complete.libsecret = candidate.clone();
+    complete
+        .files
+        .insert("padding".into(), SecretBytes::from(Vec::<u8>::new()));
+    let base = complete.to_canonical_bytes().unwrap().len();
+    complete.files = BTreeMap::from([(
+        format!(
+            "padding{}",
+            "x".repeat(underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES - base)
+        ),
+        SecretBytes::from(Vec::<u8>::new()),
+    )]);
+    assert_eq!(
+        complete.to_canonical_bytes().unwrap().len(),
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES
+    );
+    complete.libsecret = LibsecretSection::default();
+    complete
+}
+
+#[test]
+fn complete_combined_writeback_exact_max_sends_bulk_checkin() {
+    let mut candidate = LibsecretSection::default();
+    candidate.collections.insert(
+        "a".into(),
+        Collection {
+            label: "candidate".into(),
+            created: 1_700_000_000,
+            modified: 1_700_000_000,
+            items: BTreeMap::new(),
+        },
+    );
+    let original = writeback_baseline_for_exact_candidate(&candidate);
+    let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
+    daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    daemon_end.set_write_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    let expected_candidate = candidate.clone();
+    let responder = std::thread::spawn(move || {
+        let request: WrapperResourceRequest =
+            read_wrapper_resource_frame_sync(&mut daemon_end).unwrap();
+        let WrapperResourceRequest::Checkin { blob } = request else {
+            panic!("exact-max composition did not send Checkin");
+        };
+        assert_eq!(
+            blob.len(),
+            underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES
+        );
+        assert_eq!(
+            ResourceBlob::from_canonical_bytes(&blob).unwrap().libsecret,
+            expected_candidate
+        );
+        write_wrapper_resource_frame_sync(&mut daemon_end, &WrapperResourceResponse::CheckinOk)
+            .unwrap();
+        daemon_end.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(daemon_end);
+    });
+    let mut channel = test_resource_channel(
+        channel_end.as_raw_fd(),
+        original.to_canonical_bytes().unwrap(),
+    );
+    channel.files_target_paths.clear();
+    channel.libsecret = true;
+    let outcome = crate::writeback::dispatch_writeback(&[WritebackInput {
+        channel: &channel,
+        directory_layout: &[],
+        libsecret_generation: Some(&candidate),
+    }]);
+    drop(channel);
+    drop(channel_end);
+    responder.join().unwrap();
+    assert_eq!(outcome.unwrap(), vec![WritebackOutcome::Persisted]);
+}
+
+#[test]
+fn complete_combined_writeback_one_over_max_sends_no_terminal_verb() {
+    let mut exact = LibsecretSection::default();
+    exact.collections.insert(
+        "a".into(),
+        Collection {
+            label: "candidate".into(),
+            created: 1_700_000_000,
+            modified: 1_700_000_000,
+            items: BTreeMap::new(),
+        },
+    );
+    let original = writeback_baseline_for_exact_candidate(&exact);
+    let mut oversized = exact;
+    let collection = oversized.collections.remove("a").unwrap();
+    oversized.collections.insert("aa".into(), collection);
+    let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
+    daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
+    let mut channel = test_resource_channel(
+        channel_end.as_raw_fd(),
+        original.to_canonical_bytes().unwrap(),
+    );
+    channel.files_target_paths.clear();
+    channel.libsecret = true;
+    let outcomes = crate::writeback::dispatch_writeback(&[WritebackInput {
+        channel: &channel,
+        directory_layout: &[],
+        libsecret_generation: Some(&oversized),
+    }])
+    .unwrap();
+    assert_eq!(
+        outcomes,
+        vec![WritebackOutcome::RejectedTooLarge {
+            resource_id: "res_f006_unit".to_string(),
+            resource_name: "test/f006-unit".to_string(),
+            attempted_len: underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES + 1,
+            maximum_len: underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES,
+        }]
+    );
+    let mut byte = [0];
+    assert!(matches!(
+        daemon_end.read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    drop(channel_end);
+    drop(daemon_end);
 }
 
 #[test]
@@ -473,7 +599,8 @@ fn old_same_uid_state_path_is_irrelevant_to_selected_libsecret() {
 
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
     daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-    write_frame_sync(&mut daemon_end, &WrapperResourceResponse::UsageSignalOk).unwrap();
+    write_wrapper_resource_frame_sync(&mut daemon_end, &WrapperResourceResponse::UsageSignalOk)
+        .unwrap();
     let original = ResourceBlob::empty();
     let mut channel = test_resource_channel(
         channel_end.as_raw_fd(),
@@ -492,7 +619,7 @@ fn old_same_uid_state_path_is_irrelevant_to_selected_libsecret() {
         Some(vec![WritebackOutcome::Unchanged])
     );
     assert_eq!(
-        read_frame_sync::<WrapperResourceRequest>(&mut daemon_end).unwrap(),
+        read_wrapper_resource_frame_sync::<WrapperResourceRequest>(&mut daemon_end).unwrap(),
         WrapperResourceRequest::UsageSignal
     );
     assert_eq!(
@@ -522,7 +649,8 @@ fn run_parent_without_publication_preserves_nonempty_libsecret_and_propagates_st
 
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
     daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-    write_frame_sync(&mut daemon_end, &WrapperResourceResponse::UsageSignalOk).unwrap();
+    write_wrapper_resource_frame_sync(&mut daemon_end, &WrapperResourceResponse::UsageSignalOk)
+        .unwrap();
     let mut channel = test_resource_channel(channel_end.as_raw_fd(), original_canonical);
     channel.libsecret = true;
     channel.files_target_paths.clear();
@@ -570,7 +698,7 @@ fn run_parent_without_publication_preserves_nonempty_libsecret_and_propagates_st
     drop(channel_end);
     let mut guard = ChildGuard::new(outer);
     assert_eq!(
-        read_frame_sync::<WrapperResourceRequest>(&mut daemon_end).unwrap(),
+        read_wrapper_resource_frame_sync::<WrapperResourceRequest>(&mut daemon_end).unwrap(),
         WrapperResourceRequest::UsageSignal,
         "an unprojected libsecret slot must remain byte-identical"
     );
@@ -797,7 +925,8 @@ fn lifecycle_conjunction_case(
 ) -> (libc::c_int, Option<WrapperResourceRequest>) {
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
     daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-    write_frame_sync(&mut daemon_end, &WrapperResourceResponse::CheckinOk).unwrap();
+    write_wrapper_resource_frame_sync(&mut daemon_end, &WrapperResourceResponse::CheckinOk)
+        .unwrap();
     let (_staging, blob, plans) = changed_staging_fixture(b"before", b"after");
     let mut channel =
         test_resource_channel(channel_end.as_raw_fd(), blob.to_canonical_bytes().unwrap());
@@ -889,7 +1018,7 @@ fn lifecycle_conjunction_case(
 
     drop(channel_end);
     let request_result = if matches!(case, LifecycleCase::Accepted) {
-        Some(read_frame_sync(&mut daemon_end))
+        Some(read_wrapper_resource_frame_sync(&mut daemon_end))
     } else {
         None
     };
@@ -907,6 +1036,66 @@ fn lifecycle_conjunction_case(
         None
     };
     (status, request)
+}
+
+#[test]
+fn audit_json_string_and_display_escape_arbitrary_utf8_metadata() {
+    let metadata = "quote\" slash/ backslash\\ newline\n carriage\r tab\t backspace\u{08} \
+                    formfeed\u{0c} nul\0 unit\u{1f} Unicode ☃";
+    assert_eq!(
+        json_string(metadata),
+        "\"quote\\\" slash/ backslash\\\\ newline\\n carriage\\r tab\\t backspace\\b \
+         formfeed\\f nul\\u0000 unit\\u001f Unicode ☃\""
+    );
+    assert_eq!(
+        one_line_display(metadata),
+        "quote\\\" slash/ backslash\\\\ newline\\n carriage\\r tab\\t backspace\\b \
+         formfeed\\f nul\\u0000 unit\\u001f Unicode ☃"
+    );
+
+    let all_c0: String = (0_u8..=0x1f).map(char::from).collect();
+    let encoded_c0 = json_string(&all_c0);
+    assert!(
+        encoded_c0[1..encoded_c0.len() - 1]
+            .chars()
+            .all(|character| character > '\u{1f}')
+    );
+    assert!(encoded_c0.contains(r#"\u0001"#));
+    assert!(encoded_c0.contains(r#"\u001f"#));
+}
+
+#[test]
+fn audit_json_lines_cover_rejection_reasons_and_paired_size_fields() {
+    let resource_id = "id\"\\\n\u{1f}☃";
+    let resource_name = "name\"\\\n\u{1f}☃";
+    let maximum = underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES;
+
+    for (reason, size) in [
+        ("grant_readonly", None),
+        ("server_rejected", None),
+        ("resource_too_large", Some((maximum + 1, maximum))),
+    ] {
+        let line = audit_json_line(reason, resource_id, resource_name, size);
+        assert!(line.starts_with(&format!(
+            r#"{{"audit":"writeback_rejected","reason":"{reason}""#
+        )));
+        assert!(line.contains(r#""resource_id":"id\"\\\n\u001f☃""#));
+        assert!(line.contains(r#""resource_name":"name\"\\\n\u001f☃""#));
+        assert!(
+            !line.contains('\n'),
+            "fallback must remain one physical line"
+        );
+        match size {
+            Some((attempted, maximum)) => {
+                assert!(line.contains(&format!("\"maximum_length\":{maximum}")));
+                assert!(line.contains(&format!("\"attempted_length\":{attempted}")));
+            }
+            None => {
+                assert!(!line.contains("maximum_length"));
+                assert!(!line.contains("attempted_length"));
+            }
+        }
+    }
 }
 
 #[test]

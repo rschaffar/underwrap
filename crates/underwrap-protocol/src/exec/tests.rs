@@ -7,6 +7,7 @@ fn exec_resource_binding_roundtrip() {
         resource_id: "res_gws_state".to_string(),
         resource_name: "gws/state".to_string(),
         access: AccessMode::ReadWrite,
+        env_projection: true,
         libsecret: false,
         files_target_paths: vec![".config/gh".to_string()],
     };
@@ -25,6 +26,7 @@ fn resource_binding_encoding_carries_no_descriptor_selector() {
     binding.resource_id.encode(&mut expected).unwrap();
     binding.resource_name.encode(&mut expected).unwrap();
     binding.access.encode(&mut expected).unwrap();
+    binding.env_projection.encode(&mut expected).unwrap();
     binding.libsecret.encode(&mut expected).unwrap();
     binding.files_target_paths.encode(&mut expected).unwrap();
 
@@ -50,6 +52,7 @@ fn sample_binding() -> ExecResourceBinding {
         resource_id: "res_gws_state".to_string(),
         resource_name: "gws/state".to_string(),
         access: AccessMode::ReadWrite,
+        env_projection: true,
         libsecret: false,
         files_target_paths: vec![".config/gh".to_string()],
     }
@@ -58,7 +61,6 @@ fn sample_binding() -> ExecResourceBinding {
 #[test]
 fn exec_bundle_roundtrip_minimal() {
     let bundle = ExecBundle {
-        env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
         target_runtime_dir_base: "/run/user".to_string(),
@@ -66,6 +68,7 @@ fn exec_bundle_roundtrip_minimal() {
             resource_id: "res_x_y".to_string(),
             resource_name: "x/y".to_string(),
             access: AccessMode::ReadOnly,
+            env_projection: false,
             libsecret: false,
             files_target_paths: Vec::new(),
         },
@@ -80,13 +83,6 @@ fn exec_bundle_roundtrip_minimal() {
 #[test]
 fn exec_bundle_roundtrip_populated() {
     let bundle = ExecBundle {
-        env: HashMap::from([
-            ("GH_TOKEN".to_string(), b"ghp_test".as_slice().into()),
-            (
-                "AWS_SESSION_TOKEN".to_string(),
-                b"session-token".as_slice().into(),
-            ),
-        ]),
         env_passthrough: vec!["SSH_AUTH_SOCK".to_string(), "DISPLAY".to_string()],
         env_set: HashMap::from([
             ("PATH".to_string(), "/run/current-system/sw/bin".to_string()),
@@ -110,7 +106,6 @@ fn exec_bundle_carries_no_target_identity() {
     // forces deliberate review if the wire fields change. `access_paths` selects
     // caller-owned directories; it is not target identity.
     let bundle = ExecBundle {
-        env: HashMap::new(),
         env_passthrough: Vec::new(),
         env_set: HashMap::new(),
         target_runtime_dir_base: "/run/user".to_string(),
@@ -121,7 +116,6 @@ fn exec_bundle_carries_no_target_identity() {
     let encoded = encode_to_vec(&bundle).unwrap();
 
     let mut expected = Vec::new();
-    bundle.env.encode(&mut expected).unwrap();
     bundle.env_passthrough.encode(&mut expected).unwrap();
     bundle.env_set.encode(&mut expected).unwrap();
     bundle
@@ -141,7 +135,6 @@ fn exec_bundle_carries_no_target_identity() {
 #[test]
 fn exec_bundle_decode_rejects_trailing_bytes() {
     let bundle = ExecBundle {
-        env: HashMap::from([("GH_TOKEN".to_string(), b"ghp_test".as_slice().into())]),
         env_passthrough: vec!["SSH_AUTH_SOCK".to_string()],
         env_set: HashMap::new(),
         target_runtime_dir_base: "/run/user".to_string(),

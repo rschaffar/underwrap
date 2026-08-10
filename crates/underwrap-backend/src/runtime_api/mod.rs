@@ -17,11 +17,41 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::body::to_bytes;
+use axum::extract::{FromRequest, Request, State};
 use axum::routing::post;
 use tracing::warn;
 
 use crate::http::responses::Body;
+
+/// Base64 plus JSON envelope bound for runtime writeback blobs. Small runtime
+/// control requests continue using the shared 2 MiB extractor bound.
+const MAX_RESOURCE_REQUEST_BODY_BYTES: usize =
+    underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES.div_ceil(3) * 4 + 64 * 1024;
+
+struct ResourceBody<T>(T);
+
+impl<S, T> FromRequest<S> for ResourceBody<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = RuntimeError;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = to_bytes(req.into_body(), MAX_RESOURCE_REQUEST_BODY_BYTES)
+            .await
+            .map_err(|_| {
+                RuntimeError::bad_request(
+                    "invalid_request",
+                    "resource request body exceeds its limit",
+                )
+            })?;
+        serde_json::from_slice(&bytes)
+            .map(Self)
+            .map_err(|_| RuntimeError::bad_request("invalid_request", "invalid JSON request body"))
+    }
+}
 use crate::runtime_api::error::RuntimeError;
 use crate::runtime_state::ListenerState;
 use crate::store_registry::RegistryLookupError;
@@ -101,7 +131,9 @@ async fn axum_invocation_open(
 async fn axum_invocation_finalize(
     State(state): State<Arc<ListenerState>>,
     axum::Extension(peer_certs): axum::Extension<PeerCertificates>,
-    Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest>,
+    ResourceBody(parsed): ResourceBody<
+        underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest,
+    >,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse>, RuntimeError>
 {
     let (principal, store) = resolve_runtime_request(&state, &peer_certs)?;

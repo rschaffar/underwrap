@@ -1,12 +1,10 @@
 use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
+use super::errors::ErrorCode;
 use crate::config::AccessMode;
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 use crate::variant::WrapperVariant;
-
-use super::common::SecretBytes;
-use super::errors::ErrorCode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperRequest {
@@ -62,7 +60,9 @@ impl WireDecode for WrapperRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapperResponse {
     ReadOk {
-        env: std::collections::HashMap<String, SecretBytes>,
+        /// Whether the complete Checkout blob's env section is projected into
+        /// the target. Values never cross this control channel.
+        env_projection: bool,
         /// The single resource the wrapper projects. The daemon sends
         /// exactly one wrapper-resource channel fd via SCM_RIGHTS
         /// after the `ReadOk` response itself, regardless of which
@@ -108,7 +108,7 @@ impl WireEncode for WrapperResponse {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         match self {
             Self::ReadOk {
-                env,
+                env_projection,
                 resource_id,
                 resource_name,
                 access,
@@ -121,7 +121,7 @@ impl WireEncode for WrapperResponse {
                 access_paths,
             } => {
                 0u8.encode(out)?;
-                env.encode(out)?;
+                env_projection.encode(out)?;
                 resource_id.encode(out)?;
                 resource_name.encode(out)?;
                 access.encode(out)?;
@@ -146,7 +146,7 @@ impl WireDecode for WrapperResponse {
     fn decode(reader: &mut WireReader<'_>) -> Result<Self> {
         match u8::decode(reader)? {
             0 => Ok(Self::ReadOk {
-                env: std::collections::HashMap::<String, SecretBytes>::decode(reader)?,
+                env_projection: bool::decode(reader)?,
                 resource_id: String::decode(reader)?,
                 resource_name: String::decode(reader)?,
                 access: AccessMode::decode(reader)?,

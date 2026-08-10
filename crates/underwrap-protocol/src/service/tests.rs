@@ -48,6 +48,10 @@ fn runtime_invalid_blob_reason_wire_strings_are_pinned() {
         "noncanonical-blob"
     );
     assert_eq!(
+        RuntimeInvalidBlobReason::ResourceTooLarge.as_str(),
+        "resource-too-large"
+    );
+    assert_eq!(
         RuntimeInvalidBlobReason::EnvSectionImmutable.as_str(),
         "env-section-immutable"
     );

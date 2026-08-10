@@ -4,19 +4,19 @@
 //! The daemon delegates every authorization decision to the backend's
 //! `POST /v1/wrapper-invocations` endpoint. On Allow the backend
 //! returns the canonical resource blob and a `writable` hint; the
-//! daemon extracts the env section (when the wrapper config opts into
-//! it), validates env names, and assembles the wire response. The
-//! resource blob and the writable hint travel onward to the
-//! scoped wrapper-resource channel.
+//! daemon parses the env section when the wrapper config opts into it
+//! and validates its names before assembling the wire response. Env
+//! values remain in the authenticated Checkout blob. The resource blob
+//! and the writable hint travel onward to the scoped wrapper-resource
+//! channel.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use base64::Engine;
 use tracing::{error, warn};
 
 use underwrap_protocol::config::{AccessMode, RESERVED_WRAPPER_NAME_DEBUG};
-use underwrap_protocol::message::{ErrorCode, SecretBytes, WrapperResponse};
+use underwrap_protocol::message::{ErrorCode, WrapperResponse};
 use underwrap_protocol::resource::validate_env_name;
 use underwrap_protocol::resource_blob::ResourceBlob;
 use underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse;
@@ -150,9 +150,8 @@ pub(super) fn open_invocation(
         }
     };
 
-    let mut env: HashMap<String, SecretBytes> = HashMap::new();
     if wrapper_def.env {
-        for (name, value) in &blob.env {
+        for name in blob.env.keys() {
             if let Err(reason) = validate_env_name(name) {
                 return error_outcome(
                     ErrorCode::Internal,
@@ -161,7 +160,6 @@ pub(super) fn open_invocation(
                     ),
                 );
             }
-            env.insert(name.clone(), value.clone());
         }
     }
 
@@ -192,7 +190,7 @@ pub(super) fn open_invocation(
     };
 
     let response = WrapperResponse::ReadOk {
-        env,
+        env_projection: wrapper_def.env,
         resource_id: resource_id.clone(),
         resource_name: resource_name.clone(),
         access,

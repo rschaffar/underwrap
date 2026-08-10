@@ -249,6 +249,13 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
                 },
             ));
         };
+        if bytes.len() > underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES {
+            return Ok(Json(
+                RuntimeWrapperInvocationFinalizeResponse::InvalidBlob {
+                    reason: RuntimeInvalidBlobReason::ResourceTooLarge.to_string(),
+                },
+            ));
+        }
         let new_blob = match ResourceBlob::from_canonical_bytes(&bytes) {
             Ok(b) => b,
             Err(e) => {

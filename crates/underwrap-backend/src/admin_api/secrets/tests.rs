@@ -9,7 +9,7 @@ use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource_blob::ResourceBlob;
 
 use super::*;
-use crate::http::responses::Body;
+use crate::http::responses::ResourceBody;
 use crate::runtime_state::ListenerState;
 use crate::test_support::{
     admin_principal, create_resource_id_for_test, entity_test_state_with_store,
@@ -83,7 +83,7 @@ fn rename(
             slot.to_string(),
             from_key.to_string(),
         )),
-        Body(underwrap_protocol::service::AdminSecretRenameRequest {
+        ResourceBody(underwrap_protocol::service::AdminSecretRenameRequest {
             to_key: to_key.to_string(),
             material_b64: material
                 .map(|value| base64::engine::general_purpose::STANDARD.encode(value)),

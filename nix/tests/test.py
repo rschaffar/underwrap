@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -40,6 +41,12 @@ ADMIN_BOOTSTRAP_USER = "tester"
 # synthetic password and write it directly into a pipe; the derived value never
 # enters a Nix test command string, argv, environment, or configuration.
 ADMIN_PASSWORD_FIXTURE_MATERIAL = "underwrap-vm-admin-password-v1"
+MAX_CANONICAL_RESOURCE_BYTES = 2 * 1024 * 1024
+F009_ENV_VALUE = b"f009-env-value-" + b"e" * (96 * 1024)
+F009_FILES_INITIAL = b"f009-files-seed"
+F009_FILES_REPLACEMENT = b"r" * len(F009_FILES_INITIAL)
+F009_FILES_OVERSIZE = F009_FILES_INITIAL + b"x"
+F009_ADMIN_OVERSIZE = b"f009-admin-oversize"
 
 # Per-admin session-cookie state, populated by `login_admin_session`
 # during boot. `_COOKIE_JAR[url]` is curl's cookie file on the VM
@@ -214,6 +221,46 @@ def admin_api(url, path, payload=None, method="POST"):
     return json.loads(out) if out.strip() else None
 
 
+def admin_api_expect_status(url, path, payload, *, status, method="POST"):
+    """Submit an authenticated request and decode an expected non-2xx JSON
+    response without placing request material in argv.
+
+    The response capture is unique and removed even when the assertion fails;
+    `_admin_json_body` keeps a supplied request body in a mode-0600 file.
+    """
+    is_state_changing = method not in ("GET", "HEAD", "OPTIONS")
+    cookie_jar = _COOKIE_JAR.get(url)
+    csrf = _CSRF_TOKEN.get(url)
+    if cookie_jar is None or csrf is None:
+        raise AssertionError(f"admin session is unset for {url!r}")
+    response_path = f"/run/underwrap-admin-response-{uuid.uuid4().hex}.json"
+    cmd = [
+        "curl", "-sS", "-o", response_path, "-w", "%{http_code}",
+        "--cacert", CA_CERT, "-b", cookie_jar, "-X", method,
+        "-H", f"Origin: {url}",
+    ]
+    if is_state_changing:
+        cmd += ["-H", f"X-CSRF-Token: {csrf}"]
+    try:
+        if payload is None:
+            cmd += [f"{url}{path}"]
+            code = machine.succeed(" ".join(shlex.quote(part) for part in cmd)).strip()
+        else:
+            with _admin_json_body(payload) as body_path:
+                cmd += [
+                    "-H", "Content-Type: application/json",
+                    "--data-binary", f"@{body_path}", f"{url}{path}",
+                ]
+                code = machine.succeed(
+                    " ".join(shlex.quote(part) for part in cmd)
+                ).strip()
+        assert code == str(status), f"expected HTTP {status} from {path}, got {code}"
+        response = machine.succeed(f"cat {shlex.quote(response_path)}")
+        return json.loads(response) if response.strip() else {}
+    finally:
+        machine.succeed(f"rm -f {shlex.quote(response_path)}")
+
+
 def admin_write_secret(url, store, wrapper, secret_id, value):
     """Admin-side secret write. `secret_id` is the
     `<resource_name>/<slot>/<key>` path used in test fixtures; we
@@ -290,6 +337,38 @@ def admin_delete_grant(url, store, client_instance, wrapper, resource):
         f"/v1/admin/stores/{store}/wrapper-permissions/{_seg(client_instance)}/{_seg(wrapper)}/{_seg(rid)}",
         method="DELETE",
     )
+
+
+def install_local_plain_resource_blob(resource, canonical):
+    """Install trusted test-generated canonical bytes by same-directory rename.
+
+    This is root-only VM harness setup for the local PlainBackend. The transfer
+    and final resource file are service-owned mode 0600; no secret bytes enter a
+    shell command line, and every temporary guest artifact is removed.
+    """
+    assert isinstance(canonical, bytes)
+    resource_id = _resource_id_for(ADMIN_LOCAL, resource)
+    resource_dir = f"{_storage_dir_for(ADMIN_LOCAL, 'local')}/resources"
+    destination = f"{resource_dir}/{resource_id}"
+    transfer = f"{resource_dir}/.{resource_id}.f009-transfer-{uuid.uuid4().hex}"
+    with tempfile.NamedTemporaryFile(mode="wb", delete=False) as source:
+        source.write(canonical)
+        source.flush()
+        os.fchmod(source.fileno(), 0o600)
+        host_path = source.name
+    try:
+        machine.copy_from_host(host_path, transfer)
+        machine.succeed(
+            f"chmod 0600 {shlex.quote(transfer)} && "
+            f"chown underwrap-local:underwrap-local {shlex.quote(transfer)} && "
+            f"mv -f -- {shlex.quote(transfer)} {shlex.quote(destination)} && "
+            f"test $(stat -c %a {shlex.quote(destination)}) = 600 && "
+            f"test $(stat -c %U {shlex.quote(destination)}) = underwrap-local && "
+            f"test $(stat -c %G {shlex.quote(destination)}) = underwrap-local"
+        )
+    finally:
+        machine.succeed(f"rm -f -- {shlex.quote(transfer)}")
+        os.unlink(host_path)
 
 
 def admin_get_blob(url, store, resource):
@@ -381,6 +460,8 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-dir-env-probe": "test/dir-a",
     "test-dir-env-override-probe": "test/dir-a",
     "test-f006-unroutable": "test/f006-unroutable",
+    "test-f009-env": "test/f009-env",
+    "test-f009-files": "test/f009-files",
     "test-f006-exec-missing": "test/f006-exec-missing",
     "test-f006-exit-37": "test/f006-exit-37",
     "test-f006-sigkill": "test/f006-sigkill",
@@ -3103,10 +3184,10 @@ def f007_supervisor_lifecycle():
         "are irrelevant to selected libsecret state"
     )
 
-    # A legitimate generation near the private 1-MiB canonical cap must make
-    # publication/ACK progress through socket backpressure. The complete
-    # resource still exceeds generic 64-KiB Checkin framing, so this deliberately
-    # asserts target status and unchanged backend state, not backend durability.
+    # A legitimate generation near the independent private 1-MiB publication
+    # cap remains below the 2-MiB complete-resource cap, so it must pass host
+    # ACK, bulk Checkin, and backend persistence.
+    before_near_cap = baseline
     cursor = journal_cursor()
     program = (
         "import subprocess;"
@@ -3117,11 +3198,33 @@ def f007_supervisor_lifecycle():
         f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)}"
     ).strip()
     assert near_cap_status == "0", near_cap_status
+    baseline = admin_get_blob(ADMIN_LOCAL, "local", resource)
+    assert baseline != before_near_cap, "near-cap publication did not persist"
+    near_cap_stored = base64.b64decode(baseline)
+    near_cap_libsecret = json.dumps(
+        json.loads(near_cap_stored)["libsecret"],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    assert 900_000 <= len(near_cap_libsecret) <= 1_048_576, (
+        "persisted near-cap libsecret section is outside the publication range: "
+        f"{len(near_cap_libsecret)} bytes"
+    )
+    assert_one_terminal(cursor, "resource_checkin")
+
+    # A separate D-Bus lookup proves the near-cap generation made a subsequent
+    # Checkout. The target verifies the deterministic item internally and emits
+    # no value; this clean run must retain the persisted canonical bytes.
+    cursor = journal_cursor()
+    machine.succeed(
+        su(f"/run/wrappers/bin/underwrap-local {wrapper} f008-near-cap-readback")
+    )
     assert admin_get_blob(ADMIN_LOCAL, "local", resource) == baseline
-    assert_no_terminal(cursor, "F-008 near-cap generic-channel limitation")
+    assert_one_terminal(cursor, "resource_usage_signal")
     machine.log(
-        "PASS: near-cap libsecret publication receives its host ACK without "
-        "socket deadlock; no >64-KiB backend durability claim is made"
+        "PASS: near-cap libsecret publication persists through bulk Checkin and "
+        "a subsequent D-Bus readback leaves the canonical blob unchanged"
     )
 
     cancellation_cases = [
@@ -3261,6 +3364,214 @@ def f007_supervisor_lifecycle():
     assert records == [], records
     machine.log(
         "PASS: configured file-capability target gains no caps and dies through stage1 cascade"
+    )
+
+
+def f009_resource_size_contract():
+    """Exercise the deployed complete-resource boundary through fd 20."""
+    env_wrapper = "test-f009-env"
+    env_resource = "test/f009-env"
+    files_wrapper = "test-f009-files"
+    files_resource = "test/f009-files"
+
+    def report_for(value):
+        return (
+            f"length={len(value)} "
+            f"sha256={hashlib.sha256(value).hexdigest()}"
+        )
+
+    def assert_one_terminal(cursor, expected_audit):
+        deadline = time.monotonic() + 3
+        while True:
+            records = underwrapd_terminal_records_since(
+                cursor, files_wrapper, LOCAL_RESOURCE_IDS[files_resource]
+            )
+            if records or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        time.sleep(0.25)
+        records = underwrapd_terminal_records_since(
+            cursor, files_wrapper, LOCAL_RESOURCE_IDS[files_resource]
+        )
+        audits = [record["parsed_fields"].get("audit") for record in records]
+        assert audits == [expected_audit], records
+
+    def assert_no_terminal(cursor):
+        # The wrapper's completed process is the synchronization point; this
+        # lookup proves no terminal daemon verb followed it.
+        machine.sleep(0.2)
+        records = underwrapd_terminal_records_since(
+            cursor, files_wrapper, LOCAL_RESOURCE_IDS[files_resource]
+        )
+        assert records == [], records
+
+    def assert_one_size_rejection(cursor, expected_length):
+        def rejected_since_cursor():
+            output = machine.succeed(
+                "journalctl --no-pager "
+                f"--after-cursor={shlex.quote(cursor)} "
+                "SYSLOG_IDENTIFIER=underwrap-ns --output=json"
+            )
+            records = [
+                json.loads(line)
+                for line in output.splitlines()
+                if line.strip()
+            ]
+            return [
+                record for record in records
+                if record.get("AUDIT") == "writeback_rejected"
+                and record.get("REASON") == "resource_too_large"
+                and record.get("RESOURCE_ID") == LOCAL_RESOURCE_IDS[files_resource]
+                and record.get("RESOURCE_NAME") == files_resource
+            ]
+
+        deadline = time.monotonic() + 3
+        while not rejected_since_cursor() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        # The first record proves arrival, not uniqueness. Let journald finish
+        # accepting this invocation's datagrams, then re-query the entire
+        # post-cursor set before making the exact-one assertion.
+        time.sleep(0.25)
+        rejected = rejected_since_cursor()
+        assert len(rejected) == 1, rejected
+        record = rejected[0]
+        assert record.get("MAXIMUM_LENGTH") == str(MAX_CANONICAL_RESOURCE_BYTES), record
+        assert record.get("ATTEMPTED_LENGTH") == str(expected_length), record
+
+    # Env values above the generic 64-KiB control limit travel only in Checkout
+    # over the authenticated resource channel. The target prints its length and
+    # digest, never the value.
+    grant_local_unlocked(env_wrapper)
+    admin_write_resource_value(
+        ADMIN_LOCAL, "local", env_resource, "env", "F009_ENV_BULK", F009_ENV_VALUE
+    )
+    env_output = machine.succeed(
+        su(f"/run/wrappers/bin/underwrap-local {env_wrapper}")
+    ).strip()
+    assert env_output == report_for(F009_ENV_VALUE), env_output
+
+    # Build a real simple ResourceBlob shape with a small files value and a
+    # valid padding collection. Tuning only an ASCII label makes Python's sorted
+    # compact JSON exactly match the JCS representation used by this schema.
+    blob = {
+        "env": {},
+        "files": {
+            ".config/f009-boundary/token": base64.b64encode(F009_FILES_INITIAL).decode(),
+        },
+        "libsecret": {
+            "aliases": {"default": "padding"},
+            "collections": {
+                "padding": {
+                    "label": "",
+                    "created": 0,
+                    "modified": 0,
+                    "items": {},
+                },
+            },
+        },
+        "schema_version": 1,
+    }
+    assert set(blob) == {"env", "files", "libsecret", "schema_version"}
+    assert blob["libsecret"]["aliases"] == {"default": "padding"}
+    assert set(blob["libsecret"]["collections"]["padding"]) == {
+        "label", "created", "modified", "items"
+    }
+    compact = lambda value: json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    blob["libsecret"]["collections"]["padding"]["label"] = "x" * (
+        MAX_CANONICAL_RESOURCE_BYTES - len(compact(blob))
+    )
+    canonical = compact(blob)
+    assert canonical == compact(json.loads(canonical))
+    assert len(canonical) == MAX_CANONICAL_RESOURCE_BYTES
+    assert blob["libsecret"]["collections"]["padding"]["label"].isascii()
+    append_candidate = json.loads(canonical)
+    append_candidate["files"][".config/f009-boundary/token"] = base64.b64encode(
+        F009_FILES_OVERSIZE
+    ).decode()
+    append_candidate_length = len(compact(append_candidate))
+    assert append_candidate_length > MAX_CANONICAL_RESOURCE_BYTES
+
+    # Root-owned VM instrumentation seeds the local PlainBackend atomically;
+    # normal wrapper traffic subsequently uses only the installed chain.
+    install_local_plain_resource_blob(files_resource, canonical)
+    stored = base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", files_resource))
+    assert stored == canonical
+    assert len(stored) == MAX_CANONICAL_RESOURCE_BYTES
+    grant_local_unlocked(files_wrapper)
+
+    cursor = journal_cursor()
+    initial_output = machine.succeed(
+        su(f"/run/wrappers/bin/underwrap-local {files_wrapper} verify")
+    ).strip()
+    assert initial_output == report_for(F009_FILES_INITIAL), initial_output
+    assert_one_terminal(cursor, "resource_usage_signal")
+
+    # One appended byte makes the complete canonical state oversized. Target
+    # status remains authoritative, no resource terminal verb is sent, and the
+    # backend's original canonical bytes survive byte-for-byte.
+    cursor = journal_cursor()
+    status, diagnostic = machine.execute(
+        su(f"/run/wrappers/bin/underwrap-local {files_wrapper} append") + " 2>&1"
+    )
+    assert status == 0, diagnostic
+    assert LOCAL_RESOURCE_IDS[files_resource] in diagnostic, diagnostic
+    assert "complete resource size limit" in diagnostic, diagnostic
+    assert f"maximum of {MAX_CANONICAL_RESOURCE_BYTES} bytes" in diagnostic, diagnostic
+    assert f"(got {append_candidate_length})" in diagnostic, diagnostic
+    for fixture in (
+        F009_ENV_VALUE,
+        F009_FILES_INITIAL,
+        F009_FILES_REPLACEMENT,
+        F009_FILES_OVERSIZE,
+        F009_ADMIN_OVERSIZE,
+    ):
+        assert fixture.decode() not in diagnostic, "F-009 diagnostic exposed fixture material"
+    assert_no_terminal(cursor)
+    assert_one_size_rejection(cursor, append_candidate_length)
+    assert base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", files_resource)) == canonical
+
+    # An authenticated admin mutation also composes against the exact-MAX blob.
+    # It must return the stable public error without a success envelope or a
+    # persistence side effect.
+    before_admin_attempt = admin_get_blob(ADMIN_LOCAL, "local", files_resource)
+    admin_error = admin_api_expect_status(
+        ADMIN_LOCAL,
+        f"/v1/admin/stores/local/secrets/{_seg(LOCAL_RESOURCE_IDS[files_resource])}/env/F009_OVERSIZE",
+        {"material_b64": base64.b64encode(F009_ADMIN_OVERSIZE).decode()},
+        status=400,
+        method="PUT",
+    )
+    assert admin_error.get("code") == "resource_too_large", admin_error
+    assert admin_error.get("ok") is None, admin_error
+    assert admin_get_blob(ADMIN_LOCAL, "local", files_resource) == before_admin_attempt
+
+    # A same-length target replacement remains exactly MAX, emits one Checkin,
+    # and becomes the next Checkout's verified files value.
+    cursor = journal_cursor()
+    replacement_output = machine.succeed(
+        su(f"/run/wrappers/bin/underwrap-local {files_wrapper} replace")
+    )
+    assert replacement_output == "", replacement_output
+    assert_one_terminal(cursor, "resource_checkin")
+    replaced = base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", files_resource))
+    assert len(replaced) == MAX_CANONICAL_RESOURCE_BYTES
+    replaced_blob = json.loads(replaced)
+    assert base64.b64decode(
+        replaced_blob["files"][".config/f009-boundary/token"]
+    ) == F009_FILES_REPLACEMENT
+
+    cursor = journal_cursor()
+    readback_output = machine.succeed(
+        su(f"/run/wrappers/bin/underwrap-local {files_wrapper} verify")
+    ).strip()
+    assert readback_output == report_for(F009_FILES_REPLACEMENT), readback_output
+    assert base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", files_resource)) == replaced
+    assert_one_terminal(cursor, "resource_usage_signal")
+    machine.log(
+        "PASS: F-009 exact-MAX resource crosses deployed Checkout/Checkin; "
+        "oversize mutations preserve target status and canonical storage"
     )
 
 
@@ -3717,44 +4028,6 @@ done < <(find -P "$root" -type f -print0 | LC_ALL=C sort -z)
     assert stray == "", f"unexpected on-disk .key files: {stray}"
 
     machine.log("PASS: encrypted store retains recoverable generations and keeps master keys in memory only")
-
-
-def admin_api_expect_status(url, path, payload, *, status, method="POST"):
-    """Like `admin_api` but expects a specific non-2xx status and
-    returns the decoded JSON error body. Used by the
-    encrypted-store-locked tests where the interesting case is the
-    `code` field on a 4xx / 5xx response.
-    """
-    is_state_changing = method not in ("GET", "HEAD", "OPTIONS")
-    cookie_jar = _COOKIE_JAR.get(url)
-    csrf = _CSRF_TOKEN.get(url)
-    cmd = [
-        "curl", "-sS",
-        "-o", "/tmp/admin-err-body",
-        "-w", "%{http_code}",
-        "--cacert", CA_CERT,
-        "-b", cookie_jar,
-        "-X", method,
-        "-H", f"Origin: {url}",
-    ]
-    if is_state_changing:
-        cmd += ["-H", f"X-CSRF-Token: {csrf}"]
-    if payload is None:
-        cmd += [f"{url}{path}"]
-        code = machine.succeed(" ".join(shlex.quote(part) for part in cmd)).strip()
-    else:
-        with _admin_json_body(payload) as body_path:
-            cmd += [
-                "-H", "Content-Type: application/json",
-                "--data-binary", f"@{body_path}",
-                f"{url}{path}",
-            ]
-            code = machine.succeed(" ".join(shlex.quote(part) for part in cmd)).strip()
-    assert code == str(status), (
-        f"expected HTTP {status} from {path}, got {code}"
-    )
-    body = machine.succeed("cat /tmp/admin-err-body")
-    return json.loads(body) if body.strip() else {}
 
 
 def remote_service_lifecycle():
@@ -4277,6 +4550,19 @@ def audit_and_no_secret_leaks():
         "F008 complete near-cap item leaked in exact base64 form!"
     )
 
+    f009_values = {
+        "env": F009_ENV_VALUE,
+        "files-initial": F009_FILES_INITIAL,
+        "files-replacement": F009_FILES_REPLACEMENT,
+        "files-oversize": F009_FILES_OVERSIZE,
+        "admin-oversize": F009_ADMIN_OVERSIZE,
+    }
+    for label, value in f009_values.items():
+        assert value.decode() not in logs, f"F009 {label} fixture leaked in plaintext"
+        assert base64.b64encode(value).decode() not in logs, (
+            f"F009 {label} fixture leaked in exact base64 form"
+        )
+
     f007_modes = (
         "seed",
         "success",
@@ -4339,6 +4625,7 @@ local_directory_credentials()
 local_atomic_writeback()
 f006_pre_exec_writeback_gate()
 f007_supervisor_lifecycle()
+f009_resource_size_contract()
 remote_service_lifecycle()
 instance_isolation()
 local_debug_subcommand()

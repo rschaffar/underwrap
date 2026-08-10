@@ -34,7 +34,7 @@ use crate::admin_api::audit::{AuditEntity, log_admin_event, result_label};
 use crate::admin_api::csrf::Principal;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
-use crate::http::responses::Body;
+use crate::http::responses::ResourceBody;
 use crate::runtime_state::ListenerState;
 use crate::storage::secret_entries::{
     delete_resource_entry, flat_slot_entries_mut, list_secret_entries, read_resource_entry,
@@ -164,7 +164,7 @@ pub(crate) async fn handle_admin_secret_write(
     State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, slot, key)): Path<(String, String, String, String)>,
-    Body(body): Body<AdminSecretWriteRequest>,
+    ResourceBody(body): ResourceBody<AdminSecretWriteRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let slot = parse_slot(&slot)?;
     let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
@@ -187,7 +187,7 @@ pub(crate) async fn handle_admin_secret_write(
         None,
         result_label(&outcome),
     );
-    outcome.into_internal("writing secret entry")?;
+    outcome.map_err(|error| AdminError::from_resource_write(error, "writing secret entry"))?;
     Ok(Json(AdminOkResponse { ok: true }))
 }
 
@@ -264,7 +264,7 @@ pub(crate) async fn handle_admin_secret_rename(
     State(state): State<Arc<ListenerState>>,
     axum::Extension(principal): axum::Extension<Principal>,
     Path((store_id, resource_id, slot, from_key)): Path<(String, String, String, String)>,
-    Body(body): Body<AdminSecretRenameRequest>,
+    ResourceBody(body): ResourceBody<AdminSecretRenameRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let slot = parse_slot(&slot)?;
     let result = rename_inner(&state, &store_id, &resource_id, slot, &from_key, &body).await;
@@ -325,7 +325,8 @@ async fn rename_inner(
     }
     entries.insert(body.to_key.clone(), new_material);
 
-    save_resource_blob(store.as_ref(), resource_id, &blob).into_internal("saving resource blob")?;
+    save_resource_blob(store.as_ref(), resource_id, &blob)
+        .map_err(|error| AdminError::from_resource_write(error, "saving resource blob"))?;
     Ok(AdminOkResponse { ok: true })
 }
 

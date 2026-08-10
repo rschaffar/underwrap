@@ -1,8 +1,18 @@
 //! End-to-end integration tests.
 
 use std::collections::HashMap;
+use std::net::Shutdown;
+use std::os::fd::FromRawFd;
+use std::os::unix::net::UnixStream as StdUnixStream;
+use std::path::Path;
 
+use underwrap_protocol::ipc::{
+    read_frame_sync, read_wrapper_resource_frame_sync, write_frame_sync,
+    write_wrapper_resource_frame_sync,
+};
 use underwrap_protocol::message::*;
+use underwrap_protocol::resource_blob::ResourceBlob;
+use underwrap_protocol::scm_rights;
 
 use crate::harness::*;
 
@@ -116,19 +126,123 @@ fn one_wrapper_config() -> HashMap<String, underwrap_protocol::config::WrapperDe
     wrappers
 }
 
-fn expect_single_env_bytes(resp: WrapperResponse) -> Vec<u8> {
-    match resp {
-        WrapperResponse::ReadOk { env, .. } => {
-            assert_eq!(env.len(), 1, "expected exactly one env binding");
-            let (_key, value) = env.into_iter().next().unwrap();
-            Vec::from(value)
-        }
-        other => panic!("expected ReadOk, got {other:?}"),
-    }
+fn checkout_resource_sync(
+    socket_path: &Path,
+    wrapper_name: &str,
+) -> (WrapperResponse, ResourceBlob, bool) {
+    let mut control = StdUnixStream::connect(socket_path).unwrap();
+    write_frame_sync(
+        &mut control,
+        &WrapperRequest::Read {
+            wrapper_name: wrapper_name.to_string(),
+            variant: underwrap_protocol::variant::WrapperVariant::Real,
+            scope: None,
+        },
+    )
+    .unwrap();
+    let response: WrapperResponse = read_frame_sync(&mut control).unwrap();
+    assert!(matches!(response, WrapperResponse::ReadOk { .. }));
+
+    let fd = scm_rights::recv_fd(&control).unwrap();
+    // SAFETY: SCM_RIGHTS transferred one newly owned descriptor to this process.
+    let mut resource = unsafe { StdUnixStream::from_raw_fd(fd) };
+    write_wrapper_resource_frame_sync(&mut resource, &WrapperResourceRequest::Checkout).unwrap();
+    let checkout: WrapperResourceResponse =
+        read_wrapper_resource_frame_sync(&mut resource).unwrap();
+    let (bytes, writable) = match checkout {
+        WrapperResourceResponse::CheckoutOk { blob, writable } => (blob, writable),
+        other => panic!("expected CheckoutOk, got {other:?}"),
+    };
+    let blob = ResourceBlob::from_canonical_bytes(&bytes).unwrap();
+
+    write_wrapper_resource_frame_sync(&mut resource, &WrapperResourceRequest::UsageSignal).unwrap();
+    assert!(matches!(
+        read_wrapper_resource_frame_sync::<WrapperResourceResponse>(&mut resource).unwrap(),
+        WrapperResourceResponse::UsageSignalOk
+    ));
+    resource.shutdown(Shutdown::Both).unwrap();
+    control.shutdown(Shutdown::Both).unwrap();
+    drop(resource);
+    drop(control);
+    (response, blob, writable)
 }
 
-fn expect_single_env_string(resp: WrapperResponse) -> String {
-    String::from_utf8(expect_single_env_bytes(resp)).unwrap()
+async fn checkout_resource(
+    socket_path: std::path::PathBuf,
+    wrapper_name: &'static str,
+) -> (WrapperResponse, ResourceBlob, bool) {
+    tokio::task::spawn_blocking(move || checkout_resource_sync(&socket_path, wrapper_name))
+        .await
+        .unwrap()
+}
+
+fn expect_single_env_bytes(blob: ResourceBlob) -> Vec<u8> {
+    assert_eq!(blob.env.len(), 1, "expected exactly one env binding");
+    let (_key, value) = blob.env.into_iter().next().unwrap();
+    Vec::from(value)
+}
+
+fn expect_single_env_string(blob: ResourceBlob) -> String {
+    String::from_utf8(expect_single_env_bytes(blob)).unwrap()
+}
+
+fn blob_with_exact_canonical_len(len: usize) -> ResourceBlob {
+    let mut blob = ResourceBlob::empty();
+    blob.files.insert(
+        "padding".to_string(),
+        underwrap_protocol::message::SecretBytes::from(Vec::<u8>::new()),
+    );
+    let base_len = blob.to_canonical_bytes().unwrap().len();
+    assert!(len >= base_len);
+    blob.files = std::collections::BTreeMap::from([(
+        format!("padding{}", "x".repeat(len - base_len)),
+        underwrap_protocol::message::SecretBytes::from(Vec::<u8>::new()),
+    )]);
+    assert_eq!(blob.to_canonical_bytes().unwrap().len(), len);
+    blob
+}
+
+fn pad_blob_to_exact_len(mut blob: ResourceBlob, len: usize) -> ResourceBlob {
+    blob.libsecret.collections.insert(
+        "padding".to_string(),
+        underwrap_protocol::resource_blob::Collection {
+            label: String::new(),
+            created: 1_700_000_000,
+            modified: 1_700_000_000,
+            items: std::collections::BTreeMap::new(),
+        },
+    );
+    let base_len = blob.to_canonical_bytes().unwrap().len();
+    assert!(base_len <= len);
+    blob.libsecret.collections.get_mut("padding").unwrap().label = "x".repeat(len - base_len);
+    assert_eq!(blob.to_canonical_bytes().unwrap().len(), len);
+    blob
+}
+
+fn canonical_one_byte_over_limit() -> Vec<u8> {
+    let blob = blob_with_exact_canonical_len(
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES,
+    );
+    let exact = blob.to_canonical_bytes().unwrap();
+    let mut oversized = exact.clone();
+    let marker = br#""files":{"padding"#;
+    let position = oversized
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .unwrap()
+        + marker.len();
+    // The sole files key contains only unescaped ASCII. Extending that JSON
+    // string by one ASCII byte preserves both JSON validity and JCS ordering.
+    oversized.insert(position, b'x');
+    assert_eq!(
+        oversized.len(),
+        underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES + 1
+    );
+    assert!(serde_json::from_slice::<serde_json::Value>(&oversized).is_ok());
+    let mut restored = oversized.clone();
+    assert_eq!(restored.remove(position), b'x');
+    assert_eq!(restored, exact);
+    oversized
 }
 
 async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef) -> String {

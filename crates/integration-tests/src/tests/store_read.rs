@@ -10,8 +10,15 @@ async fn store_then_read_secret() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "ghp_test123");
+    let (resp, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert!(matches!(
+        resp,
+        WrapperResponse::ReadOk {
+            env_projection: true,
+            ..
+        }
+    ));
+    assert_eq!(expect_single_env_string(blob), "ghp_test123");
 
     daemon.stop().await.unwrap();
 }
@@ -32,11 +39,15 @@ async fn read_before_store_returns_empty_env() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    match resp {
-        WrapperResponse::ReadOk { env, .. } => assert!(env.is_empty()),
-        other => panic!("expected ReadOk, got {other:?}"),
-    }
+    let (resp, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert!(matches!(
+        resp,
+        WrapperResponse::ReadOk {
+            env_projection: true,
+            ..
+        }
+    ));
+    assert!(blob.env.is_empty());
 
     daemon.stop().await.unwrap();
 }
@@ -52,8 +63,8 @@ async fn read_validates_client_supplied_wrapper_name() {
         .unwrap();
 
     // A known wrapper name resolves and reads.
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "real_token");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "real_token");
 
     // An unknown client-supplied wrapper name is rejected by the daemon
     // (the name is now a client-supplied selector validated against the
@@ -97,8 +108,8 @@ async fn admin_writes_are_authenticated_operator_actions() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "overwrite_attempt");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_string(blob), "overwrite_attempt");
 
     daemon.stop().await.unwrap();
 }
@@ -117,24 +128,20 @@ async fn concurrent_reads() {
     for _ in 0..20 {
         let sock = daemon.instance_socket.clone();
         handles.push(tokio::spawn(async move {
-            let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
-            let req = WrapperRequest::Read {
-                wrapper_name: "gh-authorized".to_string(),
-                variant: underwrap_protocol::variant::WrapperVariant::Real,
-                scope: None,
-            };
-            underwrap_protocol::ipc::write_frame_async(&mut stream, &req)
-                .await
-                .unwrap();
-            underwrap_protocol::ipc::read_frame_async::<WrapperResponse>(&mut stream)
-                .await
-                .unwrap()
+            checkout_resource(sock, "gh-authorized").await
         }));
     }
 
     for h in handles {
-        let resp = h.await.unwrap();
-        assert_eq!(expect_single_env_string(resp), "ghp_concurrent");
+        let (resp, blob, _) = h.await.unwrap();
+        assert!(matches!(
+            resp,
+            WrapperResponse::ReadOk {
+                env_projection: true,
+                ..
+            }
+        ));
+        assert_eq!(expect_single_env_string(blob), "ghp_concurrent");
     }
 
     daemon.stop().await.unwrap();
@@ -156,8 +163,8 @@ async fn hierarchical_secret_ids() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("deep-wrapper").await.unwrap();
-    assert_eq!(expect_single_env_string(resp), "deep_val");
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "deep-wrapper").await;
+    assert_eq!(expect_single_env_string(blob), "deep_val");
 
     daemon.stop().await.unwrap();
 }
@@ -173,8 +180,8 @@ async fn large_secret_material() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_bytes(resp).len(), 32_000);
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_bytes(blob).len(), 32_000);
 
     daemon.stop().await.unwrap();
 }
@@ -190,8 +197,8 @@ async fn secret_with_special_chars() {
         .await
         .unwrap();
 
-    let resp = daemon.read_request("gh-authorized").await.unwrap();
-    assert_eq!(expect_single_env_bytes(resp), special.as_bytes());
+    let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
+    assert_eq!(expect_single_env_bytes(blob), special.as_bytes());
 
     daemon.stop().await.unwrap();
 }
@@ -212,8 +219,8 @@ async fn rapid_store_read_cycles() {
             .await
             .unwrap();
 
-        let resp = daemon.read_request("rapid-wrapper").await.unwrap();
-        assert_eq!(expect_single_env_string(resp), val, "iteration {i}");
+        let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "rapid-wrapper").await;
+        assert_eq!(expect_single_env_string(blob), val, "iteration {i}");
     }
 
     daemon.stop().await.unwrap();
