@@ -20,7 +20,6 @@ pub use resource_blob::{
 };
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use underwrap_protocol::config::StorageConfig;
 use underwrap_protocol::message::SecretBytes;
 
@@ -46,27 +45,6 @@ pub trait StorageBackend: Send + Sync {
     /// Delete a secret by id. Returns `Ok(true)` if the secret existed
     /// and was deleted, `Ok(false)` if it did not exist.
     fn delete(&self, secret_id: &str) -> Result<bool>;
-
-    /// Read every leaf under a set of prefixes.
-    ///
-    /// The default implementation loops through `list` + `read`.
-    fn read_prefixes(&self, prefixes: &[String]) -> Result<HashMap<String, SecretBytes>> {
-        let mut out = HashMap::new();
-        for prefix in prefixes {
-            for id in self
-                .list(prefix)
-                .with_context(|| format!("listing bundle prefix '{prefix}'"))?
-            {
-                if let Some(material) = self
-                    .read(&id)
-                    .with_context(|| format!("reading bundle id '{id}'"))?
-                {
-                    out.insert(id, material);
-                }
-            }
-        }
-        Ok(out)
-    }
 }
 
 /// Open a [`StorageBackend`] that does not require additional unlock
