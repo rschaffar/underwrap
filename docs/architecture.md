@@ -385,7 +385,19 @@ those workspaces; trusted offline recovery and selective cleanup follow the
 - one runtime directory per target UID;
 - the capability-bearing `underwrap-ns` wrapper;
 - daemon and entry-stage configuration;
-- target-host Yama and swap assertions under the hardened posture.
+- target-host Yama, kernel, ordinary-swap encryption, and zram swap-writeback
+  assertions under the hardened posture.
+
+The strongest posture admits no swap, ordinary swap admitted by the existing
+random-key/LUKS assertion, or pure RAM-only zram. It rejects enabled typed
+zram-generator swap sections with disk writeback because encryption cannot be
+established from a backing-device path. The predicate permits writeback for
+canonical mounted zram filesystem sections and ignores canonical non-zram
+sections because neither is classified as memory swap. When zram-generator is
+enabled, all final typed section and directive names must nevertheless be
+canonical tokens and all string values, including those in mounted and non-zram
+sections, must be single-line. The module evaluates declared NixOS configuration,
+not arbitrary external `/etc` drop-ins or live runtime device state.
 
 The module is part of the security architecture, not packaging convenience.
 

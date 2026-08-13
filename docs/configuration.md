@@ -25,12 +25,21 @@ The generated daemon schema is documented separately in
 | `enable` | bool | `false` | Enable all configured frontend instances |
 | `package` | package | required | underwrap package containing the frontend binaries |
 | `targetRuntimeDirBase` | string | `/run/underwrap-runtime` | Base for one `0700`, target-owned runtime directory per `(instance, wrapper)` target UID; must be absolute and outside `/run/user` |
-| `hardenTargetHost` | bool | `true` | Require Linux 6.5+, default Yama `ptrace_scope=2` with `mkDefault`, and require encrypted swap or no swap; an operator override can weaken the Yama value |
+| `hardenTargetHost` | bool | `true` | Require Linux 6.5+, default Yama `ptrace_scope=2` with `mkDefault`, and admit only no swap, ordinary swap admitted by the random-key/LUKS assertion, or pure RAM-only zram |
 | `instances.<name>` | attribute set | `{}` | Named frontend instances |
 
 The security claim in [Security](security.md#security-claim) assumes
-`hardenTargetHost = true`. Disabling it is an explicit weaker deployment
-posture.
+`hardenTargetHost = true`. In that posture, an enabled typed
+`services.zram-generator.settings` swap section with `writeback-device` is
+rejected because backing-device encryption cannot be established from typed
+configuration. The predicate permits writeback for canonical mounted zram
+filesystem sections and ignores canonical non-zram sections because neither is
+classified as memory swap. When zram-generator is enabled, all final typed
+section and directive names must nevertheless be canonical tokens and all string
+values, including those in mounted and non-zram sections, must be single-line.
+The module evaluates typed NixOS configuration; it does not inspect arbitrary
+external `/etc` drop-ins or live runtime device state.
+Disabling `hardenTargetHost` explicitly selects a weaker deployment posture.
 
 ### Instance options
 

@@ -262,6 +262,13 @@
                 cp "$daemonConfig" "$out/probe-daemon.json"
                 printf '%s\n' "$expectedMessage" > "$out/plaintext-rejection.txt"
               '';
+
+            # Evaluate the production frontend module across the complete
+            # ordinary-swap and zram-generator hardened-posture matrix.
+            frontend-swap-posture-eval = import ./nix/tests/swap-posture-eval.nix {
+              inherit nixpkgs system;
+              underwrapModule = self.nixosModules.default;
+            };
           };
 
           devShells.default = craneLib.devShell {

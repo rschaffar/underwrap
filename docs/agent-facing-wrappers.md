@@ -112,8 +112,17 @@ caller and other wrappers. This is the primary boundary against caller-owned
 processes reading target `/proc` state.
 
 Under the complete hardened posture, the NixOS module also requires Linux 6.5+,
-defaults Yama `ptrace_scope=2` with `mkDefault`, and requires encrypted swap or
-no swap. Lowering the Yama value weakens the ATTACH-mode claim. See
+defaults Yama `ptrace_scope=2` with `mkDefault`, and admits no swap, ordinary
+swap admitted by the random-key/LUKS assertion, or pure RAM-only zram. Enabled
+typed zram-generator swap sections with writeback are rejected because path
+encryption cannot be established. The predicate permits writeback for canonical
+mounted zram filesystem sections and ignores canonical non-zram sections because
+neither is classified as memory swap. When zram-generator is enabled, all final
+typed section and directive names must nevertheless be canonical tokens and all
+string values, including those in mounted and non-zram sections, must be
+single-line. Lowering Yama, adding external `/etc` drop-ins or runtime device
+changes outside the typed configuration evaluated by the module, or disabling
+the posture weakens the claim. See
 [Security](security.md#security-claim) for the qualified claim.
 
 ### Central resource and policy
@@ -121,8 +130,8 @@ no swap. Lowering the Yama value weakens the ATTACH-mode claim. See
 Persistent secret material stays in the backend's `StorageBackend`. The target
 host sees the projection in memory. Files bytes are staged on namespace-private
 tmpfs for one invocation; libsecret state stays in secretsd/host memory while a
-private tmpfs carries only its filesystem bus socket and helper logs. Under the
-hardened posture, swap is absent or encrypted.
+private tmpfs carries only its filesystem bus socket and helper logs. The
+hardened posture permits only the swap cases described above.
 
 The backend can revoke a permission without reconfiguring the frontend host.
 

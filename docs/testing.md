@@ -54,6 +54,7 @@ nix build .#checks.x86_64-linux.workspace-deny
 nix build .#checks.x86_64-linux.workspace-llvm-cov
 nix build .#checks.x86_64-linux.examples-nix-parse
 nix build .#checks.x86_64-linux.frontend-backend-url-eval
+nix build .#checks.x86_64-linux.frontend-swap-posture-eval
 nix build .#checks.x86_64-linux.vm-test
 ```
 
@@ -120,6 +121,16 @@ and the NixOS VM exercises representative deployed private-CA traffic.
 The `frontend-backend-url-eval` check proves module-level HTTP rejection and
 exact HTTPS URL generation; the VM independently proves a handcrafted plaintext
 configuration fails before credentials, socket readiness, or network traffic.
+
+The `frontend-swap-posture-eval` check evaluates the production module across
+no-swap, ordinary encrypted/plain swap, high-level and typed zram-generator,
+mixed-failure, mounted-filesystem, inert, INI name-normalization and multiline
+section/directive-injection, and explicitly weaker-posture rows. It proves exact
+module-local swap-assertion presence, absence, and truth, checks the complete set
+of false underwrap assertion messages, and compares the merged false-assertion
+boolean count so an unrelated failure cannot pass unnoticed without forcing
+unrelated lazy assertion messages. This covers declared NixOS configuration,
+not arbitrary external `/etc` drop-ins or live runtime device state.
 
 ## OpenAPI drift
 

@@ -85,8 +85,10 @@ underwrap is a secret-delivery system, not a general sandbox.
 - Every wrapper runs under a dedicated target UID. This is the primary boundary
   against caller-owned processes reading the target's `/proc` state.
 - The default hardened posture requires Linux 6.5+, defaults Yama
-  `ptrace_scope=2` with `mkDefault`, and requires encrypted swap or no swap.
-  Overriding the Yama value downward weakens the ATTACH-mode claim.
+  `ptrace_scope=2` with `mkDefault`, and admits no swap, ordinary swap admitted
+  by the random-key/LUKS assertion, or pure RAM-only zram. Enabled zram swap
+  writeback configured through the typed NixOS options is rejected. Overriding
+  the Yama value downward or disabling the posture weakens the claim.
 - Root, kernel, backend-host, or target compromise is out of scope.
 - `allowedUsers` controls which users receive convenient PATH shims; it is not a
   local access-control list. Backend policy identifies the mTLS runtime client

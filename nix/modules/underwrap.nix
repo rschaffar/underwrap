@@ -436,6 +436,42 @@ let
       || (dev.encrypted.enable or false)
     ) config.swapDevices;
 
+  canonicalIniToken = value:
+    builtins.isString value
+    && builtins.match "[A-Za-z0-9._:+-]+" value != null;
+
+  zramGeneratorSettingsAreUnambiguous =
+    lib.all (sectionName:
+      let section = config.services.zram-generator.settings.${sectionName}; in
+      !builtins.isAttrs section
+      || (
+        canonicalIniToken sectionName
+        && lib.all canonicalIniToken (builtins.attrNames section)
+        && lib.all (value:
+          !builtins.isString value
+          || (!lib.hasInfix "\n" value && !lib.hasInfix "\r" value)
+        ) (builtins.attrValues section)
+      )
+    ) (builtins.attrNames config.services.zram-generator.settings);
+
+  zramSwapWritebackIsHardened =
+    !config.services.zram-generator.enable
+    || (
+      zramGeneratorSettingsAreUnambiguous
+      && lib.all (sectionName:
+        let section = config.services.zram-generator.settings.${sectionName}; in
+        !builtins.isAttrs section
+        || !lib.hasPrefix "zram" sectionName
+        || !builtins.hasAttr "writeback-device" section
+        || builtins.hasAttr "mount-point" section
+        || (
+          builtins.hasAttr "fs-type" section
+          && canonicalIniToken section."fs-type"
+          && section."fs-type" != "swap"
+        )
+      ) (builtins.attrNames config.services.zram-generator.settings)
+    );
+
   # --- Per-(instance, wrapper) target UID isolation ---
   # One dedicated system user/group per configured (instance, wrapper) pair (a
   # sandbox uid X, distinct from any caller); underwrap-ns switches the target
@@ -560,13 +596,18 @@ in {
           wrapped targets and their descendants do not run as the caller, so the
           same-UID `/proc` access check fails for the caller's other processes.
           `ptrace_scope = 2` remains defense-in-depth for the ATTACH vectors.
-        - The build asserts that every configured swap device is encrypted
-          (random-key or LUKS), so a token paged out of the target's memory
-          cannot later surface as plaintext on disk. If you deliberately run
-          without swap, this is satisfied trivially.
+        - The build permits no swap, ordinary swap admitted by the separate
+          random-key/LUKS encryption assertion, or pure RAM-only zram. Enabled
+          typed zram-generator swap writeback is rejected because backing-device
+          encryption cannot be established from its configuration. The predicate
+          permits writeback for canonical mounted zram filesystem sections and
+          ignores canonical non-zram sections because neither is classified as
+          memory swap. When zram-generator is enabled, all final typed section and
+          directive names must still be canonical tokens and all string values,
+          including those in mounted and non-zram sections, must be single-line.
 
         Leave enabled unless you are certain the deployment does not need this
-        posture.
+        posture. Disabling it explicitly selects a weaker posture.
       '';
     };
 
@@ -664,6 +705,10 @@ in {
         {
           assertion = swapDevicesAreHardened;
           message = "services.underwrap.hardenTargetHost is enabled but at least one swapDevice is not encrypted. Tokens paged out of a wrapped target's memory would surface as plaintext on disk. Enable randomEncryption or LUKS on every swapDevice, remove swap, or set services.underwrap.hardenTargetHost = false (and accept the weaker claim).";
+        }
+        {
+          assertion = zramSwapWritebackIsHardened;
+          message = "services.underwrap.hardenTargetHost is enabled but the typed zram-generator settings either configure zram swap writeback or cannot be interpreted unambiguously. Use pure RAM-only zram or no swap, configure writeback only for a zram filesystem with an exact mount-point or canonical non-swap fs-type in canonical single-line typed settings, or set services.underwrap.hardenTargetHost = false (and accept the weaker claim).";
         }
         {
           # The daemon's wrapper peer-auth gate prefers the race-free

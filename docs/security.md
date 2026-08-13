@@ -34,8 +34,15 @@ The strongest claim applies only when all of these conditions hold:
    `SO_PEERPIDFD` rather than the weaker PID-based fallback.
 3. `kernel.yama.ptrace_scope = 2`. The module sets this with `mkDefault`; an
    operator override can lower it and therefore weakens ATTACH-mode protection.
-4. Every configured swap device is encrypted, or the host has no swap. The
-   module asserts this under the hardened posture.
+4. The host has no swap, ordinary swap admitted by the module's random-key/LUKS
+   assertion, or pure RAM-only zram. Enabled typed zram-generator swap writeback
+   is rejected because backing-device encryption cannot be established from its
+   configuration. The predicate permits writeback for canonical mounted zram
+   filesystem sections and ignores canonical non-zram sections because neither
+   is classified as memory swap. When zram-generator is enabled, all final typed
+   section and directive names must nevertheless be canonical tokens and all
+   string values, including those in mounted and non-zram sections, must be
+   single-line.
 5. The NixOS module's root-owned wrappers, config, target-UID table, users,
    groups, capabilities, and systemd units have not been modified by an
    attacker.
@@ -818,6 +825,16 @@ Keep these limits explicit in deployment and wrapper reviews:
   dedicated target UID.
 - The strongest peer-auth claim requires Linux 6.5+ and the default hardened
   posture.
+- Canonical mounted zram filesystems are not memory swap, so the predicate
+  permits their writeback; canonical non-zram sections are ignored by that
+  predicate. When zram-generator is enabled, every final typed section and
+  directive name must nevertheless be a canonical token and every string value,
+  including those in mounted and non-zram sections, must be single-line. These
+  checks evaluate typed NixOS configuration; they do not inspect arbitrary
+  external `/etc` drop-ins or live runtime device state. Operators must preserve
+  the claimed posture outside module-managed configuration.
+- Setting `services.underwrap.hardenTargetHost = false` explicitly selects a
+  weaker posture.
 
 For wrapper design, continue with the
 [wrapper author checklist](wrapper-author-checklist.md). For deployment
