@@ -583,22 +583,28 @@ Libsecret mode uses three distinct channels:
    generations from secretsd to the host and exact ACK/REJECT responses back.
 
 The host owns the sole receiver and secretsd owns the sole long-lived publisher.
-Generation zero is strictly validated and ACKed before readiness. Every mutation
-publishes while its store write lock remains held and waits for exact ACK or
-REJECT before D-Bus success or failure. Host validation enforces the inclusive 1-MiB private publication-body cap,
-exact JCS bytes, collection/item/alias segment shapes, alias references, safe
-timestamps, and composition with Checkout env/files under the 2-MiB complete
-resource cap.
+Generation zero is strictly validated and ACKed before readiness. For every
+mutation, secretsd retains the store write lock, clones the accepted store once,
+mutates the candidate, canonicalizes and publishes the complete next generation,
+observes the exact matching ACK or failure, and commits the candidate only after
+ACK. Preparation, canonicalization, host rejection, EOF, response mismatch, and
+transport failure preserve the accepted live store. Discarded candidate secret
+buffers and secret buffers displaced by a successful commit are zeroized. Host
+validation enforces the inclusive 1-MiB private publication-body cap, exact JCS
+bytes, collection/item/alias segment shapes, alias references, safe timestamps,
+and composition with Checkout env/files under the 2-MiB complete resource cap.
 
 PID 1 independently supervises target liveness while the host drains
 publication and polls relay exit. After clean reap, idle EOF permits the latest
 validated generation whose complete ACK was written. A later ordinary rejected,
 partial, response-failed, or publisher-death attempt preserves that prior
 generation after EOF. Final `EAGAIN` proves endpoint retention and suppresses
-all collection and terminal resource verbs without fallback. ACK means host retention, not caller response delivery or backend durability.
-Checkout and Checkin use a dedicated bulk frame bound of complete resource bytes
-plus their small message envelope; all unrelated control protocols retain their
-64-KiB bound.
+all collection and terminal resource verbs without fallback. A completely
+written ACK can remain eligible even if secretsd dies or the D-Bus caller misses
+the success response. ACK proves host retention, not caller delivery or backend
+durability, and the later Checkin can still fail. Checkout and Checkin use a
+dedicated bulk frame bound of complete resource bytes plus their small message
+envelope; all unrelated control protocols retain their 64-KiB bound.
 
 The private tmpfs contains the filesystem D-Bus socket and helper logs, not a
 final-state pathname consumed by the host. secretsd never holds fd 20, and the

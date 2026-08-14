@@ -324,9 +324,14 @@ other helpers retain neither endpoint.
 
 `underwrap-secretsd` has no daemon socket. PID 2 sends the initial section
 through a one-shot pipe. secretsd publishes generation 0 and waits for complete
-host ACK before readiness; every later mutation publishes the next complete
-canonical generation and waits for exact ACK or REJECT while retaining the
-store write lock. The host validates canonical bytes, identifiers, aliases,
+host ACK before readiness. For every later mutation, the handler retains the
+store write lock, clones the accepted store once, mutates that candidate,
+canonicalizes and publishes its complete next generation, observes the exact
+matching ACK or failure, and commits the candidate only after ACK. Preparation,
+canonicalization, rejection, EOF, response mismatch, and transport failure leave
+the accepted live store unchanged. Discarded candidate secret buffers are
+zeroized; after commit, secret buffers displaced from the previous live store
+are also zeroized. The host validates canonical bytes, identifiers, aliases,
 references, timestamps, the inclusive 1-MiB publication-body bound, and its
 composition with immutable Checkout env/files under the complete-resource cap
 before ACK.
@@ -335,10 +340,13 @@ After the unchanged blocking gate observation, the host drains publication while
 polling relay `waitpid(WNOHANG)`. PID 1 independently polls liveness and reaps
 PID 2. Following clean reap, terminal EOF permits the latest validated generation
 whose ACK was completely written; final `EAGAIN` proves endpoint retention and
-fails closed without fallback. ACK is invocation-local retention, not D-Bus
-response delivery or backend durability. Resource Checkout/Checkin use a
-separate bulk bound of the complete resource plus their message envelope; other
-local control IPC remains limited to 64-KiB frames.
+fails closed without fallback. A completely written host ACK can therefore
+remain eligible even if secretsd dies or the D-Bus caller misses the success
+response. ACK proves only invocation-local host retention: it is not caller
+response delivery or backend durability, and a later Checkin can still fail.
+Resource Checkout/Checkin use a separate bulk bound of the complete resource
+plus their message envelope; other local control IPC remains limited to 64-KiB
+frames.
 
 The private helpers start as PID 2 descendants and can be adopted by namespace
 PID 1. PID 1 exit terminates every helper and descendant. The relay closes fd 20

@@ -5,11 +5,12 @@ use tokio::sync::RwLock;
 use zbus::{fdo, interface, zvariant::ObjectPath};
 
 use underwrap_secretsd_store::SecretStore;
+use zeroize::Zeroize;
 
 use crate::metadata_trace_enabled;
-use crate::publication::{self, SharedPublisher};
+use crate::publication::SharedPublisher;
 
-use super::{Secret, empty_path};
+use super::{Secret, empty_path, mutation::mutate_and_publish};
 
 pub struct ItemInterface {
     id: String,
@@ -38,8 +39,17 @@ impl ItemInterface {
 impl ItemInterface {
     async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
         let mut store = self.store.write().await;
-        store.delete_item(&self.collection_id, &self.id);
-        publication::publish_store(&self.publisher, &store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            if let Some(item) = candidate
+                .collections
+                .get_mut(&self.collection_id)
+                .and_then(|collection| collection.items.get_mut(&self.id))
+            {
+                item.secret.zeroize();
+            }
+            candidate.delete_item(&self.collection_id, &self.id);
+            Ok(())
+        })?;
         Ok(empty_path())
     }
 
@@ -78,16 +88,19 @@ impl ItemInterface {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let mut store = self.store.write().await;
-        if let Some(item) = store
-            .collections
-            .get_mut(&self.collection_id)
-            .and_then(|c| c.items.get_mut(&self.id))
-        {
-            item.secret = secret.value.clone();
-            item.content_type = secret.content_type.clone();
-            item.modified = now;
-        }
-        publication::publish_store(&self.publisher, &store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            if let Some(item) = candidate
+                .collections
+                .get_mut(&self.collection_id)
+                .and_then(|c| c.items.get_mut(&self.id))
+            {
+                item.secret.zeroize();
+                item.secret = secret.value.clone();
+                item.content_type = secret.content_type.clone();
+                item.modified = now;
+            }
+            Ok(())
+        })?;
         if metadata_trace_enabled() {
             tracing::info!(
                 collection = %self.collection_id,
@@ -126,8 +139,10 @@ impl ItemInterface {
     #[zbus(property)]
     async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
         let mut store = self.store.write().await;
-        store.set_attributes(&self.collection_id, &self.id, attributes.clone());
-        publication::publish_store(&self.publisher, &store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_attributes(&self.collection_id, &self.id, attributes.clone());
+            Ok(())
+        })?;
         if metadata_trace_enabled() {
             tracing::info!(
                 collection = %self.collection_id,
@@ -151,8 +166,10 @@ impl ItemInterface {
     #[zbus(property)]
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
-        store.set_label(&self.collection_id, &self.id, &label);
-        publication::publish_store(&self.publisher, &store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_label(&self.collection_id, &self.id, &label);
+            Ok(())
+        })?;
         Ok(())
     }
 

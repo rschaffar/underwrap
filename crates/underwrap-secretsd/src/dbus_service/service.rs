@@ -11,11 +11,11 @@ use underwrap_secretsd_store::SecretStore;
 
 use crate::BASE_PATH;
 use crate::metadata_trace_enabled;
-use crate::publication::{self, SharedPublisher};
+use crate::publication::SharedPublisher;
 
 use super::{
     CollectionInterface, Secret, SessionInterface, collection_path, empty_path, item_path,
-    parse_item_path,
+    mutation::mutate_and_publish, parse_item_path,
 };
 
 pub struct SecretService {
@@ -83,14 +83,14 @@ impl SecretService {
             );
         }
 
-        let col_id = {
+        let (col_id, path) = {
             let mut store = self.store.write().await;
-            let id = store.create_collection(name, alias);
-            publication::publish_store(&self.publisher, &store)?;
-            id
+            mutate_and_publish(&mut store, &self.publisher, |candidate| {
+                let id = candidate.create_collection(name, alias);
+                let path = collection_path(&id)?;
+                Ok((id, path))
+            })?
         };
-
-        let path = collection_path(&col_id)?;
         let col = CollectionInterface::new(col_id, self.store.clone(), self.publisher.clone());
         if let Err(e) = object_server.at(&path, col).await {
             tracing::warn!(%path, error = %e, "registering collection interface failed");
@@ -206,15 +206,17 @@ impl SecretService {
         };
 
         let mut store = self.store.write().await;
-        store.set_alias(name, col_id.as_deref());
-        if metadata_trace_enabled() {
-            tracing::info!(
-                alias = name,
-                collection = col_id.as_deref().unwrap_or(""),
-                "secretsd Service.SetAlias"
-            );
-        }
-        publication::publish_store(&self.publisher, &store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_alias(name, col_id.as_deref());
+            if metadata_trace_enabled() {
+                tracing::info!(
+                    alias = name,
+                    collection = col_id.as_deref().unwrap_or(""),
+                    "secretsd Service.SetAlias"
+                );
+            }
+            Ok(())
+        })?;
         Ok(())
     }
 

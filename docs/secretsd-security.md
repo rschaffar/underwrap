@@ -34,11 +34,12 @@ namespace PID 1 ── PID 2 setup ── underwrap-secretsd ──────�
 3. PID 2 sends the initial libsecret section through a separate one-shot pipe.
    secretsd loads it into memory, publishes generation 0, and waits for complete
    host `ACK(0)` before reporting readiness. The target cannot execute first.
-4. Every D-Bus mutation keeps the existing store write lock while secretsd
-   canonicalizes and publishes the next exact attempt generation. D-Bus success
-   waits for a complete generation-matched host ACK. A complete canonical or
-   semantic rejection receives `REJECT`; framing, sequencing, EOF, or transport
-   failure returns `Failed` where the caller can observe it.
+4. Every D-Bus mutation keeps the store write lock, clones the accepted store
+   once, mutates that candidate, canonicalizes and publishes the next complete
+   attempt generation, and commits the candidate only after observing the exact
+   generation-matched host ACK. Preparation or canonicalization failure, host
+   `REJECT`, framing or sequencing failure, EOF, response mismatch, and transport
+   failure return `Failed` and preserve the accepted live store.
 5. The host incrementally bounds, parses, exact-canonical-byte checks, and
    semantically validates each generation. It retains a candidate before writing
    ACK and selects it as latest only after the complete ACK is written.
@@ -51,12 +52,13 @@ namespace PID 1 ── PID 2 setup ── underwrap-secretsd ──────�
 
 The host's ACK means invocation-local validated retention. It does not prove
 that the D-Bus caller received its response or that the backend committed the
-resource. secretsd can die after the host completely writes ACK and before the
-caller sees success; that ACK-written generation remains eligible after terminal
-EOF. A later ordinary rejected, partial, response-failed, or publisher-death
-attempt also preserves the previous ACK-written generation. A final
-nonblocking `EAGAIN` is different: it proves a publisher endpoint remains open,
-so no generation fallback, collection, Checkin, or UsageSignal is allowed.
+resource, and a later Checkin can still fail. secretsd can die after the host
+completely writes ACK and before secretsd or the caller observes success; that
+ACK-written generation remains eligible after terminal EOF. A later ordinary
+rejected, partial, response-failed, or publisher-death attempt also preserves the
+previous ACK-written generation. A final nonblocking `EAGAIN` is different: it
+proves a publisher endpoint remains open, so no generation fallback, collection,
+Checkin, or UsageSignal is allowed.
 
 The authenticated resource channel has a dedicated 2-MiB complete-resource
 bound plus its message envelope; unrelated control IPC remains capped at 64 KiB.
@@ -102,8 +104,8 @@ For every host-selectable generation, the host requires:
 
 Labels, content types, attribute keys/values, and secret bytes remain arbitrary.
 No created-before-modified, future-time, or collection/item temporal relation is
-imposed. A rejected mutation may remain in secretsd memory and poison later
-whole-state attempts; publication rejection does not promise rollback.
+imposed. A rejected candidate is discarded without changing accepted live
+memory, so later mutation candidates start from the previously accepted state.
 
 ## Process hardening
 
@@ -125,12 +127,16 @@ alphanumeric/underscore name before mutation. Item identifiers are generated as
 16 random bytes encoded to 32 lowercase hexadecimal characters. Object paths
 are constructed fallibly.
 
-Mutation handlers update the in-memory store, publish while retaining the
-existing write lock, and wait for ACK/REJECT before success. They do not clone,
-rollback, or provide side-effect-free failure. `SetAlias` publication can be
-rejected by whole-state alias/reference validation after its in-memory mutation.
-Wrong-typed item properties that become semantically valid empty values are not
-distinguishable at this boundary.
+Mutation handlers retain the existing write lock through clone, candidate
+mutation, canonicalization, publication, exact ACK observation, and commit. They
+clone the accepted store exactly once and expose the candidate as live state only
+after ACK. Preparation, canonicalization, rejection, response, EOF, and transport
+failure discard the candidate and preserve accepted live memory. Candidate secret
+buffers are zeroized when discarded; on commit, secret buffers displaced from
+the former live store are zeroized, including deletion and replacement values.
+`SetAlias` can still receive a whole-state alias/reference rejection, but that
+candidate alias does not enter live memory. Wrong-typed item properties that
+become semantically valid empty values are not distinguishable at this boundary.
 
 ## Backend authorization
 

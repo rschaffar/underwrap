@@ -89,11 +89,28 @@ Workspace tests cover:
   blob-delete-before-catalog ordering, storage-failure state re-read, and
   absence of reconstruction or false success;
 - target environment, capability, UID, idmap, mount, and writeback helpers;
-- Secret Service data model and D-Bus handler behavior;
+- Secret Service data model and production D-Bus handler behavior, including the
+  collection/item/alias mutation rejection matrix with structural live-store
+  equality, failed-create object-registration absence, ACKed create and
+  replacement paths, write-lock retention through exact ACK, wrong-generation
+  and EOF preservation, and a rejected generation followed by an unrelated
+  accepted generation;
 - private libsecret framing, strict canonical/semantic validation, exact
   generation ACK/REJECT, fallback, terminal EOF/EAGAIN, and near-cap
   backpressure;
 - real daemon/backend integration flows.
+
+The handler tests enforce the production ordering: retain the write lock, clone
+the accepted store once, mutate the candidate, canonicalize and publish it,
+observe the exact matching ACK, and only then commit. Preparation, publication,
+rejection, EOF, response mismatch, and transport failures preserve accepted live
+memory. Tests directly cover the complete-store zeroization helper and handler
+routes. Source/static inventory verifies that discarded candidate and displaced
+secret buffers, including deletion and replacement paths, are zeroized before
+drop; the suite does not instrument memory after drop. The lifecycle tests keep
+the separate host-side consequence explicit: a completely written ACK can remain
+eligible when secretsd or the D-Bus caller misses success, but ACK is neither
+caller delivery nor backend durability and a later Checkin can still fail.
 
 Some integration tests skip when the host cannot supply the required Linux
 capabilities. Focused `underwrap-ns` tests cover complete-plan zero-side-effect

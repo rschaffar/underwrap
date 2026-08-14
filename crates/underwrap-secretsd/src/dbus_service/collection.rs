@@ -8,11 +8,12 @@ use zbus::{
 };
 
 use underwrap_secretsd_store::SecretStore;
+use zeroize::Zeroize;
 
 use crate::metadata_trace_enabled;
-use crate::publication::{self, SharedPublisher};
+use crate::publication::SharedPublisher;
 
-use super::{ItemInterface, Secret, empty_path, item_path};
+use super::{ItemInterface, Secret, empty_path, item_path, mutation::mutate_and_publish};
 
 pub struct CollectionInterface {
     id: String,
@@ -34,8 +35,15 @@ impl CollectionInterface {
 impl CollectionInterface {
     async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
         let mut store = self.store.write().await;
-        store.delete_collection(&self.id);
-        publication::publish_store(&self.publisher, &store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            if let Some(collection) = candidate.collections.get_mut(&self.id) {
+                for item in collection.items.values_mut() {
+                    item.secret.zeroize();
+                }
+            }
+            candidate.delete_collection(&self.id);
+            Ok(())
+        })?;
         Ok(empty_path())
     }
 
@@ -82,20 +90,33 @@ impl CollectionInterface {
 
         let secret_len = secret.value.len();
         let content_type = secret.content_type.clone();
-        let (item_id, replaced) = {
+        let (item_id, replaced, item_path) = {
             let mut store = self.store.write().await;
-            let (id, replaced) = store
-                .create_item(
-                    &self.id,
-                    &label,
-                    &attrs,
-                    &secret.value,
-                    &secret.content_type,
-                    replace,
-                )
-                .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
-            publication::publish_store(&self.publisher, &store)?;
-            (id, replaced)
+            mutate_and_publish(&mut store, &self.publisher, |candidate| {
+                if replace
+                    && let Some(collection) = candidate.collections.get_mut(&self.id)
+                    && let Some(item) = collection.items.values_mut().find(|item| {
+                        attrs
+                            .iter()
+                            .all(|(key, value)| item.attributes.get(key) == Some(value))
+                    })
+                {
+                    item.secret.zeroize();
+                }
+                let (id, replaced) = candidate
+                    .create_item(
+                        &self.id,
+                        &label,
+                        &attrs,
+                        &secret.value,
+                        &secret.content_type,
+                        replace,
+                    )
+                    .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
+                let path = item_path(&self.id, &id)
+                    .ok_or_else(|| fdo::Error::Failed("invalid item path".into()))?;
+                Ok((id, replaced, path))
+            })?
         };
 
         if metadata_trace_enabled() {
@@ -111,9 +132,6 @@ impl CollectionInterface {
                 "secretsd Collection.CreateItem"
             );
         }
-
-        let item_path = item_path(&self.id, &item_id)
-            .ok_or_else(|| fdo::Error::Failed("invalid item path".into()))?;
 
         if !replaced {
             let item = ItemInterface::new(
@@ -152,8 +170,10 @@ impl CollectionInterface {
     #[zbus(property)]
     async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let mut store = self.store.write().await;
-        store.set_collection_label(&self.id, &label);
-        publication::publish_store(&self.publisher, &store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_collection_label(&self.id, &label);
+            Ok(())
+        })?;
         Ok(())
     }
 

@@ -37,15 +37,21 @@ For a libsecret-enabled wrapper, `underwrap-ns`:
    the latest fully ACK-written generation and sends UsageSignal or Checkin over
    fd 20.
 
-secretsd has no direct daemon channel. It keeps the keyring in memory and waits
-for exact host ACK/REJECT before returning each D-Bus mutation. The host accepts
-only bounded exact-canonical state with valid identifiers, aliases/references,
-and timestamps. The target never inherits fd 20 or the publication socket.
+secretsd has no direct daemon channel. For each D-Bus mutation it retains the
+store write lock, clones the accepted store once, mutates that candidate,
+canonicalizes and publishes the complete next generation, observes the exact
+matching host ACK or failure, and commits only after ACK. Preparation,
+canonicalization, rejection, EOF, response mismatch, or transport failure leaves
+the accepted live store unchanged. Discarded candidate secret buffers and secret
+buffers displaced by commit are zeroized. The host accepts only bounded
+exact-canonical state with valid identifiers, aliases/references, and timestamps.
+The target never inherits fd 20 or the publication socket.
 
 ACK means the host retained one invocation generation; it is neither caller
-response delivery nor backend durability. If secretsd dies after ACK but before
-the caller sees success, that generation remains eligible after terminal EOF.
-A retained publisher endpoint fails closed with no fallback. A complete
+response delivery nor backend durability, and the later Checkin can still fail.
+If the host completely writes ACK but secretsd dies or the caller misses the
+success response, that generation remains eligible after terminal EOF. A
+retained publisher endpoint fails closed with no fallback. A complete
 JCS-canonical resource is inclusively limited to 2,097,152 bytes. The private
 publication body has its separate inclusive 1,048,576-byte limit. The 64-KiB
 limit applies only to unrelated control frames; Checkout and Checkin use the

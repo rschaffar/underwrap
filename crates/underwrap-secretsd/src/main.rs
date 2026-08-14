@@ -17,6 +17,8 @@ use tokio::sync::RwLock;
 mod dbus_service;
 mod publication;
 mod section_store;
+#[cfg(test)]
+mod test_support;
 
 use underwrap_protocol::resource_blob::LibsecretSection;
 
