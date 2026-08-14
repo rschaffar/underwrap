@@ -168,15 +168,6 @@ impl ResourcesDocument {
         }
         Ok(false)
     }
-
-    /// Remove the resource with `id`. Returns `true` if a record
-    /// was removed. Callers are responsible for checking dependents
-    /// (secrets, pairs, permissions) before invoking this.
-    pub fn remove(&mut self, id: &str) -> bool {
-        let before = self.resources.len();
-        self.resources.retain(|r| r.id != id);
-        self.resources.len() != before
-    }
 }
 
 impl PairsDocument {

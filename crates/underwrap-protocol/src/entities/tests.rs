@@ -199,18 +199,7 @@ fn pairs_for_resource_filters_correctly() {
 }
 
 #[test]
-fn remove_returns_whether_anything_was_removed() {
-    let mut r = ResourcesDocument::default();
-    r.insert(ResourceRecord {
-        id: "res_a".into(),
-        name: "r1".into(),
-        created_by: op("op", "a"),
-        created_at: 1,
-    })
-    .unwrap();
-    assert!(r.remove("res_a"));
-    assert!(!r.remove("res_a"));
-
+fn pair_remove_returns_whether_pair_was_removed() {
     let mut p = PairsDocument::default();
     p.insert(WrapperResourcePairRecord {
         wrapper: "gh".into(),

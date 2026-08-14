@@ -200,7 +200,7 @@ pub(crate) async fn handle_admin_resource_delete(
         }));
     }
 
-    doc.remove(&resource_id);
+    doc.resources.retain(|resource| resource.id != resource_id);
     save_resources_document(store.as_ref(), &doc).into_internal("persisting resources document")?;
     log_admin_event(
         "resource.delete",
