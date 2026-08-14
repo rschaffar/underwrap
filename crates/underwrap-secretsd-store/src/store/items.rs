@@ -101,27 +101,6 @@ impl SecretStore {
             .map(|item| item.secret.as_slice())
     }
 
-    pub fn set_secret(&mut self, collection: &str, id: &str, value: &[u8]) -> bool {
-        if let Some(item) = self
-            .collections
-            .get_mut(collection)
-            .and_then(|c| c.items.get_mut(id))
-        {
-            item.secret = value.to_vec();
-            item.modified = now_secs();
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn get_content_type(&self, collection: &str, id: &str) -> Option<&str> {
-        self.collections
-            .get(collection)
-            .and_then(|c| c.items.get(id))
-            .map(|item| item.content_type.as_str())
-    }
-
     pub fn get_attributes(&self, collection: &str, id: &str) -> Option<&HashMap<String, String>> {
         self.collections
             .get(collection)

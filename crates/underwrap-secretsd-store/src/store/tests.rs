@@ -110,7 +110,10 @@ fn create_and_get_item() {
 
     assert_eq!(store.get_secret("default", &id), Some(b"secret".as_slice()));
     assert_eq!(store.get_label("default", &id), Some("Test"));
-    assert_eq!(store.get_content_type("default", &id), Some("text/plain"));
+    assert_eq!(
+        store.collections["default"].items[&id].content_type,
+        "text/plain"
+    );
     assert!(store.get_created("default", &id).is_some());
     assert!(store.get_modified("default", &id).is_some());
 }
@@ -299,26 +302,6 @@ fn search_all_collections() {
 }
 
 #[test]
-fn set_and_get_secret() {
-    let mut store = SecretStore::new_default();
-    let (id, _) = store
-        .create_item(
-            "default",
-            "Test",
-            &HashMap::new(),
-            b"original",
-            "text/plain",
-            false,
-        )
-        .unwrap();
-    assert!(store.set_secret("default", &id, b"updated"));
-    assert_eq!(
-        store.get_secret("default", &id),
-        Some(b"updated".as_slice())
-    );
-}
-
-#[test]
 fn set_and_get_attributes() {
     let mut store = SecretStore::new_default();
     let (id, _) = store
@@ -361,9 +344,6 @@ fn alias_operations() {
 
     store.set_alias("myalias", Some(&col));
     assert_eq!(store.get_alias("myalias"), Some(col.as_str()));
-
-    let aliases = store.list_aliases_for(&col);
-    assert!(aliases.contains(&"myalias"));
 
     store.set_alias("myalias", None);
     assert_eq!(store.get_alias("myalias"), None);
@@ -421,7 +401,6 @@ fn operations_on_nonexistent_items_return_false_or_none() {
     assert_eq!(store.get_attributes("default", "nope"), None);
     assert_eq!(store.get_created("default", "nope"), None);
     assert_eq!(store.get_modified("default", "nope"), None);
-    assert!(!store.set_secret("default", "nope", b"x"));
     assert!(!store.set_label("default", "nope", "x"));
     assert!(!store.set_attributes("default", "nope", HashMap::new()));
     assert!(!store.delete_item("default", "nope"));

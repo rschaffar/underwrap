@@ -17,13 +17,4 @@ impl SecretStore {
             }
         }
     }
-
-    /// List all aliases for a collection.
-    pub fn list_aliases_for(&self, collection_id: &str) -> Vec<&str> {
-        self.aliases
-            .iter()
-            .filter(|(_, v)| v.as_str() == collection_id)
-            .map(|(k, _)| k.as_str())
-            .collect()
-    }
 }
