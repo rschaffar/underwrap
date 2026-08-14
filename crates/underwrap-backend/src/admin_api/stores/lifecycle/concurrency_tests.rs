@@ -15,7 +15,7 @@ use crate::admin_api::stores::crud::handle_admin_store_create;
 use crate::http::responses::Body;
 use crate::store_registry::{StoreEntry, StoreState};
 use crate::test_support::{
-    MemTestStore, admin_principal, assert_secure_encrypted_tree, crud_state, run_handler,
+    TestStore, admin_principal, assert_secure_encrypted_tree, crud_state, run_handler,
     tree_snapshot,
 };
 
@@ -439,7 +439,7 @@ async fn stale_same_entry_backend_at_publication_is_left_untouched() {
     let state = Arc::new(crud_state(tmp.path()));
     let principal = admin_principal();
     let (store_id, _, canonical) = create_encrypted_store(state.clone(), &principal);
-    let replacement: Arc<dyn StorageBackend> = Arc::new(MemTestStore::new());
+    let replacement: Arc<dyn StorageBackend> = Arc::new(TestStore::new());
     replacement
         .write("replacement-marker", b"replacement")
         .unwrap();

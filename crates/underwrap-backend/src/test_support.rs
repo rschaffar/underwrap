@@ -56,40 +56,6 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
 
 // ===== Storage backends used in tests =====
 
-#[derive(Default)]
-pub(crate) struct MemTestStore {
-    pub(crate) data: std::sync::Mutex<HashMap<String, Vec<u8>>>,
-}
-
-impl MemTestStore {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl StorageBackend for MemTestStore {
-    fn read(&self, id: &str) -> anyhow::Result<Option<underwrap_protocol::message::SecretBytes>> {
-        Ok(self.data.lock().unwrap().get(id).cloned().map(Into::into))
-    }
-    fn write(&self, id: &str, m: &[u8]) -> anyhow::Result<()> {
-        self.data.lock().unwrap().insert(id.to_string(), m.to_vec());
-        Ok(())
-    }
-    fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
-        Ok(self
-            .data
-            .lock()
-            .unwrap()
-            .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
-            .collect())
-    }
-    fn delete(&self, id: &str) -> anyhow::Result<bool> {
-        Ok(self.data.lock().unwrap().remove(id).is_some())
-    }
-}
-
 pub(crate) struct TestStore {
     pub(crate) data: std::sync::Mutex<HashMap<String, Vec<u8>>>,
     pub(crate) fail_ops: std::sync::Mutex<std::collections::HashSet<&'static str>>,
@@ -334,7 +300,7 @@ pub(crate) fn service_state_with_runtime_client(
     };
     let entries = HashMap::from([(
         store_id.to_string(),
-        StoreEntry::new(record, StoreState::Unlocked(Arc::new(MemTestStore::new()))),
+        StoreEntry::new(record, StoreState::Unlocked(Arc::new(TestStore::new()))),
     )]);
     let client_instances = HashMap::from([(
         "inst_local".to_string(),
