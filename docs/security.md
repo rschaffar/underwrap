@@ -314,10 +314,12 @@ Persistence is separate:
   snapshot loaded during finalize.
 
 A permission that becomes read-only during an invocation rejects the final
-writeback. Resource mutation is a whole-blob, last-writer-wins operation rather
-than a transaction: a concurrent admin edit can race between finalize's load
-and save. Operators must serialize edits to one resource; the comparison is not
-a compare-and-swap guarantee.
+writeback. Resource and control-document mutations are whole-value,
+last-writer-wins operations rather than transactions: a concurrent admin edit or
+deletion can race between finalize's load and save. Operators must serialize all
+relevant runtime writeback and admin content, resource, pair, permission, and
+deletion mutations. The comparison and delete ordering are not compare-and-swap
+guarantees.
 
 ## Local wrapper boundary
 
@@ -737,6 +739,21 @@ so operators must quiesce all access to the store during rotation. The procedure
 does not claim CAS, response delivery, automatic reconciliation, or power-loss
 /fsync durability.
 
+Resource deletion first reads and decodes the complete typed blob and loads all
+pair and permission blockers. Every env entry, file entry, libsecret alias,
+collection (including an empty collection), and item blocks deletion. The
+identifier-only blocker sample never contains value-bearing fields, but an
+identifier itself can contain sensitive operator input, so samples are not
+copied into audit events or logs. Once unblocked, the backend deletes the active
+empty blob key before saving catalog removal and emits success only after both
+operations report success. A missing active key is the valid never-materialized
+empty case. This establishes active-key absence, not secure media erasure or
+removal from retained encrypted generations. If storage reports an error,
+callers re-read both active key and catalog state before serialized
+reconciliation; the error does not prove whether an attempted effect became
+visible and the backend does not reconstruct a blob after a later catalog-save
+failure.
+
 The operator must keep displayed keys in an external password manager or vault.
 Memory compromise of the running backend can recover an unlocked key; TPM/HSM
 custody is out of scope.
@@ -821,6 +838,10 @@ Keep these limits explicit in deployment and wrapper reviews:
 - Browser sessions are memory-only and disappear on restart.
 - Abstract D-Bus sockets are outside mount-namespace hiding.
 - Resource and policy availability depends on the backend network path.
+- Content and reference mutation endpoints do not provide a tombstone or
+  post-delete exclusion. Without serialization, a racing or later admin/runtime
+  mutation can recreate an active blob or dangling reference after resource
+  deletion.
 - `accessPaths` deliberately grants selected host-filesystem access to the
   dedicated target UID.
 - The strongest peer-auth claim requires Linux 6.5+ and the default hardened

@@ -135,20 +135,6 @@ pub(crate) fn list_secret_entries(
     Ok(entries)
 }
 
-/// Count how many per-slot entries exist under `resource_name`, plus
-/// a small sample of ids for the structured "delete refused"
-/// response.
-pub(crate) fn resource_blob_entries(
-    store: &dyn StorageBackend,
-    resource_name: &str,
-) -> Result<Vec<String>> {
-    let blob = load_resource_blob(store, resource_name)?;
-    let entries = expand_blob_to_entries(resource_name, &blob);
-    let mut ids: Vec<String> = entries.into_keys().collect();
-    ids.sort();
-    Ok(ids)
-}
-
 /// Validate the structured `(resource_id, slot, key)` tuple and
 /// compose the in-blob entry id. The only operator-supplied input
 /// validated here is the per-slot key shape; the resource id is

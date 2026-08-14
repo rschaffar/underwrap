@@ -32,6 +32,69 @@ use crate::message::SecretBytes;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
+/// Identifier-only reference to one stored entry in a resource blob.
+///
+/// This is the complete lifecycle view used by resource deletion blockers.
+/// It deliberately carries only map keys: no values, labels, alias targets,
+/// attributes, content types, timestamps, or secret bytes are copied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResourceContentReference {
+    Env {
+        name: String,
+    },
+    File {
+        path: String,
+    },
+    LibsecretAlias {
+        name: String,
+    },
+    LibsecretCollection {
+        collection_id: String,
+    },
+    LibsecretItem {
+        collection_id: String,
+        item_id: String,
+    },
+}
+
+impl utoipa::PartialSchema for ResourceContentReference {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{Discriminator, Object, OneOf, Schema, Type};
+
+        fn tagged_object(kind: &'static str, fields: &[&'static str]) -> Schema {
+            let mut object = Object::builder()
+                .property(
+                    "kind",
+                    Object::builder()
+                        .schema_type(Type::String)
+                        .enum_values(Some([kind])),
+                )
+                .required("kind");
+            for field in fields {
+                object = object
+                    .property(*field, Object::with_type(Type::String))
+                    .required(*field);
+            }
+            object.build().into()
+        }
+
+        OneOf::builder()
+            .item(tagged_object("env", &["name"]))
+            .item(tagged_object("file", &["path"]))
+            .item(tagged_object("libsecret_alias", &["name"]))
+            .item(tagged_object("libsecret_collection", &["collection_id"]))
+            .item(tagged_object(
+                "libsecret_item",
+                &["collection_id", "item_id"],
+            ))
+            .discriminator(Some(Discriminator::new("kind")))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for ResourceContentReference {}
+
 /// Inclusive maximum for the complete JCS-canonical resource blob.
 ///
 /// This is deliberately independent of the private libsecret publication
@@ -208,6 +271,57 @@ impl ResourceBlob {
             files: BTreeMap::new(),
             libsecret: LibsecretSection::default(),
         }
+    }
+
+    /// Enumerate every stored content entry in deterministic lifecycle order.
+    ///
+    /// Env keys, file keys, and aliases come first. Collections follow, each
+    /// immediately followed by its items. Every map uses its `BTreeMap` order,
+    /// and even a collection with no items contributes one reference.
+    pub fn content_references(&self) -> Vec<ResourceContentReference> {
+        let mut references = Vec::with_capacity(
+            self.env
+                .len()
+                .saturating_add(self.files.len())
+                .saturating_add(self.libsecret.aliases.len())
+                .saturating_add(self.libsecret.collections.len())
+                .saturating_add(
+                    self.libsecret
+                        .collections
+                        .values()
+                        .fold(0usize, |count, collection| {
+                            count.saturating_add(collection.items.len())
+                        }),
+                ),
+        );
+        references.extend(
+            self.env
+                .keys()
+                .map(|name| ResourceContentReference::Env { name: name.clone() }),
+        );
+        references.extend(
+            self.files
+                .keys()
+                .map(|path| ResourceContentReference::File { path: path.clone() }),
+        );
+        references.extend(
+            self.libsecret
+                .aliases
+                .keys()
+                .map(|name| ResourceContentReference::LibsecretAlias { name: name.clone() }),
+        );
+        for (collection_id, collection) in &self.libsecret.collections {
+            references.push(ResourceContentReference::LibsecretCollection {
+                collection_id: collection_id.clone(),
+            });
+            references.extend(collection.items.keys().map(|item_id| {
+                ResourceContentReference::LibsecretItem {
+                    collection_id: collection_id.clone(),
+                    item_id: item_id.clone(),
+                }
+            }));
+        }
+        references
     }
 
     /// Serialize to JCS-canonical JSON bytes. Two `ResourceBlob`s

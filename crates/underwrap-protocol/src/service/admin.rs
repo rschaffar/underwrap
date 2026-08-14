@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
 use crate::policy::WrapperPermission;
 use crate::resource::KvSecretSlot;
+use crate::resource_blob::ResourceContentReference;
 
 // ===== Users admin API =====
 //
@@ -524,14 +525,13 @@ pub struct AdminResourceRenameResponse {
     pub resource: ResourceRecord,
 }
 
-/// Counts plus a short sample of names per dependent kind. The sample
-/// is capped server-side so a heavily-used resource doesn't return
-/// thousands of strings.
+/// Counts plus a short identifier-only sample per dependent kind. Samples are
+/// capped server-side so a heavily-used resource does not return thousands of
+/// entries. Identifiers are not copied into audit events or logs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema, Default)]
 pub struct AdminResourceDeleteBlockers {
-    pub secret_count: u32,
-    #[serde(default)]
-    pub sample_secret_ids: Vec<String>,
+    pub content_entry_count: u32,
+    pub sample_content: Vec<ResourceContentReference>,
     pub pair_count: u32,
     #[serde(default)]
     pub sample_pairs: Vec<ServiceWrapperResourcePair>,

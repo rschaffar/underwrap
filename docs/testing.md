@@ -78,10 +78,16 @@ Workspace tests cover:
 - IPC framing and SCM_RIGHTS transfer;
 - runtime/admin DTO serialization;
 - permission mode evaluation;
-- canonical resource blob handling;
-- plain and encrypted storage;
+- canonical resource blob handling, including deterministic identifier-only
+  enumeration of env, files, libsecret aliases, empty/nonempty collections, and
+  items;
+- plain and encrypted storage, including active resource-key absence and
+  repeated false deletion after removing a typed-empty blob;
 - daemon peer authentication and wrapper intake;
 - backend runtime policy and writeback validation;
+- resource deletion blocker aggregation, malformed-blob fail-before behavior,
+  blob-delete-before-catalog ordering, storage-failure state re-read, and
+  absence of reconstruction or false success;
 - target environment, capability, UID, idmap, mount, and writeback helpers;
 - Secret Service data model and D-Bus handler behavior;
 - private libsecret framing, strict canonical/semantic validation, exact
@@ -116,7 +122,10 @@ not require server-side client authentication, and rejection of an arbitrary
 second private CA alone is not evidence that public roots are excluded. The
 separate real-backend integration suite retains mTLS client-certificate,
 fingerprint-principal, registration, resource, policy, and writeback evidence,
-and the NixOS VM exercises representative deployed private-CA traffic.
+and the NixOS VM exercises representative deployed private-CA traffic. The
+real authenticated HTTPS admin suite also covers a libsecret-only deletion
+blocker, unchanged catalog/blob state while blocked, structured cleanup,
+successful deletion, and direct active-key absence.
 
 The `frontend-backend-url-eval` check proves module-level HTTP rejection and
 exact HTTPS URL generation; the VM independently proves a handcrafted plaintext
@@ -155,7 +164,9 @@ committed.
 ## SPA browser tests
 
 Playwright exercises protected routing, authentication, CSRF, stores, secrets,
-permissions, client instances, and user workflows.
+permissions, client instances, and user workflows. The resource lifecycle flow
+shows a typed libsecret blocker in the still-open delete dialog, clears it, and
+then observes successful resource removal.
 
 Run it inside the Nix development shell so Playwright uses the NixOS-compatible
 browser:

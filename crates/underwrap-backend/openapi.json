@@ -3797,13 +3797,19 @@
       },
       "AdminResourceDeleteBlockers": {
         "type": "object",
-        "description": "Counts plus a short sample of names per dependent kind. The sample\nis capped server-side so a heavily-used resource doesn't return\nthousands of strings.",
+        "description": "Counts plus a short identifier-only sample per dependent kind. Samples are\ncapped server-side so a heavily-used resource does not return thousands of\nentries. Identifiers are not copied into audit events or logs.",
         "required": [
-          "secret_count",
+          "content_entry_count",
+          "sample_content",
           "pair_count",
           "permission_count"
         ],
         "properties": {
+          "content_entry_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
           "pair_count": {
             "type": "integer",
             "format": "int32",
@@ -3813,6 +3819,12 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "sample_content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceContentReference"
+            }
           },
           "sample_pairs": {
             "type": "array",
@@ -3825,17 +3837,6 @@
             "items": {
               "$ref": "#/components/schemas/AdminWrapperPermissionKey"
             }
-          },
-          "sample_secret_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "secret_count": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
           }
         }
       },
@@ -4522,6 +4523,107 @@
           "username": {
             "type": "string"
           }
+        }
+      },
+      "ResourceContentReference": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "env"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "path"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "file"
+                ]
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "libsecret_alias"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "collection_id"
+            ],
+            "properties": {
+              "collection_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "libsecret_collection"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "collection_id",
+              "item_id"
+            ],
+            "properties": {
+              "collection_id": {
+                "type": "string"
+              },
+              "item_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "libsecret_item"
+                ]
+              }
+            }
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind"
         }
       },
       "ResourceRecord": {

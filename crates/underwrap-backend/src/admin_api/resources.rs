@@ -1,14 +1,15 @@
 //! Resource admin CRUD under `/v1/admin/stores/{id}/resources`.
 //!
 //! Resources are first-class entities with provenance, stored in the
-//! resources document. Delete refuses with structured blockers if
-//! secrets, pairs, or wrapper permissions still reference the
+//! resources document. Delete refuses with structured blockers if stored
+//! resource content, pairs, or wrapper permissions still reference the
 //! resource.
 
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use underwrap_backend_store::delete_resource_blob;
 use underwrap_protocol::entities::{EntityCreator, InsertError, ResourceRecord};
 use underwrap_protocol::service::{
     AdminResourceCreateRequest, AdminResourceCreateResponse, AdminResourceDeleteBlockers,
@@ -28,7 +29,7 @@ use crate::http::responses::Body;
 use crate::runtime_state::ListenerState;
 use crate::storage::documents::{
     ENTITY_DEPENDENT_SAMPLE_LIMIT, load_pairs_document, load_resources_document,
-    policy_permission_dependents, resource_secret_dependents, save_resources_document,
+    policy_permission_dependents, resource_content_dependents, save_resources_document,
 };
 
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
@@ -157,9 +158,9 @@ pub(crate) async fn handle_admin_resource_delete(
     };
     let target_name = target.name.clone();
 
-    let (secret_count, sample_secret_ids) =
-        resource_secret_dependents(store.as_ref(), &resource_id)
-            .into_internal("scanning resource dependents")?;
+    let (content_entry_count, sample_content) =
+        resource_content_dependents(store.as_ref(), &resource_id)
+            .into_internal("scanning resource content")?;
 
     let pairs = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     let dependent_pairs: Vec<ServiceWrapperResourcePair> = pairs
@@ -177,7 +178,7 @@ pub(crate) async fn handle_admin_resource_delete(
         policy_permission_dependents(store.as_ref(), |p| p.resource_id == resource_id)
             .into_internal("loading policy document")?;
 
-    if secret_count > 0 || pair_count > 0 || permission_count > 0 {
+    if content_entry_count > 0 || pair_count > 0 || permission_count > 0 {
         log_admin_event(
             "resource.delete",
             &principal,
@@ -190,8 +191,8 @@ pub(crate) async fn handle_admin_resource_delete(
         return Ok(Json(AdminResourceDeleteResponse {
             ok: false,
             blocked_by: Some(AdminResourceDeleteBlockers {
-                secret_count,
-                sample_secret_ids,
+                content_entry_count,
+                sample_content,
                 pair_count,
                 sample_pairs,
                 permission_count,
@@ -200,6 +201,11 @@ pub(crate) async fn handle_admin_resource_delete(
         }));
     }
 
+    // Remove the active empty/missing blob key before making the catalog
+    // record disappear. `Ok(false)` is the valid never-materialized case;
+    // any returned error stops before the catalog write.
+    let _ = delete_resource_blob(store.as_ref(), &resource_id)
+        .into_internal("deleting resource blob")?;
     doc.resources.retain(|resource| resource.id != resource_id);
     save_resources_document(store.as_ref(), &doc).into_internal("persisting resources document")?;
     log_admin_event(

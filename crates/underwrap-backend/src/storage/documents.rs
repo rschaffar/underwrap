@@ -12,14 +12,12 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use underwrap_backend_store::StorageBackend;
-use underwrap_protocol::control::is_control_key;
+use underwrap_backend_store::{StorageBackend, load_resource_blob};
 use underwrap_protocol::entities::{
     PAIRS_DOCUMENT_SECRET_ID, PairsDocument, RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument,
 };
 use underwrap_protocol::policy::{POLICY_DOCUMENT_SECRET_ID, PolicyDocument};
-
-use crate::storage::secret_entries::resource_blob_entries;
+use underwrap_protocol::resource_blob::ResourceContentReference;
 
 /// Sample size for the "delete refused: dependents exist" structured
 /// responses across resource / pair / wrapper-permission admin
@@ -93,17 +91,18 @@ pub(crate) fn save_pairs_document(store: &dyn StorageBackend, doc: &PairsDocumen
     save_document(store, doc)
 }
 
-pub(crate) fn resource_secret_dependents(
+/// Count every typed content entry in one resource blob and return a capped,
+/// deterministic identifier-only sample. A genuinely missing active key is
+/// represented by `load_resource_blob` as an empty blob; every read/decode/
+/// size/version failure is returned to the caller.
+pub(crate) fn resource_content_dependents(
     store: &dyn StorageBackend,
-    resource_name: &str,
-) -> Result<(u32, Vec<String>)> {
-    let mut ids = resource_blob_entries(store, resource_name)?;
-    ids.retain(|id| !is_control_key(id));
-    ids.sort();
-    ids.dedup();
-    let count = crate::admin_api::util::saturating_u32(ids.len());
-    ids.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
-    Ok((count, ids))
+    resource_id: &str,
+) -> Result<(u32, Vec<ResourceContentReference>)> {
+    let mut references = load_resource_blob(store, resource_id)?.content_references();
+    let count = crate::admin_api::util::saturating_u32(references.len());
+    references.truncate(ENTITY_DEPENDENT_SAMPLE_LIMIT);
+    Ok((count, references))
 }
 
 /// Count permissions in the store's policy document that match

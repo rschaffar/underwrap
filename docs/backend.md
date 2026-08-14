@@ -450,9 +450,14 @@ First-class `ResourceRecord`s that own name provenance.
 - `GET    /v1/admin/stores/{id}/resources` — list.
 - `POST   /v1/admin/stores/{id}/resources` — create.
 - `PUT    /v1/admin/stores/{id}/resources/{rid}` — update.
-- `DELETE /v1/admin/stores/{id}/resources/{rid}` — delete; refuses with
-  structured `blocked_by` counts when secrets, pairs, or wrapper
-  permissions still reference the resource.
+- `DELETE /v1/admin/stores/{id}/resources/{rid}` — delete; refuses with one
+  structured `blocked_by` response while any stored env entry, file entry,
+  libsecret alias, collection (including an empty collection), item,
+  wrapper/resource pair, or permission row remains. `content_entry_count` is
+  the complete saturated total and `sample_content` is a deterministic capped
+  tagged sample (`env`, `file`, `libsecret_alias`, `libsecret_collection`, or
+  `libsecret_item`). Samples contain identifiers only; identifiers can still be
+  sensitive operator input and are never copied into audit events or logs.
 
 ### Wrapper/Resource pairs
 
@@ -667,10 +672,24 @@ pairs:
 ```
 
 Provenance is set on first creation and never changes afterwards.
-There is no edit endpoint; `delete` on either entity refuses when
-dependents exist (the response carries structured `blocked_by`
-counts plus a small sample so the SPA can render a clear "fix this
-first" message).
+There is no edit endpoint; `delete` on either entity refuses when dependents
+exist. Resource deletion classifies the complete typed `ResourceBlob`, not the
+flat env/files admin projection, and aggregates content, pair, and permission
+counts in one refusal. Its capped content sample carries only raw map
+identifiers; values, labels, alias targets, attributes, content types,
+timestamps, and secret bytes are not copied. Identifiers are not inherently
+secret-free, so blocker samples are returned only to the authenticated operator
+and are never copied into audit events or logs.
+
+After every blocker load and decode succeeds and all counts are zero, deletion
+requests removal of the active `resources/<resource_id>` key before removing
+and saving the catalog record. A missing key is the valid never-materialized
+empty case. The backend returns `ok: true` and emits the success audit event only
+after both operations report success. A blob-delete error prevents the catalog
+write. If the later catalog save reports an error, no blob reconstruction is
+attempted; storage errors do not prove which attempted effects became visible,
+so operators must re-read the active blob key and catalog state before a
+serialized reconciliation or retry.
 
 `last_used_at` (unix seconds, `None` until first use) is bumped
 server-side after a successful open and after a successful finalize
@@ -728,7 +747,10 @@ ns aborts the invocation if any blob key has no matching mount.
 
 `PlainBackend` stores the blob as one file per resource;
 `EncryptedBackend` AEAD-encrypts the blob as one ciphertext with one
-nonce per resource. The operator-facing per-secret admin endpoints
+nonce per resource. Successful resource deletion makes the active empty blob
+key absent in either backend; it is not a secure-media-erasure claim and does
+not delete copies in retained encrypted rotation generations.
+The operator-facing per-secret admin endpoints
 (`/v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}`) keep the
 `<resource>/<slot>/<key>` address space but route through the blob
 via a load-modify-save shim. **No runtime endpoint accepts a storage
@@ -743,11 +765,20 @@ or per-resource mutation lock above that storage operation.
 
 Consequently, concurrent load-modify-save operations against the same resource
 or control document are last-writer-wins. This includes runtime finalize racing
-an admin secret edit, two admin edits, registration racing policy changes, and
-an admin env edit racing a stale runtime writeback. The finalize env comparison
-protects against a submitted env change relative to the snapshot it loads; it
-does not protect an edit that lands between that load and the whole-blob save.
-Operators and API clients must serialize mutations to the same object.
+an admin content edit or resource deletion, two admin edits, registration racing
+resource/pair/policy changes, and an admin env edit racing a stale runtime
+writeback. The finalize env comparison protects against a submitted env change
+relative to the snapshot it loads; it does not protect an edit that lands
+between that load and the whole-blob save. Operators and API clients must
+serialize all relevant runtime writeback and admin content, resource, pair, and
+permission mutations for a lifecycle operation; deletion ordering is not a
+transaction or compare-and-swap guarantee.
+
+Admin content and reference mutation endpoints do not currently provide an
+absent-resource tombstone or a global post-delete write exclusion. A write made
+after deletion can recreate a blob or a dangling reference. Serialized callers
+must stop those writers before deletion and keep them stopped until they have
+observed the resulting state.
 
 Key rotation has the stronger operational requirement described under
 [Stores](#stores): quiesce all reads and writes for that store while rotation is

@@ -59,6 +59,8 @@ cFuCWqBWazuUyiSP6kQz7Ad4/9qxEu4c8Hv3Ecc5XuQDpl4Rxox+j/7lUrthzrI=
 pub(crate) struct TestStore {
     pub(crate) data: std::sync::Mutex<HashMap<String, Vec<u8>>>,
     pub(crate) fail_ops: std::sync::Mutex<std::collections::HashSet<&'static str>>,
+    fail_read_keys: std::sync::Mutex<std::collections::HashSet<String>>,
+    operation_trace: std::sync::Mutex<Vec<String>>,
 }
 
 impl TestStore {
@@ -66,10 +68,31 @@ impl TestStore {
         Self {
             data: std::sync::Mutex::new(HashMap::new()),
             fail_ops: std::sync::Mutex::new(std::collections::HashSet::new()),
+            fail_read_keys: std::sync::Mutex::new(std::collections::HashSet::new()),
+            operation_trace: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    fn should_fail(&self, op: &'static str) -> anyhow::Result<()> {
+    pub(crate) fn clear_operation_trace(&self) {
+        self.operation_trace.lock().unwrap().clear();
+    }
+
+    pub(crate) fn operation_trace(&self) -> Vec<String> {
+        self.operation_trace.lock().unwrap().clone()
+    }
+
+    pub(crate) fn fail_read_for(&self, secret_id: impl Into<String>) {
+        self.fail_read_keys.lock().unwrap().insert(secret_id.into());
+    }
+
+    fn before_operation(&self, op: &'static str, secret_id: &str) -> anyhow::Result<()> {
+        self.operation_trace
+            .lock()
+            .unwrap()
+            .push(format!("{op}:{secret_id}"));
+        if op == "read" && self.fail_read_keys.lock().unwrap().contains(secret_id) {
+            anyhow::bail!("forced read failure for requested key");
+        }
         if self.fail_ops.lock().unwrap().contains(op) {
             anyhow::bail!("forced {op} failure");
         }
@@ -79,7 +102,7 @@ impl TestStore {
 
 impl StorageBackend for TestStore {
     fn read(&self, secret_id: &str) -> anyhow::Result<Option<SecretBytes>> {
-        self.should_fail("read")?;
+        self.before_operation("read", secret_id)?;
         Ok(self
             .data
             .lock()
@@ -90,7 +113,7 @@ impl StorageBackend for TestStore {
     }
 
     fn write(&self, secret_id: &str, material: &[u8]) -> anyhow::Result<()> {
-        self.should_fail("write")?;
+        self.before_operation("write", secret_id)?;
         self.data
             .lock()
             .unwrap()
@@ -99,7 +122,7 @@ impl StorageBackend for TestStore {
     }
 
     fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
-        self.should_fail("list")?;
+        self.before_operation("list", prefix)?;
         let mut ids: Vec<_> = self
             .data
             .lock()
@@ -113,7 +136,7 @@ impl StorageBackend for TestStore {
     }
 
     fn delete(&self, secret_id: &str) -> anyhow::Result<bool> {
-        self.should_fail("delete")?;
+        self.before_operation("delete", secret_id)?;
         Ok(self.data.lock().unwrap().remove(secret_id).is_some())
     }
 }

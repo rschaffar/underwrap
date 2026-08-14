@@ -194,6 +194,49 @@ fn plain_and_encrypted_backends_enforce_complete_resource_boundaries() {
     assert_backend_resource_boundaries(&encrypted);
 }
 
+fn assert_active_resource_key_deleted(backend: &dyn StorageBackend) {
+    let resource_id = "delete-me";
+    let key = "resources/delete-me";
+    save_resource_blob(backend, resource_id, &ResourceBlob::empty()).unwrap();
+    assert!(backend.read(key).unwrap().is_some());
+    assert!(
+        backend
+            .list("resources")
+            .unwrap()
+            .contains(&key.to_string())
+    );
+
+    assert!(delete_resource_blob(backend, resource_id).unwrap());
+    assert_eq!(backend.read(key).unwrap(), None);
+    assert!(
+        !backend
+            .list("resources")
+            .unwrap()
+            .contains(&key.to_string())
+    );
+    assert!(!delete_resource_blob(backend, resource_id).unwrap());
+    assert_eq!(backend.read(key).unwrap(), None);
+    assert!(
+        !backend
+            .list("resources")
+            .unwrap()
+            .contains(&key.to_string())
+    );
+}
+
+#[test]
+fn plain_and_encrypted_backends_remove_active_resource_key_and_repeat_false() {
+    let plain_tmp = tempfile::TempDir::new().unwrap();
+    let plain = crate::PlainBackend::open(plain_tmp.path()).unwrap();
+    assert_active_resource_key_deleted(&plain);
+
+    let encrypted_tmp = tempfile::TempDir::new().unwrap();
+    let encrypted =
+        crate::EncryptedBackend::create_with_key(&encrypted_tmp.path().join("store"), [9; 32])
+            .unwrap();
+    assert_active_resource_key_deleted(&encrypted);
+}
+
 #[test]
 fn oversized_save_is_rejected_before_storage_write() {
     let store = MemStore::new();

@@ -1,5 +1,7 @@
 use base64::Engine;
-use underwrap_backend_store::{PlainBackend, load_resource_blob, save_resource_blob};
+use underwrap_backend_store::{
+    PlainBackend, StorageBackend, load_resource_blob, save_resource_blob,
+};
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::policy::PolicyDocument;
 use underwrap_protocol::resource_blob::{Collection, Item, LibsecretSection, ResourceBlob};
@@ -235,21 +237,19 @@ async fn service_mode_auto_creates_wrapper_assets_when_enabled() {
 }
 
 #[tokio::test]
-async fn admin_resource_delete_refuses_when_secrets_still_present() {
-    // Admin creates a resource, writes a secret under it (which the
-    // harness helper also seeds a grant for), attempts to delete:
-    // backend responds with structured blockers. After both the
-    // secret and the grant are cleared, delete succeeds.
-    let wrappers = one_wrapper_config();
-    let daemon = TestDaemon::start_service_mode(wrappers, "local", "underwrap-local")
+async fn admin_resource_delete_reports_blockers_then_removes_clean_resources() {
+    let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
         .await
         .unwrap();
 
-    let resource_record = daemon
+    // First exercise env content together with pair and permission blockers,
+    // then clear every dependency and delete the resource successfully.
+    let resource_id = daemon
         .create_resource("test", "github/token")
         .await
-        .unwrap();
-    let resource_id = resource_record.resource.id.clone();
+        .unwrap()
+        .resource
+        .id;
     daemon
         .store_secret("test", "gh-authorized", &resource_id, "ghp_value")
         .await
@@ -261,24 +261,21 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         "delete should be refused while dependents exist"
     );
     let blockers = blocked.blocked_by.expect("blockers present");
-    assert!(blockers.secret_count >= 1, "secret blocker reported");
+    assert!(
+        blockers.content_entry_count >= 1,
+        "content blocker reported"
+    );
+    assert!(blockers.pair_count >= 1, "pair blocker reported");
     assert!(
         blockers.permission_count >= 1,
         "permission blocker reported"
     );
 
-    // Clear the seeded permission.
     daemon
-        .put_policy(
-            "test",
-            &underwrap_protocol::policy::PolicyDocument::default(),
-        )
+        .put_policy("test", &PolicyDocument::default())
         .await
         .unwrap();
-
-    // Remove the secret. The harness writes secrets under
-    // `<resource_id>/env/TEST_TOKEN` (see `store_secret`).
-    let resp = daemon
+    let response = daemon
         .admin_request(
             reqwest::Method::DELETE,
             &format!("/v1/admin/stores/test/secrets/{resource_id}/env/TEST_TOKEN"),
@@ -287,22 +284,125 @@ async fn admin_resource_delete_refuses_when_secrets_still_present() {
         .await
         .unwrap();
     assert!(
-        resp.status().is_success(),
+        response.status().is_success(),
         "secret delete must succeed: {}",
-        resp.text().await.unwrap_or_default(),
+        response.text().await.unwrap_or_default(),
     );
-
-    // Delete the (wrapper, resource) pair record too — the new test
-    // harness seeds one inside `store_secret` so the open-invocation
-    // gate can find it, and the resource delete refuses while any
-    // pair references the resource.
     daemon
         .delete_pair("test", "gh-authorized", &resource_id)
         .await
         .unwrap();
 
-    let ok = daemon.delete_resource("test", &resource_id).await.unwrap();
-    assert!(ok.ok, "delete should succeed after blockers cleared");
+    let deleted = daemon.delete_resource("test", &resource_id).await.unwrap();
+    assert!(deleted.ok, "delete should succeed after blockers clear");
+
+    // Then create a separate resource entirely through the structured API,
+    // verify its exact libsecret blockers preserve catalog and blob state,
+    // clean it through that API, and confirm its active storage key is gone.
+    let resource = daemon
+        .create_resource("test", "libsecret/delete-flow")
+        .await
+        .unwrap()
+        .resource;
+    let libsecret_path = format!("/v1/admin/stores/test/resources/{}/libsecret", resource.id);
+
+    let response = daemon
+        .admin_request(
+            reqwest::Method::POST,
+            &format!("{libsecret_path}/collections"),
+        )
+        .json(&serde_json::json!({"id": "default", "label": "Default"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let response = daemon
+        .admin_request(
+            reqwest::Method::POST,
+            &format!("{libsecret_path}/collections/default/items"),
+        )
+        .json(&serde_json::json!({
+            "id": "item",
+            "label": "credential",
+            "content_type": "text/plain",
+            "attributes": {"service": "example"},
+            "secret_b64": base64::engine::general_purpose::STANDARD.encode(b"test-value"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let response = daemon
+        .admin_request(
+            reqwest::Method::PUT,
+            &format!("{libsecret_path}/aliases/default"),
+        )
+        .json(&serde_json::json!({"collection_id": "default"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let catalog_before = daemon.list_resources("test").await.unwrap();
+    let blob_before = daemon.get_resource_blob("test", &resource.id).unwrap();
+    let blocked = daemon.delete_resource("test", &resource.id).await.unwrap();
+    assert!(!blocked.ok);
+    let blockers = blocked.blocked_by.expect("typed blockers");
+    assert_eq!(blockers.content_entry_count, 3);
+    assert_eq!(
+        serde_json::to_value(&blockers.sample_content).unwrap(),
+        serde_json::json!([
+            {"kind": "libsecret_alias", "name": "default"},
+            {"kind": "libsecret_collection", "collection_id": "default"},
+            {
+                "kind": "libsecret_item",
+                "collection_id": "default",
+                "item_id": "item"
+            }
+        ])
+    );
+    assert_eq!(daemon.list_resources("test").await.unwrap(), catalog_before);
+    assert_eq!(
+        daemon.get_resource_blob("test", &resource.id).unwrap(),
+        blob_before
+    );
+
+    for path in [
+        format!("{libsecret_path}/aliases/default"),
+        format!("{libsecret_path}/collections/default/items/item"),
+        format!("{libsecret_path}/collections/default"),
+    ] {
+        let response = daemon
+            .admin_request(reqwest::Method::DELETE, &path)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "libsecret cleanup failed for {path}: {}",
+            response.text().await.unwrap_or_default()
+        );
+    }
+    assert_eq!(
+        daemon.get_resource_blob("test", &resource.id).unwrap(),
+        ResourceBlob::empty()
+    );
+
+    let deleted = daemon.delete_resource("test", &resource.id).await.unwrap();
+    assert!(deleted.ok);
+    let store = PlainBackend::open(&daemon.store_dir_for("test")).unwrap();
+    let active_key = format!("resources/{}", resource.id);
+    assert_eq!(store.read(&active_key).unwrap(), None);
+    assert!(!store.list("resources").unwrap().contains(&active_key));
+    assert!(
+        daemon
+            .list_resources("test")
+            .await
+            .unwrap()
+            .resources
+            .iter()
+            .all(|candidate| candidate.id != resource.id)
+    );
 
     daemon.stop().await.unwrap();
 }

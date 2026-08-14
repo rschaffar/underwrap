@@ -108,6 +108,120 @@ fn populated_blob() -> ResourceBlob {
 }
 
 #[test]
+fn content_references_are_complete_identifier_only_and_deterministically_ordered() {
+    let mut blob = populated_blob();
+    blob.env.insert(
+        "AAA_SECRET_NAME".into(),
+        SecretBytes::from("env-value-must-not-copy"),
+    );
+    blob.files.insert(
+        "aaa/private".into(),
+        SecretBytes::from("file-value-must-not-copy"),
+    );
+    // Enumeration is representational, not validation: this dangling target
+    // still contributes exactly one alias reference.
+    blob.libsecret
+        .aliases
+        .insert("aaa-dangling".into(), "target-must-not-copy".into());
+    blob.libsecret.collections.insert(
+        "aaa-empty".into(),
+        Collection {
+            label: "collection-label-must-not-copy".into(),
+            created: 91,
+            modified: 92,
+            items: BTreeMap::new(),
+        },
+    );
+
+    let references = blob.content_references();
+    assert_eq!(
+        references,
+        vec![
+            ResourceContentReference::Env {
+                name: "AAA_SECRET_NAME".into(),
+            },
+            ResourceContentReference::Env {
+                name: "API_KEY".into(),
+            },
+            ResourceContentReference::Env {
+                name: "GH_TOKEN".into(),
+            },
+            ResourceContentReference::File {
+                path: ".config/gh/hosts.yml".into(),
+            },
+            ResourceContentReference::File {
+                path: ".config/git/config".into(),
+            },
+            ResourceContentReference::File {
+                path: "aaa/private".into(),
+            },
+            ResourceContentReference::LibsecretAlias {
+                name: "aaa-dangling".into(),
+            },
+            ResourceContentReference::LibsecretAlias {
+                name: "default".into(),
+            },
+            ResourceContentReference::LibsecretCollection {
+                collection_id: "aaa-empty".into(),
+            },
+            ResourceContentReference::LibsecretCollection {
+                collection_id: "default".into(),
+            },
+            ResourceContentReference::LibsecretItem {
+                collection_id: "default".into(),
+                item_id: "gh-cli".into(),
+            },
+        ]
+    );
+    assert_eq!(references.len(), 11);
+
+    let json = serde_json::to_value(&references).unwrap();
+    assert_eq!(
+        json[0],
+        serde_json::json!({"kind": "env", "name": "AAA_SECRET_NAME"})
+    );
+    assert_eq!(
+        json[8],
+        serde_json::json!({
+            "kind": "libsecret_collection",
+            "collection_id": "aaa-empty"
+        })
+    );
+    assert_eq!(
+        json[10],
+        serde_json::json!({
+            "kind": "libsecret_item",
+            "collection_id": "default",
+            "item_id": "gh-cli"
+        })
+    );
+    let serialized = serde_json::to_string(&json).unwrap();
+    for excluded in [
+        "env-value-must-not-copy",
+        "file-value-must-not-copy",
+        "target-must-not-copy",
+        "collection-label-must-not-copy",
+        "gh CLI token",
+        "github.com",
+        "alice",
+        "text/plain",
+        "ghp_secret",
+        "1000",
+        "2000",
+    ] {
+        assert!(
+            !serialized.contains(excluded),
+            "value-bearing field leaked into references: {excluded}"
+        );
+    }
+}
+
+#[test]
+fn empty_blob_has_no_content_references() {
+    assert!(ResourceBlob::empty().content_references().is_empty());
+}
+
+#[test]
 fn libsecret_section_round_trips_independently() {
     let blob = populated_blob();
     let section = blob.libsecret.clone();

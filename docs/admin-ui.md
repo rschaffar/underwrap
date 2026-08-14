@@ -130,7 +130,17 @@ The **Secrets** page can:
 - create and rename resources;
 - add, reveal, edit, rename, and delete env/files entries;
 - manage the structured libsecret tree;
-- delete a resource after all dependent pairs and permissions are removed.
+- delete a resource after all stored resource content, dependent pairs, and
+  permission rows are removed.
+
+The delete dialog reports the complete blocker count across env entries, file
+entries, libsecret aliases, collections (including empty collections), items,
+wrapper/resource pairs, and permission rows. Typed content samples show only raw
+identifiers and are escaped by React as text. They never include values, labels,
+alias targets, attributes, content types, timestamps, or secret bytes. An
+identifier can itself contain sensitive operator input, so the backend does not
+copy samples into audit events or logs. A blocked response keeps the dialog open;
+only a successful deletion closes it and refreshes the affected views.
 
 Admin writes are unconditional for an authenticated operator. The permission
 writable flag controls wrapper-side files/libsecret writeback; it does not
@@ -146,8 +156,16 @@ A pair declares that one wrapper name can address one resource. The
 delete them.
 
 Pair deletion is blocked while a permission row references the pair. Resource
-deletion is blocked while secrets, pairs, or permission rows depend on it. The
-UI reports those blockers so they can be removed in order.
+deletion is blocked while stored resource content, pairs, or permission rows
+depend on it. The UI reports those blockers so they can be removed in order.
+After a successful resource deletion, the active empty content key and catalog
+record are absent. This is not secure media erasure and does not remove retained
+encrypted rotation generations.
+
+A storage error can occur after an earlier deletion step became visible. The UI
+does not report success in that case; re-read the resource and content state
+before retrying after all relevant runtime writeback and admin content, pair,
+permission, and deletion mutations have been serialized.
 
 ## Permission rows
 

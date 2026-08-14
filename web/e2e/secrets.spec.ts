@@ -260,8 +260,8 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
-  // Seed a resource and a secret under it so the first delete attempt
-  // is refused with a structured blocker.
+  // Seed a resource with both baseline env content and structured libsecret
+  // content so deletion reports both lifecycle blockers.
   await page.getByRole("button", { name: /create resource/i }).click();
   const resourceDlg = page.getByRole("dialog", { name: /create resource/i });
   await resourceDlg.getByTestId("create-resource-input").fill("seeded/res");
@@ -272,14 +272,23 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
   await expect(block).toBeVisible();
   await block.locator("summary").click();
   await block.getByTestId("slot-env").getByTestId("slot-env-add").click();
-  const createDlg = page.getByRole("dialog", { name: /create env entry/i });
-  await createDlg.getByLabel("Key").fill("EXAMPLE");
-  await createDlg.getByTestId("material-input").fill("v1");
-  await createDlg.getByRole("button", { name: /^create$/i }).click();
-  await expect(createDlg).toBeHidden();
+  const createEnvDlg = page.getByRole("dialog", { name: /create env entry/i });
+  await createEnvDlg.getByLabel("Key").fill("EXAMPLE");
+  await createEnvDlg.getByTestId("material-input").fill("v1");
+  await createEnvDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(createEnvDlg).toBeHidden();
 
-  // First delete attempt: backend refuses, blockers render inline.
-  // The resource-delete button has aria-label "Delete resource <name>".
+  const tree = block.getByTestId("libsecret-tree");
+  await tree.getByTestId("libsecret-add-collection").click();
+  const createCollectionDlg = page.getByRole("dialog", {
+    name: /create libsecret collection/i,
+  });
+  await createCollectionDlg.getByLabel(/^id/i).fill("delete-blocker");
+  await createCollectionDlg.getByLabel(/^label/i).fill("Delete blocker");
+  await createCollectionDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(createCollectionDlg).toBeHidden();
+
+  // First delete attempt: both blocker kinds render inline.
   await block
     .getByRole("button", { name: /^delete resource seeded\/res$/i })
     .click();
@@ -287,27 +296,53 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
     name: /delete resource: seeded\/res/i,
   });
   await delDlg.getByTestId("resource-delete-confirm").click();
-  await expect(delDlg.getByTestId("resource-delete-blockers")).toBeVisible();
+  const blockers = delDlg.getByTestId("resource-delete-blockers");
+  await expect(blockers).toBeVisible();
+  await expect(blockers).toContainText("env: EXAMPLE");
+  await expect(blockers).toContainText(
+    "libsecret collection: delete-blocker",
+  );
   await delDlg.getByRole("button", { name: /^cancel$/i }).click();
   await expect(delDlg).toBeHidden();
 
-  // Clear the secret, then re-attempt: delete succeeds, block vanishes.
-  const row = block
+  // Preserve the baseline env lifecycle: clear it through the UI.
+  const envRow = block
     .getByTestId("slot-env")
     .getByText("EXAMPLE")
     .locator("xpath=ancestor::li");
-  await row.getByRole("button", { name: /^delete$/i }).click();
-  const secretDelDlg = page.getByRole("dialog", { name: /delete secret/i });
-  await secretDelDlg.getByRole("button", { name: /^delete$/i }).click();
-  await expect(secretDelDlg).toBeHidden();
+  await envRow.getByRole("button", { name: /^delete$/i }).click();
+  const envDeleteDlg = page.getByRole("dialog", { name: /delete secret/i });
+  await envDeleteDlg.getByRole("button", { name: /^delete$/i }).click();
+  await expect(envDeleteDlg).toBeHidden();
+
+  // A second attempt leaves the resource dialog open and reports only the
+  // remaining libsecret blocker.
+  await block
+    .getByRole("button", { name: /^delete resource seeded\/res$/i })
+    .click();
+  await delDlg.getByTestId("resource-delete-confirm").click();
+  await expect(delDlg).toBeVisible();
+  await expect(blockers).toBeVisible();
+  await expect(blockers).not.toContainText("env: EXAMPLE");
+  await expect(blockers).toContainText(
+    "libsecret collection: delete-blocker",
+  );
+  await delDlg.getByRole("button", { name: /^cancel$/i }).click();
+  await expect(delDlg).toBeHidden();
+
+  await tree
+    .getByTestId("libsecret-delete-collection-delete-blocker")
+    .click();
+  const contentDeleteDlg = page.getByRole("dialog", {
+    name: /delete collection/i,
+  });
+  await contentDeleteDlg.getByRole("button", { name: /^delete$/i }).click();
+  await expect(contentDeleteDlg).toBeHidden();
 
   await block
     .getByRole("button", { name: /^delete resource seeded\/res$/i })
     .click();
-  const delDlg2 = page.getByRole("dialog", {
-    name: /delete resource: seeded\/res/i,
-  });
-  await delDlg2.getByTestId("resource-delete-confirm").click();
-  await expect(delDlg2).toBeHidden();
+  await delDlg.getByTestId("resource-delete-confirm").click();
+  await expect(delDlg).toBeHidden();
   await expect(resourceBlockByName(page, "seeded/res")).toHaveCount(0);
 });
