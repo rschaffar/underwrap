@@ -84,6 +84,9 @@ Workspace tests cover:
 - plain and encrypted storage, including active resource-key absence and
   repeated false deletion after removing a typed-empty blob;
 - daemon peer authentication and wrapper intake;
+- backend runtime registration validation before storage, including exact
+  within-request duplicate rejection, name-error precedence, valid near misses,
+  checked internal insertion failures, and separate-call idempotence;
 - backend runtime policy and writeback validation;
 - resource deletion blocker aggregation, malformed-blob fail-before behavior,
   blob-delete-before-catalog ordering, storage-failure state re-read, and
@@ -138,8 +141,13 @@ hostname behavior through `BackendClient::open` and register; those probes do
 not require server-side client authentication, and rejection of an arbitrary
 second private CA alone is not evidence that public roots are excluded. The
 separate real-backend integration suite retains mTLS client-certificate,
-fingerprint-principal, registration, resource, policy, and writeback evidence,
-and the NixOS VM exercises representative deployed private-CA traffic. The
+fingerprint-principal, registration, resource, policy, and writeback evidence.
+Its registration regression sends duplicate rows over real client-certificate-
+authenticated HTTPS with auto-create on and off against missing and existing
+state, verifies the exact structured 400 without a TLS EOF, compares unchanged
+resource/pair/policy views, and then reuses the service and client for valid and
+separate-call-idempotent registration. The NixOS VM exercises representative
+deployed private-CA traffic. The
 real authenticated HTTPS admin suite also covers a libsecret-only deletion
 blocker, unchanged catalog/blob state while blocked, structured cleanup,
 successful deletion, and direct active-key absence.

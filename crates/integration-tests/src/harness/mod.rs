@@ -940,9 +940,27 @@ impl TestDaemon {
     /// Shut down the daemon.
     pub async fn stop(self) -> Result<()> {
         self.shutdown.notify_one();
-        self.handle.await??;
         self.backend_shutdown.notify_one();
-        self.backend_handle.join().unwrap()?;
-        Ok(())
+
+        let backend_join = tokio::task::spawn_blocking(move || self.backend_handle.join());
+        let (daemon_result, backend_result) = tokio::join!(self.handle, backend_join);
+
+        let daemon_result = match daemon_result {
+            Ok(result) => result.context("daemon exited with an error"),
+            Err(error) => Err(error).context("joining daemon task"),
+        };
+        let backend_result = match backend_result {
+            Ok(Ok(result)) => result.context("backend exited with an error"),
+            Ok(Err(_)) => anyhow::bail!("backend thread panicked during shutdown"),
+            Err(error) => Err(error).context("joining backend shutdown task"),
+        };
+
+        match (daemon_result, backend_result) {
+            (Err(daemon_error), Err(backend_error)) => anyhow::bail!(
+                "daemon and backend shutdown failed: daemon: {daemon_error:#}; backend: {backend_error:#}"
+            ),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 }

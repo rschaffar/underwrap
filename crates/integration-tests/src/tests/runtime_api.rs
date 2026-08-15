@@ -130,7 +130,7 @@ fn decoded_blob(blob_b64: &str) -> ResourceBlob {
     ResourceBlob::from_canonical_bytes(&bytes).unwrap()
 }
 
-async fn set_auto_create(daemon: &TestDaemon, enable: bool) {
+async fn set_auto_create(daemon: &TestDaemon, enable: bool) -> anyhow::Result<()> {
     let body = AdminClientInstanceUpdateRequest {
         display_name: None,
         current_store_id: None,
@@ -140,8 +140,104 @@ async fn set_auto_create(daemon: &TestDaemon, enable: bool) {
     };
     daemon
         .update_client_instance(daemon.client_instance(), &body)
-        .await
-        .unwrap();
+        .await?;
+    Ok(())
+}
+
+async fn bounded_register_request(
+    daemon: &TestDaemon,
+    client: &reqwest::Client,
+    pairs: &[(&str, &str)],
+) -> anyhow::Result<reqwest::Response> {
+    let request = client
+        .post(format!("{}/v1/wrappers", daemon.service_url()))
+        .json(&RuntimeWrapperRegisterRequest {
+            wrappers: pairs
+                .iter()
+                .map(|(wrapper, resource)| RuntimeWrapperRegisterPair {
+                    wrapper_name: (*wrapper).to_string(),
+                    resource_name: (*resource).to_string(),
+                })
+                .collect(),
+        });
+    Ok(
+        tokio::time::timeout(std::time::Duration::from_secs(5), request.send())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("timed out waiting for runtime registration response")
+            })??,
+    )
+}
+
+#[derive(Debug, PartialEq)]
+struct RegistrationViews {
+    resources: serde_json::Value,
+    pairs: serde_json::Value,
+    policy: serde_json::Value,
+    client_instances: serde_json::Value,
+}
+
+async fn registration_views(daemon: &TestDaemon) -> anyhow::Result<RegistrationViews> {
+    Ok(RegistrationViews {
+        resources: serde_json::to_value(daemon.list_resources("test").await?)?,
+        pairs: serde_json::to_value(daemon.list_pairs("test").await?)?,
+        policy: serde_json::to_value(daemon.get_policy("test").await?)?,
+        client_instances: serde_json::to_value(daemon.list_client_instances().await?)?,
+    })
+}
+
+async fn reject_duplicate_registration_without_changes(
+    daemon: &TestDaemon,
+    client: &reqwest::Client,
+    pair: (&str, &str),
+) -> anyhow::Result<()> {
+    let before = registration_views(daemon).await?;
+    let response = bounded_register_request(
+        daemon,
+        client,
+        &[
+            ("valid-before-duplicate", "valid/before-duplicate"),
+            pair,
+            pair,
+        ],
+    )
+    .await?;
+    anyhow::ensure!(
+        response.status() == reqwest::StatusCode::BAD_REQUEST,
+        "duplicate registration returned {} instead of 400",
+        response.status()
+    );
+    let error: ServiceErrorResponse = response.json().await?;
+    anyhow::ensure!(
+        error.code == "duplicate_wrapper_resource_pair",
+        "unexpected duplicate error code: {}",
+        error.code
+    );
+    anyhow::ensure!(
+        error.message == "request contains a duplicate wrapper/resource pair",
+        "unexpected duplicate error message: {}",
+        error.message
+    );
+    let after = registration_views(daemon).await?;
+    anyhow::ensure!(
+        before == after,
+        "duplicate registration changed backend views"
+    );
+    Ok(())
+}
+
+async fn successful_registration(
+    daemon: &TestDaemon,
+    client: &reqwest::Client,
+    pair: (&str, &str),
+) -> anyhow::Result<RuntimeWrapperRegisterResponse> {
+    let response = bounded_register_request(daemon, client, &[pair]).await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "valid registration returned {}",
+        response.status()
+    );
+    Ok(response.json().await?)
 }
 
 // ===========================================================================
@@ -173,7 +269,7 @@ async fn register_refuses_when_auto_create_disabled_and_pair_is_unknown() {
         .unwrap();
     // Default for fresh client instances is auto_create=false. Sanity-set
     // it anyway so this test doesn't depend on the default.
-    set_auto_create(&daemon, false).await;
+    set_auto_create(&daemon, false).await.unwrap();
 
     let pairs = &[("gh-authorized", "github/token")];
     match direct_register(&daemon, pairs).await {
@@ -196,7 +292,7 @@ async fn register_with_auto_create_enabled_creates_resource_and_pair() {
     let daemon = TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local")
         .await
         .unwrap();
-    set_auto_create(&daemon, true).await;
+    set_auto_create(&daemon, true).await.unwrap();
 
     match direct_register(&daemon, &[("gh-authorized", "github/token")]).await {
         RuntimeWrapperRegisterResponse::Ok {
@@ -224,6 +320,114 @@ async fn register_with_auto_create_enabled_creates_resource_and_pair() {
         other => panic!("expected Ok on idempotent re-register, got {other:?}"),
     }
     daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn register_rejects_duplicate_rows_without_effects_or_service_abort() -> anyhow::Result<()> {
+    let daemon =
+        TestDaemon::start_service_mode(one_wrapper_config(), "local", "underwrap-local").await?;
+
+    let result = async {
+        let client = daemon.direct_service_client()?;
+        daemon.ensure_pair("recovery-wrapper", "existing/recovery")?;
+
+        set_auto_create(&daemon, false).await?;
+        reject_duplicate_registration_without_changes(
+            &daemon,
+            &client,
+            ("missing-disabled", "missing/disabled"),
+        )
+        .await?;
+        anyhow::ensure!(
+            matches!(
+                successful_registration(
+                    &daemon,
+                    &client,
+                    ("recovery-wrapper", "existing/recovery")
+                )
+                .await?,
+                RuntimeWrapperRegisterResponse::Ok { .. }
+            ),
+            "valid existing registration did not recover after rejection"
+        );
+
+        set_auto_create(&daemon, true).await?;
+        reject_duplicate_registration_without_changes(
+            &daemon,
+            &client,
+            ("missing-enabled", "missing/enabled"),
+        )
+        .await?;
+        let created =
+            successful_registration(&daemon, &client, ("missing-enabled", "missing/enabled"))
+                .await?;
+        match created {
+            RuntimeWrapperRegisterResponse::Ok {
+                auto_created_resources,
+                auto_created_pairs,
+            } => {
+                anyhow::ensure!(auto_created_resources == ["missing/enabled"]);
+                anyhow::ensure!(auto_created_pairs.len() == 1);
+            }
+            other => anyhow::bail!("expected successful auto-create, got {other:?}"),
+        }
+
+        reject_duplicate_registration_without_changes(
+            &daemon,
+            &client,
+            ("missing-enabled", "missing/enabled"),
+        )
+        .await?;
+        let repeated =
+            successful_registration(&daemon, &client, ("missing-enabled", "missing/enabled"))
+                .await?;
+        match repeated {
+            RuntimeWrapperRegisterResponse::Ok {
+                auto_created_resources,
+                auto_created_pairs,
+            } => {
+                anyhow::ensure!(auto_created_resources.is_empty());
+                anyhow::ensure!(auto_created_pairs.is_empty());
+            }
+            other => anyhow::bail!("expected idempotent registration, got {other:?}"),
+        }
+
+        set_auto_create(&daemon, false).await?;
+        reject_duplicate_registration_without_changes(
+            &daemon,
+            &client,
+            ("missing-enabled", "missing/enabled"),
+        )
+        .await?;
+        anyhow::ensure!(
+            matches!(
+                successful_registration(
+                    &daemon,
+                    &client,
+                    ("missing-enabled", "missing/enabled")
+                )
+                .await?,
+                RuntimeWrapperRegisterResponse::Ok {
+                    auto_created_resources,
+                    auto_created_pairs,
+                } if auto_created_resources.is_empty() && auto_created_pairs.is_empty()
+            ),
+            "separate-call idempotence changed with auto-create disabled"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let stop_result = daemon.stop().await;
+    match (result, stop_result) {
+        (Err(test_error), Err(stop_error)) => {
+            anyhow::bail!("test failed: {test_error:#}; shutdown also failed: {stop_error:#}")
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 #[tokio::test]
