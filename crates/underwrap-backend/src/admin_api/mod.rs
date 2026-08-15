@@ -39,6 +39,7 @@ pub(crate) mod error;
 pub(crate) mod libsecret;
 pub(crate) mod pairs;
 pub(crate) mod policy;
+mod references;
 pub(crate) mod resources;
 pub(crate) mod secrets;
 pub(crate) mod stores;

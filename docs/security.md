@@ -749,6 +749,24 @@ so operators must quiesce all access to the store during rotation. The procedure
 does not claim CAS, response delivery, automatic reconciliation, or power-loss
 /fsync durability.
 
+The admin entity graph is enforced for serialized requests. Explicit
+resource-addressed flat and libsecret operations require the exact selected-store
+catalog resource before active blob access. Ordinary pair creation requires that
+resource, and permission upsert validates a currently published runtime client
+assigned to the selected store, then the resource, then the exact pair before
+loading or mutating policy. Disabled clients remain valid references. Missing
+references use value-free canonical 404 envelopes. Unfiltered content listing and
+permission list/delete remain diagnostic and cleanup surfaces for inconsistent
+pre-existing state.
+
+These checks and their later use are separate storage/registry operations, not a
+transaction, lock, revision, or compare-and-swap. Concurrent deletion,
+reassignment, registration, finalize, or admin mutation can invalidate a check
+before persistence. Operators must serialize all participating writers; the
+backend provides no automatic scan, repair, migration, garbage collection,
+tombstone, or synthesis for pre-existing or raced orphan blobs and dangling
+references.
+
 Resource deletion first reads and decodes the complete typed blob and loads all
 pair and permission blockers. Every env entry, file entry, libsecret alias,
 collection (including an empty collection), and item blocks deletion. The
@@ -848,10 +866,11 @@ Keep these limits explicit in deployment and wrapper reviews:
 - Browser sessions are memory-only and disappear on restart.
 - Abstract D-Bus sockets are outside mount-namespace hiding.
 - Resource and policy availability depends on the backend network path.
-- Content and reference mutation endpoints do not provide a tombstone or
-  post-delete exclusion. Without serialization, a racing or later admin/runtime
-  mutation can recreate an active blob or dangling reference after resource
-  deletion.
+- Content and reference checks guarantee graph integrity only for serialized
+  requests. They are separate check/use operations without a tombstone,
+  transaction, CAS, or post-delete exclusion; a racing mutation can recreate an
+  active blob or dangling reference after resource deletion. The backend does
+  not automatically repair pre-existing or raced inconsistencies.
 - `accessPaths` deliberately grants selected host-filesystem access to the
   dedicated target UID.
 - The strongest peer-auth claim requires Linux 6.5+ and the default hardened

@@ -32,6 +32,7 @@ use underwrap_protocol::service::{
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event, result_label};
 use crate::admin_api::csrf::Principal;
+use crate::admin_api::references::require_resource;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
 use crate::http::responses::ResourceBody;
@@ -95,7 +96,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     ),
     responses(
         (status = 200, description = "Per-slot entries in the store (optionally filtered by resource id).", body = AdminSecretListResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store or filtered resource not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
@@ -105,6 +106,9 @@ pub(crate) async fn handle_admin_secrets_list(
     Query(query): Query<SecretListQuery>,
 ) -> Result<Json<AdminSecretListResponse>, AdminError> {
     let store = admin_store(&state, &store_id)?;
+    if let Some(resource_id) = query.resource_id.as_deref() {
+        require_resource(store.as_ref(), resource_id)?;
+    }
     let entries = list_secret_entries(store.as_ref(), query.resource_id.as_deref())
         .into_internal("listing secret entries")?;
     Ok(Json(AdminSecretListResponse { entries }))
@@ -134,6 +138,7 @@ pub(crate) async fn handle_admin_secret_read(
     let slot = parse_slot(&slot)?;
     let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
     let store = admin_store(&state, &store_id)?;
+    require_resource(store.as_ref(), &resource_id)?;
     let material =
         read_resource_entry(store.as_ref(), &secret_id).into_internal("reading resource entry")?;
     Ok(Json(AdminSecretReadResponse {
@@ -170,6 +175,7 @@ pub(crate) async fn handle_admin_secret_write(
     let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
     let material = decode_b64(&body.material_b64)?;
     let store = admin_store(&state, &store_id)?;
+    require_resource(store.as_ref(), &resource_id)?;
 
     // Admin writes are always allowed. Per-resource write permissions
     // on the policy document gate wrapper-side writes only — admin
@@ -219,6 +225,7 @@ pub(crate) async fn handle_admin_secret_delete(
     // wrapper-side writes.
     let secret_id = validate_and_compose_secret_id(&resource_id, slot, &key)?;
     let store = admin_store(&state, &store_id)?;
+    require_resource(store.as_ref(), &resource_id)?;
     let outcome = delete_resource_entry(store.as_ref(), &secret_id);
     log_admin_event(
         "secret.delete",
@@ -295,6 +302,7 @@ async fn rename_inner(
     let from_id = validate_and_compose_secret_id(resource_id, slot, from_key)?;
     let to_id = validate_and_compose_secret_id(resource_id, slot, &body.to_key)?;
     let store = admin_store(state, store_id)?;
+    require_resource(store.as_ref(), resource_id)?;
     let mut blob =
         load_resource_blob(store.as_ref(), resource_id).into_internal("loading resource blob")?;
     let entries =

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use base64::Engine;
 use hyper::StatusCode;
 use underwrap_backend_store::{StorageBackend, load_resource_blob, save_resource_blob};
@@ -12,8 +12,8 @@ use super::*;
 use crate::http::responses::ResourceBody;
 use crate::runtime_state::ListenerState;
 use crate::test_support::{
-    admin_principal, create_resource_id_for_test, entity_test_state_with_store,
-    mixed_resource_blob_for_test, run_handler,
+    TestStore, admin_principal, create_resource_id_for_test, entity_test_state_with_store,
+    mixed_resource_blob_for_test, run_handler, test_admin_state,
 };
 
 fn principal() -> crate::admin_api::csrf::Principal {
@@ -193,4 +193,118 @@ fn admin_secret_rename_conflict_leaves_resource_unchanged() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "target_key_exists");
     assert_resource(&state, &store_id, &resource_id, &expected);
+}
+
+fn assert_unknown_resource(status: StatusCode, body: &serde_json::Value) {
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "not_found");
+    assert_eq!(body["message"], "unknown resource");
+    assert!(!body.to_string().contains("res_missing"));
+}
+
+#[test]
+fn admin_reference_every_explicit_flat_route_rejects_before_blob_access() {
+    let store = Arc::new(TestStore::new());
+    let state = Arc::new(test_admin_state(std::collections::HashMap::from([(
+        "store".to_string(),
+        store.clone() as Arc<dyn StorageBackend>,
+    )])));
+    let resource_id = "res_missing".to_string();
+
+    let calls = vec![
+        run_handler(handle_admin_secrets_list(
+            State(state.clone()),
+            Path("store".to_string()),
+            Query(SecretListQuery {
+                resource_id: Some(resource_id.clone()),
+            }),
+        )),
+        run_handler(handle_admin_secret_read(
+            State(state.clone()),
+            Path((
+                "store".to_string(),
+                resource_id.clone(),
+                "env".to_string(),
+                "TOKEN".to_string(),
+            )),
+        )),
+        run_handler(handle_admin_secret_write(
+            State(state.clone()),
+            Extension(principal()),
+            Path((
+                "store".to_string(),
+                resource_id.clone(),
+                "env".to_string(),
+                "TOKEN".to_string(),
+            )),
+            ResourceBody(underwrap_protocol::service::AdminSecretWriteRequest {
+                material_b64: base64::engine::general_purpose::STANDARD.encode(b"synthetic"),
+            }),
+        )),
+        run_handler(handle_admin_secret_delete(
+            State(state.clone()),
+            Extension(principal()),
+            Path((
+                "store".to_string(),
+                resource_id.clone(),
+                "files".to_string(),
+                "path".to_string(),
+            )),
+        )),
+        rename(
+            state,
+            "store".to_string(),
+            resource_id,
+            "env",
+            "TOKEN",
+            "RENAMED",
+            Some(b"synthetic"),
+        ),
+    ];
+
+    for (status, body) in &calls {
+        assert_unknown_resource(*status, body);
+    }
+    assert_eq!(
+        store.operation_trace(),
+        vec!["read:control/resources".to_string(); calls.len()],
+        "missing-resource routes must neither list nor access resources/<id>",
+    );
+    assert_eq!(store.data.lock().unwrap().len(), 0);
+}
+
+#[test]
+fn admin_reference_existing_resource_keeps_missing_flat_content_semantics() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (state, store_id) = entity_test_state_with_store(tmp.path());
+    let resource_id = create_resource_id_for_test(
+        state.clone(),
+        &admin_principal(),
+        &store_id,
+        "empty/resource",
+    );
+    let (read_status, read_body) = run_handler(handle_admin_secret_read(
+        State(state.clone()),
+        Path((
+            store_id.clone(),
+            resource_id.clone(),
+            "env".to_string(),
+            "MISSING".to_string(),
+        )),
+    ));
+    assert_eq!(read_status, StatusCode::OK);
+    assert_eq!(read_body["material_b64"], serde_json::Value::Null);
+
+    let (delete_status, delete_body) = run_handler(handle_admin_secret_delete(
+        State(state),
+        Extension(principal()),
+        Path((
+            store_id,
+            resource_id,
+            "env".to_string(),
+            "MISSING".to_string(),
+        )),
+    ));
+    assert_eq!(delete_status, StatusCode::OK);
+    assert_eq!(delete_body["existed"], false);
 }

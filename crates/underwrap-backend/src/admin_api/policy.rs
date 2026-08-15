@@ -21,6 +21,9 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::csrf::Principal;
+use crate::admin_api::references::{
+    require_client_instance_in_store, require_pair, require_resource,
+};
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
@@ -148,7 +151,7 @@ pub(crate) async fn handle_admin_wrapper_permissions_list(
     responses(
         (status = 200, description = "Permission upserted.", body = AdminOkResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Store / wrapper / resource not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store, client instance, resource, or pair not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
@@ -173,6 +176,9 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
         reason: body.reason,
     };
     let store = admin_store(&state, &store_id)?;
+    require_client_instance_in_store(&state, &store_id, &client_instance)?;
+    require_resource(store.as_ref(), &resource_id)?;
+    require_pair(store.as_ref(), &wrapper, &resource_id)?;
     let mut doc = load_policy_document(store.as_ref()).into_internal("loading policy document")?;
     if let Some(slot) = doc.permissions.iter_mut().find(|p| {
         p.client_instance == client_instance && p.wrapper == wrapper && p.resource_id == resource_id

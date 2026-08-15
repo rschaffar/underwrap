@@ -469,9 +469,10 @@ First-class `ResourceRecord`s that own name provenance.
 ### Wrapper/Resource pairs
 
 - `GET    /v1/admin/stores/{id}/pairs` — list.
-- `POST   /v1/admin/stores/{id}/pairs` — create against an existing
-  resource; refuses if the resource doesn't exist or `(wrapper,
-  resource)` is already taken.
+- `POST   /v1/admin/stores/{id}/pairs` — create against an exact resource
+  record in the selected store; a missing resource returns the canonical
+  value-free `404 not_found` / `unknown resource` envelope, and an existing
+  `(wrapper, resource)` remains a conflict.
 - `POST   /v1/admin/stores/{id}/pairs/with-new-resource` — create a resource
   and pair in one API call. Their two control documents are saved separately;
   failure of the second save triggers best-effort rollback of the first.
@@ -485,7 +486,9 @@ Direct access to a store's per-secret surface, addressed by resource id
 toggle (see [No global write lock](#no-global-write-lock)).
 
 - `GET    /v1/admin/stores/{id}/secrets` — list entries (keys, never
-  values).
+  values). With `?resource_id=...`, the exact catalog resource must exist;
+  without that filter the store-wide list remains a diagnostic view and can
+  expose pre-existing orphan blob keys.
 - `GET    /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}` — read one
   entry.
 - `PUT    /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}` — create or
@@ -494,6 +497,13 @@ toggle (see [No global write lock](#no-global-write-lock)).
 - `POST   /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename` — rename one
   entry in one in-memory mutation followed by an atomic resource-file
   replacement.
+
+Every explicit resource-addressed operation above requires an exact
+`ResourceRecord` in the selected store before reading, listing, writing, or
+deleting its active resource blob. A missing catalog resource returns the
+value-free `404 not_found` / `unknown resource` envelope. An existing catalog
+resource with no active blob still starts as an empty `ResourceBlob`; subordinate
+missing-key and idempotent-delete semantics are unchanged.
 
 ### Libsecret slot (Secret Service data model)
 
@@ -509,13 +519,24 @@ Scoped under `/v1/admin/stores/{sid}/resources/{rid}/libsecret`:
 - `PUT    …/libsecret/aliases/{name}` / `DELETE …/libsecret/aliases/{name}`
   — set or clear a collection alias (e.g. `default`).
 
+All eight operations pass through shared read/mutation seams that require the
+exact parent `ResourceRecord` before active blob access. Missing parents receive
+the same value-free resource 404 as the flat routes. Existing empty resources,
+subordinate collection/item errors, and idempotent collection/item/alias deletes
+retain their documented behavior.
+
 ### Wrapper permissions (the policy surface)
 
 - `GET    /v1/admin/stores/{id}/wrapper-permissions` — list every
   permission row in the store.
 - `PUT    /v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}`
   — create or update one permission by
-  `(client_instance, wrapper, resource)` tuple.
+  `(client_instance, wrapper, resource)` tuple. After non-empty tuple
+  validation and selected-store resolution, the backend requires, in order, a
+  currently published runtime client instance assigned to that store, the exact
+  resource record, and the exact wrapper/resource pair. Disabled instances are
+  valid references. A missing reference returns its value-free canonical 404
+  before the policy document is loaded or changed.
 - `DELETE /v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}`
   — remove one permission by tuple.
 
@@ -781,11 +802,22 @@ serialize all relevant runtime writeback and admin content, resource, pair, and
 permission mutations for a lifecycle operation; deletion ordering is not a
 transaction or compare-and-swap guarantee.
 
-Admin content and reference mutation endpoints do not currently provide an
-absent-resource tombstone or a global post-delete write exclusion. A write made
-after deletion can recreate a blob or a dangling reference. Serialized callers
-must stop those writers before deletion and keep them stopped until they have
-observed the resulting state.
+For serialized requests, explicit flat/libsecret content operations reject a
+missing catalog resource, ordinary pair creation rejects a missing resource,
+and permission upsert rejects a client/store, resource, or exact-pair reference
+that is absent when checked. These are check-then-use rules, not transactions:
+the catalog, published client registry, pairs document, policy document, and
+resource blob are read or written separately. A concurrent deletion,
+reassignment, registration, or mutation can invalidate a successful check before
+the later blob, pair, or policy write and can therefore recreate an orphan blob
+or dangling row. There is no tombstone or global post-delete exclusion.
+
+Operators must serialize those writers through deletion and keep them stopped
+until the resulting state has been observed. The backend does not scan, hide,
+delete, migrate, garbage-collect, or synthesize catalog entries for pre-existing
+or concurrently produced orphan blobs, dangling pairs, or stale permissions;
+unfiltered aggregate/list endpoints and permission list/delete remain diagnostic
+and cleanup surfaces rather than implicit repair.
 
 Key rotation has the stronger operational requirement described under
 [Stores](#stores): quiesce all reads and writes for that store while rotation is

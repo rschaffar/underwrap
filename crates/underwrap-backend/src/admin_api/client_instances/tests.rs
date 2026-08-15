@@ -5,11 +5,14 @@ use axum::extract::{Path, Query, State};
 use hyper::StatusCode;
 use underwrap_protocol::service::{
     AdminClientInstanceCreateRequest, AdminClientInstanceStatus, AdminClientInstanceUpdateRequest,
-    AdminStoreBackendKind, AdminStoreCreateRequest,
+    AdminPairCreateRequest, AdminResourceCreateRequest, AdminStoreBackendKind,
+    AdminStoreCreateRequest,
 };
 
 use super::*;
+use crate::admin_api::pairs::handle_admin_pair_create;
 use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
+use crate::admin_api::resources::handle_admin_resource_create;
 use crate::admin_api::stores::crud::{DeleteQuery, handle_admin_store_delete};
 use crate::http::responses::Body;
 use crate::storage::documents::load_policy_document;
@@ -168,6 +171,28 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
         }
     }
 
+    let (resource_status, resource) = run_handler(handle_admin_resource_create(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+        Body(AdminResourceCreateRequest {
+            name: "GitHub token".into(),
+        }),
+    ));
+    assert_eq!(resource_status, StatusCode::OK);
+    let resource_id = resource["resource"]["id"].as_str().unwrap().to_string();
+
+    let (pair_status, _) = run_handler(handle_admin_pair_create(
+        State(state.clone()),
+        Extension(p.clone()),
+        Path(store_id.clone()),
+        Body(AdminPairCreateRequest {
+            wrapper: "gh".into(),
+            resource_id: resource_id.clone(),
+        }),
+    ));
+    assert_eq!(pair_status, StatusCode::OK);
+
     // The admin API addresses stores by id (the SPA's `storeName`
     // state is misleadingly named — it carries the store id).
     for instance in [&doomed_id, &survivor_id] {
@@ -178,7 +203,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
                 store_id.clone(),
                 instance.clone(),
                 "gh".into(),
-                "github/token".into(),
+                resource_id.clone(),
             )),
             Body(AdminWrapperPermissionUpsertRequest {
                 mode: WrapperApprovalMode::Unlocked,

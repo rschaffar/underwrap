@@ -776,7 +776,7 @@
             }
           },
           "404": {
-            "description": "Store / wrapper / resource not found.",
+            "description": "Store or resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1397,7 +1397,7 @@
             }
           },
           "404": {
-            "description": "Store not found.",
+            "description": "Store or filtered resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2126,7 +2126,7 @@
             }
           },
           "404": {
-            "description": "Store / wrapper / resource not found.",
+            "description": "Store, client instance, resource, or pair not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2278,7 +2278,7 @@
             }
           },
           "404": {
-            "description": "Store not found.",
+            "description": "Store or resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2372,7 +2372,7 @@
             }
           },
           "404": {
-            "description": "Collection not found.",
+            "description": "Store, resource, or collection not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2447,7 +2447,7 @@
             }
           },
           "404": {
-            "description": "Store not found.",
+            "description": "Store or resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2535,7 +2535,7 @@
             }
           },
           "404": {
-            "description": "Store not found.",
+            "description": "Store or resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2622,7 +2622,7 @@
             }
           },
           "404": {
-            "description": "Store not found.",
+            "description": "Store or resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2719,7 +2719,7 @@
             }
           },
           "404": {
-            "description": "Collection not found.",
+            "description": "Store, resource, or collection not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2815,7 +2815,7 @@
             }
           },
           "404": {
-            "description": "Collection not found.",
+            "description": "Store, resource, or collection not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2901,7 +2901,7 @@
             }
           },
           "404": {
-            "description": "Collection or item not found.",
+            "description": "Store, resource, collection, or item not found.",
             "content": {
               "application/json": {
                 "schema": {

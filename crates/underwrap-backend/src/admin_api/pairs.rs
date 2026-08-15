@@ -17,6 +17,7 @@ use utoipa_axum::routes;
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 use crate::admin_api::csrf::Principal;
+use crate::admin_api::references::require_resource;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::IntoInternal;
 use crate::http::responses::Body;
@@ -70,7 +71,7 @@ pub(crate) async fn handle_admin_pairs_list(
     responses(
         (status = 200, description = "Pair created.", body = AdminPairCreateResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Store / wrapper / resource not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 409, description = "Pair already exists.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
@@ -90,14 +91,7 @@ pub(crate) async fn handle_admin_pair_create(
         ));
     }
     let store = admin_store(&state, &store_id)?;
-    let resources =
-        load_resources_document(store.as_ref()).into_internal("loading resources document")?;
-    if resources.find_by_id(resource_id).is_none() {
-        return Err(AdminError::bad_request(
-            "unknown_resource",
-            format!("resource id '{resource_id}' must exist before a pair can reference it"),
-        ));
-    }
+    require_resource(store.as_ref(), resource_id)?;
     let mut pairs = load_pairs_document(store.as_ref()).into_internal("loading pairs document")?;
     if pairs.find(wrapper, resource_id).is_some() {
         return Err(AdminError::conflict(

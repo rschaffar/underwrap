@@ -39,6 +39,7 @@ use underwrap_protocol::service::{
 use crate::admin_api::AdminError;
 use crate::admin_api::audit::{AuditEntity, LibsecretEntityKind, log_admin_event, result_label};
 use crate::admin_api::csrf::Principal;
+use crate::admin_api::references::require_resource;
 use crate::admin_api::stores::admin_store;
 use crate::admin_api::util::{IntoInternal, decode_b64, encode_b64};
 use crate::http::responses::{Body, ResourceBody};
@@ -114,6 +115,7 @@ fn read_blob(
     resource_id: &str,
 ) -> Result<ResourceBlob, AdminError> {
     let store = admin_store(state, store_id)?;
+    require_resource(store.as_ref(), resource_id)?;
     load_resource_blob(store.as_ref(), resource_id).into_internal("loading resource blob")
 }
 
@@ -127,6 +129,7 @@ fn with_blob<R>(
     f: impl FnOnce(&mut ResourceBlob) -> Result<(R, bool), AdminError>,
 ) -> Result<R, AdminError> {
     let store = admin_store(state, store_id)?;
+    require_resource(store.as_ref(), resource_id)?;
     let mut blob =
         load_resource_blob(store.as_ref(), resource_id).into_internal("loading resource blob")?;
     let (result, dirty) = f(&mut blob)?;
@@ -148,7 +151,7 @@ fn with_blob<R>(
     ),
     responses(
         (status = 200, description = "Whole libsecret tree (item secrets omitted).", body = AdminLibsecretTreeResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
@@ -201,7 +204,7 @@ pub(crate) async fn handle_get_tree(
     responses(
         (status = 200, description = "Collection created.", body = AdminLibsecretCollectionCreateResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 409, description = "Collection id already exists.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
@@ -270,7 +273,7 @@ pub(crate) async fn handle_post_collection(
     ),
     responses(
         (status = 200, description = "Collection deleted; any aliases pointing at it are scrubbed.", body = AdminLibsecretCollectionDeleteResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
@@ -333,7 +336,7 @@ pub(crate) async fn handle_delete_collection(
     responses(
         (status = 200, description = "Item created.", body = AdminLibsecretItemCreateResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Collection not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
         (status = 409, description = "Item id already exists.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
@@ -413,7 +416,7 @@ pub(crate) async fn handle_post_item(
     ),
     responses(
         (status = 200, description = "Item removed (existed flag in body).", body = AdminLibsecretItemDeleteResponse),
-        (status = 404, description = "Collection not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
@@ -463,7 +466,7 @@ pub(crate) async fn handle_delete_item(
     ),
     responses(
         (status = 200, description = "Item secret material, base64-encoded.", body = AdminLibsecretItemSecretResponse),
-        (status = 404, description = "Collection or item not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store, resource, collection, or item not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
@@ -500,7 +503,7 @@ pub(crate) async fn handle_get_item_secret(
     responses(
         (status = 200, description = "Alias set.", body = AdminOkResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
-        (status = 404, description = "Collection not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
@@ -551,7 +554,7 @@ pub(crate) async fn handle_put_alias(
     ),
     responses(
         (status = 200, description = "Alias removed (existed flag in body).", body = AdminLibsecretAliasDeleteResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
     ),
 )]
