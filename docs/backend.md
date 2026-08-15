@@ -59,7 +59,9 @@ Operators manage the backend through the admin UI served directly by
   authenticates the server certificate against its configured CA bundle as the
   complete server trust set, or against reqwest's bundled WebPKI roots when no
   bundle is configured. The backend maps each authenticated client instance to
-  one store and only serves that store's view.
+  one store and only serves that store's view. Authentication selects the
+  principal and store; runtime JSON bodies remain parser-untrusted input and
+  are validated before use.
 - **operator browser ↔ `underwrap-backend`**: the same HTTPS listener,
   but without a client certificate. Admin routes authenticate via username +
   Argon2id password hash + an opaque `tower-sessions` session cookie (session
@@ -177,9 +179,14 @@ pair is unknown:
 ```
 
 The endpoint is upsert-only: existing entities are never modified,
-removals never happen, and `created_by` is set once on first sight.
-Idempotent on repeat calls — re-registering an unchanged set returns
-`outcome: ok` with empty creation lists.
+removals never happen, and `created_by` is set once on first sight. Empty or
+whitespace-only names are invalid. Repeating the same exact Rust-string
+`(wrapper_name, resource_name)` pair within one request returns HTTP 400 with
+code `duplicate_wrapper_resource_pair` before the auto-create setting or store
+is read; names are not trimmed, normalized, or case-folded for this check.
+Rows that share only a wrapper or only a resource remain valid. Registration is
+idempotent across separate calls — re-registering an unchanged pair in a later
+request returns `outcome: ok` with empty creation lists.
 
 ### `POST /v1/wrapper-invocations` — open
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{make_runtime_api_fixture, response_body_json};
+use crate::test_support::{TestStore, make_runtime_api_fixture, response_body_json};
 
 // ===== Unit tests for the per-stage helpers =====
 
@@ -33,6 +33,100 @@ fn validate_register_request_accepts_nonempty() {
             resource_name: "r".into(),
         }],
     };
+    validate_register_request(&req).unwrap();
+}
+
+#[test]
+fn validate_register_request_rejects_exact_duplicate_pairs() {
+    let req = RuntimeWrapperRegisterRequest {
+        wrappers: vec![
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "wrapper".into(),
+                resource_name: "resource".into(),
+            },
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "wrapper".into(),
+                resource_name: "resource".into(),
+            },
+        ],
+    };
+
+    let body = response_body_json(validate_register_request(&req).unwrap_err());
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "__status": 400,
+            "code": "duplicate_wrapper_resource_pair",
+            "message": "request contains a duplicate wrapper/resource pair",
+        })
+    );
+}
+
+#[test]
+fn validate_register_request_checks_all_names_before_duplicates() {
+    for (invalid_pair, expected_code) in [
+        (
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "  ".into(),
+                resource_name: "other".into(),
+            },
+            "invalid_wrapper_name",
+        ),
+        (
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "other".into(),
+                resource_name: "  ".into(),
+            },
+            "invalid_resource_name",
+        ),
+    ] {
+        let req = RuntimeWrapperRegisterRequest {
+            wrappers: vec![
+                RuntimeWrapperRegisterPair {
+                    wrapper_name: "wrapper".into(),
+                    resource_name: "resource".into(),
+                },
+                RuntimeWrapperRegisterPair {
+                    wrapper_name: "wrapper".into(),
+                    resource_name: "resource".into(),
+                },
+                invalid_pair,
+            ],
+        };
+
+        let body = response_body_json(validate_register_request(&req).unwrap_err());
+        assert_eq!(body["__status"], 400);
+        assert_eq!(body["code"], expected_code);
+    }
+}
+
+#[test]
+fn validate_register_request_accepts_exact_string_near_misses() {
+    let req = RuntimeWrapperRegisterRequest {
+        wrappers: vec![
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "shared-wrapper".into(),
+                resource_name: "resource-a".into(),
+            },
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "shared-wrapper".into(),
+                resource_name: "resource-b".into(),
+            },
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "other-wrapper".into(),
+                resource_name: "resource-a".into(),
+            },
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "shared-wrapper".into(),
+                resource_name: "resource-a ".into(),
+            },
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "Shared-Wrapper".into(),
+                resource_name: "resource-a".into(),
+            },
+        ],
+    };
+
     validate_register_request(&req).unwrap();
 }
 
@@ -124,7 +218,7 @@ fn apply_auto_create_inserts_resources_and_pairs() {
     let creator = EntityCreator::ClientInstance { id: "inst".into() };
 
     let (created_resources, created_pairs) =
-        apply_auto_create(&mut resources, &mut pairs, &mut diff, &creator, 42);
+        apply_auto_create(&mut resources, &mut pairs, &mut diff, &creator, 42).unwrap();
 
     assert_eq!(created_resources, vec!["beta".to_string()]);
     assert_eq!(created_pairs.len(), 1);
@@ -133,6 +227,43 @@ fn apply_auto_create_inserts_resources_and_pairs() {
     assert!(resolved_id.starts_with("res_"));
     assert!(resources.find_by_name("beta").is_some());
     assert!(pairs.find("wC", &resolved_id).is_some());
+}
+
+#[test]
+fn apply_auto_create_returns_error_for_inconsistent_missing_pair_diff() {
+    let creator = EntityCreator::ClientInstance { id: "inst".into() };
+    let mut resources = ResourcesDocument::default();
+    resources
+        .insert(ResourceRecord {
+            id: "res_beta".into(),
+            name: "beta".into(),
+            created_by: creator.clone(),
+            created_at: 0,
+        })
+        .unwrap();
+    let mut pairs = PairsDocument::default();
+    pairs
+        .insert(WrapperResourcePairRecord {
+            wrapper: "wrapper".into(),
+            resource_id: "res_beta".into(),
+            created_by: creator.clone(),
+            created_at: 0,
+            last_used_at: None,
+        })
+        .unwrap();
+    let mut diff = RegisterDiff::default();
+    diff.resolved_resource_ids
+        .insert("beta".into(), "res_beta".into());
+    diff.missing_pairs.push(RuntimeWrapperRegisterPair {
+        wrapper_name: "wrapper".into(),
+        resource_name: "beta".into(),
+    });
+
+    let error = apply_auto_create(&mut resources, &mut pairs, &mut diff, &creator, 42)
+        .expect_err("duplicate missing-pair diff must be an internal error");
+    let body = response_body_json(error);
+    assert_eq!(body["__status"], 500);
+    assert_eq!(body["code"], "internal");
 }
 
 #[test]
@@ -179,6 +310,36 @@ fn seed_locked_permissions_skips_unresolved_resources() {
 }
 
 // ===== End-to-end driver tests =====
+
+#[test]
+fn runtime_wrapper_register_rejects_duplicates_before_storage_operations() {
+    let fx = make_runtime_api_fixture();
+    let store = TestStore::new();
+    let request = RuntimeWrapperRegisterRequest {
+        wrappers: vec![
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "valid-wrapper".into(),
+                resource_name: "valid-resource".into(),
+            },
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "duplicate-wrapper".into(),
+                resource_name: "duplicate-resource".into(),
+            },
+            RuntimeWrapperRegisterPair {
+                wrapper_name: "duplicate-wrapper".into(),
+                resource_name: "duplicate-resource".into(),
+            },
+        ],
+    };
+
+    let error = handle_runtime_wrapper_register(&fx.state, &store, &fx.instance_id, &request)
+        .expect_err("duplicate request must fail");
+    assert_eq!(
+        response_body_json(error)["code"],
+        "duplicate_wrapper_resource_pair"
+    );
+    assert!(store.operation_trace().is_empty());
+}
 
 #[test]
 fn runtime_wrapper_register_seeds_pair_when_auto_create_enabled() {

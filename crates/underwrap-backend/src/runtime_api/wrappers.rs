@@ -4,7 +4,7 @@
 //! calling client instance is opted in, or refuses with a structured
 //! list of what would have been created.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use axum::Json;
 
@@ -43,8 +43,8 @@ impl RegisterDiff {
     }
 }
 
-/// Reject empty wrapper/resource names up front; everything downstream
-/// assumes those are non-empty.
+/// Reject empty wrapper/resource names and exact duplicate pairs up front;
+/// everything downstream assumes those conditions hold.
 fn validate_register_request(body: &RuntimeWrapperRegisterRequest) -> Result<(), RuntimeError> {
     for pair in &body.wrappers {
         if pair.wrapper_name.trim().is_empty() {
@@ -57,6 +57,16 @@ fn validate_register_request(body: &RuntimeWrapperRegisterRequest) -> Result<(),
             return Err(RuntimeError::bad_request(
                 "invalid_resource_name",
                 "resource_name must be non-empty",
+            ));
+        }
+    }
+
+    let mut seen = HashSet::new();
+    for pair in &body.wrappers {
+        if !seen.insert((&pair.wrapper_name, &pair.resource_name)) {
+            return Err(RuntimeError::bad_request(
+                "duplicate_wrapper_resource_pair",
+                "request contains a duplicate wrapper/resource pair",
             ));
         }
     }
@@ -104,7 +114,7 @@ fn apply_auto_create(
     diff: &mut RegisterDiff,
     creator: &EntityCreator,
     now: u64,
-) -> (Vec<String>, Vec<RuntimeWrapperRegisterPair>) {
+) -> Result<(Vec<String>, Vec<RuntimeWrapperRegisterPair>), RuntimeError> {
     let mut created_resources: Vec<String> = Vec::new();
     for name in &diff.missing_resources {
         let id = crate::ids::random_id("res");
@@ -115,7 +125,7 @@ fn apply_auto_create(
                 created_by: creator.clone(),
                 created_at: now,
             })
-            .expect("missing-set guarantees no duplicate");
+            .into_internal("inserting auto-created resource")?;
         diff.resolved_resource_ids.insert(name.clone(), id);
         created_resources.push(name.clone());
     }
@@ -124,7 +134,12 @@ fn apply_auto_create(
         let rid = diff
             .resolved_resource_ids
             .get(&pair.resource_name)
-            .expect("resource id resolved for every missing pair after auto-create");
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    "resolving auto-created pair resource",
+                    "resource id is missing from the registration diff",
+                )
+            })?;
         pairs
             .insert(WrapperResourcePairRecord {
                 wrapper: pair.wrapper_name.clone(),
@@ -133,10 +148,10 @@ fn apply_auto_create(
                 created_at: now,
                 last_used_at: None,
             })
-            .expect("missing-set guarantees no duplicate");
+            .into_internal("inserting auto-created wrapper/resource pair")?;
         created_pairs.push(pair.clone());
     }
-    (created_resources, created_pairs)
+    Ok((created_resources, created_pairs))
 }
 
 /// Seed a `Locked` permission for every incoming
@@ -226,7 +241,7 @@ pub(crate) fn handle_runtime_wrapper_register(
         id: principal.to_string(),
     };
     let (auto_created_resources, auto_created_pairs) =
-        apply_auto_create(&mut resources, &mut pairs, &mut diff, &creator, now);
+        apply_auto_create(&mut resources, &mut pairs, &mut diff, &creator, now)?;
 
     let mut policy = load_policy_document(store).into_internal("loading policy document")?;
     let policy_dirty =

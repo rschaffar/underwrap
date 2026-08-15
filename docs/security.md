@@ -632,7 +632,11 @@ At TLS time, the backend verifies proof of possession of the presented leaf's
 private key. Runtime principal resolution then requires an active client record
 with the same fingerprint and maps that client to one store. Certificate
 subject, SAN, CA chain, KU/EKU, and validity dates do not define runtime
-identity.
+identity. This authentication selects a principal and store; it does not make the
+runtime JSON body trusted. Registration validates the complete request before
+store access, including rejecting a repeated exact `(wrapper_name,
+resource_name)` row with HTTP 400 code `duplicate_wrapper_resource_pair`.
+Repeating one accepted row in a later request remains idempotent.
 
 The frontend admits only an absolute HTTPS backend URL with a host. The NixOS
 module rejects non-`https://` instance options, daemon startup validates the URL
