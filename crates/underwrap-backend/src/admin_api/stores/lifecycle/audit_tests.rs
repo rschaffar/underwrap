@@ -1,63 +1,20 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Extension;
 use axum::extract::State;
 use hyper::StatusCode;
-use tracing::subscriber::with_default;
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::registry::Registry;
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
 
 use super::*;
 use crate::admin_api::stores::crud::{handle_admin_store_create, handle_admin_stores_list};
 use crate::http::responses::Body;
 use crate::store_registry::StoreState;
-use crate::test_support::{admin_principal, crud_state, run_handler};
-
-#[derive(Clone, Default)]
-struct BufWriter {
-    inner: Arc<Mutex<Vec<u8>>>,
-}
-
-impl BufWriter {
-    fn as_string(&self) -> String {
-        String::from_utf8_lossy(&self.inner.lock().unwrap()).into_owned()
-    }
-}
-
-impl io::Write for BufWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for BufWriter {
-    type Writer = BufWriter;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-fn capture<R>(run: impl FnOnce() -> R) -> (R, String) {
-    let writer = BufWriter::default();
-    let layer = tracing_subscriber::fmt::layer()
-        .with_writer(writer.clone())
-        .with_ansi(false)
-        .with_target(false);
-    let subscriber = Registry::default().with(layer);
-    let result = with_default(subscriber, run);
-    (result, writer.as_string())
-}
+use crate::test_support::{
+    admin_principal, capture_tracing_output as capture, crud_state, run_handler,
+};
 
 fn create_fixture(state: Arc<ListenerState>, principal: &Principal) -> (String, String, PathBuf) {
     let (status, body) = run_handler(handle_admin_store_create(

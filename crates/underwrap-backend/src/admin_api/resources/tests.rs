@@ -1,14 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Extension;
 use axum::extract::{Path, State};
 use hyper::StatusCode;
-use tracing::subscriber::with_default;
-use tracing_subscriber::Registry;
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::SubscriberExt;
 use underwrap_backend_store::{EncryptedBackend, StorageBackend, save_resource_blob};
 use underwrap_protocol::entities::{EntityCreator, ResourceRecord, ResourcesDocument};
 use underwrap_protocol::message::SecretBytes;
@@ -26,8 +21,8 @@ use crate::runtime_state::ListenerState;
 use crate::storage::documents::save_policy_document;
 use crate::storage::secret_entries::write_resource_entry;
 use crate::test_support::{
-    TestStore, admin_principal, create_resource_id_for_test, entity_test_state_with_store,
-    run_handler, test_admin_state,
+    TestStore, admin_principal, capture_tracing_output, create_resource_id_for_test,
+    entity_test_state_with_store, run_handler, test_admin_state,
 };
 
 fn entity_state() -> (tempfile::TempDir, Arc<ListenerState>, String, Principal) {
@@ -125,39 +120,8 @@ fn collection(items: BTreeMap<String, Item>) -> Collection {
     }
 }
 
-#[derive(Clone, Default)]
-struct AuditWriter(Arc<Mutex<Vec<u8>>>);
-
-impl io::Write for AuditWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for AuditWriter {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-fn capture_audit(f: impl FnOnce()) -> String {
-    let writer = AuditWriter::default();
-    let subscriber = Registry::default().with(
-        tracing_subscriber::fmt::layer()
-            .with_writer(writer.clone())
-            .with_ansi(false)
-            .with_target(false),
-    );
-    with_default(subscriber, f);
-    let bytes = writer.0.lock().unwrap().clone();
-    String::from_utf8(bytes).unwrap()
+fn capture_audit(run: impl FnOnce()) -> String {
+    capture_tracing_output(run).1
 }
 
 #[test]

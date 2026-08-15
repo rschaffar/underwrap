@@ -1,52 +1,10 @@
-use std::io;
-use std::sync::{Arc, Mutex};
-
-use tracing::subscriber::with_default;
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::registry::Registry;
+use std::sync::Arc;
 
 use super::*;
-use crate::test_support::{admin_principal, crud_state};
+use crate::test_support::{admin_principal, capture_tracing_output, crud_state};
 
-#[derive(Clone, Default)]
-struct BufWriter {
-    inner: Arc<Mutex<Vec<u8>>>,
-}
-
-impl BufWriter {
-    fn into_string(self) -> String {
-        let bytes = self.inner.lock().unwrap();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-}
-
-impl io::Write for BufWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for BufWriter {
-    type Writer = BufWriter;
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-fn capture<F: FnOnce()>(f: F) -> String {
-    let writer = BufWriter::default();
-    let layer = tracing_subscriber::fmt::layer()
-        .with_writer(writer.clone())
-        .with_ansi(false)
-        .with_target(false);
-    let subscriber = Registry::default().with(layer);
-    with_default(subscriber, f);
-    writer.into_string()
+fn capture(run: impl FnOnce()) -> String {
+    capture_tracing_output(run).1
 }
 
 #[test]

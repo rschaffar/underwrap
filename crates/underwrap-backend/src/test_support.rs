@@ -11,11 +11,16 @@ mod fs_snapshot;
 pub(crate) use fs_snapshot::{TreeEntry, assert_secure_encrypted_tree, tree_snapshot};
 
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::response::IntoResponse;
 use hyper::StatusCode;
+use tracing::subscriber::with_default;
+use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::Registry;
 use underwrap_backend_store::{StorageBackend, save_resource_blob};
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::policy::PolicyDocument;
@@ -29,6 +34,40 @@ use crate::storage::documents::{
     save_policy_document, save_resources_document,
 };
 use crate::store_registry::{StoreEntry, StoreRegistry, StoreState};
+
+#[derive(Clone, Default)]
+struct TracingWriter(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for TracingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for TracingWriter {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+pub(crate) fn capture_tracing_output<R>(run: impl FnOnce() -> R) -> (R, String) {
+    let writer = TracingWriter::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_writer(writer.clone())
+        .with_ansi(false)
+        .with_target(false);
+    let subscriber = Registry::default().with(layer);
+    let result = with_default(subscriber, run);
+    let output = String::from_utf8_lossy(&writer.0.lock().unwrap()).into_owned();
+    (result, output)
+}
 
 /// A sample client cert in PEM form used by tests that need to seed
 /// a runtime-client record without going through the create API
