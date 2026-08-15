@@ -177,12 +177,16 @@ async fn ungranted_tuple_for_unrelated_client_instance_still_rejects() {
         .store_secret("test", "gh-authorized", "github/token", "ghp_test")
         .await
         .unwrap();
+    let alternate_client = daemon
+        .create_alternate_client_instance("test")
+        .await
+        .unwrap();
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
                 permissions: vec![WrapperPermission {
-                    client_instance: "some-other-client".to_string(),
+                    client_instance: alternate_client,
                     wrapper: "gh-authorized".to_string(),
                     resource_id: "github/token".to_string(),
                     mode: WrapperApprovalMode::Unlocked,

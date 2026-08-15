@@ -587,6 +587,30 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
+    pub async fn create_alternate_client_instance(&self, store_id: &str) -> Result<String> {
+        let response = self
+            .admin_request(reqwest::Method::POST, "/v1/admin/client-instances")
+            .json(
+                &underwrap_protocol::service::AdminClientInstanceCreateRequest {
+                    display_name: "alternate runtime client".to_string(),
+                    current_store_id: store_id.to_string(),
+                    status: underwrap_protocol::service::AdminClientInstanceStatus::Active,
+                    cert_pem: pki::TEST_CLIENT_TUNNEL_PEM.to_string(),
+                    auto_create_wrapper_assets: None,
+                },
+            )
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "admin API returned {}",
+            response.status()
+        );
+        let item: underwrap_protocol::service::AdminClientInstanceListItem =
+            response.json().await?;
+        Ok(item.id)
+    }
+
     pub async fn list_client_instances(
         &self,
     ) -> Result<underwrap_protocol::service::AdminClientInstancesListResponse> {

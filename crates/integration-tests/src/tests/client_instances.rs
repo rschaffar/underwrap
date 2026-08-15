@@ -189,7 +189,10 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
         .await
         .unwrap();
     daemon
-        .store_secret(
+        .ensure_pair_in_store(&other_store_id, "gh-authorized", "github/token")
+        .unwrap();
+    daemon
+        .admin_write_raw(
             &other_store_id,
             "gh-authorized",
             "github/token",
@@ -209,11 +212,18 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
             &client_id,
             &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
                 display_name: None,
-                current_store_id: Some(other_store_id),
+                current_store_id: Some(other_store_id.clone()),
                 status: None,
                 cert_pem: None,
                 auto_create_wrapper_assets: None,
             },
+        )
+        .await
+        .unwrap();
+    daemon
+        .upsert_permission(
+            &other_store_id,
+            &daemon.current_permission("gh-authorized", "github/token"),
         )
         .await
         .unwrap();

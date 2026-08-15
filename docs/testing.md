@@ -91,6 +91,12 @@ Workspace tests cover:
 - resource deletion blocker aggregation, malformed-blob fail-before behavior,
   blob-delete-before-catalog ordering, storage-failure state re-read, and
   absence of reconstruction or false success;
+- centralized selected-store admin reference checks: every explicit flat route
+  and all eight libsecret operations reject a missing parent before blob access;
+  permission upsert checks client/store, resource, and exact pair in order before
+  policy access; ordinary pair create uses the canonical value-free resource
+  404; rejection snapshots and operation traces prove no effect while valid,
+  disabled-client, missing-child, and idempotent-delete behavior remains intact;
 - target environment, capability, UID, idmap, mount, and writeback helpers;
 - Secret Service data model and production D-Bus handler behavior, including the
   collection/item/alias mutation rejection matrix with structural live-store
@@ -150,7 +156,11 @@ separate-call-idempotent registration. The NixOS VM exercises representative
 deployed private-CA traffic. The
 real authenticated HTTPS admin suite also covers a libsecret-only deletion
 blocker, unchanged catalog/blob state while blocked, structured cleanup,
-successful deletion, and direct active-key absence.
+successful deletion, and direct active-key absence. Its admin-reference matrix
+exercises representative flat, libsecret, permission, and pair 404 envelopes,
+compares unchanged unfiltered secrets, resources, pairs, policy, and runtime
+client views, verifies no orphan active key appeared, and then reuses the same
+live service and authenticated session for valid content and permission writes.
 
 The `frontend-backend-url-eval` check proves module-level HTTP rejection and
 exact HTTPS URL generation; the VM independently proves a handcrafted plaintext
@@ -304,6 +314,12 @@ Automated tests do not establish:
 - safety of a broad or malicious target;
 - protection after root or backend compromise;
 - formal noninterference or a complete security proof.
+
+The admin-reference tests establish deterministic behavior for serialized
+requests only. They do not exercise or claim cross-request transactions, CAS,
+locks, tombstones, concurrent check/use exclusion, or repair/migration of
+pre-existing inconsistencies; those limits remain operational requirements in
+[Backend](backend.md#concurrency-semantics).
 
 Security-sensitive changes still require human review against
 [Security](security.md).

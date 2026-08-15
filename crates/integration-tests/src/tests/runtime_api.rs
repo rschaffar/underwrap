@@ -1065,12 +1065,16 @@ async fn open_uses_principal_from_cert_not_request_body() {
         .await
         .unwrap();
     // Grant the permission to a DIFFERENT client_instance only.
+    let alternate_client = daemon
+        .create_alternate_client_instance("test")
+        .await
+        .unwrap();
     daemon
         .put_policy(
             "test",
             &PolicyDocument {
                 permissions: vec![WrapperPermission {
-                    client_instance: "some-other-runtime".into(),
+                    client_instance: alternate_client,
                     wrapper: "gh-authorized".into(),
                     resource_id: "github/token".into(),
                     mode: WrapperApprovalMode::Unlocked,

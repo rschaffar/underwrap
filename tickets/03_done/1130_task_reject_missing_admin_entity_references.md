@@ -148,3 +148,20 @@ Run resource-intensive checks sequentially with `CARGO_BUILD_JOBS=2`.
 - Completed F-013's stable pre-storage runtime registration validation and ordinary valid auto-create behavior remain unchanged.
 - F-015/F-016, F-039/F-045/F-046, O-004, locked-store stale-permission lifecycle coordination, repair/migration, and all other non-goals remain separately queued.
 - No unresolved implementation dependency. Mandatory repository-wide and ticket-local behavior-preserving cleanup discovery begins only after this exact task is approved. No cleanup unit is pre-approved.
+
+## Completion record
+
+Status: completed; mandatory commented completion review pending.
+
+Ordered implementation:
+
+1. cleanup `08c77de50205cc0a4bd97d38dd1b86e0cd39e771` shares the backend tracing-capture test helper;
+2. cleanup `57edeed097fcc1b8cae8b25659f5519c33528184` removes impossible integration policy optionality;
+3. fix `845c4856eb0a63fddce87155c1109bea61259bf7` introduces the centralized reference gates, complete unit/compatibility evidence, F-014 handler/OpenAPI contract, and backend/security documentation;
+4. final fix `fix: complete admin reference integrity evidence` adds the real authenticated admin-HTTPS no-effect/recovery matrix, updates testing documentation, and adapts three pre-F-014 integration fixtures to use valid published references; its immutable hash is recorded in the handover after commit.
+
+The final behavior matches the approved sequential contract. Every explicit flat-secret and libsecret parent-resource route rejects a missing catalog resource before active blob access. Permission upsert validates the currently published client/store assignment, resource, and exact pair before policy access. Ordinary pair create uses the same canonical value-free `404 not_found` missing-resource response. Existing-resource subordinate behavior, disabled-client validity, stale permission list/delete cleanup, and the documented nontransactional concurrency limits remain unchanged.
+
+Final validation passes the focused reference and compatibility suites, all 252 backend library tests plus three binary and OpenAPI tests, all 102 authenticated integration tests, the complete workspace test suite, denied-warning workspace clippy, rustfmt, OpenAPI drift, 102 SPA tests, and the production SPA build. `nix flake check` runs all coverage tests successfully and then retains the known clean-baseline LLVM 21 `llvm-profdata merge` SIGILL; no Nix or privileged-chain path changed, and no VM-specific test is required for this backend admin boundary. Final independent reviews pass after tightening the HTTPS regression to compare the complete JSON error object, so extra fields or echoed identifiers fail.
+
+F-014 is resolved. F-015/F-016/F-039/F-045/F-046, O-004, locked-store stale-permission coordination, repair/migration, and concurrent check/use coordination remain separately queued.
