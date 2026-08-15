@@ -156,20 +156,12 @@ async fn per_permission_writable_flag_roundtrips_through_admin_api() {
     let mut permission = daemon.current_permission("gh-authorized", "github/token");
     permission.writable = true;
     daemon.upsert_permission("test", &permission).await.unwrap();
-    let doc = daemon
-        .get_policy("test")
-        .await
-        .unwrap()
-        .expect("policy document persists across reads");
+    let doc = daemon.get_policy("test").await.unwrap();
     assert!(doc.writable_for(daemon.client_instance(), "gh-authorized", "github/token"));
     // Flip back off.
     permission.writable = false;
     daemon.upsert_permission("test", &permission).await.unwrap();
-    let doc = daemon
-        .get_policy("test")
-        .await
-        .unwrap()
-        .expect("policy document still exists");
+    let doc = daemon.get_policy("test").await.unwrap();
     assert!(!doc.writable_for(daemon.client_instance(), "gh-authorized", "github/token"));
     daemon.stop().await.unwrap();
 }

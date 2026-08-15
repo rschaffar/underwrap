@@ -62,7 +62,7 @@ async fn backend_policy_roundtrip_over_admin_api() {
     // Default policy on a fresh store: no grants, writes disabled.
     assert_eq!(
         daemon.get_policy("test").await.unwrap(),
-        Some(PolicyDocument::default())
+        PolicyDocument::default()
     );
 
     let grant = daemon.current_permission("gh-authorized", "github/token");
@@ -71,7 +71,7 @@ async fn backend_policy_roundtrip_over_admin_api() {
     };
     daemon.put_policy("test", &document).await.unwrap();
 
-    let loaded = daemon.get_policy("test").await.unwrap().unwrap();
+    let loaded = daemon.get_policy("test").await.unwrap();
     assert_eq!(loaded, document);
 
     daemon.stop().await.unwrap();

@@ -814,9 +814,9 @@ impl TestDaemon {
         Ok(response.json().await?)
     }
 
-    pub async fn get_policy(&self, store: &str) -> Result<Option<PolicyDocument>> {
+    pub async fn get_policy(&self, store: &str) -> Result<PolicyDocument> {
         let permissions = self.list_permissions(store).await?;
-        Ok(Some(PolicyDocument { permissions }))
+        Ok(PolicyDocument { permissions })
     }
 
     pub async fn put_policy(&self, store: &str, doc: &PolicyDocument) -> Result<()> {
