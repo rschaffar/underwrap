@@ -129,12 +129,35 @@ file stem):
 }
 ```
 
-`POST /v1/admin/stores` updates this registry atomically via
-`tempfile::persist()`. Runtime client access is resolved dynamically
-from the backend-managed client-instance registry. The presented client
-certificate fingerprint must map to an active enrolled instance. Operator
-identity is resolved from the per-user registry under `users_dir` and the
-server-side in-memory session addressed by the opaque cookie.
+Store records and runtime client instance records use one write lock per live
+registry. A same-registry create, update, or delete becomes observable to other
+requests only after its registry-file save or delete helper reports success;
+the successful mutation is published before that registry write lock is
+released. If the helper returns an error, the request returns its existing 500,
+the running live authority remains at the exact pre-request record set, and a
+fresh load observes the old persisted state once the registry path is restored
+and readable. Writes sync the temporary file and use `tempfile::persist()` for
+atomic replacement visibility. They do not fsync the parent directory; deletes
+are ordinary unlinks, so neither path claims power-loss durability.
+
+Runtime client access is resolved dynamically from the backend-managed
+client-instance registry. The presented client certificate fingerprint must map
+to an active enrolled instance. Runtime client remap/delete permission cleanup
+runs only after the registry commit and lock release and remains best-effort: a
+cleanup warning does not roll back or fail an already committed registry
+mutation. Operator identity is resolved from the per-user registry under
+`users_dir` and the server-side in-memory session addressed by the opaque
+cookie.
+
+This is a same-registry running-process guarantee, not a transaction or global
+lock. Store deletion checks client mappings and backing-store contents before
+its short registry commit window, and runtime client updates consult the store
+registry separately; concurrent cross-registry or backing-store changes can
+invalidate those check/use results. There is no revision, compare-and-swap,
+automatic retry, reconciliation, or repair. Store creation also creates its
+backing data directory—and an encrypted canary for an encrypted store—before the
+store-registry commit; a failed registry save can leave those pre-registry side
+effects for trusted-host cleanup.
 
 ## Runtime API
 

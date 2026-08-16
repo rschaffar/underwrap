@@ -707,6 +707,27 @@ operator grants.
 
 ### Persistent stores
 
+Store and runtime client instance registry mutations use their respective live
+registry write lock. A mutation is visible to other requests only after its
+registry-file save/delete helper reports success, and a successful result is
+published before the write lock is released. A helper error leaves the running
+live authorization/store authority exactly unchanged; after the registry path
+is restored and readable, a fresh load observes the exact pre-request persisted
+record set, including the absence of a record whose create failed. Runtime
+client remap/delete permission cleanup occurs after this commit and lock release
+and is best-effort, so cleanup failure cannot roll back the new principal or
+store mapping.
+
+This protects the running authority from a returned persistence error; it is not
+a cross-registry transaction, CAS, revision, global lock, or repair mechanism.
+Store-delete mapping/content checks and client-update store checks remain
+separate check/use operations and can race concurrent reassignment or backing
+store mutation. Registry replacement syncs the temporary file before atomic
+rename visibility but does not fsync the parent directory; registry deletion is
+an ordinary unlink. No power-loss durability or durable-unlink claim follows.
+Store creation can create a backing data directory and encrypted canary before
+the registry commit, and a failed registry save can leave those side effects.
+
 `PlainBackend` stores resource blobs as plaintext files owned by the backend
 service account.
 

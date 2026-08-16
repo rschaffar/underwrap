@@ -284,6 +284,7 @@ mod daemon;
 mod directory_and_status;
 mod last_used;
 mod policy;
+mod registry_failure_atomicity;
 mod rotation;
 mod runtime_api;
 mod service_transport;

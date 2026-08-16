@@ -7,11 +7,12 @@
 //! per-entity validation, uniqueness keys, and the human-friendly
 //! `KIND` string that goes into error messages.
 //!
-//! On-disk shape: pretty-printed JSON, one file per record. Writes
-//! go through `tempfile::NamedTempFile::persist` for crash-atomic
-//! rename. Reads tolerate a missing directory (fresh backend) and
-//! skip non-`.json` siblings so operator backups like
-//! `<id>.json.bak` do not break the load.
+//! On-disk shape: pretty-printed JSON, one file per record. After the
+//! temporary file is synced, `tempfile::NamedTempFile::persist` gives
+//! atomic replacement visibility. The parent directory is not fsynced,
+//! so this does not claim power-loss durability. Reads tolerate a missing
+//! directory (fresh backend) and skip non-`.json` siblings so operator
+//! backups like `<id>.json.bak` do not break the load.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

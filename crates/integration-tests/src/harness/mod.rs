@@ -44,9 +44,10 @@ pub(crate) use builders::current_group_name;
 pub use builders::{files_wrapper, files_wrapper_paths, wrapper};
 pub(crate) use pki::{
     TEST_CA_PEM, TEST_CA_SELECTED_EXCLUSIVE_PEM, TEST_CA_UNSELECTED_PEM, TEST_CLIENT_LOCAL_KEY,
-    TEST_CLIENT_LOCAL_PEM, TEST_SERVER_KEY, TEST_SERVER_PEM, TEST_SERVER_SELECTED_EXCLUSIVE_KEY,
-    TEST_SERVER_SELECTED_EXCLUSIVE_PEM, TEST_SERVER_UNSELECTED_CA_KEY,
-    TEST_SERVER_UNSELECTED_CA_PEM, TEST_SERVER_WRONG_HOST_KEY, TEST_SERVER_WRONG_HOST_PEM,
+    TEST_CLIENT_LOCAL_PEM, TEST_CLIENT_TUNNEL_KEY, TEST_CLIENT_TUNNEL_PEM, TEST_SERVER_KEY,
+    TEST_SERVER_PEM, TEST_SERVER_SELECTED_EXCLUSIVE_KEY, TEST_SERVER_SELECTED_EXCLUSIVE_PEM,
+    TEST_SERVER_UNSELECTED_CA_KEY, TEST_SERVER_UNSELECTED_CA_PEM, TEST_SERVER_WRONG_HOST_KEY,
+    TEST_SERVER_WRONG_HOST_PEM,
 };
 
 use pki::{principal_client_name, test_pki_paths};
@@ -66,6 +67,8 @@ pub struct TestDaemon {
     /// live. Used by [`Self::store_dir_for`] to compute the on-disk
     /// path of a store other than the seeded "test" one.
     pub stores_data_root: PathBuf,
+    pub(crate) stores_dir: PathBuf,
+    pub(crate) clients_dir: PathBuf,
     admin_session_cookie: String,
     admin_csrf_cookie: String,
     admin_csrf_token: String,
@@ -89,6 +92,12 @@ pub struct TestDaemon {
 /// callers receive a `(resource, slot, key)` triple internally where
 /// `key` is this constant.
 const FIXTURE_ENV_KEY: &str = "TEST_TOKEN";
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TestRuntimeIdentity {
+    Local,
+    Tunnel,
+}
 
 impl TestDaemon {
     /// Start a daemon with the given wrapper definitions.
@@ -156,8 +165,8 @@ impl TestDaemon {
         };
         underwrap_backend::runtime_clients::save_client_instance(&clients_dir, &runtime_client)?;
         let backend_config = underwrap_backend::BackendConfig {
-            stores_dir,
-            clients_dir,
+            stores_dir: stores_dir.clone(),
+            clients_dir: clients_dir.clone(),
             users_dir: base.join("users"),
             bootstrap_file: base.join("bootstrap.json"),
             https: Some(underwrap_backend::HttpsConfig {
@@ -246,6 +255,8 @@ impl TestDaemon {
             service_url: service_url.clone(),
             storage_dir,
             stores_data_root,
+            stores_dir,
+            clients_dir,
             admin_session_cookie,
             admin_csrf_cookie,
             admin_csrf_token,
@@ -513,11 +524,7 @@ impl TestDaemon {
     /// connection fails.
     pub async fn direct_service_status(&self) -> Result<()> {
         let client = self.direct_service_client()?;
-        let response = client
-            .post(format!("{}/v1/wrappers", self.service_url))
-            .json(&underwrap_protocol::service::RuntimeWrapperRegisterRequest { wrappers: vec![] })
-            .send()
-            .await?;
+        let response = self.empty_runtime_registration(client).await?;
         anyhow::ensure!(
             response.status().is_success(),
             "service API returned {}",
@@ -526,18 +533,56 @@ impl TestDaemon {
         Ok(())
     }
 
+    /// Issue the same state-free runtime registration using one of the two
+    /// synthetic fixture identities. This is intentionally narrower than a
+    /// general credential-building API so certificate-rotation tests cannot
+    /// accidentally send secret-bearing runtime requests. The response remains
+    /// available so tests can distinguish an HTTP rejection from construction
+    /// or transport failures.
+    pub(crate) async fn direct_service_status_as(
+        &self,
+        identity: TestRuntimeIdentity,
+    ) -> Result<reqwest::Response> {
+        let (cert_pem, key_pem) = match identity {
+            TestRuntimeIdentity::Local => (TEST_CLIENT_LOCAL_PEM, TEST_CLIENT_LOCAL_KEY),
+            TestRuntimeIdentity::Tunnel => (TEST_CLIENT_TUNNEL_PEM, TEST_CLIENT_TUNNEL_KEY),
+        };
+        let client =
+            self.direct_service_client_from_pem(cert_pem.as_bytes(), key_pem.as_bytes())?;
+        self.empty_runtime_registration(client).await
+    }
+
+    async fn empty_runtime_registration(
+        &self,
+        client: reqwest::Client,
+    ) -> Result<reqwest::Response> {
+        Ok(client
+            .post(format!("{}/v1/wrappers", self.service_url))
+            .json(&underwrap_protocol::service::RuntimeWrapperRegisterRequest { wrappers: vec![] })
+            .send()
+            .await?)
+    }
+
     /// Build an mTLS-authenticated reqwest client that authenticates as
     /// this daemon's runtime client instance. Tests use it to bypass
     /// the daemon entirely and call backend `/v1/*` endpoints directly,
     /// e.g. to prove the backend gates writes server-side regardless
     /// of what the client tries to send.
     pub fn direct_service_client(&self) -> Result<reqwest::Client> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let ca_pem = std::fs::read(&self.service_ca_cert)?;
         let cert_pem = std::fs::read(&self.service_client_cert)?;
         let key_pem = std::fs::read(&self.service_client_key)?;
-        let mut identity_pem = cert_pem;
-        identity_pem.extend_from_slice(&key_pem);
+        self.direct_service_client_from_pem(&cert_pem, &key_pem)
+    }
+
+    fn direct_service_client_from_pem(
+        &self,
+        cert_pem: &[u8],
+        key_pem: &[u8],
+    ) -> Result<reqwest::Client> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let ca_pem = std::fs::read(&self.service_ca_cert)?;
+        let mut identity_pem = cert_pem.to_vec();
+        identity_pem.extend_from_slice(key_pem);
         Ok(reqwest::Client::builder()
             .use_rustls_tls()
             .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem)?)

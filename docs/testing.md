@@ -88,6 +88,12 @@ Workspace tests cover:
   within-request duplicate rejection, name-error precedence, valid near misses,
   checked internal insertion failures, and separate-call idempotence;
 - backend runtime policy and writeback validation;
+- six registry failure-atomicity unit matrices—store create/update/delete and
+  runtime client instance create/update/delete—using real directory
+  rename/regular-file blockers. They pin the exact 500 codes, unchanged live
+  and freshly loaded records after helper failure, absence of failed success
+  audit/cascade effects, successful retry publication, and store backend/state/
+  rotation-lock or complete client-record identity where applicable;
 - resource deletion blocker aggregation, malformed-blob fail-before behavior,
   blob-delete-before-catalog ordering, storage-failure state re-read, and
   absence of reconstruction or false success;
@@ -161,6 +167,14 @@ exercises representative flat, libsecret, permission, and pair 404 envelopes,
 compares unchanged unfiltered secrets, resources, pairs, policy, and runtime
 client views, verifies no orphan active key appeared, and then reuses the same
 live service and authenticated session for valid content and permission writes.
+A separate real authenticated HTTPS/mTLS registry matrix blocks the actual
+store/client registry paths while one live service and admin session performs
+store update, store delete, and all-field client update. It checks exact 500
+codes, unchanged authenticated list and fresh-load state, successful retries,
+local-to-tunnel certificate replacement, old-certificate rejection, and
+replacement disable/re-enable behavior. The normal path explicitly restores the
+directory before state assertions; `Drop` provides only a best-effort fallback.
+The daemon/backend stop future is always awaited without an in-test timeout.
 
 The `frontend-backend-url-eval` check proves module-level HTTP rejection and
 exact HTTPS URL generation; the VM independently proves a handcrafted plaintext
@@ -319,7 +333,10 @@ The admin-reference tests establish deterministic behavior for serialized
 requests only. They do not exercise or claim cross-request transactions, CAS,
 locks, tombstones, concurrent check/use exclusion, or repair/migration of
 pre-existing inconsistencies; those limits remain operational requirements in
-[Backend](backend.md#concurrency-semantics).
+[Backend](backend.md#concurrency-semantics). Registry failure tests likewise
+establish returned-helper-error and running-process publication behavior, not
+parent-directory fsync, power-loss durability, cross-registry serialization,
+pre-registry create-side-effect cleanup, or automatic repair.
 
 Security-sensitive changes still require human review against
 [Security](security.md).
