@@ -11,8 +11,8 @@ use underwrap_protocol::service::{
 use super::*;
 use crate::http::responses::Body;
 use crate::test_support::{
-    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state,
-    delete_store_for_test, run_handler,
+    BlockedRegistryDir, SAMPLE_CLIENT_CERT_PEM, admin_principal, capture_tracing_output,
+    create_store_for_test, crud_state, delete_store_for_test, run_handler,
 };
 
 fn create_store(
@@ -417,4 +417,210 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
     assert_eq!(detail["actions"]["can_rotate_key"], false);
     assert_eq!(detail["actions"]["can_delete_now"], false);
     assert_eq!(detail["actions"]["can_force_delete"], false);
+}
+
+#[test]
+fn f015_store_create_blocked_registry_publishes_no_candidate_and_retries_cleanly() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let request = AdminStoreCreateRequest {
+        name: "candidate".into(),
+        backend: AdminStoreBackendKind::Plain,
+        description: Some("candidate-description".into()),
+    };
+
+    let ((status, body), audit) = capture_tracing_output(|| {
+        let _blocked = BlockedRegistryDir::new(&state.admin().stores_dir);
+        create_store(state.clone(), &principal, &request)
+    });
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "write_store_registry_failed");
+    assert!(
+        !audit.contains("action=store.create"),
+        "failed create emitted a success audit: {audit}",
+    );
+    assert!(
+        state.shared.stores.read().unwrap().entries.is_empty(),
+        "failed create published a live store candidate",
+    );
+    let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();
+    assert!(
+        reloaded.is_empty(),
+        "failed create left a restored-reload store candidate: {reloaded:?}",
+    );
+
+    let (retry_status, retry_body) = create_store(state.clone(), &principal, &request);
+    assert_eq!(retry_status, StatusCode::OK, "{retry_body}");
+    let store_id = retry_body["store"]["id"].as_str().unwrap();
+    let live = state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .entries
+        .get(store_id)
+        .unwrap()
+        .record
+        .clone();
+    let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(store_id), Some(&live));
+}
+
+#[test]
+fn f015_store_update_persists_before_publishing_live_record() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "before".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: Some("before-description".into()),
+        },
+    );
+    let (before, entry_address, backend, rotation_lock) = {
+        let stores = state.shared.stores.read().unwrap();
+        let entry = stores.entries.get(&store_id).unwrap();
+        (
+            entry.record.clone(),
+            std::ptr::from_ref(entry),
+            entry.state.backend().unwrap().clone(),
+            entry.rotation_lock.clone(),
+        )
+    };
+    let mut candidate = before.clone();
+    candidate.name = "after".into();
+    candidate.description = Some("after-description".into());
+    let request = AdminStoreUpdateRequest {
+        name: Some(candidate.name.clone()),
+        description: candidate.description.clone(),
+    };
+
+    let ((status, body), audit) = capture_tracing_output(|| {
+        let _blocked = BlockedRegistryDir::new(&state.admin().stores_dir);
+        run_handler(handle_admin_store_update(
+            State(state.clone()),
+            Extension(principal.clone()),
+            Path(store_id.clone()),
+            Body(request.clone()),
+        ))
+    });
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "write_store_registry_failed");
+    assert!(
+        !audit.contains("action=store.update"),
+        "failed update emitted a success audit: {audit}",
+    );
+    {
+        let stores = state.shared.stores.read().unwrap();
+        let live = stores.entries.get(&store_id).unwrap();
+        assert_eq!(live.record, before);
+        assert_eq!(std::ptr::from_ref(live), entry_address);
+        assert!(
+            std::ptr::eq(live.state.backend().unwrap().as_ref(), backend.as_ref()),
+            "failed update replaced the live backend/state",
+        );
+        assert!(Arc::ptr_eq(&live.rotation_lock, &rotation_lock));
+    }
+    let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(&store_id), Some(&before));
+
+    let (retry_status, retry_body) = run_handler(handle_admin_store_update(
+        State(state.clone()),
+        Extension(principal),
+        Path(store_id.clone()),
+        Body(request),
+    ));
+    assert_eq!(retry_status, StatusCode::OK, "{retry_body}");
+    {
+        let stores = state.shared.stores.read().unwrap();
+        let live = stores.entries.get(&store_id).unwrap();
+        assert_eq!(live.record, candidate);
+        assert_eq!(std::ptr::from_ref(live), entry_address);
+        assert!(std::ptr::eq(
+            live.state.backend().unwrap().as_ref(),
+            backend.as_ref(),
+        ));
+        assert!(Arc::ptr_eq(&live.rotation_lock, &rotation_lock));
+    }
+    let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(&store_id), Some(&candidate));
+}
+
+#[test]
+fn f015_store_delete_persists_before_removing_live_entry() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "keep".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: Some("keep-description".into()),
+        },
+    );
+    let record_path = state.admin().stores_dir.join(format!("{store_id}.json"));
+    let (before, entry_address, backend, rotation_lock) = {
+        let stores = state.shared.stores.read().unwrap();
+        let entry = stores.entries.get(&store_id).unwrap();
+        (
+            entry.record.clone(),
+            std::ptr::from_ref(entry),
+            entry.state.backend().unwrap().clone(),
+            entry.rotation_lock.clone(),
+        )
+    };
+
+    let ((status, body), audit) = capture_tracing_output(|| {
+        let _blocked = BlockedRegistryDir::new(&state.admin().stores_dir);
+        delete_store_for_test(state.clone(), &principal, &store_id, false)
+    });
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "write_store_registry_failed");
+    assert!(
+        !audit.contains("action=store.delete"),
+        "failed delete emitted a success audit: {audit}",
+    );
+    {
+        let stores = state.shared.stores.read().unwrap();
+        let live = stores.entries.get(&store_id).unwrap();
+        assert_eq!(live.record, before);
+        assert_eq!(std::ptr::from_ref(live), entry_address);
+        assert!(
+            std::ptr::eq(live.state.backend().unwrap().as_ref(), backend.as_ref()),
+            "failed delete replaced the live backend/state",
+        );
+        assert!(Arc::ptr_eq(&live.rotation_lock, &rotation_lock));
+    }
+    assert!(record_path.exists());
+    let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(&store_id), Some(&before));
+
+    let (retry_status, retry_body) =
+        delete_store_for_test(state.clone(), &principal, &store_id, false);
+    assert_eq!(retry_status, StatusCode::OK, "{retry_body}");
+    assert!(
+        !state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .entries
+            .contains_key(&store_id)
+    );
+    assert!(!record_path.exists());
+    assert!(
+        !crate::store_registry::load_store_records(&state.admin().stores_dir)
+            .unwrap()
+            .contains_key(&store_id),
+    );
 }

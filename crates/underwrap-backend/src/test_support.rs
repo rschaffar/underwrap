@@ -451,6 +451,37 @@ pub(crate) fn admin_principal() -> crate::admin_api::csrf::Principal {
     }
 }
 
+/// Real-filesystem fault fixture for registry persistence tests.
+///
+/// The configured registry directory is moved aside and replaced by a regular
+/// file, making record save/delete fail without a production fault hook. Drop
+/// restores the directory before callers reload or inspect persisted records.
+pub(crate) struct BlockedRegistryDir {
+    path: PathBuf,
+    backup: PathBuf,
+}
+
+impl BlockedRegistryDir {
+    pub(crate) fn new(path: &std::path::Path) -> Self {
+        std::fs::create_dir_all(path).unwrap();
+        let backup = path.with_extension("blocked-registry-backup");
+        assert!(!backup.exists(), "registry backup path already exists");
+        std::fs::rename(path, &backup).unwrap();
+        std::fs::write(path, b"registry path intentionally blocked").unwrap();
+        Self {
+            path: path.to_path_buf(),
+            backup,
+        }
+    }
+}
+
+impl Drop for BlockedRegistryDir {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).unwrap();
+        std::fs::rename(&self.backup, &self.path).unwrap();
+    }
+}
+
 /// Build an `ListenerState` wired up for CRUD tests: a
 /// dedicated store registry, user-state file, and one allowed
 /// data root, all under the supplied tempdir.

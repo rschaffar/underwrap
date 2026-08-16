@@ -260,11 +260,11 @@ pub(crate) async fn handle_admin_store_update(
     Body(body): Body<AdminStoreUpdateRequest>,
 ) -> Result<Json<AdminStoreListItem>, AdminError> {
     let updated = {
-        let reg = state.shared.stores.read().unwrap();
+        let mut reg = state.shared.stores.write().unwrap();
         let entry = reg
             .entry(&name)
             .map_err(|_| AdminError::store_not_found())?;
-        let mut record = entry.record.clone();
+        let mut updated = entry.record.clone();
         if let Some(new_name) = &body.name {
             let new_name = new_name.trim();
             if new_name.is_empty() {
@@ -282,29 +282,29 @@ pub(crate) async fn handle_admin_store_update(
                     format!("store name '{new_name}' already exists"),
                 ));
             }
-            record.name = new_name;
+            updated.name = new_name;
         }
         if let Some(new_desc) = &body.description {
-            record.description = if new_desc.is_empty() {
+            updated.description = if new_desc.is_empty() {
                 None
             } else {
                 Some(new_desc.clone())
             };
         }
-        record
-    };
-    {
-        let mut reg = state.shared.stores.write().unwrap();
-        if let Some(entry) = reg.entries.get_mut(&name) {
-            entry.record = updated.clone();
-        }
+        let entry = reg
+            .entries
+            .get_mut(&name)
+            .ok_or_else(AdminError::store_not_found)?;
+        let published = updated.clone();
         if let Err(e) = save_store_record(&state.admin().stores_dir, &updated) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),
             ));
         }
-    }
+        entry.record = published;
+        updated
+    };
     log_admin_event(
         "store.update",
         &principal,
@@ -422,13 +422,13 @@ pub(crate) async fn handle_admin_store_delete(
 
     {
         let mut reg = state.shared.stores.write().unwrap();
-        reg.entries.remove(&name);
         if let Err(e) = delete_store_record(&state.admin().stores_dir, &name) {
             return Err(AdminError::internal_with_code(
                 "write_store_registry_failed",
                 format!("{e:#}"),
             ));
         }
+        reg.entries.remove(&name);
     }
     let cleanup_hint = if non_empty {
         let data_dir = dir_for_hint.display().to_string();

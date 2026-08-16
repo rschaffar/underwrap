@@ -16,9 +16,23 @@ use crate::admin_api::resources::handle_admin_resource_create;
 use crate::http::responses::Body;
 use crate::storage::documents::load_policy_document;
 use crate::test_support::{
-    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state,
-    delete_store_for_test, run_handler,
+    BlockedRegistryDir, SAMPLE_CLIENT_CERT_PEM, admin_principal, capture_tracing_output,
+    create_store_for_test, crud_state, delete_store_for_test, run_handler,
 };
+
+fn f015_client_cert_pem(label: &str) -> String {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(vec![label.to_string()]).unwrap();
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, label);
+    params.not_before = rcgen::date_time_ymd(2025, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2035, 1, 1);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+    params.serial_number = Some(rcgen::SerialNumber::from(15));
+    params.self_signed(&key).unwrap().pem()
+}
 
 #[test]
 fn client_instance_crud_and_store_mapping_round_trip() {
@@ -415,4 +429,398 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
     ));
     assert_eq!(off_status, StatusCode::OK);
     assert_eq!(off_body["auto_create_wrapper_assets"], false);
+}
+
+#[test]
+fn f015_client_create_blocked_registry_publishes_no_candidate_and_retries_cleanly() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "work".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: None,
+        },
+    );
+    let request = AdminClientInstanceCreateRequest {
+        display_name: "candidate".into(),
+        current_store_id: store_id,
+        status: AdminClientInstanceStatus::Active,
+        cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+        auto_create_wrapper_assets: Some(true),
+    };
+
+    let ((status, body), audit) = capture_tracing_output(|| {
+        let _blocked = BlockedRegistryDir::new(&state.admin().clients_dir);
+        run_handler(handle_admin_client_instance_create(
+            State(state.clone()),
+            Extension(principal.clone()),
+            Body(request.clone()),
+        ))
+    });
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "write_client_instances_failed");
+    assert!(
+        !audit.contains("action=client-instance.create"),
+        "failed create emitted a success audit: {audit}",
+    );
+    assert!(
+        state.shared.client_instances.read().unwrap().is_empty(),
+        "failed create published a live client candidate",
+    );
+    let reloaded = crate::runtime_clients::load_client_instances(&state.admin().clients_dir)
+        .expect("reload client registry after restoring its directory");
+    assert!(
+        reloaded.is_empty(),
+        "failed create left a restored-reload client candidate: {reloaded:?}",
+    );
+
+    let (retry_status, retry_body) = run_handler(handle_admin_client_instance_create(
+        State(state.clone()),
+        Extension(principal),
+        Body(request),
+    ));
+    assert_eq!(retry_status, StatusCode::OK, "{retry_body}");
+    let client_id = retry_body["id"].as_str().unwrap();
+    let live = state
+        .shared
+        .client_instances
+        .read()
+        .unwrap()
+        .get(client_id)
+        .unwrap()
+        .clone();
+    let reloaded = crate::runtime_clients::load_client_instances(&state.admin().clients_dir)
+        .expect("reload client registry after successful retry");
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(client_id), Some(&live));
+}
+
+#[test]
+fn f015_client_update_persists_before_publishing_and_cascading() {
+    use underwrap_protocol::policy::WrapperApprovalMode;
+    use underwrap_protocol::service::AdminWrapperPermissionUpsertRequest;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let old_store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "old".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: None,
+        },
+    );
+    let new_store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "new".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: None,
+        },
+    );
+    let (create_status, created) = run_handler(handle_admin_client_instance_create(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Body(AdminClientInstanceCreateRequest {
+            display_name: "before".into(),
+            current_store_id: old_store_id.clone(),
+            status: AdminClientInstanceStatus::Active,
+            cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+            auto_create_wrapper_assets: Some(false),
+        }),
+    ));
+    assert_eq!(create_status, StatusCode::OK, "{created}");
+    let client_id = created["id"].as_str().unwrap().to_string();
+    let before = {
+        let mut instances = state.shared.client_instances.write().unwrap();
+        let record = instances.get_mut(&client_id).unwrap();
+        record.last_seen_at = Some(1_234_567);
+        crate::runtime_clients::save_client_instance(&state.admin().clients_dir, record).unwrap();
+        record.clone()
+    };
+
+    let (resource_status, resource) = run_handler(handle_admin_resource_create(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(old_store_id.clone()),
+        Body(AdminResourceCreateRequest {
+            name: "F-015 resource".into(),
+        }),
+    ));
+    assert_eq!(resource_status, StatusCode::OK, "{resource}");
+    let resource_id = resource["resource"]["id"].as_str().unwrap().to_string();
+    let (pair_status, pair) = run_handler(handle_admin_pair_create(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(old_store_id.clone()),
+        Body(AdminPairCreateRequest {
+            wrapper: "f015-wrapper".into(),
+            resource_id: resource_id.clone(),
+        }),
+    ));
+    assert_eq!(pair_status, StatusCode::OK, "{pair}");
+    let (permission_status, permission) = run_handler(handle_admin_wrapper_permission_upsert(
+        State(state.clone()),
+        Extension(principal.clone()),
+        axum::extract::Path((
+            old_store_id.clone(),
+            client_id.clone(),
+            "f015-wrapper".into(),
+            resource_id,
+        )),
+        Body(AdminWrapperPermissionUpsertRequest {
+            mode: WrapperApprovalMode::Unlocked,
+            writable: false,
+            reason: Some("F-015 evidence".into()),
+        }),
+    ));
+    assert_eq!(permission_status, StatusCode::OK, "{permission}");
+    let old_backend = state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .expect_unlocked(&old_store_id);
+    let policy_before = load_policy_document(old_backend.as_ref()).unwrap();
+    assert_eq!(policy_before.permissions.len(), 1);
+
+    let replacement_cert = f015_client_cert_pem("f015-replacement");
+    let mut candidate = before.clone();
+    candidate.display_name = "after".into();
+    candidate.current_store_id = new_store_id.clone();
+    candidate.status = crate::runtime_clients::ClientInstanceStatus::Disabled;
+    candidate.current_credential =
+        crate::runtime_clients::current_credential_from_pem(replacement_cert.clone()).unwrap();
+    candidate.auto_create_wrapper_assets = true;
+    assert_ne!(
+        candidate.current_credential.cert_fingerprint, before.current_credential.cert_fingerprint,
+        "replacement certificate must identify a distinct credential",
+    );
+    assert_eq!(candidate.last_seen_at, before.last_seen_at);
+    let request = AdminClientInstanceUpdateRequest {
+        display_name: Some(candidate.display_name.clone()),
+        current_store_id: Some(candidate.current_store_id.clone()),
+        status: Some(AdminClientInstanceStatus::Disabled),
+        cert_pem: Some(replacement_cert),
+        auto_create_wrapper_assets: Some(true),
+    };
+
+    let ((status, body), audit) = capture_tracing_output(|| {
+        let _blocked = BlockedRegistryDir::new(&state.admin().clients_dir);
+        run_handler(handle_admin_client_instance_update(
+            State(state.clone()),
+            Extension(principal.clone()),
+            Path(client_id.clone()),
+            Body(request.clone()),
+        ))
+    });
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "write_client_instances_failed");
+    assert!(
+        !audit.contains("action=client-instance.update"),
+        "failed update emitted a success audit: {audit}",
+    );
+    assert_eq!(
+        state
+            .shared
+            .client_instances
+            .read()
+            .unwrap()
+            .get(&client_id),
+        Some(&before),
+    );
+    let reloaded = crate::runtime_clients::load_client_instances(&state.admin().clients_dir)
+        .expect("reload client registry after restoring its directory");
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(&client_id), Some(&before));
+    assert_eq!(
+        load_policy_document(old_backend.as_ref()).unwrap(),
+        policy_before,
+        "failed remap must not start the old-store permission cascade",
+    );
+
+    let (retry_status, retry_body) = run_handler(handle_admin_client_instance_update(
+        State(state.clone()),
+        Extension(principal),
+        Path(client_id.clone()),
+        Body(request),
+    ));
+    assert_eq!(retry_status, StatusCode::OK, "{retry_body}");
+    assert_eq!(
+        state
+            .shared
+            .client_instances
+            .read()
+            .unwrap()
+            .get(&client_id),
+        Some(&candidate),
+    );
+    let reloaded = crate::runtime_clients::load_client_instances(&state.admin().clients_dir)
+        .expect("reload client registry after successful retry");
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(&client_id), Some(&candidate));
+
+    let mut expected_policy = policy_before;
+    expected_policy
+        .permissions
+        .retain(|row| row.client_instance != client_id);
+    assert_eq!(
+        load_policy_document(old_backend.as_ref()).unwrap(),
+        expected_policy,
+        "successful remap must remove the client's old-store permissions",
+    );
+}
+
+#[test]
+fn f015_client_delete_blocked_registry_preserves_record_and_permission_until_retry() {
+    use underwrap_protocol::policy::WrapperApprovalMode;
+    use underwrap_protocol::service::AdminWrapperPermissionUpsertRequest;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let old_store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "old".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: None,
+        },
+    );
+    let (create_status, created) = run_handler(handle_admin_client_instance_create(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Body(AdminClientInstanceCreateRequest {
+            display_name: "delete-candidate".into(),
+            current_store_id: old_store_id.clone(),
+            status: AdminClientInstanceStatus::Active,
+            cert_pem: SAMPLE_CLIENT_CERT_PEM.into(),
+            auto_create_wrapper_assets: Some(false),
+        }),
+    ));
+    assert_eq!(create_status, StatusCode::OK, "{created}");
+    let client_id = created["id"].as_str().unwrap().to_string();
+    let record_path = state.admin().clients_dir.join(format!("{client_id}.json"));
+    let before = state
+        .shared
+        .client_instances
+        .read()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .clone();
+
+    let (resource_status, resource) = run_handler(handle_admin_resource_create(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(old_store_id.clone()),
+        Body(AdminResourceCreateRequest {
+            name: "F-015 delete resource".into(),
+        }),
+    ));
+    assert_eq!(resource_status, StatusCode::OK, "{resource}");
+    let resource_id = resource["resource"]["id"].as_str().unwrap().to_string();
+    let (pair_status, pair) = run_handler(handle_admin_pair_create(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(old_store_id.clone()),
+        Body(AdminPairCreateRequest {
+            wrapper: "f015-delete-wrapper".into(),
+            resource_id: resource_id.clone(),
+        }),
+    ));
+    assert_eq!(pair_status, StatusCode::OK, "{pair}");
+    let (permission_status, permission) = run_handler(handle_admin_wrapper_permission_upsert(
+        State(state.clone()),
+        Extension(principal.clone()),
+        axum::extract::Path((
+            old_store_id.clone(),
+            client_id.clone(),
+            "f015-delete-wrapper".into(),
+            resource_id,
+        )),
+        Body(AdminWrapperPermissionUpsertRequest {
+            mode: WrapperApprovalMode::Unlocked,
+            writable: true,
+            reason: Some("F-015 delete evidence".into()),
+        }),
+    ));
+    assert_eq!(permission_status, StatusCode::OK, "{permission}");
+    let old_backend = state
+        .shared
+        .stores
+        .read()
+        .unwrap()
+        .expect_unlocked(&old_store_id);
+    let policy_before = load_policy_document(old_backend.as_ref()).unwrap();
+    assert_eq!(policy_before.permissions.len(), 1);
+    assert_eq!(policy_before.permissions[0].client_instance, client_id);
+
+    let ((status, body), audit) = capture_tracing_output(|| {
+        let _blocked = BlockedRegistryDir::new(&state.admin().clients_dir);
+        run_handler(handle_admin_client_instance_delete(
+            State(state.clone()),
+            Extension(principal.clone()),
+            Path(client_id.clone()),
+        ))
+    });
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "write_client_instances_failed");
+    assert!(
+        !audit.contains("action=client-instance.delete"),
+        "failed delete emitted a success audit: {audit}",
+    );
+    {
+        let live = state.shared.client_instances.read().unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live.get(&client_id), Some(&before));
+    }
+    assert!(record_path.exists());
+    let reloaded = crate::runtime_clients::load_client_instances(&state.admin().clients_dir)
+        .expect("reload client registry after restoring its directory");
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded.get(&client_id), Some(&before));
+    assert_eq!(
+        load_policy_document(old_backend.as_ref()).unwrap(),
+        policy_before,
+        "failed delete must not cascade the old-store permission",
+    );
+
+    let (retry_status, retry_body) = run_handler(handle_admin_client_instance_delete(
+        State(state.clone()),
+        Extension(principal),
+        Path(client_id.clone()),
+    ));
+    assert_eq!(retry_status, StatusCode::OK, "{retry_body}");
+    assert!(
+        !state
+            .shared
+            .client_instances
+            .read()
+            .unwrap()
+            .contains_key(&client_id),
+    );
+    assert!(!record_path.exists());
+    assert!(
+        !crate::runtime_clients::load_client_instances(&state.admin().clients_dir)
+            .expect("reload client registry after successful delete retry")
+            .contains_key(&client_id),
+    );
+    let mut expected_policy = policy_before;
+    expected_policy
+        .permissions
+        .retain(|row| row.client_instance != client_id);
+    assert_eq!(
+        load_policy_document(old_backend.as_ref()).unwrap(),
+        expected_policy,
+        "successful delete retry must remove the old-store permission",
+    );
 }

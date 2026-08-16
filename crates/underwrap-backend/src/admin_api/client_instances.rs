@@ -324,7 +324,6 @@ pub(crate) async fn handle_admin_client_instance_update(
     if let Some(flag) = body.auto_create_wrapper_assets {
         updated.auto_create_wrapper_assets = flag;
     }
-    instances.insert(id.clone(), updated.clone());
     if let Err(e) =
         crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &updated)
     {
@@ -333,6 +332,7 @@ pub(crate) async fn handle_admin_client_instance_update(
             format!("{e:#}"),
         ));
     }
+    instances.insert(id.clone(), updated.clone());
     drop(instances);
     if old_store_id != updated.current_store_id
         && let Err(e) = drop_client_instance_permissions(&state, &principal, &old_store_id, &id)
