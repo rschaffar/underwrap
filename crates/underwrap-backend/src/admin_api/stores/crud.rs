@@ -320,10 +320,9 @@ pub(crate) async fn handle_admin_store_update(
                 "store vanished from registry between update and read-back",
             )
         })?;
-        match &entry.state {
-            StoreState::Unlocked(b) => (Some(Arc::clone(b)), false),
-            StoreState::Locked => (None, true),
-        }
+        let handle = entry.state.backend().cloned();
+        let locked = handle.is_none();
+        (handle, locked)
     };
     let usage = match handle.as_deref() {
         Some(b) => admin_store_usage(&state, &name, b)?,
@@ -371,10 +370,9 @@ pub(crate) async fn handle_admin_store_delete(
             RegistryLookupError::Locked => AdminError::store_locked(&name),
         })?;
         let dir = entry.record.storage.dir().to_path_buf();
-        match &entry.state {
-            StoreState::Unlocked(b) => (Some(Arc::clone(b)), dir, false),
-            StoreState::Locked => (None, dir, true),
-        }
+        let store_handle = entry.state.backend().cloned();
+        let locked = store_handle.is_none();
+        (store_handle, dir, locked)
     };
     if state
         .shared
