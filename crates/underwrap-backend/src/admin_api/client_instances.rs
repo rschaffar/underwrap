@@ -50,15 +50,6 @@ fn client_instance_status_from_wire(
     }
 }
 
-fn admin_client_instance_actions(
-    record: &crate::runtime_clients::ClientInstanceRecord,
-) -> AdminClientInstanceActionState {
-    AdminClientInstanceActionState {
-        can_disable: record.status == crate::runtime_clients::ClientInstanceStatus::Active,
-        can_enable: record.status == crate::runtime_clients::ClientInstanceStatus::Disabled,
-    }
-}
-
 fn current_store_names(state: &ListenerState) -> HashMap<String, String> {
     state
         .shared
@@ -74,7 +65,6 @@ fn current_store_names(state: &ListenerState) -> HashMap<String, String> {
 fn admin_client_instance_list_item(
     record: &crate::runtime_clients::ClientInstanceRecord,
     current_store_name: String,
-    actions: AdminClientInstanceActionState,
 ) -> AdminClientInstanceListItem {
     AdminClientInstanceListItem {
         id: record.id.clone(),
@@ -85,7 +75,10 @@ fn admin_client_instance_list_item(
         last_seen_at: record.last_seen_at,
         current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
         auto_create_wrapper_assets: record.auto_create_wrapper_assets,
-        actions,
+        actions: AdminClientInstanceActionState {
+            can_disable: record.status == crate::runtime_clients::ClientInstanceStatus::Active,
+            can_enable: record.status == crate::runtime_clients::ClientInstanceStatus::Disabled,
+        },
     }
 }
 
@@ -140,12 +133,7 @@ pub(crate) async fn handle_admin_client_instances_list(
                 "client instance references an unknown store",
             ));
         };
-        let actions = admin_client_instance_actions(record);
-        items.push(admin_client_instance_list_item(
-            record,
-            current_store_name,
-            actions,
-        ));
+        items.push(admin_client_instance_list_item(record, current_store_name));
     }
     items.sort_by(|a, b| a.display_name.cmp(&b.display_name).then(a.id.cmp(&b.id)));
     Ok(Json(AdminClientInstancesListResponse { items }))
@@ -247,11 +235,9 @@ pub(crate) async fn handle_admin_client_instance_create(
         "success",
     );
     let current_store_name = resolve_store_name(&state, &record.current_store_id)?;
-    let actions = admin_client_instance_actions(&record);
     Ok(Json(admin_client_instance_list_item(
         &record,
         current_store_name,
-        actions,
     )))
 }
 
@@ -371,11 +357,9 @@ pub(crate) async fn handle_admin_client_instance_update(
         "success",
     );
     let current_store_name = resolve_store_name(&state, &updated.current_store_id)?;
-    let actions = admin_client_instance_actions(&updated);
     Ok(Json(admin_client_instance_list_item(
         &updated,
         current_store_name,
-        actions,
     )))
 }
 
