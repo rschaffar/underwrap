@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use hyper::StatusCode;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
@@ -11,7 +11,8 @@ use underwrap_protocol::service::{
 use super::*;
 use crate::http::responses::Body;
 use crate::test_support::{
-    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, run_handler,
+    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state,
+    delete_store_for_test, run_handler,
 };
 
 fn create_store(
@@ -42,21 +43,6 @@ fn store_detail(
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     (status, item)
-}
-
-fn store_delete(
-    state: Arc<crate::runtime_state::ListenerState>,
-    p: &crate::admin_api::csrf::Principal,
-    store_id: &str,
-    force: bool,
-) -> (StatusCode, serde_json::Value) {
-    let q = DeleteQuery { force };
-    run_handler(handle_admin_store_delete(
-        State(state),
-        Extension(p.clone()),
-        Path(store_id.to_string()),
-        Query(q),
-    ))
 }
 
 #[test]
@@ -144,7 +130,7 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
     let (_, body) = store_detail(state.clone(), &store_id);
     assert!(!body.as_object().unwrap().contains_key("description"));
     // Delete (empty store).
-    let (status, body) = store_delete(state.clone(), &p, &store_id, false);
+    let (status, body) = delete_store_for_test(state.clone(), &p, &store_id, false);
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
     assert!(!body.as_object().unwrap().contains_key("cleanup_hint"));
@@ -217,11 +203,11 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
             .unwrap();
     }
     // Without force → 409 + code store_not_empty.
-    let (status, body) = store_delete(state.clone(), &p, &store_id, false);
+    let (status, body) = delete_store_for_test(state.clone(), &p, &store_id, false);
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "store_not_empty");
     // With force → 200 + cleanup_hint pointing at the data dir.
-    let (status, body) = store_delete(state.clone(), &p, &store_id, true);
+    let (status, body) = delete_store_for_test(state.clone(), &p, &store_id, true);
     assert_eq!(status, StatusCode::OK);
     let hint = body["cleanup_hint"]
         .as_object()

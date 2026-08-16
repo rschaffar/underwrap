@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use hyper::StatusCode;
 use underwrap_protocol::service::{
     AdminClientInstanceCreateRequest, AdminClientInstanceStatus, AdminClientInstanceUpdateRequest,
@@ -13,27 +13,12 @@ use super::*;
 use crate::admin_api::pairs::handle_admin_pair_create;
 use crate::admin_api::policy::handle_admin_wrapper_permission_upsert;
 use crate::admin_api::resources::handle_admin_resource_create;
-use crate::admin_api::stores::crud::{DeleteQuery, handle_admin_store_delete};
 use crate::http::responses::Body;
 use crate::storage::documents::load_policy_document;
 use crate::test_support::{
-    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state, run_handler,
+    SAMPLE_CLIENT_CERT_PEM, admin_principal, create_store_for_test, crud_state,
+    delete_store_for_test, run_handler,
 };
-
-fn delete_store(
-    state: Arc<crate::runtime_state::ListenerState>,
-    p: &crate::admin_api::csrf::Principal,
-    name: &str,
-    force: bool,
-) -> (StatusCode, serde_json::Value) {
-    let q = DeleteQuery { force };
-    run_handler(handle_admin_store_delete(
-        State(state),
-        Extension(p.clone()),
-        Path(name.to_string()),
-        Query(q),
-    ))
-}
 
 #[test]
 fn client_instance_crud_and_store_mapping_round_trip() {
@@ -85,7 +70,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     assert_eq!(list_body["items"][0]["current_store_name"], "work");
     assert_eq!(list_body["items"][0]["actions"]["can_disable"], true);
 
-    let (in_use_status, in_use_body) = delete_store(state.clone(), &p, &work_id, true);
+    let (in_use_status, in_use_body) = delete_store_for_test(state.clone(), &p, &work_id, true);
     assert_eq!(in_use_status, StatusCode::CONFLICT);
     assert_eq!(in_use_body["code"], "store_in_use");
 
@@ -115,7 +100,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
     assert_eq!(list_after_disable["items"][0]["id"], client_id);
     assert_eq!(list_after_disable["items"][0]["status"], "disabled");
 
-    let (delete_old_status, _) = delete_store(state.clone(), &p, &work_id, false);
+    let (delete_old_status, _) = delete_store_for_test(state.clone(), &p, &work_id, false);
     assert_eq!(delete_old_status, StatusCode::OK);
 
     let (delete_client_status, delete_client_body) = run_handler(

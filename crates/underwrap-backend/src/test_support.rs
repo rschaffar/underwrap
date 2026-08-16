@@ -27,7 +27,9 @@ use underwrap_protocol::policy::PolicyDocument;
 use underwrap_protocol::resource_blob::{Collection, Item, LibsecretSection, ResourceBlob};
 use underwrap_protocol::service::{AdminStoreBackendKind, AdminStoreCreateRequest};
 
-use crate::admin_api::stores::crud::handle_admin_store_create;
+use crate::admin_api::stores::crud::{
+    DeleteQuery, handle_admin_store_create, handle_admin_store_delete,
+};
 use crate::runtime_state::{AdminState, ListenerState, SharedState};
 use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
@@ -490,6 +492,21 @@ pub(crate) fn create_store_for_test(
     ));
     assert_eq!(status, StatusCode::OK, "store create failed: {value}");
     value["store"]["id"].as_str().unwrap().to_string()
+}
+
+pub(crate) fn delete_store_for_test(
+    state: Arc<ListenerState>,
+    principal: &crate::admin_api::csrf::Principal,
+    store_id: &str,
+    force: bool,
+) -> (StatusCode, serde_json::Value) {
+    let query = DeleteQuery { force };
+    run_handler(handle_admin_store_delete(
+        axum::extract::State(state),
+        axum::Extension(principal.clone()),
+        axum::extract::Path(store_id.to_string()),
+        axum::extract::Query(query),
+    ))
 }
 
 /// Sync helper used by `runtime_api/*` tests. Accepts any `IntoResponse`, turns
