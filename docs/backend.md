@@ -312,39 +312,54 @@ shares the same server certificate. Operator requests authenticate with
 session cookies; state-changing requests must also satisfy the CSRF and
 `allowed_origins` checks.
 
-The complete admin API contract is described by the OpenAPI 3.1 document
-at `crates/underwrap-backend/openapi.json`, derived from
-`#[utoipa::path(...)]` annotations on each handler plus
-`#[derive(utoipa::ToSchema)]` on each DTO. The mTLS runtime API
-(`/v1/wrappers`, `/v1/wrapper-invocations*`) is deliberately *not* in
-the spec — it is an internal daemon-to-backend contract, not a
+The OpenAPI 3.1 document at
+`crates/underwrap-backend/openapi.json` is the generated client contract for
+the documented admin routes, DTO schemas, and responses declared on annotated
+handlers. It is derived from `#[utoipa::path(...)]` annotations plus
+`#[derive(utoipa::ToSchema)]` on DTOs. It is not an exhaustive inventory of
+errors produced around handlers by shared middleware, extractors, or
+infrastructure, and it does not model or enforce the `allowed_origins` gate;
+the live router and its tests remain authoritative for those behaviors. The
+mTLS runtime API (`/v1/wrappers`, `/v1/wrapper-invocations*`) is deliberately
+*not* in the spec — it is an internal daemon-to-backend contract, not a
 front-end consumable.
 
-Regenerate the spec by running `cargo test --workspace`; the
-`openapi_export.rs` drift test rewrites `openapi.json` in place and
-fails until the file is committed.
+Regenerate the spec by running `cargo test --workspace`. The semantic tests in
+`openapi_export.rs` verify the generated security and lifecycle meaning, and its
+byte-drift test rewrites `openapi.json` in place and fails until the file is
+committed. Live handler tests remain the authority for statuses and canonical
+codes actually emitted by handlers.
 
 The SPA's API client (`web/src/api/client.ts`, built on
 `openapi-fetch`) consumes the same spec: `npm run generate:api`
 re-runs `openapi-typescript` against `openapi.json` to produce the
 ignored local file `web/src/api/schema.ts`. The `predev`, `prebuild`,
 and `pretest` npm hooks run this automatically, so a stale spec
-breaks the SPA build at the earliest possible point. The OpenAPI schema is the
-single source of typed admin-API truth.
+breaks the SPA build at the earliest possible point. Within the generated
+client contract's scope, the OpenAPI schema supplies the SPA's typed route, DTO,
+and annotated-response surface.
 
 Two SecuritySchemes are referenced from individual operations:
 `session_cookie` (the opaque `__Host-underwrap-session` cookie issued by
-tower-sessions) and `csrf_header` (the synchronizer `X-CSRF-Token`
-header issued by `axum_csrf`). Public endpoints (login, whoami, and read-only
-bootstrap status) carry neither; read-only protected endpoints carry only
-`session_cookie`; state-changing protected endpoints carry both.
+tower-sessions) and `csrf_header` (the synchronizer `X-CSRF-Token` header
+issued by `axum_csrf`). The document root has no non-empty security
+requirement. Effective operation security follows OpenAPI inheritance: an
+absent operation-level field inherits the root, while an explicit empty array
+is public. The exact effectively public set is login, whoami, and read-only
+bootstrap status. Every other `GET` carries one session-only Security
+Requirement Object. Each of the 32 protected state-changing operations carries
+one Security Requirement Object containing both schemes, which means session
+**and** CSRF in OpenAPI rather than two alternative (OR) requirements.
 
+The exact 27 store-backed operations that can encounter a locked store advertise
+`503 Service Unavailable` with canonical code `store_locked` and a
+`ServiceErrorResponse`; the admin contract advertises no `423 Locked` response.
 
-The full route table follows, grouped by resource and using the real
-HTTP verbs. `openapi.json` (and the handler annotations it is generated
-from) is the source of truth; this list is a human-readable index. Path
-parameters: `{id}`/`{sid}` is a store, `{rid}` a resource, `{cid}` a
-libsecret collection, `{iid}` a libsecret item.
+The full route table follows, grouped by resource and using the real HTTP
+verbs. It is a human-readable index of the generated client route surface;
+handler and live-router tests cover runtime behavior outside that surface. Path
+parameters: `{id}`/`{sid}` is a store, `{rid}` a resource, `{cid}` a libsecret
+collection, `{iid}` a libsecret item.
 
 ### Authentication and session
 
@@ -393,13 +408,15 @@ libsecret collection, `{iid}` a libsecret item.
 - `DELETE /v1/admin/stores/{id}` — delete. Locked stores require
   `?force=true` (contents can't be verified empty while locked).
 - `POST   /v1/admin/stores/{id}/unlock` — body `{key_hex}`; decrypts the
-  canary to verify the key, then installs the `Unlocked` backend.
-  Failure cases: `400 invalid_key_hex`, `400 store_not_encrypted`,
-  `403 key_mismatch`, `409 already_unlocked`, and
-  `500 rotation_recovery_required` when the canonical encrypted generation is
-  missing and the trusted-host retained-generation procedure is required.
+  canary to verify the key, then installs the `Unlocked` backend. Its exact
+  response set is `{200, 400, 403, 404, 409, 500}`: 400 carries
+  `invalid_key_hex` or `store_not_encrypted`; a syntactically valid wrong key is
+  `403 key_mismatch`; 404 carries `not_found`; 409 carries `already_unlocked`;
+  and 500 carries `open_store_failed` or `rotation_recovery_required`.
 - `POST   /v1/admin/stores/{id}/lock` — drop the in-memory backend so
-  subsequent runtime requests fail `store_locked`. Idempotent.
+  subsequent runtime requests fail `503 store_locked`. Idempotent for an
+  already-locked encrypted store. Its exact response set is `{200, 400, 404}`:
+  400 carries `store_not_encrypted` and 404 carries `not_found`.
 - `POST   /v1/admin/stores/{id}/rotate-key` — stage and verify a complete copy
   under a fresh master key, move the live directory into a unique recovery
   workspace, promote the staged directory, and return the new `key_hex`
@@ -407,9 +424,12 @@ libsecret collection, `{iid}` a libsecret item.
   Each filesystem rename is atomic, but the multi-rename operation is not a
   transaction. The per-store mutex serializes rotations only; ordinary reads
   and writes do not acquire it. Quiesce wrapper traffic and admin mutations for
-  the store before rotating. `503 store_locked` if locked, `409 not_encrypted`
-  on plain stores, and `500 rotation_recovery_required` when the canonical
-  generation cannot be restored safely.
+  the store before rotating. Its exact response set is `{200, 404, 409, 500,
+  503}`: 404 carries `not_found`, 409 carries `not_encrypted`, 503 carries
+  `store_locked`, and 500 carries `rotate_stage_failed`, `rotate_list_failed`,
+  `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`,
+  `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, or
+  `rotation_recovery_required`.
 
 #### Retained rotation generations
 
