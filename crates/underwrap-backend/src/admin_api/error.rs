@@ -11,9 +11,9 @@
 //! handlers always pick the context string explicitly via
 //! `AdminError::internal("loading resources document", err)`.
 //!
-//! The OpenAPI drift test in `tests/openapi_export.rs` is the
-//! authoritative guard on the wire shape (status codes, `code`
-//! strings, envelope layout).
+//! Live handler tests pin emitted status/code behavior. Semantic tests in
+//! `tests/openapi_export.rs` pin the generated contract's meaning, while the
+//! byte-drift test pins the committed OpenAPI bytes.
 
 use std::fmt;
 

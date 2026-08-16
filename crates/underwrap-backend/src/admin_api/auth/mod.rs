@@ -142,7 +142,7 @@ pub(crate) async fn handle_admin_login(
     post,
     path = "/v1/admin/auth/logout",
     tag = "auth",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     responses(
         (status = 204, description = "Session destroyed and cookie cleared."),
     ),
@@ -188,7 +188,7 @@ pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Json<
     post,
     path = "/v1/admin/auth/password",
     tag = "auth",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     request_body = AdminPasswordChangeRequest,
     responses(
         (status = 200, description = "Password changed; new session issued.", body = AdminOkUserResponse),

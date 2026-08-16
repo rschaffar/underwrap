@@ -38,13 +38,14 @@ use crate::admin_api::audit::{AuditEntity, log_admin_event};
     post,
     path = "/v1/admin/stores/{id}/rotate-key",
     tag = "stores",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     responses(
         (status = 200, description = "Key rotated and returned once; the displaced encrypted generation is retained for backend-host recovery.", body = AdminStoreRotateKeyResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
-        (status = 500, description = "Rotation failed; rotation_recovery_required means trusted host recovery is required.", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found (`not_found`).", body = ServiceErrorResponse),
+        (status = 409, description = "Store is not encrypted (`not_encrypted`).", body = ServiceErrorResponse),
+        (status = 500, description = "Rotation failed (`rotate_stage_failed`, `rotate_list_failed`, `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`, `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, or `rotation_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_store_rotate_key(
@@ -209,14 +210,16 @@ async fn rotate_key_with_hooks(
     post,
     path = "/v1/admin/stores/{id}/unlock",
     tag = "stores",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     request_body = AdminStoreUnlockRequest,
     responses(
         (status = 200, description = "Store unlocked.", body = AdminOkResponse),
-        (status = 400, description = "Wrong key / passphrase.", body = ServiceErrorResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 500, description = "Canonical encrypted generation is missing; trusted-host recovery is required.", body = ServiceErrorResponse),
+        (status = 400, description = "Key hex is invalid (`invalid_key_hex`) or the store is not encrypted (`store_not_encrypted`).", body = ServiceErrorResponse),
+        (status = 403, description = "Key does not match the encrypted store (`key_mismatch`).", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found (`not_found`).", body = ServiceErrorResponse),
+        (status = 409, description = "Store is already unlocked (`already_unlocked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Opening the store failed (`open_store_failed`) or trusted-host rotation recovery is required (`rotation_recovery_required`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_store_unlock(
@@ -365,11 +368,12 @@ pub(crate) async fn handle_admin_store_unlock(
     post,
     path = "/v1/admin/stores/{id}/lock",
     tag = "stores",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     responses(
         (status = 200, description = "Store locked; in-memory key material wiped.", body = AdminStoreLockResponse),
-        (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 400, description = "Store is not encrypted (`store_not_encrypted`).", body = ServiceErrorResponse),
+        (status = 404, description = "Store not found (`not_found`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_store_lock(

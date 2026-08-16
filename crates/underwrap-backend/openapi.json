@@ -103,10 +103,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -172,10 +170,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -273,10 +269,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -342,10 +336,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       },
@@ -389,10 +381,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -480,10 +470,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -549,10 +537,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       },
@@ -615,10 +601,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -652,8 +636,18 @@
               }
             }
           },
+          "400": {
+            "description": "Store is not encrypted (`store_not_encrypted`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "Store not found.",
+            "description": "Store not found (`not_found`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -665,10 +659,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -711,8 +703,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -795,8 +787,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -808,10 +800,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -884,8 +874,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -897,10 +887,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -961,8 +949,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -974,10 +962,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -1020,8 +1006,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1104,8 +1090,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1117,10 +1103,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -1202,8 +1186,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1215,10 +1199,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       },
@@ -1268,8 +1250,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1281,10 +1263,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -1319,7 +1299,7 @@
             }
           },
           "404": {
-            "description": "Store not found.",
+            "description": "Store not found (`not_found`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1328,8 +1308,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "409": {
+            "description": "Store is not encrypted (`not_encrypted`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1339,7 +1319,17 @@
             }
           },
           "500": {
-            "description": "Rotation failed; rotation_recovery_required means trusted host recovery is required.",
+            "description": "Rotation failed (`rotate_stage_failed`, `rotate_list_failed`, `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`, `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, or `rotation_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1351,10 +1341,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -1406,8 +1394,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1462,8 +1450,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1545,8 +1533,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1646,8 +1634,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1659,10 +1647,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       },
@@ -1730,8 +1716,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1743,10 +1729,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -1837,8 +1821,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1850,10 +1834,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -1898,7 +1880,17 @@
             }
           },
           "400": {
-            "description": "Wrong key / passphrase.",
+            "description": "Key hex is invalid (`invalid_key_hex`) or the store is not encrypted (`store_not_encrypted`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Key does not match the encrypted store (`key_mismatch`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1908,7 +1900,17 @@
             }
           },
           "404": {
-            "description": "Store not found.",
+            "description": "Store not found (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Store is already unlocked (`already_unlocked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1918,7 +1920,7 @@
             }
           },
           "500": {
-            "description": "Canonical encrypted generation is missing; trusted-host recovery is required.",
+            "description": "Opening the store failed (`open_store_failed`) or trusted-host rotation recovery is required (`rotation_recovery_required`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1930,10 +1932,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -1976,8 +1976,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2032,8 +2032,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2135,8 +2135,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2148,10 +2148,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       },
@@ -2219,8 +2217,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2232,10 +2230,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -2287,8 +2283,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2381,8 +2377,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2394,10 +2390,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       },
@@ -2456,8 +2450,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2469,10 +2463,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -2554,8 +2546,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2567,10 +2559,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -2631,8 +2621,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2644,10 +2634,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -2738,8 +2726,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2751,10 +2739,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -2824,8 +2810,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2837,10 +2823,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -2910,8 +2894,8 @@
               }
             }
           },
-          "423": {
-            "description": "Store is locked.",
+          "503": {
+            "description": "Store is locked (`store_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3011,10 +2995,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -3090,10 +3072,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       },
@@ -3147,10 +3127,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }
@@ -3216,10 +3194,8 @@
         },
         "security": [
           {
+            "csrf_header": [],
             "session_cookie": []
-          },
-          {
-            "csrf_header": []
           }
         ]
       }

@@ -152,7 +152,7 @@ fn with_blob<R>(
     responses(
         (status = 200, description = "Whole libsecret tree (item secrets omitted).", body = AdminLibsecretTreeResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_get_tree(
@@ -195,7 +195,7 @@ pub(crate) async fn handle_get_tree(
     post,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections",
     tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("sid" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -206,7 +206,7 @@ pub(crate) async fn handle_get_tree(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 409, description = "Collection id already exists.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_post_collection(
@@ -265,7 +265,7 @@ pub(crate) async fn handle_post_collection(
     delete,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}",
     tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("sid" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -274,7 +274,7 @@ pub(crate) async fn handle_post_collection(
     responses(
         (status = 200, description = "Collection deleted; any aliases pointing at it are scrubbed.", body = AdminLibsecretCollectionDeleteResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_delete_collection(
@@ -326,7 +326,7 @@ pub(crate) async fn handle_delete_collection(
     post,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items",
     tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("sid" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -338,7 +338,7 @@ pub(crate) async fn handle_delete_collection(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
         (status = 409, description = "Item id already exists.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_post_item(
@@ -407,7 +407,7 @@ pub(crate) async fn handle_post_item(
     delete,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}",
     tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("sid" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -417,7 +417,7 @@ pub(crate) async fn handle_post_item(
     responses(
         (status = 200, description = "Item removed (existed flag in body).", body = AdminLibsecretItemDeleteResponse),
         (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_delete_item(
@@ -467,7 +467,7 @@ pub(crate) async fn handle_delete_item(
     responses(
         (status = 200, description = "Item secret material, base64-encoded.", body = AdminLibsecretItemSecretResponse),
         (status = 404, description = "Store, resource, collection, or item not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_get_item_secret(
@@ -493,7 +493,7 @@ pub(crate) async fn handle_get_item_secret(
     put,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}",
     tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("sid" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -504,7 +504,7 @@ pub(crate) async fn handle_get_item_secret(
         (status = 200, description = "Alias set.", body = AdminOkResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_put_alias(
@@ -546,7 +546,7 @@ pub(crate) async fn handle_put_alias(
     delete,
     path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}",
     tag = "libsecret",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("sid" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -555,7 +555,7 @@ pub(crate) async fn handle_put_alias(
     responses(
         (status = 200, description = "Alias removed (existed flag in body).", body = AdminLibsecretAliasDeleteResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_delete_alias(

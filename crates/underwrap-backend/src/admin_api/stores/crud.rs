@@ -77,7 +77,7 @@ pub(crate) async fn handle_admin_stores_list(
     post,
     path = "/v1/admin/stores",
     tag = "stores",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     request_body = AdminStoreCreateRequest,
     responses(
         (status = 200, description = "Store created and added to the registry.", body = AdminStoreCreateResponse),
@@ -244,7 +244,7 @@ pub(crate) async fn handle_admin_store_create(
     put,
     path = "/v1/admin/stores/{id}",
     tag = "stores",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     request_body = AdminStoreUpdateRequest,
     responses(
@@ -344,7 +344,7 @@ pub(crate) struct DeleteQuery {
     delete,
     path = "/v1/admin/stores/{id}",
     tag = "stores",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
         ("force" = bool, Query, description = "Pass `?force=true` to bypass the empty-store guard."),

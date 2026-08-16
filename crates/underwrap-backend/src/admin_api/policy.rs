@@ -122,7 +122,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     responses(
         (status = 200, description = "List of wrapper permissions for the store.", body = AdminWrapperPermissionsListResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permissions_list(
@@ -140,7 +140,7 @@ pub(crate) async fn handle_admin_wrapper_permissions_list(
     put,
     path = "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
     tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
         ("client_instance" = String, Path, description = "Client instance id."),
@@ -152,7 +152,7 @@ pub(crate) async fn handle_admin_wrapper_permissions_list(
         (status = 200, description = "Permission upserted.", body = AdminOkResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store, client instance, resource, or pair not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permission_upsert(
@@ -223,7 +223,7 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
     delete,
     path = "/v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
     tag = "policy",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
         ("client_instance" = String, Path, description = "Client instance id."),
@@ -233,7 +233,7 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
     responses(
         (status = 200, description = "Permission removed.", body = AdminOkResponse),
         (status = 404, description = "Store / permission not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permission_delete(

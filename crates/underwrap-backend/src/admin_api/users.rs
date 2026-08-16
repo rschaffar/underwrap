@@ -195,7 +195,7 @@ pub(crate) async fn handle_admin_users_list(
     post,
     path = "/v1/admin/users",
     tag = "users",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     request_body = AdminUserCreateRequest,
     responses(
         (status = 200, description = "Operator created.", body = AdminUserListItem),
@@ -246,7 +246,7 @@ pub(crate) async fn handle_admin_user_create(
     put,
     path = "/v1/admin/users/{id}",
     tag = "users",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Operator id.")),
     request_body = AdminUserUpdateRequest,
     responses(
@@ -282,7 +282,7 @@ pub(crate) async fn handle_admin_user_update(
     post,
     path = "/v1/admin/users/{id}/password",
     tag = "users",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Operator id.")),
     request_body = AdminUserResetPasswordRequest,
     responses(
@@ -329,7 +329,7 @@ pub(crate) async fn handle_admin_user_reset_password(
     delete,
     path = "/v1/admin/users/{id}",
     tag = "users",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Operator id.")),
     responses(
         (status = 200, description = "Operator deleted; all sessions held by the deleted user are invalidated automatically.", body = AdminOkUserResponse),

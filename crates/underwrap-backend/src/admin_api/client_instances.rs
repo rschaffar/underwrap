@@ -143,7 +143,7 @@ pub(crate) async fn handle_admin_client_instances_list(
     post,
     path = "/v1/admin/client-instances",
     tag = "client_instances",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     request_body = AdminClientInstanceCreateRequest,
     responses(
         (status = 200, description = "Client instance registered.", body = AdminClientInstanceListItem),
@@ -245,7 +245,7 @@ pub(crate) async fn handle_admin_client_instance_create(
     put,
     path = "/v1/admin/client-instances/{id}",
     tag = "client_instances",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Client instance id.")),
     request_body = AdminClientInstanceUpdateRequest,
     responses(
@@ -367,7 +367,7 @@ pub(crate) async fn handle_admin_client_instance_update(
     delete,
     path = "/v1/admin/client-instances/{id}",
     tag = "client_instances",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Client instance id.")),
     responses(
         (status = 200, description = "Instance removed; its wrapper permissions are dropped from the mapped store.", body = AdminOkResponse),

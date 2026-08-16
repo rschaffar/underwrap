@@ -53,7 +53,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     responses(
         (status = 200, description = "Resources in the store.", body = AdminResourcesListResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_resources_list(
@@ -73,7 +73,7 @@ pub(crate) async fn handle_admin_resources_list(
     post,
     path = "/v1/admin/stores/{id}/resources",
     tag = "resources",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     request_body = AdminResourceCreateRequest,
     responses(
@@ -81,7 +81,7 @@ pub(crate) async fn handle_admin_resources_list(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
         (status = 409, description = "Resource name already exists.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_resource_create(
@@ -134,7 +134,7 @@ pub(crate) async fn handle_admin_resource_create(
     delete,
     path = "/v1/admin/stores/{id}/resources/{rid}",
     tag = "resources",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -142,7 +142,7 @@ pub(crate) async fn handle_admin_resource_create(
     responses(
         (status = 200, description = "Resource deleted, or `ok: false` with structured blockers.", body = AdminResourceDeleteResponse),
         (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_resource_delete(
@@ -227,7 +227,7 @@ pub(crate) async fn handle_admin_resource_delete(
     put,
     path = "/v1/admin/stores/{id}/resources/{rid}",
     tag = "resources",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
@@ -238,7 +238,7 @@ pub(crate) async fn handle_admin_resource_delete(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
         (status = 409, description = "Target name already exists.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_resource_rename(

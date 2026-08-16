@@ -44,7 +44,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     responses(
         (status = 200, description = "Wrapper / resource pairs in the store.", body = AdminPairsListResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_pairs_list(
@@ -65,7 +65,7 @@ pub(crate) async fn handle_admin_pairs_list(
     post,
     path = "/v1/admin/stores/{id}/pairs",
     tag = "pairs",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     request_body = AdminPairCreateRequest,
     responses(
@@ -73,7 +73,7 @@ pub(crate) async fn handle_admin_pairs_list(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 409, description = "Pair already exists.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_pair_create(
@@ -130,7 +130,7 @@ pub(crate) async fn handle_admin_pair_create(
     post,
     path = "/v1/admin/stores/{id}/pairs/with-new-resource",
     tag = "pairs",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     request_body = AdminPairWithNewResourceRequest,
     responses(
@@ -138,7 +138,7 @@ pub(crate) async fn handle_admin_pair_create(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
         (status = 409, description = "Resource name already exists.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_pair_with_new_resource(
@@ -243,7 +243,7 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
     delete,
     path = "/v1/admin/stores/{id}/pairs/{wrapper}/{rid}",
     tag = "pairs",
-    security(("session_cookie" = []), ("csrf_header" = [])),
+    security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
         ("wrapper" = String, Path, description = "Wrapper name."),
@@ -252,7 +252,7 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
     responses(
         (status = 200, description = "Pair removed, or `ok: false` with structured blockers.", body = AdminPairDeleteResponse),
         (status = 404, description = "Store / pair not found.", body = ServiceErrorResponse),
-        (status = 423, description = "Store is locked.", body = ServiceErrorResponse),
+        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_pair_delete(
