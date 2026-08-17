@@ -14,7 +14,8 @@ import {
 import { ClientInstancesPage } from "./client-instances/page";
 
 vi.mock("@/api/client", async () => {
-  const actual = await vi.importActual<typeof import("@/api/client")>("@/api/client");
+  const actual =
+    await vi.importActual<typeof import("@/api/client")>("@/api/client");
   return {
     ...actual,
     fetchClientInstances: vi.fn(),
@@ -25,11 +26,22 @@ vi.mock("@/api/client", async () => {
   };
 });
 
-function renderWithQuery(ui: React.ReactNode) {
+function renderClientInstancesPage() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={qc}>
+      <ClientInstancesPage />
+    </QueryClientProvider>,
+  );
+}
+
+async function openWorkEditDialog(user: ReturnType<typeof userEvent.setup>) {
+  renderClientInstancesPage();
+  const row = await screen.findByTestId("client-instance-row-client_work");
+  await user.click(within(row).getByRole("button", { name: "Edit" }));
+  return screen.findByRole("dialog", { name: "Edit: Work laptop" });
 }
 
 describe("ClientInstancesPage", () => {
@@ -129,11 +141,21 @@ describe("ClientInstancesPage", () => {
       display_name:
         body.display_name ??
         (id === "client_work" ? "Work laptop" : "Retired workstation"),
-      current_store_id: body.current_store_id ?? (id === "client_work" ? "store_work" : "store_other"),
-      current_store_name: body.current_store_id === "store_other" ? "Other" : body.current_store_id === "store_work" ? "Work" : id === "client_work" ? "Work" : "Other",
+      current_store_id:
+        body.current_store_id ??
+        (id === "client_work" ? "store_work" : "store_other"),
+      current_store_name:
+        body.current_store_id === "store_other"
+          ? "Other"
+          : body.current_store_id === "store_work"
+            ? "Work"
+            : id === "client_work"
+              ? "Work"
+              : "Other",
       status: body.status ?? (id === "client_work" ? "active" : "disabled"),
       last_seen_at: id === "client_work" ? 1_700_000_000 : undefined,
-      current_credential_fingerprint: id === "client_work" ? "fp-work" : "fp-old",
+      current_credential_fingerprint:
+        id === "client_work" ? "fp-work" : "fp-old",
       auto_create_wrapper_assets: false,
       actions: {
         can_disable: body.status !== "disabled",
@@ -143,9 +165,7 @@ describe("ClientInstancesPage", () => {
   });
 
   it("shows display name, store, and status for each instance", async () => {
-    renderWithQuery(
-      <ClientInstancesPage />,
-    );
+    renderClientInstancesPage();
 
     const row = await screen.findByTestId("client-instance-row-client_work");
     expect(within(row).getByText("Work laptop")).toBeInTheDocument();
@@ -155,29 +175,31 @@ describe("ClientInstancesPage", () => {
 
   it("keeps disabled instances visible and filterable", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <ClientInstancesPage />,
-    );
+    renderClientInstancesPage();
 
     await screen.findByTestId("client-instance-row-client_work");
-    expect(screen.getByTestId("client-instance-row-client_disabled")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("client-instance-row-client_disabled"),
+    ).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText(/status filter/i), "disabled");
+    await user.selectOptions(
+      screen.getByLabelText(/status filter/i),
+      "disabled",
+    );
 
     expect(screen.queryByTestId("client-instance-row-client_work")).toBeNull();
-    expect(screen.getByTestId("client-instance-row-client_disabled")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("client-instance-row-client_disabled"),
+    ).toBeInTheDocument();
   });
 
   it("remaps an instance to another store from the unified edit dialog", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <ClientInstancesPage />,
+    const dialog = await openWorkEditDialog(user);
+    await user.selectOptions(
+      within(dialog).getByLabelText(/target store/i),
+      "store_other",
     );
-
-    const row = await screen.findByTestId("client-instance-row-client_work");
-    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
-    await user.selectOptions(within(dialog).getByLabelText(/target store/i), "store_other");
     await user.click(within(dialog).getByRole("button", { name: /^save$/i }));
 
     expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
@@ -187,14 +209,16 @@ describe("ClientInstancesPage", () => {
 
   it("disables an active instance via the confirmation dialog", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <ClientInstancesPage />,
-    );
+    renderClientInstancesPage();
 
     const row = await screen.findByTestId("client-instance-row-client_work");
     await user.click(within(row).getByRole("button", { name: /^disable$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /disable: work laptop/i });
-    await user.click(within(dialog).getByRole("button", { name: /disable now/i }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /disable: work laptop/i,
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: /disable now/i }),
+    );
 
     expect(putClientInstanceUpdate).toHaveBeenCalledWith("client_work", {
       status: "disabled",
@@ -203,17 +227,21 @@ describe("ClientInstancesPage", () => {
 
   it("creates a client instance via the create dialog using a pasted cert PEM", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <ClientInstancesPage />,
-    );
+    renderClientInstancesPage();
 
     await screen.findByTestId("client-instance-row-client_work");
-    await user.click(screen.getByRole("button", { name: /create client instance/i }));
+    await user.click(
+      screen.getByRole("button", { name: /create client instance/i }),
+    );
     const dialog = await screen.findByRole("dialog", {
       name: /create client instance/i,
     });
-    await user.type(within(dialog).getByLabelText(/display name/i), "laptop-work");
-    const pem = "-----BEGIN CERTIFICATE-----\nFAKECERT\n-----END CERTIFICATE-----\n";
+    await user.type(
+      within(dialog).getByLabelText(/display name/i),
+      "laptop-work",
+    );
+    const pem =
+      "-----BEGIN CERTIFICATE-----\nFAKECERT\n-----END CERTIFICATE-----\n";
     await user.type(within(dialog).getByLabelText(/certificate pem/i), pem);
     await user.click(within(dialog).getByRole("button", { name: /^create$/i }));
 
@@ -228,13 +256,7 @@ describe("ClientInstancesPage", () => {
 
   it("renames an instance via the unified edit dialog", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <ClientInstancesPage />,
-    );
-
-    const row = await screen.findByTestId("client-instance-row-client_work");
-    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
+    const dialog = await openWorkEditDialog(user);
     const input = within(dialog).getByLabelText(/display name/i);
     await user.clear(input);
     await user.type(input, "Work laptop renamed");
@@ -247,14 +269,9 @@ describe("ClientInstancesPage", () => {
 
   it("replaces the registered cert via the unified edit dialog", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <ClientInstancesPage />,
-    );
-
-    const row = await screen.findByTestId("client-instance-row-client_work");
-    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
-    const pem = "-----BEGIN CERTIFICATE-----\nFRESHCERT\n-----END CERTIFICATE-----\n";
+    const dialog = await openWorkEditDialog(user);
+    const pem =
+      "-----BEGIN CERTIFICATE-----\nFRESHCERT\n-----END CERTIFICATE-----\n";
     await user.type(within(dialog).getByLabelText(/new certificate pem/i), pem);
     await user.click(within(dialog).getByRole("button", { name: /^save$/i }));
 
@@ -265,13 +282,7 @@ describe("ClientInstancesPage", () => {
 
   it("toggles auto-create wrapper assets via the edit dialog", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <ClientInstancesPage />,
-    );
-
-    const row = await screen.findByTestId("client-instance-row-client_work");
-    await user.click(within(row).getByRole("button", { name: /^edit$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /edit: work laptop/i });
+    const dialog = await openWorkEditDialog(user);
     // Default fixture has the flag off; the checkbox starts unchecked.
     const checkbox = within(dialog).getByTestId("edit-auto-create");
     expect(checkbox).not.toBeChecked();
@@ -286,7 +297,7 @@ describe("ClientInstancesPage", () => {
 
   it("surfaces a stores-load failure and disables the Create button", async () => {
     vi.mocked(fetchStores).mockRejectedValue(new Error("boom"));
-    renderWithQuery(<ClientInstancesPage />);
+    renderClientInstancesPage();
 
     // The instances themselves still render; only store-dependent actions
     // are blocked.
@@ -301,7 +312,7 @@ describe("ClientInstancesPage", () => {
 
   it("deletes a client instance via the confirmation dialog", async () => {
     const user = userEvent.setup();
-    renderWithQuery(<ClientInstancesPage />);
+    renderClientInstancesPage();
 
     const row = await screen.findByTestId("client-instance-row-client_work");
     await user.click(within(row).getByRole("button", { name: /^delete$/i }));
@@ -315,7 +326,7 @@ describe("ClientInstancesPage", () => {
 
   it("re-enables a disabled instance via the confirmation dialog", async () => {
     const user = userEvent.setup();
-    renderWithQuery(<ClientInstancesPage />);
+    renderClientInstancesPage();
 
     const row = await screen.findByTestId(
       "client-instance-row-client_disabled",
