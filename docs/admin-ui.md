@@ -221,14 +221,33 @@ editing a resource while one of its writable wrapper invocations is finalizing.
 
 ### Unsafe debug mode
 
-`UnsafeDebugUntil` permits `underwrap-debug-tool` for the selected wrapper. It
-can show an env summary, start an interactive shell, or execute an arbitrary
-command inside the wrapper namespace with the projected resource available.
-When writable is enabled, debug changes can be persisted.
+`UnsafeDebugUntil` gives `underwrap-debug-tool` the complete configured env,
+files, and libsecret projection for the exact runtime client instance,
+store, wrapper/resource pair, and expiry shown by the confirmation. The tool can
+show an environment summary, start an interactive shell, or execute an arbitrary
+command that can print, copy through accessible paths, or transmit the
+projection. underwrap is not a behavioral sandbox.
 
-The UI requires explicit confirmation before setting this mode. Use the shortest
-practical deadline and return the permission to `Locked`, `Unlocked`, or
-`UnlockedUntil` immediately afterward.
+The frontend instance entry is system-wide: [any local user can invoke
+it](security.md#untrusted-caller) while the permission is active. Backend policy
+authorizes a runtime client instance, wrapper, and resource, not a local Unix
+user, and `allowedUsers` installs PATH shims only. Put sudo, polkit, or another
+OS-level gate in front when only selected local users may invoke the wrapper or
+a per-invocation prompt is required. The backend UI does not know the frontend
+instance name; verify which deployment provides the conventional
+`underwrap-<instance> debug <wrapper>` entry before saving.
+
+With writable enabled, files/libsecret changes can be submitted and persisted
+on successful finalization, affecting future invocations; env remains
+backend-owned and immutable. With writable disabled, underwrap does not persist
+staged changes, but full target access and disclosure are unchanged.
+
+Selecting this mode proposes one exact local expiry using the 15-minute default.
+Confirmation only copies that value into the form: the operator can review or
+change it, and no backend permission becomes active until **Save**. The backend
+rechecks expiry on every open and finalize. Use the shortest practical deadline
+and return the permission to `Locked`, `Unlocked`, or `UnlockedUntil`
+immediately afterward.
 
 ## Users and profile
 

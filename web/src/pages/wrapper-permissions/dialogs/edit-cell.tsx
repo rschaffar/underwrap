@@ -53,29 +53,30 @@ export function EditCellDialog({
   const [writable, setWritable] = useState<boolean>(existing?.writable ?? false);
   const [reason, setReason] = useState<string>(existing?.reason ?? "");
   const [submitError, setSubmitError] = useState<string | null>(null);
-  // When the operator picks `unsafe-debug-until` from any other mode we
-  // gate the switch behind an explicit confirmation rather than committing
-  // it immediately. Adjusting the TTL while already in the mode does not
-  // re-prompt.
-  const [confirmUnsafeDebug, setConfirmUnsafeDebug] = useState(false);
+  // A fresh unsafe-debug selection gets one exact candidate deadline. The
+  // confirmation displays this same value before applying it to the form.
+  const [pendingUnsafeDebug, setPendingUnsafeDebug] = useState<string | null>(
+    null,
+  );
 
   // `unsafe-debug-until` shares the deadline picker with `unlocked-until`.
   const showDeadline = kind === "unlocked-until" || kind === "unsafe-debug-until";
 
   function onKindChange(next: WrapperApprovalMode["kind"]) {
     if (next === "unsafe-debug-until" && kind !== "unsafe-debug-until") {
-      setConfirmUnsafeDebug(true);
+      setPendingUnsafeDebug(
+        toDatetimeLocal(new Date(Date.now() + 15 * 60 * 1000)),
+      );
       return;
     }
     setKind(next);
   }
 
   function armUnsafeDebug() {
+    if (pendingUnsafeDebug === null) return;
+    setUntilLocal(pendingUnsafeDebug);
     setKind("unsafe-debug-until");
-    // Fresh entry into unsafe-debug gets a deliberately short default
-    // window (15 min vs. the 30-min unlocked-until default).
-    setUntilLocal(toDatetimeLocal(new Date(Date.now() + 15 * 60 * 1000)));
-    setConfirmUnsafeDebug(false);
+    setPendingUnsafeDebug(null);
   }
 
   const upsert = useMutation({
@@ -273,20 +274,76 @@ export function EditCellDialog({
           </div>
         </DialogFooter>
     </AdminDialog>
-    {confirmUnsafeDebug ? (
+    {pendingUnsafeDebug !== null ? (
       <ConfirmDangerDialog
         title="Enable unsafe debug?"
-        confirmLabel="Yes, enable unsafe debug"
+        confirmLabel="Yes, select unsafe debug"
         onConfirm={armUnsafeDebug}
-        onCancel={() => setConfirmUnsafeDebug(false)}
+        onCancel={() => setPendingUnsafeDebug(null)}
         description={
-          <>
-            This unlocks the debug tool (
-            <code>underwrap-&lt;instance&gt; debug {wrapper}</code>), which prints
-            this wrapper's projected secret material to the operator's
-            terminal, until the deadline you set expires. Only use it for
-            local, supervised debugging.
-          </>
+          <span
+            className="block max-h-[65vh] space-y-3 overflow-y-auto pr-2 text-left"
+            data-testid="unsafe-debug-security-warning"
+          >
+            <span className="block">
+              <strong>Exact backend authority:</strong> select{" "}
+              <code>UnsafeDebugUntil</code> for runtime client{" "}
+              <strong>{clientInstanceDisplayName}</strong> (id{" "}
+              <code>{clientInstance}</code>), store <code>{storeId}</code>,
+              wrapper <code>{wrapper}</code>, and resource{" "}
+              <strong>{resourceName}</strong> (id <code>{resourceId}</code>).
+            </span>
+            <span className="block">
+              <strong>Local reach:</strong> Any local user can invoke the
+              system-wide frontend instance entry while this permission is
+              active. Backend permission is not Unix-user authorization, and{" "}
+              <code>allowedUsers</code> installs PATH shims only. If selected
+              users or a per-invocation prompt are required, put sudo, polkit,
+              or another OS-level gate in front before Save.
+            </span>
+            <span className="block">
+              The conventional command is{" "}
+              <code>underwrap-&lt;instance&gt; debug {wrapper}</code>. This backend
+              UI does not know the frontend instance name; verify the matching
+              frontend instance before Save.
+            </span>
+            <span className="block">
+              <strong>Full projection disclosure:</strong>{" "}
+              <code>underwrap-debug-tool</code> can show an environment summary,
+              open an interactive shell, or execute an arbitrary command with
+              the complete configured env, files, and libsecret projection. It
+              can print, copy through accessible paths, or transmit that
+              projection. underwrap is not a behavioral sandbox.
+            </span>
+            {writable ? (
+              <span className="block" data-testid="unsafe-debug-writable-effect">
+                <strong>Writable is enabled:</strong> files and libsecret
+                changes can be submitted, written back on successful
+                finalization, and persisted for future invocations, affecting
+                their integrity. Env remains backend-owned and immutable.
+              </span>
+            ) : (
+              <span className="block" data-testid="unsafe-debug-readonly-effect">
+                <strong>Writable is disabled:</strong> underwrap does not persist
+                staged files or libsecret changes, but full target access and
+                disclosure are unchanged. Env remains backend-owned and
+                immutable.
+              </span>
+            )}
+            <span className="block">
+              <strong>Pending local expiry:</strong>{" "}
+              <time
+                dateTime={pendingUnsafeDebug}
+                data-testid="unsafe-debug-pending-expiry"
+              >
+                {pendingUnsafeDebug}
+              </time>{" "}
+              (15-minute default). Confirming only copies this exact value into
+              the form. Unsafe debug is not active until you press Save; you can
+              review or change the deadline first. The backend rechecks expiry
+              on every request.
+            </span>
+          </span>
         }
       />
     ) : null}

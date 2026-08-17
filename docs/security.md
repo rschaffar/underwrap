@@ -885,10 +885,26 @@ Expiry is evaluated lazily on every open and finalize. There is no background
 sweeper and no per-invocation approval flow.
 
 `UnsafeDebugUntil` selects `underwrap-debug-tool`, which can summarize the
-environment, open an interactive shell, or execute an arbitrary command inside
-the wrapper namespace. It receives the same projection and can submit writes
-when the permission's writable flag is true. Use the shortest practical TTL and
-return the permission to a safer mode immediately after the incident task.
+environment, open an interactive shell, or execute an arbitrary command with
+the complete configured env, files, and libsecret projection. It can print,
+copy through accessible paths, or transmit that projection; underwrap is not a
+behavioral sandbox.
+
+This mode remains inside the [untrusted-caller](#untrusted-caller) model. Any
+local user can invoke the system-wide frontend instance entry while the exact
+runtime client instance, wrapper/resource pair, and expiry authorize debug;
+backend permission is not local Unix-user authorization, and `allowedUsers`
+installs PATH shims only. Deployments that require selected local users or a
+per-invocation prompt put sudo, polkit, or another OS-level gate in front.
+
+When writable is true, files/libsecret changes can be submitted and persisted
+on successful finalize, affecting the integrity of future invocations; env
+remains backend-owned and immutable. When writable is false, underwrap does not
+persist staged changes, but the full disclosure capability is unchanged. The
+admin confirmation proposes an exact 15-minute local expiry but does not
+activate the mode; activation requires Save, after which the backend rechecks
+expiry on every open and finalize. Use the shortest practical TTL and return the
+permission to a safer mode immediately after the incident task.
 
 The complete evaluation order and wire deny reasons live in
 [Backend](backend.md#policy-model).

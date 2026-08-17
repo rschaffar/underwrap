@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -33,7 +33,7 @@ function renderDialog(
         clientInstanceDisplayName="dev-laptop"
         wrapper="gh-authorized"
         resourceId="github/token"
-        resourceName="github/token"
+        resourceName="GitHub production token"
         existing={overrides.existing ?? null}
         onClose={overrides.onClose ?? (() => {})}
       />
@@ -42,51 +42,173 @@ function renderDialog(
 }
 
 describe("EditCellDialog — unsafe-debug-until confirmation flow", () => {
+  const now = new Date(2035, 3, 5, 6, 7).getTime();
+  const pendingLocal = "2035-04-05T06:22";
+
   beforeEach(() => {
     vi.mocked(putWrapperPermission).mockReset();
     vi.mocked(putWrapperPermission).mockResolvedValue(undefined as never);
+    vi.spyOn(Date, "now").mockReturnValue(now);
   });
 
-  it("opens the confirm dialog when picking unsafe-debug-until, and reverts on cancel", async () => {
-    renderDialog();
-    // Starts Locked: no deadline picker.
-    expect(screen.queryByLabelText(/deadline/i)).toBeNull();
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
-    await userEvent.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
+  it("pins the complete unsafe-debug security boundary", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(screen.getByTestId("permission-writable"));
+    await user.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
+
+    const warning = await screen.findByTestId("unsafe-debug-security-warning");
+    expect(warning).toHaveTextContent(
+      "Exact backend authority: select UnsafeDebugUntil for runtime client dev-laptop (id ci-1), store prod, wrapper gh-authorized, and resource GitHub production token (id github/token).",
+    );
+    expect(warning).toHaveTextContent(
+      "Any local user can invoke the system-wide frontend instance entry",
+    );
+    expect(warning).toHaveTextContent(
+      "Backend permission is not Unix-user authorization",
+    );
+    expect(warning).toHaveTextContent("allowedUsers installs PATH shims only");
+    expect(warning).toHaveTextContent(
+      "sudo, polkit, or another OS-level gate",
+    );
+    expect(warning).toHaveTextContent(
+      "underwrap-<instance> debug gh-authorized",
+    );
+    expect(warning).toHaveTextContent(
+      "does not know the frontend instance name; verify the matching frontend instance before Save",
+    );
+    expect(warning).toHaveTextContent(
+      "show an environment summary, open an interactive shell, or execute an arbitrary command with the complete configured env, files, and libsecret projection",
+    );
+    expect(warning).toHaveTextContent(
+      "print, copy through accessible paths, or transmit that projection",
+    );
+    expect(warning).toHaveTextContent("underwrap is not a behavioral sandbox");
     expect(
-      await screen.findByTestId("confirm-danger-confirm"),
-    ).toBeInTheDocument();
-
-    await userEvent.click(screen.getByTestId("confirm-danger-cancel"));
-    await waitFor(() =>
-      expect(screen.queryByTestId("confirm-danger-confirm")).toBeNull(),
+      within(warning).getByTestId("unsafe-debug-writable-effect"),
+    ).toHaveTextContent(
+      "files and libsecret changes can be submitted, written back on successful finalization, and persisted for future invocations, affecting their integrity. Env remains backend-owned and immutable.",
     );
-    // Reverted: still no deadline picker (mode did not switch).
-    expect(screen.queryByLabelText(/deadline/i)).toBeNull();
+    expect(
+      within(warning).getByTestId("unsafe-debug-pending-expiry"),
+    ).toHaveTextContent(pendingLocal);
+    expect(warning).toHaveTextContent("15-minute default");
+    expect(warning).toHaveTextContent(
+      "Confirming only copies this exact value into the form. Unsafe debug is not active until you press Save",
+    );
+    expect(warning).toHaveTextContent("backend rechecks expiry on every request");
+    expect(putWrapperPermission).not.toHaveBeenCalled();
   });
 
-  it("commits the mode on confirm and does not re-prompt when the TTL is edited afterwards", async () => {
+  it("warns that writable false prevents underwrap persistence, not disclosure", async () => {
+    const user = userEvent.setup();
     renderDialog();
-    await userEvent.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
-    await userEvent.click(await screen.findByTestId("confirm-danger-confirm"));
+    await user.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
 
-    // Confirmed: deadline picker now visible, confirm dialog gone.
-    const deadline = await screen.findByLabelText(/deadline/i);
-    expect(screen.queryByTestId("confirm-danger-confirm")).toBeNull();
-
-    // Editing the TTL while already in the mode must not re-open the dialog.
-    await userEvent.clear(deadline);
-    await userEvent.type(deadline, "2099-01-01T00:00");
-    expect(screen.queryByTestId("confirm-danger-confirm")).toBeNull();
-
-    await userEvent.click(screen.getByTestId("permission-save"));
-    await waitFor(() =>
-      expect(putWrapperPermission).toHaveBeenCalledTimes(1),
+    const effect = await screen.findByTestId("unsafe-debug-readonly-effect");
+    expect(effect).toHaveTextContent(
+      "underwrap does not persist staged files or libsecret changes, but full target access and disclosure are unchanged",
     );
-    const call = vi.mocked(putWrapperPermission).mock.calls[0];
-    // putWrapperPermission(storeId, clientInstance, wrapper, resourceId, body)
-    const body = call[4] as { mode: { kind: string } };
-    expect(body.mode.kind).toBe("unsafe-debug-until");
+    expect(effect).toHaveTextContent("Env remains backend-owned and immutable");
+    expect(putWrapperPermission).not.toHaveBeenCalled();
+  });
+
+  it("cancel clears the pending value and preserves the original kind and deadline", async () => {
+    const user = userEvent.setup();
+    const originalLocal = "2040-02-03T04:05";
+    renderDialog({
+      existing: {
+        client_instance: "ci-1",
+        wrapper: "gh-authorized",
+        resource_id: "github/token",
+        mode: {
+          kind: "unlocked-until",
+          until_epoch: Math.floor(new Date(originalLocal).getTime() / 1000),
+        },
+        writable: false,
+      },
+    });
+    expect(screen.getByLabelText(/deadline/i)).toHaveValue(originalLocal);
+
+    await user.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
+    expect(await screen.findByTestId("unsafe-debug-pending-expiry")).toHaveTextContent(
+      pendingLocal,
+    );
+    await user.click(screen.getByTestId("confirm-danger-cancel"));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("unsafe-debug-security-warning")).toBeNull(),
+    );
+    expect(screen.getByTestId("mode-radio-unlocked-until")).toBeChecked();
+    expect(screen.getByLabelText(/deadline/i)).toHaveValue(originalLocal);
+    expect(putWrapperPermission).not.toHaveBeenCalled();
+  });
+
+  it("confirms the exact displayed deadline locally and saves its epoch and current writable flag", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(screen.getByTestId("permission-writable"));
+    await user.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
+    expect(await screen.findByTestId("unsafe-debug-pending-expiry")).toHaveTextContent(
+      pendingLocal,
+    );
+
+    await user.click(screen.getByTestId("confirm-danger-confirm"));
+    expect(screen.queryByTestId("unsafe-debug-security-warning")).toBeNull();
+    expect(screen.getByLabelText(/deadline/i)).toHaveValue(pendingLocal);
+    expect(putWrapperPermission).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("permission-save"));
+    await waitFor(() => expect(putWrapperPermission).toHaveBeenCalledTimes(1));
+    expect(putWrapperPermission).toHaveBeenCalledWith(
+      "prod",
+      "ci-1",
+      "gh-authorized",
+      "github/token",
+      {
+        mode: {
+          kind: "unsafe-debug-until",
+          until_epoch: Math.floor(new Date(pendingLocal).getTime() / 1000),
+        },
+        writable: true,
+        reason: undefined,
+      },
+    );
+  });
+
+  it("does not re-prompt when editing an existing unsafe-debug deadline", async () => {
+    const user = userEvent.setup();
+    renderDialog({
+      existing: {
+        client_instance: "ci-1",
+        wrapper: "gh-authorized",
+        resource_id: "github/token",
+        mode: {
+          kind: "unsafe-debug-until",
+          until_epoch: Math.floor(new Date("2098-01-01T00:00").getTime() / 1000),
+        },
+        writable: false,
+      },
+    });
+
+    const deadline = screen.getByLabelText(/deadline/i);
+    await user.clear(deadline);
+    await user.type(deadline, "2099-01-01T00:00");
+    expect(screen.queryByTestId("unsafe-debug-security-warning")).toBeNull();
+
+    await user.click(screen.getByTestId("permission-save"));
+    await waitFor(() => expect(putWrapperPermission).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(putWrapperPermission).mock.calls[0][4] as {
+      mode: { kind: string; until_epoch: number };
+    };
+    expect(body.mode).toEqual({
+      kind: "unsafe-debug-until",
+      until_epoch: Math.floor(new Date("2099-01-01T00:00").getTime() / 1000),
+    });
   });
 });
 
