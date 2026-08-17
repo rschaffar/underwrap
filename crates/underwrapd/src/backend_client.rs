@@ -257,21 +257,33 @@ impl BackendClient {
     }
 }
 
+async fn send_runtime_request(
+    request: reqwest::RequestBuilder,
+    operation: &'static str,
+) -> Result<reqwest::Response> {
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("sending backend {operation} request"))?;
+    if !response.status().is_success() {
+        bail!(parse_error(response).await);
+    }
+    Ok(response)
+}
+
 async fn register_request(
     client: &reqwest::Client,
     base_url: &str,
     request: &RuntimeWrapperRegisterRequest,
 ) -> Result<RuntimeWrapperRegisterResponse> {
-    let response = client
-        .post(endpoint(base_url, "/v1/wrappers"))
-        .header(CONTENT_TYPE, "application/json")
-        .json(request)
-        .send()
-        .await
-        .context("sending backend register request")?;
-    if !response.status().is_success() {
-        bail!(parse_error(response).await);
-    }
+    let response = send_runtime_request(
+        client
+            .post(endpoint(base_url, "/v1/wrappers"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(request),
+        "register",
+    )
+    .await?;
     response
         .json::<RuntimeWrapperRegisterResponse>()
         .await
@@ -283,16 +295,14 @@ async fn open_request(
     base_url: &str,
     request: &RuntimeWrapperInvocationOpenRequest,
 ) -> Result<RuntimeWrapperInvocationOpenResponse> {
-    let response = client
-        .post(endpoint(base_url, "/v1/wrapper-invocations"))
-        .header(CONTENT_TYPE, "application/json")
-        .json(request)
-        .send()
-        .await
-        .context("sending backend open request")?;
-    if !response.status().is_success() {
-        bail!(parse_error(response).await);
-    }
+    let response = send_runtime_request(
+        client
+            .post(endpoint(base_url, "/v1/wrapper-invocations"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(request),
+        "open",
+    )
+    .await?;
     response
         .json::<RuntimeWrapperInvocationOpenResponse>()
         .await
@@ -304,16 +314,14 @@ async fn finalize_request(
     base_url: &str,
     request: &RuntimeWrapperInvocationFinalizeRequest,
 ) -> Result<RuntimeWrapperInvocationFinalizeResponse> {
-    let response = client
-        .post(endpoint(base_url, "/v1/wrapper-invocations/finalize"))
-        .header(CONTENT_TYPE, "application/json")
-        .json(request)
-        .send()
-        .await
-        .context("sending backend finalize request")?;
-    if !response.status().is_success() {
-        bail!(parse_error(response).await);
-    }
+    let response = send_runtime_request(
+        client
+            .post(endpoint(base_url, "/v1/wrapper-invocations/finalize"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(request),
+        "finalize",
+    )
+    .await?;
     response
         .json::<RuntimeWrapperInvocationFinalizeResponse>()
         .await
