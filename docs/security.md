@@ -641,7 +641,7 @@ Repeating one accepted row in a later request remains idempotent.
 The frontend admits only an absolute HTTPS backend URL with a host. The NixOS
 module rejects non-`https://` instance options, daemon startup validates the URL
 before credential reads or wrapper-socket binding, `BackendClient::open` repeats
-the check before file I/O or worker creation, and reqwest is configured
+the check before file I/O or client construction, and reqwest is configured
 HTTPS-only so redirects cannot downgrade the runtime channel to plaintext. A
 configured CA bundle is the complete server trust set for that runtime client
 instance and excludes bundled public WebPKI roots; when no bundle is configured,
@@ -655,6 +655,31 @@ Layer-4 TLS passthrough preserve the mTLS peer certificate. An HTTPS Layer-7
 proxy address is syntactically admitted, but ordinary TLS termination followed
 by HTTP does not preserve the backend's peer-certificate principal. No trusted
 forwarded-certificate or proxy-identity mechanism is implied.
+
+Each daemon uses one shared direct async reqwest client for register,
+invocation-open, and invocation-finalize calls; there is no global FIFO request
+worker. A fail-fast semaphore admits at most 32 calls. Open/finalize DTO
+construction and finalize base64 encoding may already be complete for a 33rd
+simultaneous call, but admission failure does not invoke the request closure,
+build a reqwest `RequestBuilder`, or start or send a network request. The call
+does not join a pending queue. This local saturation error follows the existing
+startup-registration, wrapper-open, or finalize error path; it does not bypass
+backend policy or create an alternate persistence path.
+
+Every admitted call receives one 30-second deadline starting after admission and
+covering request send plus complete success or error decoding. Timeout or caller
+cancellation releases the local permit. It does not prove that the backend saw
+no request or committed no effect: register auto-creation, open's `last_used_at`
+update, or finalize persistence may already have occurred. There is no automatic
+retry, rollback, deduplication, exactly-once delivery, or transaction. One
+wrapper-resource channel remains sequential, while independent invocations may
+complete out of order under the backend's existing last-writer-wins rules.
+
+This is a queue and head-of-line bound, not an availability guarantee. An
+untrusted caller can consume capacity with wrapper traffic, and 32 stalled calls
+or an unavailable backend leave no capacity for another call until a permit is
+released. Transport, mTLS principal derivation, CA and HTTPS rules, disabled
+idle pooling, and backend policy and persistence authority are unchanged.
 
 ### Frontend daemon hardening
 
@@ -678,7 +703,10 @@ At startup, the daemon rejects a present runtime credential when:
 - its parent directory is owned by another UID or wider than `0700`.
 
 Missing credential files are allowed so enrollment can happen after service
-startup; each wrapper request retries backend initialization.
+startup; each wrapper request retries backend initialization until a client is
+built. The daemon then caches that client and identity. Replacing the credential
+files requires a daemon restart to load the new identity; direct async request
+scheduling does not add credential reload or unauthorized-triggered retry.
 
 ### Admin authentication
 
@@ -886,7 +914,10 @@ Keep these limits explicit in deployment and wrapper reviews:
   after restart.
 - Browser sessions are memory-only and disappear on restart.
 - Abstract D-Bus sockets are outside mount-namespace hiding.
-- Resource and policy availability depends on the backend network path.
+- Resource and policy availability depends on the backend network path. The
+  daemon admits at most 32 runtime calls; 32 stalled calls exhaust that local
+  capacity, and saturation provides no availability guarantee during a backend
+  outage.
 - Content and reference checks guarantee graph integrity only for serialized
   requests. They are separate check/use operations without a tombstone,
   transaction, CAS, or post-delete exclusion; a racing mutation can recreate an

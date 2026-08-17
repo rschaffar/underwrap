@@ -84,6 +84,9 @@ Workspace tests cover:
 - plain and encrypted storage, including active resource-key absence and
   repeated false deletion after removing a typed-empty blob;
 - daemon peer authentication and wrapper intake;
+- daemon runtime-client admission and progress: the exact production 32-call/
+  30-second policy, independent direct async requests, timeout permit release,
+  fail-fast saturation without request start, and later admission;
 - backend runtime registration validation before storage, including exact
   within-request duplicate rejection, name-error precedence, valid near misses,
   checked internal insertion failures, and separate-call idempotence;
@@ -143,9 +146,35 @@ subsequent D-Bus readback, exact-2-MiB files round trips, rejected oversize
 admin/files mutations with byte-identical prior storage, host-only
 receiver/secretsd-only publisher ownership, and plaintext/exact-base64 log
 hygiene.
+The daemon runtime-client concurrency tests are deterministic TLS fixtures. The
+current-thread Tokio test
+`independent_runtime_requests_are_not_globally_serialized` synchronizes after the
+server has accepted and completely read one invocation-open request, withholds
+that response, and proves an unrelated request reaches the server and completes
+before release. This detects both a global FIFO worker and a synchronous call
+that blocks the single runtime thread.
+`accepted_request_timeout_releases_its_permit` injects a short client deadline
+for an accepted but unanswered request and proves timeout, permit release, and a
+later successful admission.
+`saturation_is_fail_fast_without_starting_a_request_and_later_admission_succeeds`
+is a deterministic direct-closure test: it injects one slot, holds its request
+future, proves the saturated closure is never constructed or started, and then
+proves admission succeeds after release.
+`production_runtime_request_policy_is_pinned` checks the exact production
+constants of 32 calls and 30 seconds without making the test wait for the
+production deadline.
+
+The 30-second value is a product request deadline, measured after admission
+through complete success/error decoding. Fixture socket, channel, coordination,
+and injected short-client deadlines are test cleanup and assertion bounds; they
+do not redefine that product contract. The parent process that invokes the test
+command remains the hard whole-suite bound. Cancellation-unsafe blocking futures
+are not placed under an in-runtime timeout merely to bound the suite.
+
 Daemon transport tests cover absolute HTTPS URL admission, base-path preservation,
-and HTTPS-to-HTTP redirect rejection through the production client. Applied
-root-policy unit tests record that the production client disables bundled
+and asynchronous HTTPS-to-HTTP redirect rejection through the production
+client, including zero connections to the plaintext trap. Applied root-policy
+unit tests record that the production client disables bundled
 WebPKI roots before adding a configured CA, while omission explicitly retains
 the bundled roots. Supplemental loopback probes use two independent private
 server authorities and a wrong-host certificate to prove selected-chain and
@@ -154,6 +183,14 @@ not require server-side client authentication, and rejection of an arbitrary
 second private CA alone is not evidence that public roots are excluded. The
 separate real-backend integration suite retains mTLS client-certificate,
 fingerprint-principal, registration, resource, policy, and writeback evidence.
+Together with the asynchronous integration `backend_ca_*` private-CA/hostname
+probes, registration tests, daemon open/store-read flows, and finalize/writeback
+and UsageSignal flows, this is aggregate evidence that direct async scheduling
+did not change transport, authority, error mapping, or persistence. The NixOS
+VM test in `nix/tests/test.py` provides the backend-service restart evidence;
+the Rust integration aggregate does not establish credential-file reload by a
+running daemon. The aggregate is not evidence of availability once all
+32 permits are occupied or while the backend is unavailable.
 Its registration regression sends duplicate rows over real client-certificate-
 authenticated HTTPS with auto-create on and off against missing and existing
 state, verifies the exact structured 400 without a TLS EOF, compares unchanged

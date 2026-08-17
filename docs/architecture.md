@@ -143,6 +143,39 @@ The detailed sequence is:
 The runtime API is stateless: finalize does not rely on backend-side open-session
 state.
 
+### Daemon runtime-client concurrency
+
+Each daemon owns one shared async reqwest client and calls register, invocation
+open, and invocation finalize directly from its Tokio runtime. There is no
+global FIFO request worker. At most 32 of these calls are admitted per daemon at
+once. Admission is fail-fast: open/finalize DTO construction and finalize
+base64 encoding may already be complete when all 32 permits are occupied, but
+admission failure does not invoke the request closure, build a reqwest
+`RequestBuilder`, or start or send a network request. There is no pending client
+queue. Saturation follows the existing call-site handling: startup registration
+warns, invocation open returns the existing internal wrapper error, Checkin
+returns `ResourceErrorCode::Internal` with `backend finalize failed`, and
+UsageSignal returns `ResourceErrorCode::Internal` with `usage signal failed`.
+
+A 30-second product deadline starts only after admission. It covers sending the
+request and completely decoding either the success response or the error
+response. Timeout and caller cancellation drop the local future and release its
+permit, but they do not establish the remote outcome. Registration auto-create,
+invocation-open `last_used_at`, or finalize writeback may already have occurred.
+The daemon does not retry, roll back, or provide exactly-once delivery.
+
+One scoped wrapper-resource channel still processes Checkout and its terminal
+Checkin or UsageSignal sequentially. Independent channels and registration/open/
+finalize calls may complete out of order. This adds neither write ordering nor a
+transaction: the backend remains the policy and persistence authority, with the
+existing whole-value last-writer-wins limitations.
+
+The concurrency limit prevents an unbounded local pending queue; it does not
+make the daemon available when 32 calls are stalled or the backend path is down.
+HTTPS-only transport, mTLS identity, CA selection, hostname verification,
+base-path handling, disabled idle pooling, and backend policy/persistence
+semantics are unchanged.
+
 ## Local wrapper gate
 
 Each frontend instance has:
