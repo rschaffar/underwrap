@@ -111,5 +111,5 @@ async fn open_one_invocation(
         }
     };
 
-    open_invocation(scope, wrapper_name, variant, peer_uid, state, backend)
+    open_invocation(scope, wrapper_name, variant, peer_uid, state, backend).await
 }

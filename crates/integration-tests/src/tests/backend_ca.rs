@@ -347,8 +347,14 @@ fn invoke_backend_register(
         client_key_file: Some(client_key_file),
     })
     .map_err(ClientFailure::from_anyhow)?;
-    client
-        .register(RuntimeWrapperRegisterRequest { wrappers: vec![] })
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            ClientFailure::harness(format!("building backend client runtime: {error}"))
+        })?;
+    runtime
+        .block_on(client.register(RuntimeWrapperRegisterRequest { wrappers: vec![] }))
         .map_err(ClientFailure::from_anyhow)
 }
 

@@ -1,6 +1,8 @@
 use super::*;
 use std::io::{Read, Write};
 
+mod concurrency;
+
 const TEST_CA_PEM: &str = include_str!("../../../integration-tests/testdata/pki/ca.pem");
 const TEST_SERVER_PEM: &str = include_str!("../../../integration-tests/testdata/pki/server.pem");
 const TEST_SERVER_KEY: &str = include_str!("../../../integration-tests/testdata/pki/server.key");
@@ -132,8 +134,8 @@ fn write_fixture(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents.as_bytes()).unwrap();
 }
 
-#[test]
-fn https_only_redirect_never_connects_to_plaintext_trap() {
+#[tokio::test(flavor = "current_thread")]
+async fn https_only_redirect_never_connects_to_plaintext_trap() {
     use rustls::pki_types::pem::PemObject;
     use std::sync::Arc;
 
@@ -233,7 +235,9 @@ fn https_only_redirect_never_connects_to_plaintext_trap() {
         tls.flush().unwrap();
     });
 
-    let register_result = client.register(RuntimeWrapperRegisterRequest { wrappers: vec![] });
+    let register_result = client
+        .register(RuntimeWrapperRegisterRequest { wrappers: vec![] })
+        .await;
     let _ = trap_stop_tx.send(());
     let tls_result = tls_server.join();
     let trap_result = trap_server.join();

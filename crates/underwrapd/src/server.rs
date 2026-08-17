@@ -112,7 +112,7 @@ fn format_register_pairs(pairs: &[RuntimeWrapperRegisterPair]) -> String {
 /// auto-create is disabled for this client instance. Best-effort: a
 /// failure here does not stop the daemon — the open call for each
 /// invocation will re-issue the appropriate error.
-fn register_wrapper_assets(backend: &BackendClient, config: &DaemonConfig) -> Result<()> {
+async fn register_wrapper_assets(backend: &BackendClient, config: &DaemonConfig) -> Result<()> {
     let mut wrappers = Vec::with_capacity(config.wrappers.len());
     for (wrapper_name, wrapper) in &config.wrappers {
         wrappers.push(RuntimeWrapperRegisterPair {
@@ -120,7 +120,9 @@ fn register_wrapper_assets(backend: &BackendClient, config: &DaemonConfig) -> Re
             resource_name: wrapper.resource.clone(),
         });
     }
-    let response = backend.register(RuntimeWrapperRegisterRequest { wrappers })?;
+    let response = backend
+        .register(RuntimeWrapperRegisterRequest { wrappers })
+        .await?;
     match response {
         RuntimeWrapperRegisterResponse::Ok {
             auto_created_resources,
@@ -181,7 +183,7 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
     // daemon to register configured assets.
     match state.ensure_backend() {
         Ok(client) => {
-            if let Err(e) = register_wrapper_assets(&client, &config) {
+            if let Err(e) = register_wrapper_assets(&client, &config).await {
                 warn!(
                     err = %format!("{e:#}"),
                     "wrapper-asset register call failed at startup; restart the daemon to retry registration",

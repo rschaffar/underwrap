@@ -98,39 +98,23 @@ async fn channel_loop(mut stream: UnixStream, ctx: &ChannelContext) -> Result<()
                 return Err(e).context("reading wrapper-resource request");
             }
         };
-        let backend = Arc::clone(&ctx.backend);
-        let ctx_wrapper = ctx.wrapper_name.clone();
-        let ctx_variant = ctx.variant;
-        let ctx_resource_name = ctx.resource_name.clone();
-        let ctx_resource_id = ctx.resource_id.clone();
-        let ctx_access = ctx.access;
-        let cached = ctx.cached_blob.clone();
-        // The BackendClient API is sync (it owns its own runtime
-        // thread), so wrap the call in `spawn_blocking` to avoid
-        // stalling the tokio worker that owns this channel.
-        let resp = tokio::task::spawn_blocking(move || {
-            handle_request(
-                req,
-                &backend,
-                &ctx_wrapper,
-                ctx_variant,
-                &ctx_resource_name,
-                &ctx_resource_id,
-                ctx_access,
-                &cached,
-            )
-        })
-        .await
-        .unwrap_or_else(|join_err| WrapperResourceResponse::Error {
-            code: ResourceErrorCode::Internal,
-            message: format!("channel handler panicked: {join_err}"),
-        });
+        let resp = handle_request(
+            req,
+            &ctx.backend,
+            &ctx.wrapper_name,
+            ctx.variant,
+            &ctx.resource_name,
+            &ctx.resource_id,
+            ctx.access,
+            &ctx.cached_blob,
+        )
+        .await;
         write_wrapper_resource_frame_async(&mut stream, &resp).await?;
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_request(
+async fn handle_request(
     request: WrapperResourceRequest,
     backend: &BackendClient,
     wrapper_name: &str,
@@ -144,16 +128,19 @@ fn handle_request(
         WrapperResourceRequest::Checkout => {
             handle_checkout(wrapper_name, resource_id, access, cached_blob)
         }
-        WrapperResourceRequest::Checkin { blob } => handle_checkin(
-            blob,
-            backend,
-            wrapper_name,
-            variant,
-            resource_name,
-            resource_id,
-        ),
+        WrapperResourceRequest::Checkin { blob } => {
+            handle_checkin(
+                blob,
+                backend,
+                wrapper_name,
+                variant,
+                resource_name,
+                resource_id,
+            )
+            .await
+        }
         WrapperResourceRequest::UsageSignal => {
-            handle_usage_signal(backend, wrapper_name, variant, resource_name, resource_id)
+            handle_usage_signal(backend, wrapper_name, variant, resource_name, resource_id).await
         }
     }
 }
@@ -177,7 +164,7 @@ fn handle_checkout(
     }
 }
 
-fn handle_checkin(
+async fn handle_checkin(
     blob: Vec<u8>,
     backend: &BackendClient,
     wrapper_name: &str,
@@ -185,7 +172,10 @@ fn handle_checkin(
     resource_name: &str,
     resource_id: &str,
 ) -> WrapperResourceResponse {
-    match backend.finalize_invocation(wrapper_name, resource_name, variant, Some(&blob)) {
+    match backend
+        .finalize_invocation(wrapper_name, resource_name, variant, Some(&blob))
+        .await
+    {
         Ok(RuntimeWrapperInvocationFinalizeResponse::Ok) => {
             debug!(
                 wrapper = %wrapper_name,
@@ -235,14 +225,17 @@ fn handle_checkin(
     }
 }
 
-fn handle_usage_signal(
+async fn handle_usage_signal(
     backend: &BackendClient,
     wrapper_name: &str,
     variant: WrapperVariant,
     resource_name: &str,
     resource_id: &str,
 ) -> WrapperResourceResponse {
-    match backend.finalize_invocation(wrapper_name, resource_name, variant, None) {
+    match backend
+        .finalize_invocation(wrapper_name, resource_name, variant, None)
+        .await
+    {
         Ok(RuntimeWrapperInvocationFinalizeResponse::Ok) => {
             debug!(
                 wrapper = %wrapper_name,

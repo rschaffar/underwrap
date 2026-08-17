@@ -29,7 +29,7 @@ use crate::wrapper_resource_channel::ChannelContext;
 
 use super::ReadOutcome;
 
-pub(super) fn open_invocation(
+pub(super) async fn open_invocation(
     _scope: Option<&str>,
     wrapper_name: &str,
     variant: WrapperVariant,
@@ -60,7 +60,10 @@ pub(super) fn open_invocation(
     };
     let resource_name = wrapper_def.resource.clone();
 
-    let response = match backend.open_invocation(wrapper_name, &resource_name, variant) {
+    let response = match backend
+        .open_invocation(wrapper_name, &resource_name, variant)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             if let Some(locked) = e.downcast_ref::<StoreLockedError>() {

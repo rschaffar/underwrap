@@ -24,7 +24,9 @@ use reqwest::Certificate;
 use reqwest::Identity;
 use reqwest::header::CONTENT_TYPE;
 use std::fs;
-use std::sync::mpsc;
+use std::future::Future;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 
 use underwrap_protocol::config::BackendServiceConfig;
 use underwrap_protocol::service::{
@@ -74,23 +76,14 @@ impl std::fmt::Display for UnauthorizedError {
 
 impl std::error::Error for UnauthorizedError {}
 
-enum Command {
-    Register {
-        request: RuntimeWrapperRegisterRequest,
-        reply: mpsc::Sender<Result<RuntimeWrapperRegisterResponse>>,
-    },
-    Open {
-        request: RuntimeWrapperInvocationOpenRequest,
-        reply: mpsc::Sender<Result<RuntimeWrapperInvocationOpenResponse>>,
-    },
-    Finalize {
-        request: RuntimeWrapperInvocationFinalizeRequest,
-        reply: mpsc::Sender<Result<RuntimeWrapperInvocationFinalizeResponse>>,
-    },
-}
+const MAX_IN_FLIGHT_REQUESTS: usize = 32;
+const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 pub struct BackendClient {
-    sender: mpsc::Sender<Command>,
+    client: reqwest::Client,
+    base_url: String,
+    in_flight: Semaphore,
+    request_deadline: Duration,
 }
 
 trait BackendCaPolicyTarget: Sized {
@@ -121,10 +114,16 @@ fn apply_backend_ca_policy<T: BackendCaPolicyTarget>(
 }
 
 impl BackendClient {
-    /// Build the mTLS HTTPS client and spawn the I/O worker thread.
-    /// The worker owns its own tokio runtime so synchronous call sites
-    /// in the daemon can issue requests from any thread.
+    /// Build the shared mTLS HTTPS client used by the daemon's Tokio runtime.
     pub fn open(config: &BackendServiceConfig) -> Result<Self> {
+        Self::open_with_policy(config, MAX_IN_FLIGHT_REQUESTS, REQUEST_DEADLINE)
+    }
+
+    fn open_with_policy(
+        config: &BackendServiceConfig,
+        max_in_flight: usize,
+        request_deadline: Duration,
+    ) -> Result<Self> {
         crate::startup::validate_backend_url(&config.url)?;
         let base_url = config.url.clone();
         let cert_path = config
@@ -172,88 +171,73 @@ impl BackendClient {
             .build()
             .context("building backend HTTPS client")?;
 
-        let (tx, rx) = mpsc::channel::<Command>();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("building backend client runtime");
-            for command in rx {
-                match command {
-                    Command::Register { request, reply } => {
-                        let _ = reply
-                            .send(runtime.block_on(register_request(&client, &base_url, &request)));
-                    }
-                    Command::Open { request, reply } => {
-                        let _ = reply
-                            .send(runtime.block_on(open_request(&client, &base_url, &request)));
-                    }
-                    Command::Finalize { request, reply } => {
-                        let _ = reply
-                            .send(runtime.block_on(finalize_request(&client, &base_url, &request)));
-                    }
-                }
-            }
-        });
-
-        Ok(Self { sender: tx })
+        Ok(Self {
+            client,
+            base_url,
+            in_flight: Semaphore::new(max_in_flight),
+            request_deadline,
+        })
     }
 
-    pub fn register(
+    async fn execute<T, F, Fut>(&self, operation: &'static str, request: F) -> Result<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let _permit = self.in_flight.try_acquire().map_err(|_| {
+            anyhow::anyhow!("backend {operation} request rejected: client is saturated")
+        })?;
+        let deadline = tokio::time::Instant::now() + self.request_deadline;
+        match tokio::time::timeout_at(deadline, request()).await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!("backend {operation} request timed out")),
+        }
+    }
+
+    pub async fn register(
         &self,
         request: RuntimeWrapperRegisterRequest,
     ) -> Result<RuntimeWrapperRegisterResponse> {
-        let (tx, rx) = mpsc::channel();
-        self.sender
-            .send(Command::Register { request, reply: tx })
-            .context("sending register command to backend client worker")?;
-        rx.recv()
-            .context("receiving register response from backend client worker")?
+        self.execute("register", || {
+            register_request(&self.client, &self.base_url, &request)
+        })
+        .await
     }
 
-    pub fn open_invocation(
+    pub async fn open_invocation(
         &self,
         wrapper_name: &str,
         resource_name: &str,
         variant: WrapperVariant,
     ) -> Result<RuntimeWrapperInvocationOpenResponse> {
-        let (tx, rx) = mpsc::channel();
-        self.sender
-            .send(Command::Open {
-                request: RuntimeWrapperInvocationOpenRequest {
-                    wrapper_name: wrapper_name.to_string(),
-                    resource_name: resource_name.to_string(),
-                    variant,
-                },
-                reply: tx,
-            })
-            .context("sending open command to backend client worker")?;
-        rx.recv()
-            .context("receiving open response from backend client worker")?
+        let request = RuntimeWrapperInvocationOpenRequest {
+            wrapper_name: wrapper_name.to_string(),
+            resource_name: resource_name.to_string(),
+            variant,
+        };
+        self.execute("open", || {
+            open_request(&self.client, &self.base_url, &request)
+        })
+        .await
     }
 
-    pub fn finalize_invocation(
+    pub async fn finalize_invocation(
         &self,
         wrapper_name: &str,
         resource_name: &str,
         variant: WrapperVariant,
         blob_bytes: Option<&[u8]>,
     ) -> Result<RuntimeWrapperInvocationFinalizeResponse> {
-        let (tx, rx) = mpsc::channel();
-        self.sender
-            .send(Command::Finalize {
-                request: RuntimeWrapperInvocationFinalizeRequest {
-                    wrapper_name: wrapper_name.to_string(),
-                    resource_name: resource_name.to_string(),
-                    variant,
-                    blob_b64: blob_bytes
-                        .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
-                },
-                reply: tx,
-            })
-            .context("sending finalize command to backend client worker")?;
-        rx.recv()
-            .context("receiving finalize response from backend client worker")?
+        let request = RuntimeWrapperInvocationFinalizeRequest {
+            wrapper_name: wrapper_name.to_string(),
+            resource_name: resource_name.to_string(),
+            variant,
+            blob_b64: blob_bytes.map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+        };
+        self.execute("finalize", || {
+            finalize_request(&self.client, &self.base_url, &request)
+        })
+        .await
     }
 }
 
