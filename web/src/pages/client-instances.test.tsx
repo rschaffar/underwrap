@@ -44,6 +44,19 @@ async function openWorkEditDialog(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole("dialog", { name: "Edit: Work laptop" });
 }
 
+function expectTextInOrder(element: HTMLElement, fragments: string[]) {
+  const text = element.textContent ?? "";
+  let cursor = -1;
+  for (const fragment of fragments) {
+    const next = text.indexOf(fragment, cursor + 1);
+    expect(
+      next,
+      `expected ${JSON.stringify(fragment)} after offset ${cursor}`,
+    ).toBeGreaterThan(cursor);
+    cursor = next;
+  }
+}
+
 describe("ClientInstancesPage", () => {
   const stores = {
     items: [
@@ -171,6 +184,9 @@ describe("ClientInstancesPage", () => {
     expect(within(row).getByText("Work laptop")).toBeInTheDocument();
     expect(within(row).getByText("Work")).toBeInTheDocument();
     expect(within(row).getByText("active")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/edits apply on the next runtime request/i),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps disabled instances visible and filterable", async () => {
@@ -254,9 +270,15 @@ describe("ClientInstancesPage", () => {
     });
   });
 
-  it("renames an instance via the unified edit dialog", async () => {
+  it("renames an instance without telling metadata-only edits to restart the daemon", async () => {
     const user = userEvent.setup();
     const dialog = await openWorkEditDialog(user);
+    expect(dialog).toHaveTextContent(
+      "If you replace the certificate, complete the restart operation described beside that field.",
+    );
+    expect(dialog).not.toHaveTextContent(
+      /(?:rename|remap|metadata).*requires? (?:a )?(?:daemon )?restart/i,
+    );
     const input = within(dialog).getByLabelText(/display name/i);
     await user.clear(input);
     await user.type(input, "Work laptop renamed");
@@ -267,9 +289,19 @@ describe("ClientInstancesPage", () => {
     });
   });
 
-  it("replaces the registered cert via the unified edit dialog", async () => {
+  it("replaces only the registered cert and pins the ordered restart operation", async () => {
     const user = userEvent.setup();
     const dialog = await openWorkEditDialog(user);
+    expectTextInOrder(dialog, [
+      "underwrap-keygen --instance-config /etc/underwrap/daemon/<instance>.yaml",
+      "Paste the public certificate here and select Save on this same client instance.",
+      "systemctl restart underwrapd-<instance>.service",
+      "Verify a representative wrapper.",
+    ]);
+    expect(dialog).toHaveTextContent(
+      "The running daemon continues using its cached old identity until restart. After Save and before restart, expect an interruption: wrapper requests fail with enrollment guidance.",
+    );
+
     const pem =
       "-----BEGIN CERTIFICATE-----\nFRESHCERT\n-----END CERTIFICATE-----\n";
     await user.type(within(dialog).getByLabelText(/new certificate pem/i), pem);

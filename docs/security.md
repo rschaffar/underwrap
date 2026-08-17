@@ -706,7 +706,9 @@ Missing credential files are allowed so enrollment can happen after service
 startup; each wrapper request retries backend initialization until a client is
 built. The daemon then caches that client and identity. Replacing the credential
 files requires a daemon restart to load the new identity; direct async request
-scheduling does not add credential reload or unauthorized-triggered retry.
+scheduling does not add credential reload or unauthorized-triggered retry. Use
+the Admin UI guide's [ordered certificate-replacement
+operation](admin-ui.md#replace-a-runtime-client-certificate).
 
 ### Admin authentication
 

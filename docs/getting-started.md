@@ -194,7 +194,7 @@ sudo underwrap-keygen \
   --instance-config /etc/underwrap/daemon/demo.yaml
 ```
 
-The command atomically writes:
+On a successful run, the command installs:
 
 - `/var/lib/underwrap-demo/client-demo.key` with mode `0400`;
 - `/var/lib/underwrap-demo/client-demo.pem` with mode `0600`;
@@ -222,6 +222,14 @@ sudo systemctl restart underwrapd-demo.service
 Registration creates the resource `demo/token`, the pair
 `secret-check → demo/token`, and a `Locked` permission row for this runtime
 client instance.
+
+For a later certificate replacement, follow the normative
+[ordered cutover](admin-ui.md#replace-a-runtime-client-certificate): successfully
+run keygen on the frontend, save its public certificate on the same backend
+instance, run `sudo systemctl restart underwrapd-<instance>.service`, and verify a
+representative wrapper. The old daemon identity remains cached until restart, so
+wrapper failure with enrollment guidance after **Save** and before restart is the
+expected interruption.
 
 ## 5. Add the env entry and unlock the wrapper
 

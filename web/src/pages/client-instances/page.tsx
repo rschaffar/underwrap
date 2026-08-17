@@ -67,8 +67,8 @@ export function ClientInstancesPage() {
           <p className="mt-1 text-sm text-(--color-muted)">
             Runtime client identities registered with this backend. Generate a credential
             on the client host with <code>underwrap-keygen</code> and paste the cert PEM
-            below to register it. Edits apply on the next runtime request; disabled
-            instances stay visible here for management and auditability.
+            below to register it. Disabled instances stay visible here for management and
+            auditability.
           </p>
         </div>
         <div className="flex items-end gap-3">

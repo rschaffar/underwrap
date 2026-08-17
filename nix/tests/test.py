@@ -4327,34 +4327,122 @@ def runtime_api_invariants():
     # ============================================================
     #
     # Pins the three-endpoint runtime API's trust-boundary properties end to
-    # end: lazy backend-client recovery, no storage-key route on the wire, a
-    # closed permission-mode enum, and env validation on every finalize.
+    # end: fresh connections from the cached client, explicit credential
+    # cutover, no storage-key route on the wire, a closed permission-mode enum,
+    # and env validation on every finalize.
     # ============================================================
 
     # ----------------------------------------------------------
-    # Backend restart self-heal — the daemon's BackendClient is
-    # lazy and re-opens on the next wrapper call, so the wrapper
-    # must keep working without restarting underwrapd-local.
+    # Backend restart self-heal — idle pooling is disabled, so the
+    # daemon's cached reqwest client opens a fresh HTTPS connection on
+    # the next wrapper call. This does not rebuild the client or reload
+    # credential files.
     # ----------------------------------------------------------
     grant_local_unlocked("test-echo")
-    output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
-    assert "MY_TOKEN=" in output
+    wrapper_success_command = su(
+        '/run/wrappers/bin/underwrap-local test-echo | grep -q "^MY_TOKEN="'
+    )
+    machine.succeed(wrapper_success_command)
 
     machine.succeed("systemctl restart underwrap-backend-local.service")
     machine.wait_for_unit("underwrap-backend-local.service")
-    # Give the new listener a moment to bind before the next wrapper call.
-    time.sleep(1)
-
-    output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
-    assert "MY_TOKEN=" in output, (
-        f"wrapper must self-heal after backend restart, got: {output}"
-    )
-    machine.log("PASS: daemon self-heals after backend restart")
+    machine.wait_until_succeeds(wrapper_success_command)
+    machine.log("PASS: cached runtime client reconnects after backend restart")
 
     # The in-memory `tower-sessions` store does not survive the
     # restart above, so the admin session captured at boot is gone.
     # Re-login before any admin API call after a backend restart.
     login_admin_session(ADMIN_LOCAL)
+
+    # ----------------------------------------------------------
+    # Runtime credential rotation requires daemon restart. A successful
+    # keygen replaces the frontend files, but the running daemon keeps its
+    # cached old identity until the operator restarts the matching service.
+    # ----------------------------------------------------------
+    stable_client_fields = (
+        "id",
+        "display_name",
+        "current_store_id",
+        "current_store_name",
+        "status",
+        "auto_create_wrapper_assets",
+        "current_credential_fingerprint",
+    )
+
+    def local_client_snapshot():
+        items = admin_api(
+            ADMIN_LOCAL, "/v1/admin/client-instances", None, method="GET"
+        )["items"]
+        matches = [item for item in items if item["id"] == LOCAL_CLIENT_INSTANCE]
+        assert len(matches) == 1, "expected exactly one active local client record"
+        return {field: matches[0][field] for field in stable_client_fields}
+
+    def daemon_main_pid():
+        value = machine.succeed(
+            "systemctl show underwrapd-local.service -p MainPID --value"
+        ).strip()
+        assert value.isdecimal() and int(value) > 0, "underwrapd-local has no MainPID"
+        return int(value)
+
+    machine.succeed(wrapper_success_command)
+    client_before_rotation = local_client_snapshot()
+    assert client_before_rotation["status"] == "active"
+    old_daemon_pid = daemon_main_pid()
+
+    replacement_cert_pem = machine.succeed(
+        "underwrap-keygen --instance-config /etc/underwrap/daemon/local.yaml"
+    )
+    assert replacement_cert_pem.startswith("-----BEGIN CERTIFICATE-----\n")
+    assert replacement_cert_pem.endswith("-----END CERTIFICATE-----\n")
+    credential_metadata = machine.succeed(
+        "stat -c '%U:%G %a' "
+        "/var/lib/underwrap-local/client-local.key "
+        "/var/lib/underwrap-local/client-local.pem"
+    ).splitlines()
+    assert credential_metadata == [
+        "underwrap-local:underwrap-local 400",
+        "underwrap-local:underwrap-local 600",
+    ], "keygen installed unexpected credential ownership or modes"
+
+    assert daemon_main_pid() == old_daemon_pid
+    machine.succeed(wrapper_success_command)
+    assert daemon_main_pid() == old_daemon_pid
+
+    admin_api(
+        ADMIN_LOCAL,
+        f"/v1/admin/client-instances/{_seg(LOCAL_CLIENT_INSTANCE)}",
+        {"cert_pem": replacement_cert_pem},
+        method="PUT",
+    )
+    client_after_rotation = local_client_snapshot()
+    assert (
+        client_after_rotation["current_credential_fingerprint"]
+        != client_before_rotation["current_credential_fingerprint"]
+    ), "credential rotation did not change the backend fingerprint"
+    expected_after_rotation = dict(client_before_rotation)
+    expected_after_rotation["current_credential_fingerprint"] = (
+        client_after_rotation["current_credential_fingerprint"]
+    )
+    assert client_after_rotation == expected_after_rotation, (
+        "credential-only update changed another stable client field"
+    )
+
+    assert daemon_main_pid() == old_daemon_pid
+    enrollment_error = machine.fail(f"{wrapper_success_command} 2>&1")
+    assert "this underwrap instance is not enrolled yet" in enrollment_error, (
+        "cached old identity did not produce the existing enrollment guidance"
+    )
+    assert daemon_main_pid() == old_daemon_pid
+
+    machine.succeed("systemctl restart underwrapd-local.service")
+    machine.wait_until_succeeds(
+        "pid=$(systemctl show underwrapd-local.service -p MainPID --value); "
+        f"test \"$pid\" -gt 0 && test \"$pid\" -ne {old_daemon_pid}"
+    )
+    new_daemon_pid = daemon_main_pid()
+    assert new_daemon_pid != old_daemon_pid
+    machine.wait_until_succeeds(wrapper_success_command)
+    machine.log("PASS: runtime credential rotation requires daemon restart")
 
     # ----------------------------------------------------------
     # Wrapper-permission upsert rejects an unsupported permission-mode variant.

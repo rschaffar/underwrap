@@ -112,9 +112,38 @@ Auto-create is convenient for initial enrollment; disabling it gives operators
 an explicit asset-creation workflow.
 
 Changing a client instance's target store removes that client's permission rows
-from the preceding store. Replacing its certificate rotates the runtime
-credential. Disabling or deleting the instance stops its certificate from
-authenticating.
+from the preceding store. Disabling or deleting the instance stops its
+certificate from authenticating.
+
+### Replace a runtime client certificate
+
+Certificate replacement is one ordered operator cutover for the existing
+runtime client instance:
+
+1. On the frontend, successfully generate and install the replacement pair:
+
+   ```bash
+   sudo underwrap-keygen \
+     --instance-config /etc/underwrap/daemon/<instance>.yaml
+   ```
+
+2. In **Client instances**, edit that same instance, paste the public certificate
+   printed by the successful command, and select **Save**.
+3. On the frontend, load the replacement pair explicitly:
+
+   ```bash
+   sudo systemctl restart underwrapd-<instance>.service
+   ```
+
+4. Verify a representative wrapper for that instance.
+
+The running daemon continues using its cached old identity until step 3. Saving
+the replacement certificate makes the backend reject that old identity, so an
+interruption is expected between **Save** and the restart: wrapper requests fail
+with enrollment guidance. Only the public certificate crosses to the backend;
+the private key remains in the frontend credential file. This operation does not
+apply one timing promise to display-name, store, status, or wrapper-asset
+auto-create edits.
 
 ## Resources and secret entries
 

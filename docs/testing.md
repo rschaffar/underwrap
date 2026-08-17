@@ -304,7 +304,26 @@ It checks:
 - setgid and capability wrappers;
 - socket path, owner, group, and mode;
 - generated daemon and entry-stage config;
-- local and remote-style runtime client enrollment.
+- local and remote-style runtime client enrollment;
+- the deployed runtime credential-rotation cutover: the packaged
+  `underwrap-keygen` successfully installs a replacement pair from
+  `/etc/underwrap/daemon/local.yaml` with exact daemon ownership and `0400` key /
+  `0600` certificate modes; the unchanged daemon PID still succeeds with its
+  cached old identity before the certificate-only backend update; an exact
+  comparison of `id`, `display_name`, `current_store_id`, `current_store_name`,
+  `status`, `auto_create_wrapper_assets`, and
+  `current_credential_fingerprint` shows that only the fingerprint changes; the
+  same PID then receives enrollment guidance; and an explicit
+  `underwrapd-local.service` restart yields a distinct nonzero PID and bounded
+  wrapper success using the replacement pair.
+
+That rotation witness discards target output, keeps the private key unread, and
+passes only the public certificate through the authenticated admin request-body
+helper. It excludes volatile `last_seen_at` from the client-record comparison and
+leaves the replacement active for subsequent direct runtime mTLS checks. It
+establishes the current explicit-restart operation and interruption window, not
+live reload, unauthorized-triggered retry, rollback, a grace credential, or zero
+downtime.
 
 ### Wrapper identity and policy
 

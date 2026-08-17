@@ -89,7 +89,7 @@ export function EditClientInstanceDialog({
       open
       onClose={onClose}
       title={`Edit: ${instance.display_name}`}
-      description="Rename, remap the target store, or replace the registered certificate. Changes take effect on the next runtime request."
+      description="Rename, remap the target store, configure wrapper-asset creation, or replace the registered certificate. If you replace the certificate, complete the restart operation described beside that field."
     >
       <Form {...form}>
         <form onSubmit={onSubmit} className="space-y-3" noValidate>
@@ -148,9 +148,37 @@ export function EditClientInstanceDialog({
                   />
                 </FormControl>
                 <FormDescription>
-                  Generate a new credential on the client host with{" "}
-                  <code>underwrap-keygen</code> and paste the cert PEM to
-                  rotate. Leave blank to keep the existing cert.
+                  Leave blank to keep the existing certificate. To replace it,
+                  complete this operation in order:
+                  <span className="mt-1 block pl-2">
+                    1. On the frontend, successfully run{" "}
+                    <code>
+                      {
+                        "underwrap-keygen --instance-config /etc/underwrap/daemon/<instance>.yaml"
+                      }
+                    </code>
+                    .
+                  </span>
+                  <span className="block pl-2">
+                    2. Paste the public certificate here and select <b>Save</b>{" "}
+                    on this same client instance.
+                  </span>
+                  <span className="block pl-2">
+                    3. Run{" "}
+                    <code>
+                      {"systemctl restart underwrapd-<instance>.service"}
+                    </code>
+                    .
+                  </span>
+                  <span className="block pl-2">
+                    4. Verify a representative wrapper.
+                  </span>
+                  <span className="mt-1 block">
+                    The running daemon continues using its cached old identity
+                    until restart. After Save and before restart, expect an
+                    interruption: wrapper requests fail with enrollment
+                    guidance.
+                  </span>
                 </FormDescription>
                 <FormMessage />
               </FormItem>
