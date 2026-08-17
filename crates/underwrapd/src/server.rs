@@ -74,9 +74,6 @@ impl State {
     /// self-heals as soon as the operator drops the cert files in
     /// place or the backend comes back up.
     pub(crate) fn ensure_backend(&self) -> Result<Arc<BackendClient>, BackendOpenError> {
-        if let Some(c) = self.backend.lock().unwrap().as_ref() {
-            return Ok(Arc::clone(c));
-        }
         let mut guard = self.backend.lock().unwrap();
         if let Some(c) = guard.as_ref() {
             return Ok(Arc::clone(c));
