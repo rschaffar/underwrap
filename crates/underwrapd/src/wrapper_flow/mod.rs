@@ -10,6 +10,7 @@ use underwrap_protocol::variant::WrapperVariant;
 
 use crate::peer_auth::PeerCred;
 use crate::server::{BackendOpenError, State};
+use crate::wrapper_resource_channel::ChannelContext;
 
 mod channels;
 mod intake;
@@ -59,8 +60,8 @@ pub(crate) async fn handle_wrapper(
     .await;
     write_frame_async(&mut stream, &outcome.response).await?;
 
-    if let Some(opened) = outcome.opened {
-        establish_scoped_channels(&stream, &wrapper_name, opened).await;
+    if let Some(channel) = outcome.channel {
+        establish_scoped_channels(&stream, &wrapper_name, channel).await;
     }
 
     stream.shutdown().await?;
@@ -72,7 +73,7 @@ pub(crate) async fn handle_wrapper(
 /// scoped wrapper-resource channel.
 pub(in crate::wrapper_flow) struct ReadOutcome {
     pub(in crate::wrapper_flow) response: WrapperResponse,
-    pub(in crate::wrapper_flow) opened: Option<read::OpenedInvocation>,
+    pub(in crate::wrapper_flow) channel: Option<ChannelContext>,
 }
 
 async fn open_one_invocation(
@@ -105,7 +106,7 @@ async fn open_one_invocation(
                     code: ErrorCode::Unauthorized,
                     message: crate::server::unenrolled_message(&state.enrollment_url()),
                 },
-                opened: None,
+                channel: None,
             };
         }
     };

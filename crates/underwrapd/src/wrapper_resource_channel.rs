@@ -36,6 +36,8 @@ use crate::backend_client::BackendClient;
 
 /// State carried for the lifetime of one channel.
 pub struct ChannelContext {
+    /// Backend client kept alive for the lifetime of the channel.
+    pub backend: Arc<BackendClient>,
     /// Client-supplied (and validated) wrapper name used both in
     /// logs/audit and in backend API calls.
     pub wrapper_name: String,
@@ -58,14 +60,14 @@ pub struct ChannelContext {
     pub cached_blob: Vec<u8>,
 }
 
-pub async fn run_channel(stream: UnixStream, backend: Arc<BackendClient>, ctx: ChannelContext) {
+pub async fn run_channel(stream: UnixStream, ctx: ChannelContext) {
     info!(
         wrapper = %ctx.wrapper_name,
         resource = %ctx.resource_id,
         access = ?ctx.access,
         "wrapper-resource channel opened",
     );
-    if let Err(e) = channel_loop(stream, backend, &ctx).await {
+    if let Err(e) = channel_loop(stream, &ctx).await {
         debug!(
             wrapper = %ctx.wrapper_name,
             resource = %ctx.resource_id,
@@ -80,11 +82,7 @@ pub async fn run_channel(stream: UnixStream, backend: Arc<BackendClient>, ctx: C
     );
 }
 
-async fn channel_loop(
-    mut stream: UnixStream,
-    backend: Arc<BackendClient>,
-    ctx: &ChannelContext,
-) -> Result<()> {
+async fn channel_loop(mut stream: UnixStream, ctx: &ChannelContext) -> Result<()> {
     loop {
         let req: WrapperResourceRequest = match read_wrapper_resource_frame_async(&mut stream).await
         {
@@ -100,7 +98,7 @@ async fn channel_loop(
                 return Err(e).context("reading wrapper-resource request");
             }
         };
-        let backend = Arc::clone(&backend);
+        let backend = Arc::clone(&ctx.backend);
         let ctx_wrapper = ctx.wrapper_name.clone();
         let ctx_variant = ctx.variant;
         let ctx_resource_name = ctx.resource_name.clone();

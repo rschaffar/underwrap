@@ -25,34 +25,9 @@ use underwrap_protocol::variant::WrapperVariant;
 use crate::audit;
 use crate::backend_client::{BackendClient, StoreLockedError, UnauthorizedError};
 use crate::server::State;
+use crate::wrapper_resource_channel::ChannelContext;
 
 use super::ReadOutcome;
-
-/// Per-invocation state the channel handler needs after the daemon's
-/// `ReadOk` has been written to the wrapper socket.
-pub(super) struct OpenedInvocation {
-    pub backend: Arc<BackendClient>,
-    /// Wrapper name used in `POST /v1/wrapper-invocations` calls. This is
-    /// the client-supplied name validated against the daemon config.
-    pub wrapper_name: String,
-    /// Invocation variant (Real/Debug); re-sent on finalize so the
-    /// backend re-evaluates the same policy branch it allowed on open.
-    pub variant: WrapperVariant,
-    /// Resource name (operator-facing) used in `POST /v1/wrapper-invocations`.
-    pub resource_name: String,
-    /// Canonical resource blob bytes returned by the backend on open.
-    /// The channel serves this verbatim on `Checkout`.
-    pub blob_bytes: Vec<u8>,
-    /// Backend's writable hint. The channel uses it for the
-    /// `CheckoutOk { writable }` field; the backend re-checks on
-    /// finalize regardless.
-    pub access: AccessMode,
-    /// Opaque backend resource id, threaded through to the channel. The
-    /// daemon never addresses storage by it, but it is surfaced to the
-    /// wrapper (and onward into `underwrap-ns` audit events and the
-    /// user-facing writeback-rejected message), not just logged.
-    pub resource_id: String,
-}
 
 pub(super) fn open_invocation(
     _scope: Option<&str>,
@@ -204,14 +179,14 @@ pub(super) fn open_invocation(
     };
     ReadOutcome {
         response,
-        opened: Some(OpenedInvocation {
+        channel: Some(ChannelContext {
             backend,
             wrapper_name: wrapper_name.to_string(),
             variant,
             resource_name,
-            blob_bytes,
-            access,
             resource_id,
+            access,
+            cached_blob: blob_bytes,
         }),
     }
 }
@@ -219,6 +194,6 @@ pub(super) fn open_invocation(
 fn error_outcome(code: ErrorCode, message: String) -> ReadOutcome {
     ReadOutcome {
         response: WrapperResponse::Error { code, message },
-        opened: None,
+        channel: None,
     }
 }

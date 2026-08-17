@@ -4,8 +4,6 @@ use tracing::{error, info};
 
 use crate::wrapper_resource_channel::{ChannelContext, run_channel};
 
-use super::read::OpenedInvocation;
-
 /// Set up the single wrapper-resource channel for the resource the
 /// backend authorized. Exactly one fd is sent via SCM_RIGHTS,
 /// immediately after the `ReadOk` response itself. The channel
@@ -14,9 +12,9 @@ use super::read::OpenedInvocation;
 pub(super) async fn establish_scoped_channels(
     stream: &UnixStream,
     wrapper_name: &str,
-    opened: OpenedInvocation,
+    ctx: ChannelContext,
 ) {
-    match setup_wrapper_resource_channel(stream, opened).await {
+    match setup_wrapper_resource_channel(stream, ctx).await {
         Ok(()) => info!(wrapper = %wrapper_name, "wrapper-resource channel established"),
         Err(e) => error!(
             wrapper = %wrapper_name,
@@ -49,25 +47,13 @@ async fn setup_scoped_channel(
     Ok(())
 }
 
-async fn setup_wrapper_resource_channel(
-    stream: &UnixStream,
-    opened: OpenedInvocation,
-) -> Result<()> {
-    let ctx = ChannelContext {
-        wrapper_name: opened.wrapper_name,
-        variant: opened.variant,
-        resource_name: opened.resource_name,
-        resource_id: opened.resource_id,
-        access: opened.access,
-        cached_blob: opened.blob_bytes,
-    };
-    let backend = opened.backend;
+async fn setup_wrapper_resource_channel(stream: &UnixStream, ctx: ChannelContext) -> Result<()> {
     setup_scoped_channel(
         stream,
         "wrapper-resource channel fd",
         move |daemon_stream| {
             tokio::spawn(async move {
-                run_channel(daemon_stream, backend, ctx).await;
+                run_channel(daemon_stream, ctx).await;
             });
         },
     )
