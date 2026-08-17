@@ -331,20 +331,18 @@ fn invoke_backend_register(
     let directory = tempfile::tempdir()
         .map_err(|error| ClientFailure::harness(format!("creating fixture directory: {error}")))?;
     let ca_file = directory.path().join("selected-ca.pem");
-    let client_cert_file = directory.path().join("client.pem");
-    let client_key_file = directory.path().join("client.key");
+    let client_identity_file = directory.path().join("client.identity.pem");
     std::fs::write(&ca_file, TEST_CA_SELECTED_EXCLUSIVE_PEM)
         .map_err(|error| ClientFailure::harness(format!("writing fixture CA: {error}")))?;
-    std::fs::write(&client_cert_file, TEST_CLIENT_LOCAL_PEM)
-        .map_err(|error| ClientFailure::harness(format!("writing fixture certificate: {error}")))?;
-    std::fs::write(&client_key_file, TEST_CLIENT_LOCAL_KEY)
-        .map_err(|error| ClientFailure::harness(format!("writing fixture key: {error}")))?;
+    let mut client_identity = TEST_CLIENT_LOCAL_PEM.as_bytes().to_vec();
+    client_identity.extend_from_slice(TEST_CLIENT_LOCAL_KEY.as_bytes());
+    std::fs::write(&client_identity_file, client_identity)
+        .map_err(|error| ClientFailure::harness(format!("writing fixture identity: {error}")))?;
 
     let client = BackendClient::open(&BackendServiceConfig {
         url: format!("https://127.0.0.1:{}", address.port()),
         ca_file: Some(ca_file),
-        client_cert_file: Some(client_cert_file),
-        client_key_file: Some(client_key_file),
+        client_identity_file: Some(client_identity_file),
     })
     .map_err(ClientFailure::from_anyhow)?;
     let runtime = tokio::runtime::Builder::new_current_thread()

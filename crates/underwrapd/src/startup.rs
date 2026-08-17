@@ -44,10 +44,6 @@ pub(crate) fn validate_backend_url(value: &str) -> Result<reqwest::Url> {
 /// Validate configuration at load time.
 pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
     validate_backend_url(&config.backend.url)?;
-    anyhow::ensure!(
-        config.backend.client_cert_file.is_some() == config.backend.client_key_file.is_some(),
-        "backend.client_cert_file and backend.client_key_file must either both be set or both be omitted"
-    );
 
     // Instance-level invariants (reserved `debug` name, projection slot
     // presence, non-empty instance name) shared with the backend.
@@ -94,38 +90,28 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
 /// Refuse to start if an mTLS client credential file exists on disk but
 /// is readable beyond the daemon user.
 ///
-/// The daemon self-heals when the credential is absent (the operator
-/// hasn't run `underwrap-keygen` yet, or the backend hasn't issued a
-/// cert), so a *missing* file is not an error — only a present file with
+/// The daemon self-heals when the identity is absent (the operator hasn't run
+/// `underwrap-keygen` yet), so a *missing* file is not an error — only a present file with
 /// the wrong owner, an over-permissive mode, or a world/group-accessible
 /// parent directory is. This turns a key-leak misconfiguration into a
 /// loud startup failure instead of silent operator-discipline reliance.
 pub(crate) fn check_credential_permissions(config: &DaemonConfig) -> Result<()> {
     let euid = unsafe { libc::geteuid() };
-    let entries = [
-        (
-            "backend client cert",
-            config.backend.client_cert_file.as_ref(),
-        ),
-        (
-            "backend client key",
-            config.backend.client_key_file.as_ref(),
-        ),
-    ];
-    for (label, path) in entries {
-        let Some(path) = path else { continue };
-        if !path.exists() {
-            continue;
-        }
-        let meta = std::fs::metadata(path)
-            .with_context(|| format!("stat {label} file {}", path.display()))?;
-        check_credential_file_meta(label, &path.display().to_string(), &meta, euid)?;
+    let Some(path) = config.backend.client_identity_file.as_ref() else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let label = "backend client identity";
+    let meta =
+        std::fs::metadata(path).with_context(|| format!("stat {label} file {}", path.display()))?;
+    check_credential_file_meta(label, &path.display().to_string(), &meta, euid)?;
 
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
-            && let Ok(pmeta) = std::fs::metadata(parent)
-        {
-            check_credential_dir_meta(label, &parent.display().to_string(), &pmeta, euid)?;
-        }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+        && let Ok(pmeta) = std::fs::metadata(parent)
+    {
+        check_credential_dir_meta(label, &parent.display().to_string(), &pmeta, euid)?;
     }
     Ok(())
 }

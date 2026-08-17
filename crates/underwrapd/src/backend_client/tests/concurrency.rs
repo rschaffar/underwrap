@@ -1,5 +1,6 @@
 use super::{
     TEST_CA_PEM, TEST_CLIENT_KEY, TEST_CLIENT_PEM, TEST_SERVER_KEY, TEST_SERVER_PEM, write_fixture,
+    write_identity_fixture,
 };
 use crate::backend_client::{BackendClient, MAX_IN_FLIGHT_REQUESTS, REQUEST_DEADLINE};
 use rustls::pki_types::pem::PemObject;
@@ -49,17 +50,14 @@ fn open_test_client(
 ) -> (tempfile::TempDir, BackendClient) {
     let dir = tempfile::tempdir().unwrap();
     let ca = dir.path().join("ca.pem");
-    let cert = dir.path().join("client.pem");
-    let key = dir.path().join("client.key");
+    let identity = dir.path().join("client.identity.pem");
     write_fixture(&ca, TEST_CA_PEM);
-    write_fixture(&cert, TEST_CLIENT_PEM);
-    write_fixture(&key, TEST_CLIENT_KEY);
+    write_identity_fixture(&identity, TEST_CLIENT_PEM, TEST_CLIENT_KEY);
     let client = BackendClient::open_with_policy(
         &BackendServiceConfig {
             url: format!("https://127.0.0.1:{}", address.port()),
             ca_file: Some(ca),
-            client_cert_file: Some(cert),
-            client_key_file: Some(key),
+            client_identity_file: Some(identity),
         },
         max_in_flight,
         request_deadline,

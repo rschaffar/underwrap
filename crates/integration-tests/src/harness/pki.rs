@@ -34,7 +34,7 @@ pub(super) struct TestPkiPaths {
     pub server_cert: PathBuf,
     pub server_key: PathBuf,
     pub client_cert: PathBuf,
-    pub client_key: PathBuf,
+    pub client_identity: PathBuf,
 }
 
 pub(super) fn principal_client_name(principal: &str) -> Result<&'static str> {
@@ -63,34 +63,42 @@ pub(super) fn test_pki_paths(base: &Path, client_name: &str) -> Result<TestPkiPa
     std::fs::write(&server_cert, TEST_SERVER_PEM.as_bytes())?;
     std::fs::write(&server_key, TEST_SERVER_KEY.as_bytes())?;
 
-    let (client_cert, client_key, client_cert_bytes, client_key_bytes): (&str, &str, &[u8], &[u8]) =
-        match client_name {
-            "local" => (
-                "client-local.pem",
-                "client-local.key",
-                TEST_CLIENT_LOCAL_PEM.as_bytes(),
-                TEST_CLIENT_LOCAL_KEY.as_bytes(),
-            ),
-            "tunnel" => (
-                "client-tunnel.pem",
-                "client-tunnel.key",
-                TEST_CLIENT_TUNNEL_PEM.as_bytes(),
-                TEST_CLIENT_TUNNEL_KEY.as_bytes(),
-            ),
-            other => anyhow::bail!("unknown test client name '{other}'"),
-        };
-    let client_cert = pki_dir.join(client_cert);
-    let client_key = pki_dir.join(client_key);
+    let (client_cert_name, client_identity_name, client_cert_bytes, client_key_bytes): (
+        &str,
+        &str,
+        &[u8],
+        &[u8],
+    ) = match client_name {
+        "local" => (
+            "client-local.pem",
+            "client-local.identity.pem",
+            TEST_CLIENT_LOCAL_PEM.as_bytes(),
+            TEST_CLIENT_LOCAL_KEY.as_bytes(),
+        ),
+        "tunnel" => (
+            "client-tunnel.pem",
+            "client-tunnel.identity.pem",
+            TEST_CLIENT_TUNNEL_PEM.as_bytes(),
+            TEST_CLIENT_TUNNEL_KEY.as_bytes(),
+        ),
+        other => anyhow::bail!("unknown test client name '{other}'"),
+    };
+    let client_cert = pki_dir.join(client_cert_name);
+    let client_identity = pki_dir.join(client_identity_name);
     std::fs::write(&client_cert, client_cert_bytes)?;
-    std::fs::write(&client_key, client_key_bytes)?;
-    // The daemon refuses to start unless its mTLS credential is 0600 or
-    // tighter (see underwrapd startup::check_credential_permissions),
-    // matching what underwrap-keygen writes. `std::fs::write` honors the
-    // umask (typically 0644), so tighten explicitly here.
+    let mut identity = client_cert_bytes.to_vec();
+    identity.extend_from_slice(client_key_bytes);
+    match std::fs::remove_file(&client_identity) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    std::fs::write(&client_identity, identity)?;
+    // The daemon refuses to start unless its combined mTLS identity is 0600
+    // or tighter (see underwrapd startup::check_credential_permissions).
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&client_cert, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::set_permissions(&client_key, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&client_identity, std::fs::Permissions::from_mode(0o400))?;
     }
 
     Ok(TestPkiPaths {
@@ -98,6 +106,6 @@ pub(super) fn test_pki_paths(base: &Path, client_name: &str) -> Result<TestPkiPa
         server_cert,
         server_key,
         client_cert,
-        client_key,
+        client_identity,
     })
 }

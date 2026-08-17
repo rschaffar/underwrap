@@ -74,8 +74,7 @@ pub struct TestDaemon {
     admin_csrf_token: String,
     admin_client: reqwest::Client,
     pub service_ca_cert: PathBuf,
-    service_client_cert: PathBuf,
-    service_client_key: PathBuf,
+    service_client_identity: PathBuf,
     /// The mTLS-bound runtime client instance id the backend
     /// authenticates this daemon as. Tests use it to build per-grant
     /// keys.
@@ -213,20 +212,13 @@ impl TestDaemon {
                 &pki.ca_cert,
             )?)?)
             .build()?;
-        wait_for_service(
-            &service_url,
-            &ready_pki.ca_cert,
-            &ready_pki.client_cert,
-            &ready_pki.client_key,
-        )
-        .await?;
+        wait_for_service(&service_url, &ready_pki.ca_cert, &ready_pki.client_identity).await?;
 
         let config = DaemonConfig {
             backend: BackendServiceConfig {
                 url: service_url.clone(),
                 ca_file: Some(pki.ca_cert.clone()),
-                client_cert_file: Some(pki.client_cert.clone()),
-                client_key_file: Some(pki.client_key.clone()),
+                client_identity_file: Some(pki.client_identity.clone()),
             },
             instance: "local".to_string(),
             socket: instance_socket.clone(),
@@ -262,8 +254,7 @@ impl TestDaemon {
             admin_csrf_token,
             admin_client,
             service_ca_cert: pki.ca_cert.clone(),
-            service_client_cert: pki.client_cert.clone(),
-            service_client_key: pki.client_key.clone(),
+            service_client_identity: pki.client_identity.clone(),
             client_instance,
             shutdown,
             backend_shutdown,
@@ -562,9 +553,14 @@ impl TestDaemon {
     /// e.g. to prove the backend gates writes server-side regardless
     /// of what the client tries to send.
     pub fn direct_service_client(&self) -> Result<reqwest::Client> {
-        let cert_pem = std::fs::read(&self.service_client_cert)?;
-        let key_pem = std::fs::read(&self.service_client_key)?;
-        self.direct_service_client_from_pem(&cert_pem, &key_pem)
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let ca_pem = std::fs::read(&self.service_ca_cert)?;
+        let identity_pem = std::fs::read(&self.service_client_identity)?;
+        Ok(reqwest::Client::builder()
+            .use_rustls_tls()
+            .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem)?)
+            .identity(reqwest::Identity::from_pem(&identity_pem)?)
+            .build()?)
     }
 
     fn direct_service_client_from_pem(

@@ -9,9 +9,8 @@ backend:
   # Optional. When set, this is the complete server trust bundle and replaces
   # bundled WebPKI roots. Omit to use reqwest's bundled WebPKI roots.
   ca_file: /etc/underwrap/ca.pem
-  # The NixOS module fixes these paths under the per-instance state directory.
-  client_cert_file: /var/lib/underwrap-example/client-example.pem
-  client_key_file: /var/lib/underwrap-example/client-example.key
+  # The NixOS module fixes this path under the per-instance state directory.
+  client_identity_file: /var/lib/underwrap-example/client-example.identity.pem
 
 # One instance has one setgid entry point (`underwrap-<instance>`), one group,
 # one daemon, and one wrapper socket. Wrapper names are selectors validated

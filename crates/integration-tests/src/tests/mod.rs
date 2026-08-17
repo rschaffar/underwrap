@@ -254,8 +254,7 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
         backend: underwrap_protocol::config::BackendServiceConfig {
             url: backend_url,
             ca_file: Some(base.join("ca.pem")),
-            client_cert_file: Some(base.join("client.pem")),
-            client_key_file: Some(base.join("client.key")),
+            client_identity_file: Some(base.join("client.identity.pem")),
         },
         instance: "local".to_string(),
         socket: base.join("instance.sock"),

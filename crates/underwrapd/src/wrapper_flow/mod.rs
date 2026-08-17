@@ -92,13 +92,13 @@ async fn open_one_invocation(
             match &err {
                 BackendOpenError::MissingCredential => warn!(
                     wrapper = %wrapper_name,
-                    "wrapper request denied: client credential is not on disk yet \
+                    "wrapper request denied: client identity is not on disk yet \
                      (run `underwrap-keygen` for this instance)",
                 ),
                 BackendOpenError::Open(e) => warn!(
                     wrapper = %wrapper_name,
                     err = %format!("{e:#}"),
-                    "wrapper request denied: backend rejected this client's credential or is unreachable",
+                    "wrapper request denied: backend client construction failed",
                 ),
             }
             return ReadOutcome {

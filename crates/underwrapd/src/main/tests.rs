@@ -14,8 +14,7 @@ fn parse_daemon_config_parses_minimal_yaml() {
 backend:
   url: https://backend.example.internal:8443
   ca_file: /etc/underwrap/ca.pem
-  client_cert_file: /etc/underwrap/client.pem
-  client_key_file: /etc/underwrap/client.key
+  client_identity_file: /var/lib/underwrap-local/client-local.identity.pem
 instance: local
 socket: /run/underwrap/local.sock
 group: underwrap-local

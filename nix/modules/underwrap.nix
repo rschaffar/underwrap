@@ -46,9 +46,8 @@ let
     stateDir = "/var/lib/underwrap-${instName}";
     # Per-instance mTLS client credential, generated locally with
     # `underwrap-keygen --instance-config /etc/underwrap/daemon/${instName}.yaml`.
-    # Fixed per-instance paths prevent credential-file collisions on one host.
-    clientCertPath = "${stateDir}/client-${instName}.pem";
-    clientKeyPath = "${stateDir}/client-${instName}.key";
+    # A fixed per-instance path prevents identity-file collisions on one host.
+    clientIdentityPath = "${stateDir}/client-${instName}.identity.pem";
     nsBinaryPath = "/run/wrappers/bin/underwrap-ns";
 
     # Minimal trusted sidecar read by `underwrap-exec` (underwrap-exec) from
@@ -73,8 +72,7 @@ let
     runtimeConfig = {
       backend = {
         url = inst.backend.url;
-        client_cert_file = clientCertPath;
-        client_key_file = clientKeyPath;
+        client_identity_file = clientIdentityPath;
       } // lib.optionalAttrs (inst.backend.caFile != null) {
         ca_file = inst.backend.caFile;
       };
@@ -190,7 +188,7 @@ let
         CapabilityBoundingSet = "";
         AmbientCapabilities = "";
         LimitCORE = 0;
-        # `${stateDir}` holds the mTLS cert/key (read-only at runtime; only
+        # `${stateDir}` holds the mTLS identity (read-only at runtime; only
         # keygen, run separately as the operator, writes there). `${runDir}`
         # holds the wrapper socket the daemon binds. /etc/underwrap is the
         # config, already read-only under ProtectSystem=strict.

@@ -206,6 +206,7 @@ fn default_storage_dir() -> PathBuf {
 ///
 /// The frontend talks to a central backend service over HTTPS with mTLS.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BackendServiceConfig {
     /// Backend service URL, e.g. `https://backend.example.internal:8443`.
     pub url: String,
@@ -213,11 +214,8 @@ pub struct BackendServiceConfig {
     /// CA certificate bundle used to verify the backend service certificate.
     pub ca_file: Option<PathBuf>,
 
-    /// Client certificate file used for mTLS.
-    pub client_cert_file: Option<PathBuf>,
-
-    /// Client private key file used for mTLS.
-    pub client_key_file: Option<PathBuf>,
+    /// Combined client certificate-chain and private-key PEM used for mTLS.
+    pub client_identity_file: Option<PathBuf>,
 }
 
 /// A wrapper definition.

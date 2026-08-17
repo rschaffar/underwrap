@@ -42,14 +42,13 @@ pub(crate) struct State {
 
 #[derive(Debug)]
 pub(crate) enum BackendOpenError {
-    /// The cert/key files configured for this instance aren't on disk
-    /// yet. The operator hasn't run `underwrap-keygen` for this
-    /// instance, or the keygen output landed somewhere else.
+    /// The combined identity configured for this instance isn't on disk yet.
+    /// The operator hasn't run `underwrap-keygen` for this instance, or the
+    /// keygen output landed somewhere else.
     MissingCredential,
-    /// The backend rejected the handshake or the client could not be
-    /// constructed. Most often: backend is down, mTLS material is no
-    /// longer accepted, or the operator hasn't pasted the cert PEM
-    /// into the admin UI yet.
+    /// The configured identity or CA could not be read/parsed, or the HTTPS
+    /// client could not be constructed. Network/authentication failures occur
+    /// only when that client later issues a runtime request.
     Open(anyhow::Error),
 }
 
@@ -69,22 +68,20 @@ impl State {
         build_enrollment_url(&self.config)
     }
 
-    /// Get (or lazily build) the [`BackendClient`]. Failures are NOT
-    /// cached: a later wrapper request retries the open, so the daemon
-    /// self-heals as soon as the operator drops the cert files in
-    /// place or the backend comes back up.
+    /// Get (or lazily build) the [`BackendClient`]. Construction failures are
+    /// not cached: a later wrapper request retries after the operator installs
+    /// or repairs the identity/CA files.
     pub(crate) fn ensure_backend(&self) -> Result<Arc<BackendClient>, BackendOpenError> {
         let mut guard = self.backend.lock().unwrap();
         if let Some(c) = guard.as_ref() {
             return Ok(Arc::clone(c));
         }
-        let credential_on_disk = matches!(
-            (
-                self.config.backend.client_cert_file.as_ref(),
-                self.config.backend.client_key_file.as_ref(),
-            ),
-            (Some(c), Some(k)) if c.exists() && k.exists(),
-        );
+        let credential_on_disk = self
+            .config
+            .backend
+            .client_identity_file
+            .as_ref()
+            .is_some_and(|identity| identity.exists());
         if !credential_on_disk {
             return Err(BackendOpenError::MissingCredential);
         }
@@ -193,11 +190,11 @@ pub async fn run(config: DaemonConfig, shutdown: Option<Arc<Notify>>) -> Result<
             }
         }
         Err(BackendOpenError::MissingCredential) => info!(
-            "client credential not yet on disk; daemon will retry backend open on the next wrapper request",
+            "client identity not yet on disk; daemon will retry backend client construction on the next wrapper request",
         ),
         Err(BackendOpenError::Open(e)) => warn!(
             err = %format!("{e:#}"),
-            "backend not reachable at startup; daemon will retry on the next wrapper request",
+            "backend client construction failed at startup; daemon will retry on the next wrapper request",
         ),
     }
 

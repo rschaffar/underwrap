@@ -12,35 +12,29 @@ use zeroize::Zeroizing;
     about = "Generate a self-signed client credential for underwrap"
 )]
 pub struct Cli {
-    /// Where to atomically install the generated client certificate PEM.
+    /// Where to atomically install the generated combined client identity PEM.
     /// Required unless `--instance-config` is given.
     #[arg(long, conflicts_with = "instance_config")]
-    pub client_cert_out: Option<PathBuf>,
-    /// Where to atomically install the generated client private key PEM.
-    /// Required unless `--instance-config` is given.
-    #[arg(long, conflicts_with = "instance_config")]
-    pub client_key_out: Option<PathBuf>,
+    pub client_identity_out: Option<PathBuf>,
     /// Path to an underwrapd daemon config (typically
     /// `/etc/underwrap/daemon/<instance>.yaml` — the file that carries
     /// the `backend` section, not the `/etc/underwrap/instances/`
     /// underwrap-exec sidecar). When given, the helper reads
-    /// `backend.client_cert_file` and `backend.client_key_file` from
-    /// that file and refuses any duplicate explicit
-    /// `--client-cert-out` / `--client-key-out`.
+    /// `backend.client_identity_file` from that file and refuses a duplicate
+    /// explicit `--client-identity-out`.
     #[arg(long)]
     pub instance_config: Option<PathBuf>,
 }
 
-/// Effective output locations, resolved either from explicit CLI flags or
+/// Effective output location, resolved either from the explicit CLI flag or
 /// from an instance config file.
 #[derive(Debug, Clone)]
 pub struct ResolvedTargets {
-    pub client_cert_out: PathBuf,
-    pub client_key_out: PathBuf,
-    /// When the targets came from `--instance-config` and an
+    pub client_identity_out: PathBuf,
+    /// When the target came from `--instance-config` and an
     /// `underwrap-<catalog_instance>` user + group could be resolved on
-    /// this host, the (uid, gid) the helper should chown freshly written
-    /// credential files to. `None` falls back to "keep current uid/gid"
+    /// this host, the (uid, gid) the helper should chown the freshly written
+    /// identity file to. `None` falls back to "keep current uid/gid"
     /// (root, under `sudo`) plus a warning so the operator knows to
     /// adjust ownership manually.
     pub credential_owner: Option<(u32, u32)>,
@@ -71,15 +65,9 @@ impl Cli {
                         path.display()
                     )
                 })?;
-            let client_cert_out = backend.client_cert_file.with_context(|| {
+            let client_identity_out = backend.client_identity_file.with_context(|| {
                 format!(
-                    "instance config '{}' has no backend.client_cert_file",
-                    path.display()
-                )
-            })?;
-            let client_key_out = backend.client_key_file.with_context(|| {
-                format!(
-                    "instance config '{}' has no backend.client_key_file",
+                    "instance config '{}' has no backend.client_identity_file",
                     path.display()
                 )
             })?;
@@ -93,22 +81,16 @@ impl Cli {
                 .and_then(|s| s.to_str())
                 .and_then(derive_instance_owner);
             Ok(ResolvedTargets {
-                client_cert_out,
-                client_key_out,
+                client_identity_out,
                 credential_owner,
             })
         } else {
-            let client_cert_out = self
-                .client_cert_out
+            let client_identity_out = self
+                .client_identity_out
                 .clone()
-                .context("either --instance-config or --client-cert-out is required")?;
-            let client_key_out = self
-                .client_key_out
-                .clone()
-                .context("either --instance-config or --client-key-out is required")?;
+                .context("either --instance-config or --client-identity-out is required")?;
             Ok(ResolvedTargets {
-                client_cert_out,
-                client_key_out,
+                client_identity_out,
                 credential_owner: None,
             })
         }
@@ -154,34 +136,38 @@ fn lookup_gid(name: &str) -> Option<u32> {
 pub fn run(cli: Cli) -> Result<()> {
     harden_process()?;
     let targets = cli.resolve_targets()?;
-    validate_output_paths(&targets.client_cert_out, &targets.client_key_out)?;
+    validate_output_path(&targets.client_identity_out)?;
 
     eprintln!("underwrap-keygen: generating client key and self-signed cert");
-    let (key_pem, cert_pem) = generate_key_and_self_signed_cert()?;
+    let (identity_pem, cert_pem) = generate_key_and_self_signed_cert()?;
 
-    eprintln!("underwrap-keygen: installing credential files atomically");
-    install_credential(
-        &targets.client_key_out,
-        key_pem.as_bytes(),
-        0o400,
-        &targets.client_cert_out,
-        cert_pem.as_bytes(),
-        0o600,
+    eprintln!("underwrap-keygen: installing client identity atomically");
+    install_identity(
+        &targets.client_identity_out,
+        identity_pem.as_slice(),
         targets.credential_owner,
     )?;
 
     eprintln!(
-        "underwrap-keygen: wrote {} and {}",
-        targets.client_key_out.display(),
-        targets.client_cert_out.display()
+        "underwrap-keygen: wrote {}",
+        targets.client_identity_out.display()
     );
     eprintln!(
         "underwrap-keygen: paste the certificate PEM below into the admin UI to register this client"
     );
 
-    // The PEM is the only thing on stdout — easy to pipe or copy.
-    print!("{cert_pem}");
+    // Persistence is already committed here. Stdout delivery is intentionally
+    // nontransactional: a write failure leaves the complete new identity installed.
+    let mut stdout = std::io::stdout().lock();
+    write_public_certificate(&mut stdout, &cert_pem)?;
     Ok(())
+}
+
+fn write_public_certificate(writer: &mut impl Write, cert_pem: &str) -> Result<()> {
+    writer
+        .write_all(cert_pem.as_bytes())
+        .and_then(|()| writer.flush())
+        .context("writing public certificate to stdout after identity commit")
 }
 
 fn harden_process() -> Result<()> {
@@ -206,20 +192,15 @@ fn harden_process() -> Result<()> {
     Ok(())
 }
 
-fn validate_output_paths(cert_out: &Path, key_out: &Path) -> Result<()> {
-    let mut seen = std::collections::BTreeSet::new();
-    for path in [cert_out, key_out] {
-        let key = path.as_os_str().to_owned();
-        anyhow::ensure!(seen.insert(key), "output paths must be distinct");
-        anyhow::ensure!(
-            !path.as_os_str().is_empty(),
-            "output path must not be empty"
-        );
-    }
+fn validate_output_path(path: &Path) -> Result<()> {
+    anyhow::ensure!(
+        !path.as_os_str().is_empty(),
+        "output path must not be empty"
+    );
     Ok(())
 }
 
-fn generate_key_and_self_signed_cert() -> Result<(Zeroizing<String>, String)> {
+fn generate_key_and_self_signed_cert() -> Result<(Zeroizing<Vec<u8>>, String)> {
     let key_pair = rcgen::KeyPair::generate().context("generating client keypair")?;
     let key_pem = Zeroizing::new(key_pair.serialize_pem());
 
@@ -237,10 +218,44 @@ fn generate_key_and_self_signed_cert() -> Result<(Zeroizing<String>, String)> {
     let cert = params
         .self_signed(&key_pair)
         .context("generating self-signed client cert")?;
-    Ok((key_pem, cert.pem()))
+    let cert_pem = cert.pem();
+    let mut identity_pem = Zeroizing::new(Vec::with_capacity(cert_pem.len() + key_pem.len()));
+    identity_pem.extend_from_slice(cert_pem.as_bytes());
+    identity_pem.extend_from_slice(key_pem.as_bytes());
+    Ok((identity_pem, cert_pem))
 }
 
-fn write_atomic(path: &Path, contents: &[u8], mode: u32, owner: Option<(u32, u32)>) -> Result<()> {
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallPhase {
+    Write,
+    Chown,
+    Chmod,
+    Sync,
+    Persist,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_INSTALL_PHASE: std::cell::Cell<Option<InstallPhase>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn install_checkpoint(phase: InstallPhase) -> Result<()> {
+    if FAIL_INSTALL_PHASE.with(|selected| selected.get() == Some(phase)) {
+        bail!("injected identity install failure at {phase:?}");
+    }
+    Ok(())
+}
+
+macro_rules! install_checkpoint {
+    ($phase:ident) => {
+        #[cfg(test)]
+        install_checkpoint(InstallPhase::$phase)?;
+    };
+}
+
+fn write_identity_atomic(path: &Path, contents: &[u8], owner: Option<(u32, u32)>) -> Result<()> {
     use std::os::fd::AsRawFd;
     let parent = path.parent().ok_or_else(|| {
         anyhow::anyhow!("output path '{}' has no parent directory", path.display())
@@ -249,14 +264,14 @@ fn write_atomic(path: &Path, contents: &[u8], mode: u32, owner: Option<(u32, u32
         .with_context(|| format!("creating output directory {}", parent.display()))?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)
         .with_context(|| format!("creating temp file under {}", parent.display()))?;
+
+    install_checkpoint!(Write);
     temp.write_all(contents)
-        .with_context(|| format!("writing temp file for {}", path.display()))?;
-    temp.as_file()
-        .sync_all()
-        .with_context(|| format!("fsyncing temp file for {}", path.display()))?;
+        .with_context(|| format!("writing temp identity for {}", path.display()))?;
+
     if let Some((uid, gid)) = owner {
-        let fd = temp.as_file().as_raw_fd();
-        let ret = unsafe { libc::fchown(fd, uid, gid) };
+        install_checkpoint!(Chown);
+        let ret = unsafe { libc::fchown(temp.as_file().as_raw_fd(), uid, gid) };
         if ret != 0 {
             bail!(
                 "fchown({}, {uid}, {gid}) failed: {}",
@@ -265,35 +280,44 @@ fn write_atomic(path: &Path, contents: &[u8], mode: u32, owner: Option<(u32, u32
             );
         }
     }
-    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(mode))
-        .with_context(|| format!("setting permissions on temp file for {}", path.display()))?;
+
+    install_checkpoint!(Chmod);
+    temp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o400))
+        .with_context(|| {
+            format!(
+                "setting permissions on temp identity for {}",
+                path.display()
+            )
+        })?;
+
+    install_checkpoint!(Sync);
+    temp.as_file()
+        .sync_all()
+        .with_context(|| format!("syncing prepared identity for {}", path.display()))?;
+
+    // This persist is the single visibility commit. The prepared file is synced,
+    // but the parent directory is intentionally not fsynced for power-loss durability.
+    install_checkpoint!(Persist);
     temp.persist(path)
-        .map_err(|e| anyhow::anyhow!("atomically persisting {}: {e}", path.display(),))?;
+        .map_err(|e| anyhow::anyhow!("atomically persisting {}: {e}", path.display()))?;
     Ok(())
 }
 
-fn install_credential(
-    key_out: &Path,
-    key_pem: &[u8],
-    key_mode: u32,
-    cert_out: &Path,
-    cert_pem: &[u8],
-    cert_mode: u32,
+fn install_identity(
+    identity_out: &Path,
+    identity_pem: &[u8],
     preferred_owner: Option<(u32, u32)>,
 ) -> Result<()> {
-    let key_owner = resolve_target_owner(key_out, preferred_owner);
-    let cert_owner = resolve_target_owner(cert_out, preferred_owner);
-    if preferred_owner.is_none() && key_owner.is_none() {
+    let owner = resolve_target_owner(identity_out, preferred_owner);
+    if preferred_owner.is_none() && owner.is_none() {
         eprintln!(
-            "underwrap-keygen: warning: could not infer a daemon user for the credential files; \
-             writing as the current user. chown {} and {} to the daemon user before starting underwrapd.",
-            key_out.display(),
-            cert_out.display()
+            "underwrap-keygen: warning: could not infer a daemon user for the client identity; \
+             writing as the current user. chown {} to the daemon user before starting underwrapd.",
+            identity_out.display()
         );
     }
-    write_atomic(key_out, key_pem, key_mode, key_owner)?;
-    write_atomic(cert_out, cert_pem, cert_mode, cert_owner)?;
-    Ok(())
+    write_identity_atomic(identity_out, identity_pem, owner)
 }
 
 /// Decide the (uid, gid) for a credential file. `preferred_owner` (from the

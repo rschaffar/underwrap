@@ -70,8 +70,7 @@ async fn parse_example_config() {
 backend:
   url: https://backend.example.internal:8443
   ca_file: /etc/underwrap/ca.pem
-  client_cert_file: /etc/underwrap/client.pem
-  client_key_file: /etc/underwrap/client.key
+  client_identity_file: /var/lib/underwrap-local/client-local.identity.pem
 instance: local
 socket: /run/underwrap/local.sock
 group: underwrap-local
@@ -614,23 +613,20 @@ async fn underwrapd_binary_start_and_read() {
     let server_key = base.join("server.key");
     let ca_cert = base.join("ca.pem");
     let client_cert = base.join("client.pem");
-    let client_key = base.join("client.key");
+    let client_identity = base.join("client.identity.pem");
     std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
     std::fs::write(&client_cert, crate::harness::TEST_CLIENT_LOCAL_PEM).unwrap();
-    std::fs::write(&client_key, crate::harness::TEST_CLIENT_LOCAL_KEY).unwrap();
-    // The daemon refuses to start unless its mTLS credential is 0600 or
-    // tighter and its parent directory is 0700 or tighter
-    // (startup::check_credential_permissions), matching the NixOS module's
-    // 0700 stateDir + keygen's 0600 output. Both `std::fs::write` and
-    // `tempfile` honor the umask (0644 / 0755 in the Nix build sandbox),
-    // so pin them explicitly.
+    let mut identity = crate::harness::TEST_CLIENT_LOCAL_PEM.as_bytes().to_vec();
+    identity.extend_from_slice(crate::harness::TEST_CLIENT_LOCAL_KEY.as_bytes());
+    std::fs::write(&client_identity, identity).unwrap();
+    // The daemon refuses to start unless its mTLS identity is 0600 or tighter
+    // and its parent directory is 0700 or tighter.
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::set_permissions(&client_cert, std::fs::Permissions::from_mode(0o600)).unwrap();
-        std::fs::set_permissions(&client_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&client_identity, std::fs::Permissions::from_mode(0o400)).unwrap();
     }
 
     let stores_dir = base.join("stores");
@@ -754,7 +750,7 @@ async fn underwrapd_binary_start_and_read() {
         .unwrap();
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        wait_for_service(&service_url, &ca_cert, &client_cert, &client_key),
+        wait_for_service(&service_url, &ca_cert, &client_identity),
     )
     .await
     {
@@ -775,8 +771,7 @@ async fn underwrapd_binary_start_and_read() {
         backend: underwrap_protocol::config::BackendServiceConfig {
             url: service_url.clone(),
             ca_file: Some(ca_cert.clone()),
-            client_cert_file: Some(client_cert.clone()),
-            client_key_file: Some(client_key.clone()),
+            client_identity_file: Some(client_identity.clone()),
         },
         instance: "local".to_string(),
         socket: wrapper_sock.clone(),

@@ -6,8 +6,7 @@ pub(crate) fn config_with_backend_url(url: &str) -> DaemonConfig {
         backend: BackendServiceConfig {
             url: url.into(),
             ca_file: None,
-            client_cert_file: None,
-            client_key_file: None,
+            client_identity_file: None,
         },
         instance: "local".into(),
         socket: PathBuf::from("/run/underwrap/local.sock"),

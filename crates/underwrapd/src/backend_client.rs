@@ -29,6 +29,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use underwrap_protocol::config::BackendServiceConfig;
+use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::service::{
     RuntimeWrapperInvocationFinalizeRequest, RuntimeWrapperInvocationFinalizeResponse,
     RuntimeWrapperInvocationOpenRequest, RuntimeWrapperInvocationOpenResponse,
@@ -126,21 +127,16 @@ impl BackendClient {
     ) -> Result<Self> {
         crate::startup::validate_backend_url(&config.url)?;
         let base_url = config.url.clone();
-        let cert_path = config
-            .client_cert_file
+        let identity_path = config
+            .client_identity_file
             .as_ref()
-            .context("backend requires client_cert_file")?;
-        let key_path = config
-            .client_key_file
-            .as_ref()
-            .context("backend requires client_key_file")?;
-
-        let cert_pem = fs::read(cert_path)
-            .with_context(|| format!("reading backend client cert file {}", cert_path.display()))?;
-        let key_pem = fs::read(key_path)
-            .with_context(|| format!("reading backend client key file {}", key_path.display()))?;
-        let mut identity_pem = cert_pem;
-        identity_pem.extend_from_slice(&key_pem);
+            .context("backend requires client_identity_file")?;
+        let identity_pem = SecretBytes::from(fs::read(identity_path).with_context(|| {
+            format!(
+                "reading backend client identity file {}",
+                identity_path.display()
+            )
+        })?);
 
         let _ = rustls::crypto::ring::default_provider().install_default();
         // Disable HTTP keep-alive: the daemon issues a small handful
@@ -159,7 +155,10 @@ impl BackendClient {
             .use_rustls_tls()
             .https_only(true)
             .pool_max_idle_per_host(0)
-            .identity(Identity::from_pem(&identity_pem).context("parsing backend identity PEM")?);
+            .identity(
+                Identity::from_pem(identity_pem.as_ref())
+                    .context("parsing backend identity PEM")?,
+            );
         let configured_ca = if let Some(ca_path) = config.ca_file.as_ref() {
             let ca_pem = fs::read(ca_path)
                 .with_context(|| format!("reading backend ca file {}", ca_path.display()))?;

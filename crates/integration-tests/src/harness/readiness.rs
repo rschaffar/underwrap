@@ -130,15 +130,11 @@ pub(crate) async fn wait_for_admin(url: &str, ca_cert: &Path) -> Result<()> {
 pub(crate) async fn wait_for_service(
     url: &str,
     ca_cert: &Path,
-    client_cert: &Path,
-    client_key: &Path,
+    client_identity: &Path,
 ) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let ca_pem = std::fs::read(ca_cert)?;
-    let cert_pem = std::fs::read(client_cert)?;
-    let key_pem = std::fs::read(client_key)?;
-    let mut identity_pem = cert_pem;
-    identity_pem.extend_from_slice(&key_pem);
+    let identity_pem = std::fs::read(client_identity)?;
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .timeout(std::time::Duration::from_millis(500))

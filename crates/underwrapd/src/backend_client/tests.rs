@@ -65,9 +65,8 @@ fn backend_ca_policy_default_mode_keeps_built_ins() {
 fn open_fails_immediately_on_bad_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let ca = dir.path().join("ca.pem");
-    let cert = dir.path().join("cert.pem");
-    let key = dir.path().join("key.pem");
-    for path in [&ca, &cert, &key] {
+    let identity = dir.path().join("client.identity.pem");
+    for path in [&ca, &identity] {
         std::fs::File::create(path)
             .unwrap()
             .write_all(b"not-a-cert")
@@ -76,8 +75,7 @@ fn open_fails_immediately_on_bad_credentials() {
     let result = BackendClient::open(&BackendServiceConfig {
         url: "https://localhost:0".to_string(),
         ca_file: Some(ca),
-        client_cert_file: Some(cert),
-        client_key_file: Some(key),
+        client_identity_file: Some(identity),
     });
     assert!(result.is_err());
     let msg = format!("{:#}", result.err().unwrap());
@@ -92,12 +90,11 @@ fn open_rejects_missing_client_identity() {
     let result = BackendClient::open(&BackendServiceConfig {
         url: "https://backend.example.internal".to_string(),
         ca_file: None,
-        client_cert_file: None,
-        client_key_file: None,
+        client_identity_file: None,
     });
     assert!(
-        format!("{:#}", result.err().unwrap()).contains("client_cert_file"),
-        "expected client_cert_file error",
+        format!("{:#}", result.err().unwrap()).contains("client_identity_file"),
+        "expected client_identity_file error",
     );
 }
 
@@ -106,8 +103,7 @@ fn backend_url_rejection_precedes_all_credential_file_reads() {
     let result = BackendClient::open(&BackendServiceConfig {
         url: "http://plaintext.example.invalid".to_string(),
         ca_file: Some("/unusable/ca.pem".into()),
-        client_cert_file: Some("/unusable/client.pem".into()),
-        client_key_file: Some("/unusable/client.key".into()),
+        client_identity_file: Some("/unusable/client.identity.pem".into()),
     });
     assert_eq!(
         result.err().unwrap().to_string(),
@@ -132,6 +128,12 @@ fn backend_url_endpoint_preserves_non_root_base_path_and_trailing_slash() {
 
 fn write_fixture(path: &std::path::Path, contents: &str) {
     std::fs::write(path, contents.as_bytes()).unwrap();
+}
+
+fn write_identity_fixture(path: &std::path::Path, cert: &str, key: &str) {
+    let mut identity = cert.as_bytes().to_vec();
+    identity.extend_from_slice(key.as_bytes());
+    std::fs::write(path, identity).unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -159,16 +161,13 @@ async fn https_only_redirect_never_connects_to_plaintext_trap() {
 
     let dir = tempfile::tempdir().unwrap();
     let ca = dir.path().join("ca.pem");
-    let cert = dir.path().join("client.pem");
-    let key = dir.path().join("client.key");
+    let identity = dir.path().join("client.identity.pem");
     write_fixture(&ca, TEST_CA_PEM);
-    write_fixture(&cert, TEST_CLIENT_PEM);
-    write_fixture(&key, TEST_CLIENT_KEY);
+    write_identity_fixture(&identity, TEST_CLIENT_PEM, TEST_CLIENT_KEY);
     let client = BackendClient::open(&BackendServiceConfig {
         url: format!("https://127.0.0.1:{}/proxy-base/", tls_address.port()),
         ca_file: Some(ca),
-        client_cert_file: Some(cert),
-        client_key_file: Some(key),
+        client_identity_file: Some(identity),
     })
     .unwrap();
 

@@ -3601,8 +3601,7 @@ def plaintext_runtime_backend_url_is_rejected_before_io():
         "backend": {
             "url": f"http://127.0.0.1:{trap_port}/runtime/base/",
             "ca_file": "/unusable/credentials/ca.pem",
-            "client_cert_file": "/unusable/credentials/client.pem",
-            "client_key_file": "/unusable/credentials/client.key",
+            "client_identity_file": "/unusable/credentials/client.identity.pem",
         },
         "instance": "plaintext-test",
         "socket": "/run/underwrap-plaintext-test/wrapper.sock",
@@ -4356,8 +4355,8 @@ def runtime_api_invariants():
 
     # ----------------------------------------------------------
     # Runtime credential rotation requires daemon restart. A successful
-    # keygen replaces the frontend files, but the running daemon keeps its
-    # cached old identity until the operator restarts the matching service.
+    # keygen replaces the frontend identity file, but the running daemon keeps
+    # its cached old identity until the operator restarts the matching service.
     # ----------------------------------------------------------
     stable_client_fields = (
         "id",
@@ -4394,15 +4393,13 @@ def runtime_api_invariants():
     )
     assert replacement_cert_pem.startswith("-----BEGIN CERTIFICATE-----\n")
     assert replacement_cert_pem.endswith("-----END CERTIFICATE-----\n")
-    credential_metadata = machine.succeed(
+    identity_metadata = machine.succeed(
         "stat -c '%U:%G %a' "
-        "/var/lib/underwrap-local/client-local.key "
-        "/var/lib/underwrap-local/client-local.pem"
-    ).splitlines()
-    assert credential_metadata == [
-        "underwrap-local:underwrap-local 400",
-        "underwrap-local:underwrap-local 600",
-    ], "keygen installed unexpected credential ownership or modes"
+        "/var/lib/underwrap-local/client-local.identity.pem"
+    ).strip()
+    assert identity_metadata == "underwrap-local:underwrap-local 400", (
+        "keygen installed unexpected identity ownership or mode"
+    )
 
     assert daemon_main_pid() == old_daemon_pid
     machine.succeed(wrapper_success_command)
@@ -4472,8 +4469,7 @@ def runtime_api_invariants():
     # An authenticated runtime mTLS client still receives 404 for guessed
     # storage-key/status routes outside the three-endpoint runtime surface.
     # ----------------------------------------------------------
-    runtime_cert = "/var/lib/underwrap-local/client-local.pem"
-    runtime_key = "/var/lib/underwrap-local/client-local.key"
+    runtime_identity = "/var/lib/underwrap-local/client-local.identity.pem"
 
     def _runtime_curl(method, path, body=None, expect_status=None):
         """Issue an mTLS request against the local backend's runtime
@@ -4485,8 +4481,8 @@ def runtime_api_invariants():
             "-o", "/tmp/runtime-body",
             "-w", "%{http_code}",
             "--cacert", CA_CERT,
-            "--cert", runtime_cert,
-            "--key", runtime_key,
+            "--cert", runtime_identity,
+            "--key", runtime_identity,
             "-X", method,
             f"https://127.0.0.1:18443{path}",
         ]

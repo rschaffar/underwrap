@@ -1,73 +1,83 @@
 use super::*;
+use clap::Parser;
+use std::collections::BTreeSet;
+use std::ffi::OsString;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-#[test]
-fn distinct_output_paths_are_required() {
-    let path = Path::new("/tmp/same.pem");
-    let err = validate_output_paths(path, path).unwrap_err();
-    assert!(format!("{err:#}").contains("must be distinct"));
-}
-
-#[test]
-fn key_and_self_signed_cert_are_generated_locally() {
-    let (key_pem, cert_pem) = generate_key_and_self_signed_cert().unwrap();
-    assert!(key_pem.contains("BEGIN PRIVATE KEY"));
-    assert!(cert_pem.contains("BEGIN CERTIFICATE"));
-    assert!(!cert_pem.contains("CERTIFICATE REQUEST"));
-}
-
-fn explicit_cli(cert: &str, key: &str) -> Cli {
+fn explicit_cli(identity: &str) -> Cli {
     Cli {
-        client_cert_out: Some(PathBuf::from(cert)),
-        client_key_out: Some(PathBuf::from(key)),
+        client_identity_out: Some(PathBuf::from(identity)),
         instance_config: None,
     }
 }
 
 #[test]
-fn resolve_targets_uses_explicit_flags() {
-    let cli = explicit_cli("/tmp/c.pem", "/tmp/c.key");
-    let t = cli.resolve_targets().unwrap();
-    assert_eq!(t.client_cert_out, PathBuf::from("/tmp/c.pem"));
-    assert_eq!(t.client_key_out, PathBuf::from("/tmp/c.key"));
+fn key_and_self_signed_cert_are_generated_locally_in_identity_order() {
+    let (identity_pem, cert_pem) = generate_key_and_self_signed_cert().unwrap();
+    let identity = std::str::from_utf8(identity_pem.as_slice()).unwrap();
+    assert!(cert_pem.contains("BEGIN CERTIFICATE"));
+    assert!(!cert_pem.contains("CERTIFICATE REQUEST"));
+    assert!(identity.starts_with(&cert_pem));
+    assert!(identity.contains("BEGIN PRIVATE KEY"));
+    assert!(
+        identity.find("BEGIN CERTIFICATE").unwrap() < identity.find("BEGIN PRIVATE KEY").unwrap()
+    );
+}
+
+#[test]
+fn resolve_targets_uses_explicit_flag() {
+    let cli = explicit_cli("/tmp/client.identity.pem");
+    let targets = cli.resolve_targets().unwrap();
+    assert_eq!(
+        targets.client_identity_out,
+        PathBuf::from("/tmp/client.identity.pem")
+    );
+}
+
+#[test]
+fn explicit_output_conflicts_with_instance_config() {
+    let error = Cli::try_parse_from([
+        "underwrap-keygen",
+        "--client-identity-out",
+        "/tmp/client.identity.pem",
+        "--instance-config",
+        "/etc/underwrap/daemon/work.yaml",
+    ])
+    .unwrap_err();
+    assert!(error.to_string().contains("cannot be used with"));
 }
 
 #[test]
 fn resolve_targets_reads_instance_config() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = tmp.path().join("work.yaml");
+    let config = tmp.path().join("work.yaml");
     std::fs::write(
-        &cfg,
+        &config,
         r#"
 backend:
   url: https://backend.example.internal:8443
-  client_cert_file: /etc/underwrap/client-work.pem
-  client_key_file: /etc/underwrap/client-work.key
+  client_identity_file: /var/lib/underwrap-work/client-work.identity.pem
 wrappers: {}
 "#,
     )
     .unwrap();
     let cli = Cli {
-        client_cert_out: None,
-        client_key_out: None,
-        instance_config: Some(cfg),
+        client_identity_out: None,
+        instance_config: Some(config),
     };
-    let t = cli.resolve_targets().unwrap();
+    let targets = cli.resolve_targets().unwrap();
     assert_eq!(
-        t.client_cert_out,
-        PathBuf::from("/etc/underwrap/client-work.pem")
-    );
-    assert_eq!(
-        t.client_key_out,
-        PathBuf::from("/etc/underwrap/client-work.key")
+        targets.client_identity_out,
+        PathBuf::from("/var/lib/underwrap-work/client-work.identity.pem")
     );
 }
 
 #[test]
-fn resolve_targets_rejects_instance_config_without_cert_paths() {
+fn resolve_targets_rejects_instance_config_without_identity_path() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = tmp.path().join("noop.yaml");
+    let config = tmp.path().join("noop.yaml");
     std::fs::write(
-        &cfg,
+        &config,
         r#"
 backend:
   url: https://backend.example.internal:8443
@@ -76,42 +86,144 @@ wrappers: {}
     )
     .unwrap();
     let cli = Cli {
-        client_cert_out: None,
-        client_key_out: None,
-        instance_config: Some(cfg),
+        client_identity_out: None,
+        instance_config: Some(config),
     };
-    let err = cli.resolve_targets().unwrap_err();
-    assert!(format!("{err:#}").contains("client_cert_file"));
+    let error = cli.resolve_targets().unwrap_err();
+    assert!(format!("{error:#}").contains("client_identity_file"));
 }
 
 #[test]
-fn resolve_targets_requires_paths_without_instance_config() {
+fn resolve_targets_requires_path_without_instance_config() {
     let cli = Cli {
-        client_cert_out: None,
-        client_key_out: Some(PathBuf::from("/tmp/c.key")),
+        client_identity_out: None,
         instance_config: None,
     };
-    let err = cli.resolve_targets().unwrap_err();
-    assert!(format!("{err:#}").contains("--client-cert-out"));
+    let error = cli.resolve_targets().unwrap_err();
+    assert!(format!("{error:#}").contains("--client-identity-out"));
 }
 
-#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+struct IdentitySnapshot {
+    bytes: Vec<u8>,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    entries: BTreeSet<OsString>,
+}
+
+fn snapshot(path: &Path) -> IdentitySnapshot {
+    let metadata = std::fs::metadata(path).unwrap();
+    let entries = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    IdentitySnapshot {
+        bytes: std::fs::read(path).unwrap(),
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        mode: metadata.permissions().mode() & 0o777,
+        entries,
+    }
+}
+
+fn with_install_failure<T>(phase: InstallPhase, action: impl FnOnce() -> T) -> T {
+    let previous = FAIL_INSTALL_PHASE.with(|selected| selected.replace(Some(phase)));
+    let result = action();
+    FAIL_INSTALL_PHASE.with(|selected| selected.set(previous));
+    result
+}
+
 #[test]
-fn install_credential_writes_expected_permissions() {
+fn every_precommit_install_failure_preserves_old_identity_and_metadata() {
+    for phase in [
+        InstallPhase::Write,
+        InstallPhase::Chown,
+        InstallPhase::Chmod,
+        InstallPhase::Sync,
+        InstallPhase::Persist,
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("client.identity.pem");
+        let (old_identity, _) = generate_key_and_self_signed_cert().unwrap();
+        let (new_identity, _) = generate_key_and_self_signed_cert().unwrap();
+        std::fs::write(&path, old_identity.as_slice()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o440)).unwrap();
+        let before = snapshot(&path);
+
+        let result = with_install_failure(phase, || {
+            install_identity(
+                &path,
+                new_identity.as_slice(),
+                Some((before.uid, before.gid)),
+            )
+        });
+
+        assert!(result.is_err(), "{phase:?} failure unexpectedly succeeded");
+        assert_eq!(snapshot(&path), before, "{phase:?} changed live identity");
+    }
+}
+
+#[test]
+fn successful_install_commits_one_complete_identity_with_exact_metadata() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let key = tmp.path().join("client.key");
-    let cert = tmp.path().join("client.pem");
-    install_credential(&key, b"KEY", 0o400, &cert, b"CERT", 0o440, None).unwrap();
-    assert_eq!(std::fs::read(&key).unwrap(), b"KEY");
-    assert_eq!(std::fs::read(&cert).unwrap(), b"CERT");
-    assert_eq!(
-        std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
-        0o400
+    let path = tmp.path().join("client.identity.pem");
+    let (old_identity, _) = generate_key_and_self_signed_cert().unwrap();
+    let (new_identity, new_cert) = generate_key_and_self_signed_cert().unwrap();
+    std::fs::write(&path, old_identity.as_slice()).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o440)).unwrap();
+    let before = snapshot(&path);
+
+    install_identity(
+        &path,
+        new_identity.as_slice(),
+        Some((before.uid, before.gid)),
+    )
+    .unwrap();
+
+    let after = snapshot(&path);
+    assert_eq!(after.bytes, new_identity.as_slice());
+    assert!(after.bytes.starts_with(new_cert.as_bytes()));
+    assert!(
+        std::str::from_utf8(&after.bytes)
+            .unwrap()
+            .contains("BEGIN PRIVATE KEY")
     );
     assert_eq!(
-        std::fs::metadata(&cert).unwrap().permissions().mode() & 0o777,
-        0o440
+        (after.uid, after.gid, after.mode),
+        (before.uid, before.gid, 0o400)
     );
+    assert_eq!(after.entries, before.entries);
+}
+
+struct FailingWriter;
+
+impl std::io::Write for FailingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "injected stdout failure",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn stdout_failure_after_commit_does_not_restore_old_identity() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("client.identity.pem");
+    let (old_identity, _) = generate_key_and_self_signed_cert().unwrap();
+    let (new_identity, new_cert) = generate_key_and_self_signed_cert().unwrap();
+    std::fs::write(&path, old_identity.as_slice()).unwrap();
+
+    install_identity(&path, new_identity.as_slice(), None).unwrap();
+    let error = write_public_certificate(&mut FailingWriter, &new_cert).unwrap_err();
+
+    assert!(format!("{error:#}").contains("after identity commit"));
+    assert_eq!(std::fs::read(path).unwrap(), new_identity.as_slice());
 }
 
 #[test]
@@ -125,23 +237,18 @@ fn derive_instance_owner_returns_none_for_empty_instance() {
     assert!(derive_instance_owner("   ").is_none());
 }
 
-#[cfg(unix)]
 #[test]
 fn resolve_target_owner_prefers_explicit_then_existing_file() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("client.pem");
+    let path = tmp.path().join("client.identity.pem");
 
-    // No file, no preference → None
     assert!(resolve_target_owner(&path, None).is_none());
 
-    // File exists → preserves its uid/gid
     std::fs::write(&path, b"x").unwrap();
-    let meta = std::fs::metadata(&path).unwrap();
-    use std::os::unix::fs::MetadataExt;
-    let (uid, gid) = (meta.uid(), meta.gid());
+    let metadata = std::fs::metadata(&path).unwrap();
+    let (uid, gid) = (metadata.uid(), metadata.gid());
     assert_eq!(resolve_target_owner(&path, None), Some((uid, gid)));
 
-    // Explicit preference wins over existing file
     assert_eq!(
         resolve_target_owner(&path, Some((12345, 67890))),
         Some((12345, 67890))
