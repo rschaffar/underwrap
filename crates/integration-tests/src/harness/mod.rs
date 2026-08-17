@@ -275,15 +275,8 @@ impl TestDaemon {
 
     /// Send a read request and return the response.
     pub async fn read_request(&self, wrapper: &str) -> Result<WrapperResponse> {
-        let mut stream = UnixStream::connect(&self.instance_socket).await?;
-        let req = WrapperRequest::Read {
-            wrapper_name: wrapper.to_string(),
-            variant: underwrap_protocol::variant::WrapperVariant::Real,
-            scope: None,
-        };
-        write_frame_async(&mut stream, &req).await?;
-        let resp: WrapperResponse = read_frame_async(&mut stream).await?;
-        Ok(resp)
+        self.read_request_variant(wrapper, underwrap_protocol::variant::WrapperVariant::Real)
+            .await
     }
 
     /// Send a read request with an explicit variant (Real/Debug).
