@@ -24,11 +24,7 @@ pub(super) async fn establish_scoped_channels(
     }
 }
 
-async fn setup_scoped_channel(
-    stream: &UnixStream,
-    label: &str,
-    spawn: impl FnOnce(UnixStream) + Send + 'static,
-) -> Result<()> {
+async fn setup_wrapper_resource_channel(stream: &UnixStream, ctx: ChannelContext) -> Result<()> {
     use std::os::unix::io::{AsRawFd, FromRawFd};
 
     let (daemon_end, wrapper_end) =
@@ -38,24 +34,13 @@ async fn setup_scoped_channel(
     let wrapper_fd = wrapper_end.as_raw_fd();
     let send_result = underwrap_protocol::scm_rights::send_fd(&std_stream, wrapper_fd);
     std::mem::forget(std_stream);
-    send_result.with_context(|| format!("sending {label} fd"))?;
+    send_result.context("sending wrapper-resource channel fd fd")?;
     drop(wrapper_end);
 
     daemon_end.set_nonblocking(true)?;
     let daemon_stream = UnixStream::from_std(daemon_end)?;
-    spawn(daemon_stream);
+    tokio::spawn(async move {
+        run_channel(daemon_stream, ctx).await;
+    });
     Ok(())
-}
-
-async fn setup_wrapper_resource_channel(stream: &UnixStream, ctx: ChannelContext) -> Result<()> {
-    setup_scoped_channel(
-        stream,
-        "wrapper-resource channel fd",
-        move |daemon_stream| {
-            tokio::spawn(async move {
-                run_channel(daemon_stream, ctx).await;
-            });
-        },
-    )
-    .await
 }
