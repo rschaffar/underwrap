@@ -146,6 +146,26 @@ subsequent D-Bus readback, exact-2-MiB files round trips, rejected oversize
 admin/files mutations with byte-identical prior storage, host-only
 receiver/secretsd-only publisher ownership, and plaintext/exact-base64 log
 hygiene.
+
+The keygen identity-installation tests exercise a five-phase precommit failure
+matrix: complete temporary-file write, owner application, exact mode application,
+file sync, and the persist boundary. Every injected failure must preserve the old
+complete identity byte-for-byte with identical UID, GID, and mode and leave no
+staging entry. A separate success test requires one complete new identity with
+exact metadata, and a post-commit stdout-failure test proves that failed
+public-certificate delivery leaves that complete new identity installed. These tests
+pin persist as the visibility commit; they do not claim parent-directory fsync,
+power-loss durability, rollback, secure erasure, or a frontend/backend
+transaction.
+
+Protocol tests pin the sole config field `client_identity_file`; keygen tests
+pin the sole explicit CLI flag `--client-identity-out`. Daemon startup and
+backend-client tests cover one-file admission, URL-before-file-I/O ordering,
+construction from the combined identity, CA policy, redirects, and typed errors.
+Integration PKI and daemon/backend-CA tests build and consume one combined
+identity while retaining separate certificate/key source fixtures only where a
+test independently needs those primitives.
+
 The daemon runtime-client concurrency tests are deterministic TLS fixtures. The
 current-thread Tokio test
 `independent_runtime_requests_are_not_globally_serialized` synchronizes after the
@@ -305,25 +325,29 @@ It checks:
 - socket path, owner, group, and mode;
 - generated daemon and entry-stage config;
 - local and remote-style runtime client enrollment;
-- the deployed runtime credential-rotation cutover: the packaged
-  `underwrap-keygen` successfully installs a replacement pair from
-  `/etc/underwrap/daemon/local.yaml` with exact daemon ownership and `0400` key /
-  `0600` certificate modes; the unchanged daemon PID still succeeds with its
-  cached old identity before the certificate-only backend update; an exact
+- the deployed runtime identity cutover: the packaged `underwrap-keygen`
+  successfully installs
+  `/var/lib/underwrap-local/client-local.identity.pem` from
+  `/etc/underwrap/daemon/local.yaml` with exact `underwrap-local:underwrap-local`
+  ownership and mode `0400`; the unchanged daemon PID still succeeds with its
+  cached old identity before the public-certificate backend update; an exact
   comparison of `id`, `display_name`, `current_store_id`, `current_store_name`,
   `status`, `auto_create_wrapper_assets`, and
   `current_credential_fingerprint` shows that only the fingerprint changes; the
   same PID then receives enrollment guidance; and an explicit
   `underwrapd-local.service` restart yields a distinct nonzero PID and bounded
-  wrapper success using the replacement pair.
+  wrapper success using the replacement identity.
 
-That rotation witness discards target output, keeps the private key unread, and
-passes only the public certificate through the authenticated admin request-body
-helper. It excludes volatile `last_seen_at` from the client-record comparison and
-leaves the replacement active for subsequent direct runtime mTLS checks. It
-establishes the current explicit-restart operation and interruption window, not
-live reload, unauthorized-triggered retry, rollback, a grace credential, or zero
-downtime.
+That cutover witness preserves the exact keygen → public-certificate PUT →
+same-PID cached-old failure → restart → distinct-PID success order. It discards
+target output, does not read the private-key portion separately, and passes only
+the public certificate through the authenticated admin request-body helper. It
+excludes volatile `last_seen_at` from the client-record comparison and leaves
+the replacement active for subsequent direct runtime mTLS checks. Those checks
+also give curl the same combined identity path for both `--cert` and `--key`.
+The witness establishes the explicit-restart operation and interruption window,
+not live reload, unauthorized-triggered retry, rollback, a grace credential, or
+zero downtime.
 
 ### Wrapper identity and policy
 

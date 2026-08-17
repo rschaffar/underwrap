@@ -24,7 +24,7 @@ Linux HTTPS service.
 Several identities serve different purposes:
 
 - **Frontend instance:** one `underwrapd`, one Unix socket, one setgid entry
-  point, one instance group, and one mTLS credential.
+  point, one instance group, and one private combined mTLS identity PEM.
 - **Runtime client instance:** the backend principal resolved from the presented
   client certificate fingerprint. It maps to exactly one store.
 - **Wrapper/resource pair:** a configured wrapper name bound to one backend

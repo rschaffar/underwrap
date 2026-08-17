@@ -204,25 +204,25 @@ sudo underwrap-keygen \
 The helper:
 
 - generates a private key and self-signed client certificate locally;
-- writes the key `0400` and certificate `0600` under
-  `/var/lib/underwrap-work/`;
-- assigns them to the per-instance daemon user;
-- prints the certificate PEM.
+- atomically installs one combined certificate-chain-and-key identity PEM at
+  `/var/lib/underwrap-work/client-work.identity.pem` with mode `0400`;
+- assigns it to the per-instance daemon user;
+- prints only the public certificate PEM after the identity commit.
 
 It does not contact the backend. Paste the certificate into **Client instances**
 in the admin UI, choose the existing target store, and set the instance to
-`Active`.
+`Active`. The normative atomic-installation and failure boundaries are in
+[Security](security.md#runtime-client-identity-installation).
 
-For a non-NixOS frontend configuration tool, explicit output paths are also
+For a non-NixOS frontend configuration tool, an explicit output path is also
 available:
 
 ```bash
 sudo underwrap-keygen \
-  --client-cert-out /etc/underwrap/client-work.pem \
-  --client-key-out /etc/underwrap/client-work.key
+  --client-identity-out /etc/underwrap/client-work.identity.pem
 ```
 
-The frontend wrapper chain itself remains NixOS-supported; explicit paths are
+The frontend wrapper chain itself remains NixOS-supported; the explicit path is
 useful for credential generation and development tooling.
 
 ## Register wrapper assets

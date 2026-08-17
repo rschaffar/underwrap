@@ -120,7 +120,8 @@ certificate from authenticating.
 Certificate replacement is one ordered operator cutover for the existing
 runtime client instance:
 
-1. On the frontend, successfully generate and install the replacement pair:
+1. On the frontend, successfully generate and atomically install the replacement
+   combined identity:
 
    ```bash
    sudo underwrap-keygen \
@@ -129,7 +130,7 @@ runtime client instance:
 
 2. In **Client instances**, edit that same instance, paste the public certificate
    printed by the successful command, and select **Save**.
-3. On the frontend, load the replacement pair explicitly:
+3. On the frontend, load the replacement identity explicitly:
 
    ```bash
    sudo systemctl restart underwrapd-<instance>.service
@@ -141,8 +142,10 @@ The running daemon continues using its cached old identity until step 3. Saving
 the replacement certificate makes the backend reject that old identity, so an
 interruption is expected between **Save** and the restart: wrapper requests fail
 with enrollment guidance. Only the public certificate crosses to the backend;
-the private key remains in the frontend credential file. This operation does not
-apply one timing promise to display-name, store, status, or wrapper-asset
+the private key remains in the frontend's combined identity file. Identity-file
+installation guarantees and non-transactional boundaries are defined in
+[Security](security.md#runtime-client-identity-installation). This operation does
+not apply one timing promise to display-name, store, status, or wrapper-asset
 auto-create edits.
 
 ## Resources and secret entries

@@ -194,12 +194,11 @@ sudo underwrap-keygen \
   --instance-config /etc/underwrap/daemon/demo.yaml
 ```
 
-On a successful run, the command installs:
-
-- `/var/lib/underwrap-demo/client-demo.key` with mode `0400`;
-- `/var/lib/underwrap-demo/client-demo.pem` with mode `0600`;
-
-and prints the certificate PEM.
+On a successful run, the command installs one private combined certificate-
+chain-and-key identity at
+`/var/lib/underwrap-demo/client-demo.identity.pem` with mode `0400`, then prints
+only the public certificate PEM. See the normative
+[identity installation guarantees](security.md#runtime-client-identity-installation).
 
 In **Client instances**, choose **Create client instance** and set:
 
@@ -289,11 +288,11 @@ Setgid entry point:
 ls -l /run/wrappers/bin/underwrap-demo
 ```
 
-Credential ownership and modes:
+Identity ownership and mode:
 
 ```bash
 sudo ls -ld /var/lib/underwrap-demo
-sudo ls -l /var/lib/underwrap-demo/client-demo.{pem,key}
+sudo ls -l /var/lib/underwrap-demo/client-demo.identity.pem
 ```
 
 The admin UI should show:
@@ -318,9 +317,9 @@ of `/run/wrappers/bin/underwrap-demo` and do not connect directly to the socket.
 
 ### The wrapper says the instance is not enrolled
 
-Check that both credential files exist with the expected owner/mode and that the
-certificate PEM was registered on an active client instance. A rotated or
-disabled credential produces the same enrollment guidance.
+Check that the combined identity file exists with the expected owner and mode,
+and that its public certificate PEM was registered on an active client instance.
+A replaced or disabled identity produces the same enrollment guidance.
 
 ### The resource or wrapper pair is missing
 

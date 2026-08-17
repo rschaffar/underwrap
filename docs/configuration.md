@@ -93,12 +93,12 @@ The module assigns each instance:
 
 ### Runtime client credential
 
-The mTLS client credential is generated after deployment, not supplied as a
-Nix option. The module configures:
+The mTLS client identity is generated after deployment, not supplied as a Nix
+option. It is one private combined certificate-chain-and-key PEM configured as
+`backend.client_identity_file` at:
 
 ```text
-/var/lib/underwrap-<instance>/client-<instance>.pem
-/var/lib/underwrap-<instance>/client-<instance>.key
+/var/lib/underwrap-<instance>/client-<instance>.identity.pem
 ```
 
 Generate it with:
@@ -108,8 +108,11 @@ sudo underwrap-keygen \
   --instance-config /etc/underwrap/daemon/<instance>.yaml
 ```
 
-Register the printed certificate PEM on a backend runtime client instance. The
-private key remains on the frontend host.
+The file is installed with mode `0400`. Register the public certificate PEM
+printed after installation on a backend runtime client instance; the private key
+remains only in the combined identity on the frontend host. The normative
+installation and failure guarantees are in
+[Security](security.md#runtime-client-identity-installation).
 
 ### Wrapper options
 

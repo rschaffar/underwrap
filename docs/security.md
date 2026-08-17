@@ -625,8 +625,36 @@ and object-path rules.
 ### Runtime mTLS
 
 `underwrap-keygen` creates a self-signed client leaf and private key on the
-frontend host. An operator registers the certificate PEM in the admin UI. The
-backend stores its SHA-256 fingerprint.
+frontend host. An operator registers the public certificate PEM in the admin UI.
+The backend stores its SHA-256 fingerprint.
+
+#### Runtime client identity installation
+
+The private frontend identity is one PEM containing the certificate chain
+followed by its matching private key. The daemon config names it only through
+`backend.client_identity_file`; on NixOS its path is
+`/var/lib/underwrap-<instance>/client-<instance>.identity.pem`. Keygen resolves
+that path from `--instance-config`, or accepts the sole explicit output flag
+`--client-identity-out`.
+
+Keygen prepares exactly one mode-`0400` temporary file in the identity's parent
+directory. The daemon account selected from instance config takes ownership
+precedence; otherwise keygen preserves an existing identity's owner, then falls
+back to the invoking process identity. It writes the complete combined PEM,
+applies the selected UID/GID and exact mode, syncs the file, and then uses one
+same-directory `NamedTempFile::persist()` replacement. That persist is the single visibility
+commit. Before it, a write, owner, mode, file-sync, or persist-boundary failure
+leaves the old complete identity's bytes, UID, GID, and mode unchanged and
+removes the temporary file. After it, readers see the complete new identity.
+
+Only after that commit does keygen write the public certificate to stdout. A
+stdout failure can therefore report command failure while leaving the complete
+new identity installed; it does not restore the old identity. Persistence and
+stdout delivery are not a transaction, and neither are frontend installation
+and the later backend certificate update. There is no rollback, parent-directory
+fsync or power-loss durability guarantee, or secure-erasure guarantee for storage
+media. In-memory candidate identity buffers are zeroized where practical, but
+that does not strengthen those filesystem claims.
 
 At TLS time, the backend verifies proof of possession of the presented leaf's
 private key. Runtime principal resolution then requires an active client record
@@ -702,12 +730,13 @@ At startup, the daemon rejects a present runtime credential when:
 - its mode is wider than `0600`;
 - its parent directory is owned by another UID or wider than `0700`.
 
-Missing credential files are allowed so enrollment can happen after service
+A missing identity file is allowed so enrollment can happen after service
 startup; each wrapper request retries backend initialization until a client is
-built. The daemon then caches that client and identity. Replacing the credential
-files requires a daemon restart to load the new identity; direct async request
-scheduling does not add credential reload or unauthorized-triggered retry. Use
-the Admin UI guide's [ordered certificate-replacement
+built. The daemon reads the combined identity once when building that client and
+then caches both. Replacing the identity file requires a daemon restart to load
+the new identity; direct async request scheduling does not add identity reload
+or unauthorized-triggered retry. Use the Admin UI guide's
+[ordered certificate-replacement
 operation](admin-ui.md#replace-a-runtime-client-certificate).
 
 ### Admin authentication
