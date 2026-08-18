@@ -70,6 +70,22 @@ SPA unit tests are not a separate flake check, so run them explicitly:
 cd web && npm test && npm run build
 ```
 
+## Rust toolchain
+
+The flake explicitly pins Rust 1.97.1 for development shells, Crane packages,
+and checks while retaining the `rust-src`, `rust-analyzer`, and
+`llvm-tools-preview` components. Verify the complete toolchain selection with:
+
+```bash
+nix develop -c bash -lc 'rustc --version; rustc -Vv; cargo --version; cargo clippy --version; rustfmt --version'
+```
+
+Rust 1.97.1 is the fixed release selected to move release builds beyond the
+known LLVM optimizer defect range that included the previous reproducible
+compiler. Rebuilding and testing with the fixed compiler removes that avoidable
+toolchain uncertainty; it does not establish that any prior underwrap artifact
+was miscompiled or add a runtime security guarantee.
+
 ## Rust coverage
 
 Workspace tests cover:

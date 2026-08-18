@@ -263,7 +263,7 @@ impl<T: WireEncode> WireEncode for HashMap<String, T> {
         ensure!(self.len() <= u32::MAX as usize, "map too large");
         (self.len() as u32).encode(out)?;
         let mut entries: Vec<_> = self.iter().collect();
-        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        entries.sort_by_key(|(key, _)| *key);
         for (key, value) in entries {
             key.encode(out)?;
             value.encode(out)?;

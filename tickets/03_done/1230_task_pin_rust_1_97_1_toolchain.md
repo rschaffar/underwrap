@@ -7,7 +7,7 @@ Source themes: C-006
 
 ## Outcome
 
-Every reproducible Rust build, development shell, check, coverage run, package, static privileged wrapper, and NixOS VM uses an explicit Rust **1.97.1** toolchain from a refreshed `rust-overlay` lock. This moves release artifacts beyond the known LLVM optimizer defect range affecting the previous Rust 1.94.1 pin while changing no product behavior and making no claim that underwrap was previously miscompiled.
+Every reproducible Rust build, development shell, check, coverage run, package, privileged Rust binary, and NixOS VM uses an explicit Rust **1.97.1** toolchain from a refreshed `rust-overlay` lock. This moves release artifacts beyond the known LLVM optimizer defect range affecting the previous Rust 1.94.1 pin while changing no product behavior and making no claim that underwrap was previously miscompiled.
 
 Rust 1.97.1 is the smallest accepted fixed release from the review. The pin is explicit in `flake.nix`; future lock refreshes cannot silently change the compiler selected by `stable.latest`.
 
@@ -24,7 +24,7 @@ Rust 1.97.1 is the smallest accepted fixed release from the review. The pin is e
   - package/check derivations evaluate with that explicit toolchain.
 - Run every release boundary under the new Nix toolchain:
   - full Rust workspace tests, denied-warning clippy, rustfmt, cargo-nextest, cargo-audit, cargo-deny, and llvm coverage;
-  - default workspace package plus `underwrap-exec` and `underwrap-ns` release packages, including their musl/static privileged artifacts;
+  - default workspace package plus the `underwrap-exec` and `underwrap-ns` release packages, and their deployed NixOS `security.wrappers`/capability paths through the VM;
   - integration tests and the production NixOS VM test;
   - SPA unit/build and auth/browser flows as the existing cross-language release evidence;
   - full `nix flake check`.
@@ -63,7 +63,7 @@ A narrower path set is preferred. Required board moves and `tickets/_handover/co
 
 ### Release evidence
 
-- All workspace, integration, nextest, clippy, fmt, audit, deny, coverage, package, privileged musl, SPA, browser, VM, and full-flake gates pass under the explicit toolchain, or an external/tool defect is recorded with exact evidence and independently shown unrelated without weakening a gate.
+- All workspace, integration, nextest, clippy, fmt, audit, deny, coverage, package, privileged-binary, SPA, browser, VM, and full-flake gates pass under the explicit toolchain, or an external/tool defect is recorded with exact evidence and independently shown unrelated without weakening a gate.
 - Any compiler-required source adaptation is behavior-preserving, separately reviewed, and limited to the minimum path set.
 - Documentation states only that artifacts are rebuilt/tested with the fixed compiler; it does not claim prior miscompilation or runtime exploitability.
 
@@ -76,7 +76,7 @@ A narrower path set is preferred. Required board moves and `tickets/_handover/co
 
 - Protected asset: correctness of compiled privilege, identity, namespace, policy, and secret-handling checks in deployed binaries.
 - Actor/fault: no repository attacker trigger is established; the fault is avoidable uncertainty from a compiler version in a known fixed miscompilation range.
-- Boundary direction: pinned rust-overlay/toolchain -> Crane packages/checks and musl artifacts -> NixOS deployed privileged binaries and backend/daemon services.
+- Boundary direction: pinned rust-overlay/toolchain -> Crane packages/checks -> NixOS deployed privileged Rust binaries and backend/daemon services.
 - Invariant: first-release artifacts and all validation evidence use the explicit fixed compiler without weakening source assertions or release gates.
 
 ## Validation
