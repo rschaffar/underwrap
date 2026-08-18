@@ -300,12 +300,23 @@ exact reveal and clipboard text. Reveal tests distinguish missing and empty
 values, malformed base64, and valid base64 for non-UTF-8 bytes (`//4=` for
 `0xff 0xfe`); the invalid cases never reach the textarea or clipboard.
 
+Libsecret attribute parser tests cover one `key=value` entry per nonblank line,
+first-delimiter splitting, trimmed keys and values, ignored blank lines, CRLF,
+empty values, and case-sensitive keys. They also pin line-numbered rejection of
+missing delimiters, empty trimmed keys, and repeated exact trimmed keys (with
+the original line), plus safe own-property handling for object-like names such
+as `__proto__` and `constructor`. Create-item tests prove those field errors
+send no request and that valid mixed input sends the exact attribute map while
+retaining the Unicode secret bytes. These are browser checks, not backend/API
+attribute rejection tests.
+
 Run the focused boundary tests with:
 
 ```bash
 cd web
 npm test -- src/lib/utf8-base64.test.ts \
   src/pages/secrets/dialogs/write.test.tsx \
+  src/pages/secrets/libsecret/helpers.test.ts \
   src/pages/secrets/libsecret/dialogs/create-item.test.tsx \
   src/pages/secrets/reveal-secret-view.test.tsx
 ```

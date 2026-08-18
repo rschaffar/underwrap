@@ -619,6 +619,16 @@ The private tmpfs contains the filesystem D-Bus socket and helper logs, not a
 final-state pathname consumed by the host. secretsd never holds fd 20, and the
 target never inherits fd 20 or either publication endpoint.
 
+Before an admin-browser item-creation request, the attributes textarea accepts
+one `key=value` entry per nonblank line, splits at the first `=`, trims both
+parts, permits empty values, and keeps keys case-sensitive. Blank lines are
+ignored. A missing delimiter, empty trimmed key, or repeated exact trimmed key
+produces a line-numbered field error and no request; duplicate errors also name
+the original line. The resulting map constructs object-like names such as
+`__proto__` and `constructor` as ordinary own string keys without prototype
+mutation. This protects the browser textarea-to-map projection only; the
+backend API's typed attribute map and Secret Service rules are unchanged.
+
 The private filesystem socket and mount namespace keep normal NixOS path-based
 session buses out of the target's view. Abstract Unix sockets are not hidden by
 the mount namespace; a deliberately nonconforming client that ignores

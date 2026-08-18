@@ -38,17 +38,70 @@ export function libsecretTreeKey(storeId: string, resourceId: string) {
   return ["admin", "libsecret", storeId, resourceId] as const;
 }
 
-export function parseAttributes(input: string): Record<string, string> {
-  // `key=value` per line; blank lines and lines without `=` ignored.
-  // Keys / values trimmed. Duplicate keys: last wins.
-  const out: Record<string, string> = {};
-  for (const line of input.split("\n")) {
-    const idx = line.indexOf("=");
-    if (idx < 0) continue;
-    const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (!key) continue;
-    out[key] = value;
+export type AttributeParseErrorReason =
+  | "malformed-line"
+  | "empty-key"
+  | "duplicate-key";
+
+export class AttributeParseError extends Error {
+  readonly reason: AttributeParseErrorReason;
+  readonly lineNumber: number;
+  readonly originalLineNumber?: number;
+
+  constructor(
+    reason: AttributeParseErrorReason,
+    lineNumber: number,
+    message: string,
+    originalLineNumber?: number,
+  ) {
+    super(message);
+    this.name = "AttributeParseError";
+    this.reason = reason;
+    this.lineNumber = lineNumber;
+    this.originalLineNumber = originalLineNumber;
   }
-  return out;
+}
+
+export function parseAttributes(input: string): Record<string, string> {
+  const entries: Array<[string, string]> = [];
+  const keyLines = new Map<string, number>();
+
+  for (const [index, line] of input.split("\n").entries()) {
+    const lineNumber = index + 1;
+    if (line.trim() === "") continue;
+
+    const delimiter = line.indexOf("=");
+    if (delimiter < 0) {
+      throw new AttributeParseError(
+        "malformed-line",
+        lineNumber,
+        `Line ${lineNumber} must use key=value.`,
+      );
+    }
+
+    const key = line.slice(0, delimiter).trim();
+    const value = line.slice(delimiter + 1).trim();
+    if (key === "") {
+      throw new AttributeParseError(
+        "empty-key",
+        lineNumber,
+        `Line ${lineNumber} has an empty attribute key.`,
+      );
+    }
+
+    const originalLineNumber = keyLines.get(key);
+    if (originalLineNumber !== undefined) {
+      throw new AttributeParseError(
+        "duplicate-key",
+        lineNumber,
+        `Line ${lineNumber} repeats attribute key "${key}" from line ${originalLineNumber}.`,
+        originalLineNumber,
+      );
+    }
+
+    keyLines.set(key, lineNumber);
+    entries.push([key, value]);
+  }
+
+  return Object.fromEntries(entries);
 }

@@ -20,17 +20,27 @@ import { useFormDialog } from "@/hooks/use-form-dialog";
 import { encodeUtf8Base64 } from "@/lib/utf8-base64";
 
 import {
+  AttributeParseError,
   libsecretTreeKey,
   optionalLibsecretIdField,
   parseAttributes,
 } from "../helpers";
 import { postLibsecretItem } from "@/api/client";
 
+const attributesField = z.string().superRefine((value, context) => {
+  try {
+    parseAttributes(value);
+  } catch (error) {
+    if (!(error instanceof AttributeParseError)) throw error;
+    context.addIssue({ code: "custom", message: error.message });
+  }
+});
+
 const itemSchema = z.object({
   id: optionalLibsecretIdField(),
   label: z.string().min(1, "Label is required."),
   content_type: z.string().min(1, "Content type is required."),
-  attributes: z.string(),
+  attributes: attributesField,
   secret: z.string().min(1, "Secret material is required."),
 });
 type ItemValues = z.infer<typeof itemSchema>;

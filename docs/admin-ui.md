@@ -174,6 +174,15 @@ value is valid empty text and can be copied. The backend continues to support
 arbitrary secret bytes, but this text UI cannot display or copy non-UTF-8 bytes
 and does not provide a binary editor or download mode.
 
+The libsecret item form accepts one `key=value` attribute per nonblank line. It
+splits at the first `=`, trims both parts, ignores blank lines, permits empty
+values, and treats keys as case-sensitive. A missing delimiter, empty trimmed
+key, or repeated exact trimmed key is shown as a line-numbered field error and
+no request is sent; duplicate errors identify the original line. Object-like
+keys such as `__proto__` and `constructor` remain ordinary own string keys and
+do not alter the attribute map's prototype. This is browser form validation,
+not a backend/API rejection rule.
+
 The delete dialog reports the complete blocker count across env entries, file
 entries, libsecret aliases, collections (including empty collections), items,
 wrapper/resource pairs, and permission rows. Typed content samples show only raw
