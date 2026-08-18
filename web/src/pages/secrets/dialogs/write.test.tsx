@@ -50,6 +50,22 @@ describe("WriteSecretDialog", () => {
     expect(postSecretRename).not.toHaveBeenCalled();
   });
 
+  it("writes Unicode material as its exact UTF-8 base64 body", async () => {
+    const user = userEvent.setup();
+    renderDialog("create", { resource_id: "r1", slot: "files", key: "" });
+    await user.type(screen.getByLabelText(/^key$/i), "token.txt");
+    await user.type(screen.getByTestId("material-input"), "✓ à la mode");
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+    expect(putSecret).toHaveBeenCalledWith(
+      "prod",
+      "r1",
+      "files",
+      "token.txt",
+      { material_b64: "4pyTIMOgIGxhIG1vZGU=" },
+    );
+  });
+
   it("renames via postSecretRename when the key changes in edit mode", async () => {
     const user = userEvent.setup();
     renderDialog("edit", { resource_id: "r1", slot: "env", key: "OLD" });
@@ -64,5 +80,20 @@ describe("WriteSecretDialog", () => {
       material_b64: btoa("hi"),
     });
     expect(putSecret).not.toHaveBeenCalled();
+  });
+
+  it("renames with Unicode replacement material as exact UTF-8 base64", async () => {
+    const user = userEvent.setup();
+    renderDialog("edit", { resource_id: "r1", slot: "env", key: "OLD" });
+    const keyField = screen.getByLabelText(/^key$/i);
+    await user.clear(keyField);
+    await user.type(keyField, "NEW");
+    await user.type(screen.getByTestId("material-input"), "päss🔐");
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(postSecretRename).toHaveBeenCalledWith("prod", "r1", "env", "OLD", {
+      to_key: "NEW",
+      material_b64: "cMOkc3Pwn5SQ",
+    });
   });
 });

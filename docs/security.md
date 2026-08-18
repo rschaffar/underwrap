@@ -518,6 +518,15 @@ this covers the canonical blob itself, independently of HTTP base64/JSON and
 local wire envelopes. The daemon treats it as opaque canonical bytes and caches
 it only for the scoped resource channel.
 
+The backend and resource format preserve arbitrary secret bytes. The browser
+admin surface is intentionally text-only: writes convert JavaScript text to
+exact UTF-8 bytes before base64 transport, and reveals use fatal UTF-8 decoding
+without replacement characters. Empty bytes are valid empty text. Missing
+values, malformed base64 transport, and valid base64 containing non-UTF-8 bytes
+are reported separately; malformed or non-UTF-8 values never reach the reveal
+textarea or clipboard. This UI boundary does not narrow backend storage or add a
+binary representation.
+
 ### Env
 
 Env entries are inserted into the target environment. Runtime finalize compares

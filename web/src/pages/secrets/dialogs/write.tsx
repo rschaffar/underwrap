@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 
 import { useFormDialog } from "@/hooks/use-form-dialog";
+import { encodeUtf8Base64 } from "@/lib/utf8-base64";
 
 import type { SecretAddress } from "../grouping";
 import { postSecretRename, putSecret } from "@/api/client";
@@ -61,11 +62,11 @@ export function WriteSecretDialog({
           address.resource_id,
           address.slot,
           address.key,
-          { to_key: key, material_b64: btoa(material) },
+          { to_key: key, material_b64: encodeUtf8Base64(material) },
         );
       }
       return putSecret(storeId, address.resource_id, address.slot, key, {
-        material_b64: btoa(material),
+        material_b64: encodeUtf8Base64(material),
       });
     },
     invalidate: [["admin", "secrets-view", storeId]],

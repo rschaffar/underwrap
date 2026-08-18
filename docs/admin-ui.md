@@ -165,6 +165,15 @@ The **Secrets** page can:
 - delete a resource after all stored resource content, dependent pairs, and
   permission rows are removed.
 
+Secret inputs in this browser UI are text-only. The browser encodes JavaScript
+text losslessly as UTF-8 bytes before base64 transport; it does not apply Unicode
+normalization or line-ending conversion. Reveal decodes base64 and then requires
+strict, valid UTF-8. A missing value, malformed base64 transport, and valid
+base64 containing non-UTF-8 bytes are distinct visible states. An empty byte
+value is valid empty text and can be copied. The backend continues to support
+arbitrary secret bytes, but this text UI cannot display or copy non-UTF-8 bytes
+and does not provide a binary editor or download mode.
+
 The delete dialog reports the complete blocker count across env entries, file
 entries, libsecret aliases, collections (including empty collections), items,
 wrapper/resource pairs, and permission rows. Typed content samples show only raw

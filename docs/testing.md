@@ -289,6 +289,27 @@ The drift test rewrites `openapi.json` in place when needed; review and commit
 that change with the implementation. The generated TypeScript schema under
 `web/src/api/schema.ts` is local build output and is not committed.
 
+## SPA secret-text unit tests
+
+Vitest pins the browser's text-only secret conversion boundary independently of
+the backend's arbitrary-byte contract. Known UTF-8/base64 vectors include
+`✓ à la mode` → `4pyTIMOgIGxhIG1vZGU=`, `päss🔐` → `cMOkc3Pwn5SQ`,
+Japanese text, empty text, and a multi-chunk input. Component tests pin exact
+Unicode request bodies for flat create/rename and libsecret item creation, plus
+exact reveal and clipboard text. Reveal tests distinguish missing and empty
+values, malformed base64, and valid base64 for non-UTF-8 bytes (`//4=` for
+`0xff 0xfe`); the invalid cases never reach the textarea or clipboard.
+
+Run the focused boundary tests with:
+
+```bash
+cd web
+npm test -- src/lib/utf8-base64.test.ts \
+  src/pages/secrets/dialogs/write.test.tsx \
+  src/pages/secrets/libsecret/dialogs/create-item.test.tsx \
+  src/pages/secrets/reveal-secret-view.test.tsx
+```
+
 ## SPA browser tests
 
 Playwright exercises protected routing, authentication, CSRF, stores, secrets,

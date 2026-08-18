@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { describeApiError } from "@/lib/error-message";
+import { decodeBase64Utf8 } from "@/lib/utf8-base64";
 
 /**
  * Self-contained "reveal a secret value" dialog. Owns the `AdminDialog`
  * shell *and* the body so flat-KV and libsecret callers stop repeating
  * the same Radix boilerplate around it.
  *
- * UX: confirm gate → fetch → b64 decode → textarea + copy-to-clipboard.
+ * UX: confirm gate → fetch → strict UTF-8 decode → textarea + clipboard.
  * The differences between the two use sites are exactly the query
  * key, the fetch function, the title/description, and the textarea
  * id.
@@ -60,19 +61,15 @@ export function RevealSecretView<T>({
   });
 
   const b64 = read.data ? pickB64(read.data) : null;
-  const decoded = useMemo(() => {
-    if (!b64) return null;
-    try {
-      return atob(b64);
-    } catch {
-      return null;
-    }
-  }, [b64]);
+  const decoded = useMemo(
+    () => (b64 == null ? null : decodeBase64Utf8(b64)),
+    [b64],
+  );
 
   async function onCopy() {
-    if (!decoded) return;
+    if (!decoded?.ok) return;
     try {
-      await navigator.clipboard.writeText(decoded);
+      await navigator.clipboard.writeText(decoded.text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -108,11 +105,17 @@ export function RevealSecretView<T>({
     } else if (decoded == null) {
       body = (
         <Alert variant="warning">
-          {b64 == null
-            ? "The secret does not exist (or was removed)."
-            : "The server returned a value that could not be base64-decoded. This is likely a server-side bug."}
+          The secret does not exist (or was removed).
         </Alert>
       );
+    } else if (!decoded.ok) {
+      const warnings = {
+        "invalid-base64":
+          "The server returned malformed base64. This is likely a server-side contract bug.",
+        "invalid-utf8":
+          "The secret contains non-UTF-8 bytes and cannot be displayed or copied by this text-only interface.",
+      };
+      body = <Alert variant="warning">{warnings[decoded.reason]}</Alert>;
     } else {
       body = (
         <div className="space-y-2">
@@ -121,7 +124,7 @@ export function RevealSecretView<T>({
             id={textareaId}
             data-testid={textareaTestId}
             readOnly
-            value={decoded}
+            value={decoded.text}
             rows={6}
             className="w-full rounded-md border border-(--color-line) bg-(--color-surface-0) p-2 font-mono text-xs text-(--color-fg)"
           />

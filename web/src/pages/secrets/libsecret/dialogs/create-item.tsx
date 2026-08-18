@@ -17,6 +17,7 @@ import {
 import { Input } from "@/components/ui/input";
 
 import { useFormDialog } from "@/hooks/use-form-dialog";
+import { encodeUtf8Base64 } from "@/lib/utf8-base64";
 
 import {
   libsecretTreeKey,
@@ -72,7 +73,7 @@ export function CreateItemDialog({
         label: v.label,
         content_type: v.content_type,
         attributes: parseAttributes(v.attributes),
-        secret_b64: btoa(v.secret),
+        secret_b64: encodeUtf8Base64(v.secret),
       }),
     invalidate: [libsecretTreeKey(storeId, resourceId)],
     onSuccess: onClose,
