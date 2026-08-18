@@ -292,9 +292,12 @@ that change with the implementation. The generated TypeScript schema under
 ## SPA browser tests
 
 Playwright exercises protected routing, authentication, CSRF, stores, secrets,
-permissions, client instances, and user workflows. The resource lifecycle flow
-shows a typed libsecret blocker in the still-open delete dialog, clears it, and
-then observes successful resource removal.
+permissions, client instances, and user workflows. Authentication coverage
+includes hard-navigation sign-out with a freshly primed CSRF token, backend
+session destruction, stale-cookie rejection, and a failed first logout that
+remains visible and authenticated until a successful retry. The resource
+lifecycle flow shows a typed libsecret blocker in the still-open delete dialog,
+clears it, and then observes successful resource removal.
 
 Run it inside the Nix development shell so Playwright uses the NixOS-compatible
 browser:

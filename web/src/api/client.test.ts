@@ -7,6 +7,7 @@ import {
   fetchWhoami,
   postLogin,
   postLogout,
+  revokeAdminSession,
 } from "./client";
 
 function mockResponse(
@@ -117,6 +118,66 @@ describe("typed admin client", () => {
     );
     const result = await postLogout();
     expect(result).toBeUndefined();
+  });
+
+  it("primes an empty CSRF token before revoking the admin session", async () => {
+    _resetCsrfTokenForTesting();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        mockResponseWithCsrf(200, { username: "alice" }, "logout-token"),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await revokeAdminSession();
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    const prime = spy.mock.calls[0]![0] as Request;
+    const logout = spy.mock.calls[1]![0] as Request;
+    expect(prime.method).toBe("GET");
+    expect(new URL(prime.url).pathname).toBe("/v1/admin/auth/whoami");
+    expect(prime.headers.get("X-CSRF-Token")).toBeNull();
+    expect(logout.method).toBe("POST");
+    expect(new URL(logout.url).pathname).toBe("/v1/admin/auth/logout");
+    expect(logout.headers.get("X-CSRF-Token")).toBe("logout-token");
+  });
+
+  it("does not send logout when the CSRF prime fails", async () => {
+    _resetCsrfTokenForTesting();
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse(500, { code: "prime_failed", message: "prime failed" }),
+    );
+
+    await expect(revokeAdminSession()).rejects.toMatchObject({
+      status: 500,
+      code: "prime_failed",
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+    const prime = spy.mock.calls[0]![0] as Request;
+    expect(prime.method).toBe("GET");
+    expect(new URL(prime.url).pathname).toBe("/v1/admin/auth/whoami");
+  });
+
+  it("propagates logout failure after a successful CSRF prime", async () => {
+    _resetCsrfTokenForTesting();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        mockResponseWithCsrf(200, { username: "alice" }, "logout-token"),
+      )
+      .mockResolvedValueOnce(
+        mockResponse(500, { code: "logout_failed", message: "logout failed" }),
+      );
+
+    await expect(revokeAdminSession()).rejects.toMatchObject({
+      status: 500,
+      code: "logout_failed",
+    });
+    expect(spy).toHaveBeenCalledTimes(2);
+    const logout = spy.mock.calls[1]![0] as Request;
+    expect(logout.method).toBe("POST");
+    expect(new URL(logout.url).pathname).toBe("/v1/admin/auth/logout");
+    expect(logout.headers.get("X-CSRF-Token")).toBe("logout-token");
   });
 
   it("does not log request or response bodies (paranoia)", async () => {

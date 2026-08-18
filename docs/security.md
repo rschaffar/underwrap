@@ -761,6 +761,10 @@ The admin API and SPA share the backend HTTPS listener. Authentication uses:
 
 Sessions do not survive backend restart. Password changes and user deletion
 invalidate that user's sessions through `axum-login`'s session auth-hash check.
+The SPA primes a fresh synchronizer token before every sign-out sequence,
+including hard navigation to `/logout`, and reports success only after the
+logout POST destroys backend authority. A prime or logout failure remains
+visible and retryable without clearing the admin cache or navigating to login.
 All authenticated users have full admin access; there are no roles or per-store
 operator grants.
 

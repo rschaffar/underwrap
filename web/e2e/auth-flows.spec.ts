@@ -4,12 +4,38 @@
  *
  *   1. fresh backend → offline setup guidance; network bootstrap rejected
  *   2. login with the wrong password → inline error
- *   3. logout invalidates the server-side session
- *   4. CSRF token is attached on POSTs the SPA initiates
- *   5. an unauthenticated API call redirects the user to /login
+ *   3. hard-navigation logout invalidates the server-side session
+ *   4. failed hard-navigation logout stays visible and can be retried
+ *   5. CSRF token is attached on POSTs the SPA initiates
+ *   6. an unauthenticated API call redirects the user to /login
  */
 import { request as playwrightRequest } from "@playwright/test";
-import { test, expect, loginViaUi, ADMIN_USERNAME, ADMIN_PASSWORD } from "./fixtures";
+import {
+  test,
+  expect,
+  loginViaUi,
+  ADMIN_USERNAME,
+  ADMIN_PASSWORD,
+} from "./fixtures";
+
+async function replayProtectedRequest(
+  baseUrl: string,
+  session: { name: string; value: string },
+): Promise<{ status: number; code: string | undefined }> {
+  const replay = await playwrightRequest.newContext({
+    ignoreHTTPSErrors: true,
+    extraHTTPHeaders: {
+      Cookie: `${session.name}=${session.value}`,
+    },
+  });
+  try {
+    const response = await replay.get(`${baseUrl}/v1/admin/stores`);
+    const body = (await response.json()) as { code?: string };
+    return { status: response.status(), code: body.code };
+  } finally {
+    await replay.dispose();
+  }
+}
 
 test("fresh backend requires offline setup and rejects network bootstrap", async ({
   page,
@@ -66,34 +92,93 @@ test("logout invalidates the session server-side", async ({
   const session = cookies.find((c) => c.name === "__Host-underwrap-session");
   expect(session).toBeDefined();
 
-  // Sign out via the AppShell control. It is a client-side `<Link to=
-  // "/logout">`, so the logout route's `postLogout()` runs in the live
-  // SPA with the CSRF synchronizer token already primed (a fresh
-  // `page.goto("/logout")` would start with no primed token).
-  await page.getByRole("link", { name: /sign out/i }).click();
+  // Load /logout as a fresh document so the SPA starts without its
+  // module-scoped CSRF token and must prime before revoking the session.
+  await page.goto(`${backendWithAdmin.baseUrl}/logout`);
   await page.waitForURL(/\/login(\?|$)/);
 
-  // Replay the old session cookie via a *fresh* request context (no
-  // cookie jar) against a protected endpoint. The acceptance criterion
-  // is that the next request to `/v1/admin/...` after logout returns
-  // 401 — we exercise it on `/stores` because `/whoami` is
-  // intentionally tolerant (it returns 200 with no username rather than
-  // 401, so the SPA can probe without alarming devtools). Logout
-  // destroys the session server-side, so the replayed cookie resolves
-  // to no session and the layer answers `unauthorized`.
-  const replay = await playwrightRequest.newContext({
-    ignoreHTTPSErrors: true,
-    extraHTTPHeaders: {
-      Cookie: `${session!.name}=${session!.value}`,
+  // Replay the old cookie in a fresh request context. `/whoami` is
+  // intentionally tolerant, so use a protected endpoint to pin the
+  // canonical rejection after backend session destruction.
+  const replayed = await replayProtectedRequest(
+    backendWithAdmin.baseUrl,
+    session!,
+  );
+  expect(replayed).toEqual({ status: 401, code: "unauthorized" });
+});
+
+test("failed hard-navigation logout remains visible and retryable", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  const cookies = await page.context().cookies(backendWithAdmin.baseUrl);
+  const session = cookies.find((c) => c.name === "__Host-underwrap-session");
+  expect(session).toBeDefined();
+
+  await page.route(
+    "**/v1/admin/auth/logout",
+    async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "logout_failed",
+          message: "The request failed.",
+        }),
+      });
     },
-  });
-  const protectedRes = await replay.get(
+    { times: 1 },
+  );
+
+  const [failedLogout] = await Promise.all([
+    page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/v1/admin/auth/logout") &&
+        request.method() === "POST",
+    ),
+    page.goto(`${backendWithAdmin.baseUrl}/logout`),
+  ]);
+
+  expect(
+    failedLogout.headers()["x-csrf-token"],
+    "hard-navigation logout must prime and send a CSRF token",
+  ).toBeTruthy();
+  await expect(page).toHaveURL(/\/logout(\?|$)/);
+  await expect(
+    page.getByRole("heading", { name: "Sign out failed" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Retry sign out" }),
+  ).toBeVisible();
+
+  const stillAuthenticated = await page.request.get(
     `${backendWithAdmin.baseUrl}/v1/admin/stores`,
   );
-  expect(protectedRes.status()).toBe(401);
-  const body = await protectedRes.json();
-  expect(body.code).toBe("unauthorized");
-  await replay.dispose();
+  expect(stillAuthenticated.status()).toBe(200);
+
+  const [retryPrime, retryLogout] = await Promise.all([
+    page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/v1/admin/auth/whoami") &&
+        request.method() === "GET",
+    ),
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/v1/admin/auth/logout") &&
+        response.request().method() === "POST",
+    ),
+    page.getByRole("button", { name: "Retry sign out" }).click(),
+  ]);
+  expect(retryPrime.method()).toBe("GET");
+  expect(retryLogout.status()).toBe(204);
+  await expect(page).toHaveURL(/\/login(\?|$)/);
+
+  const replayed = await replayProtectedRequest(
+    backendWithAdmin.baseUrl,
+    session!,
+  );
+  expect(replayed).toEqual({ status: 401, code: "unauthorized" });
 });
 
 test("CSRF token is attached on state-changing requests", async ({

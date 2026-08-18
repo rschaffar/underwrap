@@ -273,6 +273,11 @@ The backend uses:
   unknown usernames.
 
 Sessions disappear when the backend restarts, so operators must sign in again.
+Sign-out always obtains a fresh synchronizer token before submitting logout,
+including when `/logout` is opened as a fresh document. The UI clears its admin
+cache and returns to `/login` only after the backend destroys the session. A
+failed request remains visibly on `/logout` with a retry action; it does not
+clear the cache or report sign-out success.
 
 Routes are:
 

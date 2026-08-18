@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Outlet,
   RouterProvider,
@@ -22,9 +23,10 @@ import {
   type WhoamiResponse,
   fetchBootstrapStatus,
   fetchWhoami,
-  postLogout,
+  revokeAdminSession,
 } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { describeApiError } from "@/lib/error-message";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -220,25 +222,61 @@ const bootstrapRoute = createRoute({
 const logoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/logout",
-  beforeLoad: async () => {
+  component: LogoutRouteComponent,
+});
+
+function LogoutRouteComponent() {
+  const navigate = logoutRoute.useNavigate();
+  const initialAttemptStarted = useRef(false);
+  const attemptInFlight = useRef(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const signOut = useCallback(async () => {
+    if (attemptInFlight.current) return;
+    attemptInFlight.current = true;
+    setFailure(null);
+
     try {
-      await postLogout();
-    } catch {
-      // Even if the server rejects (already revoked, CSRF, etc.) we still
-      // proceed to /login — the session cookie is either gone server-side
-      // or never existed.
+      await revokeAdminSession();
+    } catch (error) {
+      setFailure(describeApiError(error));
+      attemptInFlight.current = false;
+      return;
     }
+
     queryClient.clear();
-    throw redirect({ to: "/login", replace: true });
-  },
-  component: function LogoutRouteComponent() {
+    await navigate({ to: "/login", replace: true });
+    attemptInFlight.current = false;
+  }, [navigate]);
+
+  useEffect(() => {
+    if (initialAttemptStarted.current) return;
+    initialAttemptStarted.current = true;
+    void signOut();
+  }, [signOut]);
+
+  if (failure === null) {
     return (
       <div className="flex min-h-screen items-center justify-center p-6">
         <p className="text-sm text-(--color-muted)">Signing out…</p>
       </div>
     );
-  },
-});
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center p-6">
+      <div className="max-w-md rounded-xl border border-(--color-line) bg-(--color-surface-0)/70 p-6 text-center">
+        <h2 className="text-lg font-semibold text-(--color-fg)">
+          Sign out failed
+        </h2>
+        <p className="mt-2 text-sm text-(--color-muted)">{failure}</p>
+        <Button className="mt-4" onClick={() => void signOut()}>
+          Retry sign out
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Resolve a `?next=` query parameter to a same-origin path, or `null` if
