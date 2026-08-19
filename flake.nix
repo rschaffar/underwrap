@@ -274,7 +274,6 @@
           devShells.default = craneLib.devShell {
             # Extra packages available in the dev shell.
             packages = with pkgs; [
-              rust-analyzer
               cargo-watch
               cargo-edit
               cargo-expand
