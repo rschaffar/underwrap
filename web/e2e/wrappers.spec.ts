@@ -6,6 +6,9 @@
  * cell-editor flows for each of the four modes, removing a permission,
  * and a refresh that preserves the URL `?store=` selection.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { test, expect, loginViaUi } from "./fixtures";
 
 // Admin mutations are driven from inside the page via `fetch(...,
@@ -44,6 +47,24 @@ async function adminFetchJson<T>(
     }
     return (await res.json()) as T;
   }, req);
+}
+
+/** Create a real runtime client instance and return its backend-generated id. */
+async function createClientInstance(
+  page: import("@playwright/test").Page,
+  backend: { tmpDir: string },
+): Promise<string> {
+  const body = await adminFetchJson<{ id: string }>(page, {
+    method: "POST",
+    path: "/v1/admin/client-instances",
+    body: {
+      display_name: "E2E client",
+      current_store_id: "default",
+      status: "active",
+      cert_pem: readFileSync(join(backend.tmpDir, "cert.pem"), "utf8"),
+    },
+  });
+  return body.id;
 }
 
 /** Create a resource (random backend id) and return that id. */
@@ -119,6 +140,8 @@ test("cell editor cycles a permission through every mode (incl. unsafe-debug con
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
 
+  const clientInstanceId = await createClientInstance(page, backendWithAdmin);
+
   // Seed a pair record so the table has a row to drive permissions against.
   const resourceId = await seedPair(
     page,
@@ -130,7 +153,7 @@ test("cell editor cycles a permission through every mode (incl. unsafe-debug con
   await upsertPermission(
     page,
     "default",
-    "dev-laptop",
+    clientInstanceId,
     "gh-authorized",
     resourceId,
     { kind: "locked" },
@@ -140,7 +163,7 @@ test("cell editor cycles a permission through every mode (incl. unsafe-debug con
   await page.goto(`${backendWithAdmin.baseUrl}/wrappers?store=default`);
 
   const cell = page.getByTestId(
-    `wrappers-cell-gh-authorized-${resourceId}-dev-laptop`,
+    `wrappers-cell-gh-authorized-${resourceId}-${clientInstanceId}`,
   );
   await expect(cell).toBeVisible();
   await expect(cell.getByTestId("mode-locked")).toBeVisible();
@@ -226,13 +249,18 @@ test("raw policy viewer surfaces the live PolicyDocument and writable-permission
   await expect(dlg).toBeHidden();
 
   // Seed a writable permission. The raw policy reads policy.permissions
-  // directly and the header badge counts them, so a resource + writable
-  // permission is enough to bump the count to 1.
-  const resourceId = await createResource(page, "default", "github/token");
+  // directly and the header badge counts them.
+  const clientInstanceId = await createClientInstance(page, backendWithAdmin);
+  const resourceId = await seedPair(
+    page,
+    "default",
+    "gh-authorized",
+    "github/token",
+  );
   await upsertPermission(
     page,
     "default",
-    "dev-laptop",
+    clientInstanceId,
     "gh-authorized",
     resourceId,
     { kind: "unlocked" },

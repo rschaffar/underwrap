@@ -50,8 +50,8 @@
 
           # RustSec advisory database for cargo-audit.
           advisoryDb = pkgs.fetchzip {
-            url = "https://github.com/RustSec/advisory-db/archive/b5fc89b8be99e96f79194d8a6f11e9b4143b99f0.tar.gz";
-            hash = "sha256-BOqD2VjHKAjJB8uAltrYfjhci1JoiusWsHryUTup9FM=";
+            url = "https://github.com/RustSec/advisory-db/archive/2f08fbb85332687b721f2f22706d07448369451b.tar.gz";
+            hash = "sha256-hRoCd9955xmj8kS1ujgkv7Xg2IjcQt/WyYBow3DXZIc=";
           };
 
           # Common build inputs.
@@ -82,7 +82,7 @@
             src = ./web;
             # If this hash drifts the build fails with the
             # offending hash printed; copy it back into this file.
-            npmDepsHash = "sha256-953WYvZOCLf2OEvkZftxMMHz73aTuBrq+qtMI8B2HtU=";
+            npmDepsHash = "sha256-LHeYCM1f2AjGzQtnaCFsxc0fIWPkCPdDQ6Lm1HgcAx0=";
             # The npm `prebuild` hook runs `openapi-typescript` against
             # `../crates/underwrap-backend/openapi.json`, which lives
             # outside the `./web` source root. Stage it at the

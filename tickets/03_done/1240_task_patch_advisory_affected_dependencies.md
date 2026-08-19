@@ -18,7 +18,7 @@ This is dependency and build-input maintenance, not evidence that the deployed a
   - `h2` 0.4.14 → 0.4.16 (`RUSTSEC-2026-0258`);
   - `event-listener` 5.4.1 → 5.4.2 (`RUSTSEC-2026-0221`);
   - `rand` 0.8.5 → 0.8.6 and 0.9.2 → 0.9.3 (`RUSTSEC-2026-0097`).
-  Use Cargo 1.97.1 exact `cargo update -p ... --precise ...` operations. Permit only the resulting checksum/reference changes and Cargo's deterministic removal of the no-longer-needed `windows-sys` 0.61.2 lock entry/reuse of already-locked compatible `windows-sys` versions; do not change `Cargo.toml`, Rust source, features, or major/minor lines.
+  Use Cargo 1.97.1 exact `cargo update -p ... --precise ...` operations. Permit only the resulting checksum/reference changes and Cargo's deterministic re-resolution of references among the already locked `windows-sys` 0.52/0.59/0.60/0.61 lines; no `windows-sys` package version is added or removed. Do not change `Cargo.toml`, Rust source, features, or major/minor lines.
 - Refresh the pinned RustSec advisory database in `flake.nix` from commit `b5fc89b8be99e96f79194d8a6f11e9b4143b99f0` to reviewed current commit `2f08fbb85332687b721f2f22706d07448369451b` and its unpacked hash `sha256-hRoCd9955xmj8kS1ujgkv7Xg2IjcQt/WyYBow3DXZIc=`. The refreshed database must make the old lock fail for `h2` and the patched lock pass with only the two no-fix unmaintained notices below.
 - Retain `paste` 1.0.15 (`RUSTSEC-2024-0436`) and `rustls-pemfile` 2.2.0 (`RUSTSEC-2025-0134`) as the only allowed informational warnings. Neither advisory has a patched release. Replacing either crate would require source/API/dependency restructuring and is not a fix-available supported-line patch; document the residual maintenance notices without calling them vulnerabilities fixed by this task.
 - Refresh only the `nixpkgs.locked` revision/hash/timestamp in `flake.lock` from `8d029aa64915e54b7846873d9583af4c9fd21ea4` to reviewed revision `afe3d8ac4395617bdcdac9f188ac8717a062e014`. This supplies Node 24.19.0/npm 11.17.0, beyond the official Node 24.18.1 July 2026 security release, while preserving:
@@ -36,6 +36,11 @@ This is dependency and build-input maintenance, not evidence that the deployed a
   - state that Node is build/development tooling and does not enter the embedded static backend closure;
   - explain that Playwright package/driver versions move together with nixpkgs;
   - preserve the existing statement that test/audit success does not establish absence of dependency vulnerabilities.
+- Repair exactly two pre-existing `web/e2e/wrappers.spec.ts` fixture setups exposed by the required full-browser gate after F-014:
+  - clean HEAD `c8941506e51d3d28a6a41077ac0317f0077b465c` with the old dependency/browser locks fails both deterministically with `404 unknown client instance`; baseline log SHA-256 `4a24e872fad2f7d2fb41102c6611a3c2390133471872e6c17da50093c0e235a9`;
+  - create one real client instance in each affected isolated backend through the authenticated admin API, using that backend's generated public `cert.pem`, and use the returned client id rather than synthetic `dev-laptop` in permission URLs/test ids;
+  - retain `seedPair(...)` in the cell-editor test and use it instead of resource-only creation in the raw-policy test, because F-014 requires the exact wrapper/resource pair before permission access;
+  - do not modify the backend, application UI/API client, shared backend fixture, F-014 validation order, or any other E2E scenario. Record this as restoring stale F-014 browser evidence, not as an F-025 product behavior change.
 - Preserve clean-HEAD evidence outside the repository:
   - desired-state script `/tmp/underwrap-codebase-review-2026-07-18-WJidbr/1240-dependency-advisory-red.py`, SHA-256 `5b2a0a604ce6546a28c4160dfda4d40923efb6e601a3e8cef902753ca10b69c2`;
   - red log `/tmp/underwrap-codebase-review-2026-07-18-WJidbr/1240-dependency-advisory-red.log`, SHA-256 `af5ca1fbab7633c692d8f4b10b169bd99c02918b67aaca67d9b7960d282a2d1b`;
@@ -52,12 +57,13 @@ Expected implementation/product paths are limited to:
 - `web/package.json`
 - `web/package-lock.json`
 - `docs/testing.md`
+- `web/e2e/wrappers.spec.ts` (only the exact pre-existing F-014 fixture repair above)
 
 Required board moves and `tickets/_handover/codebase_2026-07-18.md` updates are workflow state, not product-scope expansion. Mandatory fresh cleanup discovery runs first; no cleanup is pre-approved. Dependency/input lock changes are the F-025 fix, not cleanup.
 
 ## Non-goals
 
-- Do not add a dependency, change any Rust/TypeScript/Python/Nix module/runtime source, change protocol/API/config/storage behavior, or alter the `underwrap-exec → underwrap-ns` chain.
+- Do not add a dependency, change any Rust/application-TypeScript/Python/Nix module/runtime source, change protocol/API/config/storage behavior, or alter the `underwrap-exec → underwrap-ns` chain. The exact `web/e2e/wrappers.spec.ts` fixture repair above is the sole test-source exception.
 - Do not update Rust beyond 1.97.1 or change F-024's `rust-overlay` node, Crane authority, components, optimizer posture, warnings, or coverage gate.
 - Do not update `crane`, `rust-overlay`, `flake-utils`, or `systems`; do not perform a broad `nix flake update`.
 - Do not run broad `cargo update`, `npm update`, `npm audit fix --force`, major-version migrations, or remove direct dependencies. Do not absorb F-058 frontend/OpenAPI currency.
@@ -80,6 +86,7 @@ Required board moves and `tickets/_handover/codebase_2026-07-18.md` updates are 
 ### Evidence and behavior preservation
 
 - Desired-state 20-failure script becomes fully green. The Nix web-dist/default packages, Rust workspace, SPA tests/build, full browser suite, integration coverage, and production VM pass under the updated Nix closure.
+- The two corrected wrappers browser tests create real client/resource/pair prerequisites and pass; clean-HEAD evidence proves their former failure predates the F-025 dependency update. No backend assertion or reference gate is weakened.
 - No source, API, config, protocol, security assertion, dependency feature, major line, or runtime behavior changes.
 - Documentation distinguishes current lock-snapshot evidence, residual no-patch maintenance notices, developer/build exposure, static deployed assets, and the absence of exploitability claims.
 

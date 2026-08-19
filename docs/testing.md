@@ -70,6 +70,26 @@ SPA unit tests are not a separate flake check, so run them explicitly:
 cd web && npm test && npm run build
 ```
 
+## Dependency audits
+
+Audit the npm lock separately from the aggregate flake checks:
+
+```bash
+cd web && npm audit --package-lock-only
+```
+
+The pinned RustSec snapshot used by `workspace-audit` currently reports zero
+fixable findings and exactly two unmaintained notices without patched releases:
+`paste` (`RUSTSEC-2024-0436`) and `rustls-pemfile` (`RUSTSEC-2025-0134`). Node is
+build and development tooling for the SPA; the backend embeds the resulting
+static assets, and Node does not enter its runtime closure. Keep the direct
+`@playwright/test` package version aligned with the nixpkgs Playwright driver
+when updating nixpkgs so browser revisions remain compatible.
+
+These audits describe the pinned lockfiles and advisory snapshots at the time
+they run. They do not prove that dependencies are free of undisclosed or future
+vulnerabilities, nor that an affected package path is exploitable by underwrap.
+
 ## Rust toolchain
 
 The flake explicitly pins Rust 1.97.1 for development shells, Crane packages,
