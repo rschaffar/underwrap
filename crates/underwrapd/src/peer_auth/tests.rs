@@ -1,7 +1,106 @@
+use std::cell::RefCell;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::net::UnixStream;
+
 use super::*;
 
 const STATUS: &str =
     "Name:\tgh\nState:\tR (running)\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t6001\t6001\t6001\n";
+const SOCKET_FD: RawFd = 71;
+const PIDFD: RawFd = 72;
+const PEER_PID: u32 = 4242;
+const PIDFD_PID: u32 = 4343;
+
+#[derive(Clone, Copy)]
+enum Acquisition {
+    Unsupported,
+    Error(i32),
+    InvalidData,
+    Acquired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    Acquire(RawFd),
+    ResolvePid(RawFd),
+    ReadStatus(u32),
+    Close(RawFd),
+}
+
+struct FakePeerAuthOperations {
+    acquisition: Acquisition,
+    resolved_pid: Option<u32>,
+    status: Option<&'static str>,
+    operations: RefCell<Vec<Operation>>,
+}
+
+impl FakePeerAuthOperations {
+    fn new(
+        acquisition: Acquisition,
+        resolved_pid: Option<u32>,
+        status: Option<&'static str>,
+    ) -> Self {
+        Self {
+            acquisition,
+            resolved_pid,
+            status,
+            operations: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn operations(&self) -> Vec<Operation> {
+        self.operations.borrow().clone()
+    }
+}
+
+impl PeerAuthOperations for FakePeerAuthOperations {
+    type Pidfd = RawFd;
+
+    fn peer_pidfd(&self, socket_fd: RawFd) -> std::io::Result<Option<Self::Pidfd>> {
+        self.operations
+            .borrow_mut()
+            .push(Operation::Acquire(socket_fd));
+        match self.acquisition {
+            Acquisition::Unsupported => Ok(None),
+            Acquisition::Error(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+            Acquisition::InvalidData => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "malformed descriptor payload",
+            )),
+            Acquisition::Acquired => Ok(Some(PIDFD)),
+        }
+    }
+
+    fn pidfd_pid(&self, pidfd: &Self::Pidfd) -> Option<u32> {
+        self.operations
+            .borrow_mut()
+            .push(Operation::ResolvePid(*pidfd));
+        self.resolved_pid
+    }
+
+    fn read_proc_status(&self, pid: u32) -> Option<String> {
+        self.operations
+            .borrow_mut()
+            .push(Operation::ReadStatus(pid));
+        self.status.map(str::to_owned)
+    }
+
+    fn close_pidfd(&self, pidfd: Self::Pidfd) {
+        self.operations.borrow_mut().push(Operation::Close(pidfd));
+    }
+}
+
+fn socket_cred() -> libc::ucred {
+    libc::ucred {
+        pid: PEER_PID as libc::pid_t,
+        uid: 1000,
+        gid: 1000,
+    }
+}
+
+fn resolve_with(operations: &FakePeerAuthOperations) -> Result<PeerCred, PeerAuthReject> {
+    resolve_peer_cred(SOCKET_FD, socket_cred(), operations)
+}
 
 #[test]
 fn parse_proc_status_ids_extracts_real_and_effective() {
@@ -139,10 +238,202 @@ fn parse_fdinfo_pid_rejects_missing_pid_line() {
 }
 
 #[test]
+fn only_enoprotoopt_is_classified_as_peer_pidfd_unsupported() {
+    let unsupported =
+        classify_peer_pidfd_error(std::io::Error::from_raw_os_error(libc::ENOPROTOOPT))
+            .expect("ENOPROTOOPT selects the explicitly weaker older-kernel path");
+    assert_eq!(unsupported, None);
+
+    for errno in [
+        libc::EACCES,
+        libc::EBADF,
+        libc::EINTR,
+        libc::EINVAL,
+        libc::EMFILE,
+    ] {
+        let err = classify_peer_pidfd_error(std::io::Error::from_raw_os_error(errno))
+            .expect_err("every non-ENOPROTOOPT errno must remain an acquisition failure");
+        assert_eq!(err.raw_os_error(), Some(errno));
+    }
+}
+
+#[test]
+fn valid_and_negative_peer_pidfd_payloads_transfer_only_valid_ownership() {
+    let expected_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let (pidfd, _peer) = UnixStream::pair().expect("temporary Unix descriptors must be created");
+    let pidfd = pidfd.into_raw_fd();
+    let returned = validate_peer_pidfd_payload(pidfd, expected_len)
+        .expect("a valid descriptor payload must be returned");
+    assert_eq!(returned, pidfd);
+
+    // SAFETY: validation returned the same owned descriptor, transferring it
+    // back to this test exactly once.
+    let returned = unsafe { OwnedFd::from_raw_fd(returned) };
+    assert_eq!(returned.as_raw_fd(), pidfd);
+
+    assert_eq!(
+        validate_peer_pidfd_payload(-1, expected_len)
+            .expect_err("a negative descriptor must be rejected")
+            .kind(),
+        std::io::ErrorKind::InvalidData,
+    );
+}
+
+#[test]
+fn malformed_peer_pidfd_length_closes_the_acquired_descriptor() {
+    let expected_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let (pidfd, _peer) = UnixStream::pair().expect("temporary Unix descriptors must be created");
+    let pidfd = pidfd.into_raw_fd();
+
+    assert_eq!(
+        validate_peer_pidfd_payload(pidfd, expected_len - 1)
+            .expect_err("a malformed descriptor length must be rejected")
+            .kind(),
+        std::io::ErrorKind::InvalidData,
+    );
+    let fcntl_result = unsafe { libc::fcntl(pidfd, libc::F_GETFD) };
+    let fcntl_error = std::io::Error::last_os_error();
+    assert_eq!(fcntl_result, -1);
+    assert_eq!(fcntl_error.raw_os_error(), Some(libc::EBADF));
+}
+
+#[test]
+fn unsupported_peer_pidfd_alone_reads_fallback_status() {
+    let operations = FakePeerAuthOperations::new(Acquisition::Unsupported, None, Some(STATUS));
+    let peer = resolve_with(&operations).expect("unsupported kernels retain the explicit fallback");
+
+    assert_eq!(peer.pid, PEER_PID);
+    assert_eq!(peer.auth_path, PeerAuthPath::PeerCredFallback);
+    assert_eq!(
+        operations.operations(),
+        [
+            Operation::Acquire(SOCKET_FD),
+            Operation::ReadStatus(PEER_PID)
+        ]
+    );
+}
+
+#[test]
+fn peer_pidfd_acquisition_errors_reject_without_fallback_status_reads() {
+    for acquisition in [
+        Acquisition::Error(libc::EACCES),
+        Acquisition::Error(libc::EBADF),
+        Acquisition::Error(libc::EINTR),
+        Acquisition::InvalidData,
+    ] {
+        let operations = FakePeerAuthOperations::new(acquisition, None, Some(STATUS));
+        assert_eq!(
+            resolve_with(&operations).expect_err("acquisition failure must reject"),
+            PeerAuthReject::Unresolved,
+        );
+        assert_eq!(operations.operations(), [Operation::Acquire(SOCKET_FD)]);
+    }
+}
+
+#[test]
+fn acquired_peer_pidfd_pid_resolution_failure_rejects_and_closes_once() {
+    let operations = FakePeerAuthOperations::new(Acquisition::Acquired, None, Some(STATUS));
+    assert_eq!(
+        resolve_with(&operations).expect_err("PID resolution failure must reject"),
+        PeerAuthReject::Unresolved,
+    );
+    assert_eq!(
+        operations.operations(),
+        [
+            Operation::Acquire(SOCKET_FD),
+            Operation::ResolvePid(PIDFD),
+            Operation::Close(PIDFD),
+        ]
+    );
+}
+
+#[test]
+fn acquired_peer_pidfd_status_read_failure_rejects_without_fallback_and_closes_once() {
+    let operations = FakePeerAuthOperations::new(Acquisition::Acquired, Some(PIDFD_PID), None);
+    assert_eq!(
+        resolve_with(&operations).expect_err("status read failure must reject"),
+        PeerAuthReject::Unresolved,
+    );
+    assert_eq!(
+        operations.operations(),
+        [
+            Operation::Acquire(SOCKET_FD),
+            Operation::ResolvePid(PIDFD),
+            Operation::ReadStatus(PIDFD_PID),
+            Operation::Close(PIDFD),
+        ]
+    );
+}
+
+#[test]
+fn acquired_peer_pidfd_malformed_status_rejects_without_fallback_and_closes_once() {
+    let operations =
+        FakePeerAuthOperations::new(Acquisition::Acquired, Some(PIDFD_PID), Some("garbage\n"));
+    assert_eq!(
+        resolve_with(&operations).expect_err("malformed status must reject"),
+        PeerAuthReject::Unresolved,
+    );
+    assert_eq!(
+        operations.operations(),
+        [
+            Operation::Acquire(SOCKET_FD),
+            Operation::ResolvePid(PIDFD),
+            Operation::ReadStatus(PIDFD_PID),
+            Operation::Close(PIDFD),
+        ]
+    );
+}
+
+#[test]
+fn acquired_peer_pidfd_credential_mismatch_rejects_without_fallback_and_closes_once() {
+    let mismatch = "Uid:\t4242\t4242\t4242\t4242\nGid:\t4242\t4242\t4242\t4242\n";
+    let operations =
+        FakePeerAuthOperations::new(Acquisition::Acquired, Some(PIDFD_PID), Some(mismatch));
+    assert_eq!(
+        resolve_with(&operations).expect_err("credential mismatch must reject"),
+        PeerAuthReject::CredMismatch {
+            uid: 1000,
+            gid: 1000,
+            auth_path: PeerAuthPath::PeerPidfd,
+        }
+    );
+    assert_eq!(
+        operations.operations(),
+        [
+            Operation::Acquire(SOCKET_FD),
+            Operation::ResolvePid(PIDFD),
+            Operation::ReadStatus(PIDFD_PID),
+            Operation::Close(PIDFD),
+        ]
+    );
+}
+
+#[test]
+fn acquired_peer_pidfd_success_uses_pinned_path_and_closes_once_after_status_read() {
+    let operations =
+        FakePeerAuthOperations::new(Acquisition::Acquired, Some(PIDFD_PID), Some(STATUS));
+    let peer = resolve_with(&operations).expect("consistent pinned credentials must pass");
+
+    assert_eq!(peer.pid, PIDFD_PID);
+    assert_eq!(peer.egid, Some(6001));
+    assert_eq!(peer.auth_path, PeerAuthPath::PeerPidfd);
+    assert_eq!(
+        operations.operations(),
+        [
+            Operation::Acquire(SOCKET_FD),
+            Operation::ResolvePid(PIDFD),
+            Operation::ReadStatus(PIDFD_PID),
+            Operation::Close(PIDFD),
+        ]
+    );
+}
+
+#[test]
 fn get_peer_cred_resolves_self_over_socketpair() {
-    // End-to-end against a real socket: a socketpair's peer is this very
-    // process, so the resolved ids must match our own. Exercises whichever
-    // path the running kernel supports (pidfd on 6.5+, else fallback).
+    // End-to-end against a real socket: supported kernels must take the pinned
+    // path. An older kernel remains portable only through the documented,
+    // explicitly weaker fallback contract.
+    let supported = peerpidfd_supported().expect("SO_PEERPIDFD support probe must complete");
     let mut fds = [0 as libc::c_int; 2];
     let ret = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     assert_eq!(ret, 0, "socketpair failed");
@@ -157,6 +448,14 @@ fn get_peer_cred_resolves_self_over_socketpair() {
     assert_eq!(cred.pid, std::process::id());
     assert_eq!(cred.uid, unsafe { libc::getuid() });
     assert_eq!(cred.egid, Some(unsafe { libc::getegid() }));
+    assert_eq!(
+        cred.auth_path,
+        if supported {
+            PeerAuthPath::PeerPidfd
+        } else {
+            PeerAuthPath::PeerCredFallback
+        },
+    );
 }
 
 #[test]

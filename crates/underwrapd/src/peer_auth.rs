@@ -1,4 +1,4 @@
-use std::os::unix::io::RawFd;
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::net::UnixStream;
@@ -78,21 +78,96 @@ fn get_peer_cred_for_fd(fd: RawFd) -> Result<PeerCred, PeerAuthReject> {
             return Err(PeerAuthReject::Unresolved);
         }
     };
+    resolve_peer_cred(fd, cred, &SystemPeerAuthOperations)
+}
 
+/// Operations at the peer-pidfd decision boundary. Production delegates each
+/// method directly to the existing syscall/procfs operation; tests inject only
+/// here so they exercise the same fallback, rejection, and close ordering as a
+/// live connection without adding a deployed fault-control path.
+trait PeerAuthOperations {
+    type Pidfd;
+
+    fn peer_pidfd(&self, socket_fd: RawFd) -> std::io::Result<Option<Self::Pidfd>>;
+    fn pidfd_pid(&self, pidfd: &Self::Pidfd) -> Option<u32>;
+    fn read_proc_status(&self, pid: u32) -> Option<String>;
+    fn close_pidfd(&self, pidfd: Self::Pidfd);
+}
+
+struct SystemPeerAuthOperations;
+
+impl PeerAuthOperations for SystemPeerAuthOperations {
+    type Pidfd = RawFd;
+
+    fn peer_pidfd(&self, socket_fd: RawFd) -> std::io::Result<Option<Self::Pidfd>> {
+        peer_pidfd(socket_fd)
+    }
+
+    fn pidfd_pid(&self, pidfd: &Self::Pidfd) -> Option<u32> {
+        pidfd_pid(*pidfd)
+    }
+
+    fn read_proc_status(&self, pid: u32) -> Option<String> {
+        std::fs::read_to_string(format!("/proc/{pid}/status")).ok()
+    }
+
+    fn close_pidfd(&self, pidfd: Self::Pidfd) {
+        // SAFETY: `peer_pidfd` returned this descriptor as owned. The guard
+        // below transfers it here exactly once and no later operation uses it.
+        unsafe { libc::close(pidfd) };
+    }
+}
+
+/// Owns one successfully acquired pidfd until every resolution operation has
+/// finished. Keeping close in `Drop` makes each early rejection close exactly
+/// once while the operation trace remains injectable in deterministic tests.
+struct AcquiredPidfd<'a, O: PeerAuthOperations + ?Sized> {
+    operations: &'a O,
+    pidfd: Option<O::Pidfd>,
+}
+
+impl<'a, O: PeerAuthOperations + ?Sized> AcquiredPidfd<'a, O> {
+    fn new(operations: &'a O, pidfd: O::Pidfd) -> Self {
+        Self {
+            operations,
+            pidfd: Some(pidfd),
+        }
+    }
+
+    fn get(&self) -> &O::Pidfd {
+        self.pidfd
+            .as_ref()
+            .expect("acquired pidfd remains owned until drop")
+    }
+}
+
+impl<O: PeerAuthOperations + ?Sized> Drop for AcquiredPidfd<'_, O> {
+    fn drop(&mut self) {
+        if let Some(pidfd) = self.pidfd.take() {
+            self.operations.close_pidfd(pidfd);
+        }
+    }
+}
+
+fn resolve_peer_cred<O: PeerAuthOperations + ?Sized>(
+    fd: RawFd,
+    cred: libc::ucred,
+    operations: &O,
+) -> Result<PeerCred, PeerAuthReject> {
     // Primary path: SO_PEERPIDFD. Holding the pidfd open pins the peer's
     // PID — the kernel will not recycle it to a different process — so the
     // subsequent `/proc/<pid>/status` read is race-free. Only ENOPROTOOPT
     // selects the older-kernel fallback; every other acquisition failure is a
     // hard rejection.
-    match peer_pidfd(fd) {
-        Ok(Some(pidfd)) => {
-            let resolved = (|| {
-                let pid = pidfd_pid(pidfd)?;
-                let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-                Some((pid, status))
-            })();
-            // Release the pidfd only after the read above has completed.
-            unsafe { libc::close(pidfd) };
+    match operations.peer_pidfd(fd) {
+        Ok(Some(raw_pidfd)) => {
+            let pidfd = AcquiredPidfd::new(operations, raw_pidfd);
+            let resolved = operations
+                .pidfd_pid(pidfd.get())
+                .and_then(|pid| operations.read_proc_status(pid).map(|status| (pid, status)));
+            // Release the pidfd only after its PID and status read have
+            // completed, and before parsing data that no longer needs the pin.
+            drop(pidfd);
 
             return match resolved {
                 Some((pid, status)) => {
@@ -122,9 +197,9 @@ fn get_peer_cred_for_fd(fd: RawFd) -> Result<PeerCred, PeerAuthReject> {
     // Fallback path: pre-6.5 kernel without SO_PEERPIDFD.
     warn_fallback_once();
     let pid = cred.pid as u32;
-    let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
-        Ok(s) => s,
-        Err(_) => return Err(PeerAuthReject::Unresolved),
+    let status = match operations.read_proc_status(pid) {
+        Some(status) => status,
+        None => return Err(PeerAuthReject::Unresolved),
     };
     finish_peer_cred(cred, pid, &status, PeerAuthPath::PeerCredFallback)
 }
@@ -200,20 +275,39 @@ fn peer_pidfd(fd: RawFd) -> std::io::Result<Option<RawFd>> {
         )
     };
     if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        return if err.raw_os_error() == Some(libc::ENOPROTOOPT) {
-            Ok(None)
-        } else {
-            Err(err)
-        };
+        return classify_peer_pidfd_error(std::io::Error::last_os_error());
     }
-    if pidfd < 0 || len != std::mem::size_of::<libc::c_int>() as libc::socklen_t {
+    validate_peer_pidfd_payload(pidfd, len).map(Some)
+}
+
+fn classify_peer_pidfd_error(err: std::io::Error) -> std::io::Result<Option<RawFd>> {
+    if err.raw_os_error() == Some(libc::ENOPROTOOPT) {
+        Ok(None)
+    } else {
+        Err(err)
+    }
+}
+
+fn validate_peer_pidfd_payload(pidfd: RawFd, len: libc::socklen_t) -> std::io::Result<RawFd> {
+    if pidfd < 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "SO_PEERPIDFD returned an invalid descriptor payload",
         ));
     }
-    Ok(Some(pidfd))
+
+    // SAFETY: a successful SO_PEERPIDFD call returned this nonnegative
+    // descriptor as owned. Take ownership before validating the returned length
+    // so every malformed payload closes the acquired descriptor exactly once.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
+    if len != std::mem::size_of::<libc::c_int>() as libc::socklen_t {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "SO_PEERPIDFD returned an invalid descriptor payload",
+        ))
+    } else {
+        Ok(pidfd.into_raw_fd())
+    }
 }
 
 /// Resolve the PID a pidfd refers to via `/proc/self/fdinfo/<pidfd>`,

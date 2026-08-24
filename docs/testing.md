@@ -160,7 +160,14 @@ Workspace tests cover:
   items;
 - plain and encrypted storage, including active resource-key absence and
   repeated false deletion after removing a typed-empty blob;
-- daemon peer authentication and wrapper intake;
+- daemon peer authentication and wrapper intake, including a private injected
+  operation seam shared by the live resolver. Deterministic traces prove that
+  only `SO_PEERPIDFD`'s `ENOPROTOOPT`/unsupported result reads the
+  `SO_PEERCRED` PID's status and selects `PeerCredFallback`; all other
+  acquisition errors, malformed descriptor payloads, pidfd PID/status
+  resolution failures, malformed status, and credential mismatches reject
+  without fallback. Every accepted pidfd trace closes exactly once after its
+  final resolution/status use, including all rejection outcomes;
 - daemon runtime-client admission and progress: the exact production 32-call/
   30-second policy, independent direct async requests, timeout permit release,
   fail-fast saturation without request start, and later admission;
@@ -465,7 +472,13 @@ zero downtime.
 
 It checks:
 
-- effective-GID wrapper-socket peer authentication;
+- effective-GID wrapper-socket peer authentication. The hardened witness first
+  asserts the running kernel is Linux 6.5 or newer, snapshots a journal cursor
+  immediately before one successful uniquely scoped setgid `test-echo`
+  invocation, and decodes only post-cursor `underwrapd-local` JSON records. Its
+  matching wrapper-read record must report `auth_path: PeerPidfd`, while the
+  complete scoped record set must contain neither `PeerCredFallback` nor a
+  fallback warning;
 - spoofing and direct-socket rejection;
 - rejection of a complete forged fd-3/fd-20 direct `underwrap-ns` handoff,
   followed by a successful daemon-created handoff;
@@ -537,6 +550,11 @@ not appear in service logs.
 
 Automated tests do not establish:
 
+- correctness of the Linux `SO_PEERPIDFD` implementation itself. Unit tests
+  prove underwrap's production decision and close ordering through injected
+  operation results, while the VM witnesses the selected path on its one
+  deployed kernel/invocation; neither is a kernel proof or evidence for every
+  kernel/procfs environment;
 - absence of kernel or dependency vulnerabilities;
 - correctness on every Linux filesystem and desktop environment;
 - safety of a broad or malicious target;

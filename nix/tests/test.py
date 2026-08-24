@@ -771,9 +771,58 @@ def local_unprivileged_wrapper_invocation():
     # LOCAL INSTANCE: unprivileged user wrapper invocation
     # ============================================================
 
+    kernel_release = machine.succeed("uname -r").strip()
+    kernel_version = re.match(r"^(\d+)\.(\d+)", kernel_release)
+    assert kernel_version is not None, f"could not parse running kernel release: {kernel_release!r}"
+    assert tuple(map(int, kernel_version.groups())) >= (6, 5), (
+        f"hardened peer-auth witness requires running Linux >= 6.5, got {kernel_release}"
+    )
+
+    # Scope the production-path witness to exactly this successful setgid
+    # invocation. The cursor is intentionally the final operation before exec.
+    cursor = journal_cursor()
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
     assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN: {output}"
-    machine.log("PASS: unprivileged user can use wrapper")
+
+    journal_output = machine.succeed(
+        "journalctl --no-pager "
+        f"--after-cursor={shlex.quote(cursor)} "
+        "-u underwrapd-local.service --output=json"
+    )
+    scoped_messages = [
+        _journal_message(json.loads(line))
+        for line in journal_output.splitlines()
+        if line.strip()
+    ]
+    matching_reads = [
+        message
+        for message in scoped_messages
+        if "wrapper read request" in message
+        and re.search(r"(?:^|\s)wrapper=test-echo(?:\s|$)", message)
+    ]
+    assert len(matching_reads) == 1, (
+        "expected exactly one post-cursor test-echo wrapper-read record, "
+        f"got {matching_reads!r} from {scoped_messages!r}"
+    )
+    assert re.search(
+        r"(?:^|[{,]\s*)uid:\s*1099(?=\s*[,}])", matching_reads[0]
+    ), matching_reads[0]
+    assert re.search(
+        r"(?:^|[{,]\s*)auth_path:\s*PeerPidfd(?=\s*[,}])", matching_reads[0]
+    ), (
+        f"hardened wrapper read did not use SO_PEERPIDFD: {matching_reads[0]!r}"
+    )
+    fallback_records = [
+        message
+        for message in scoped_messages
+        if "PeerCredFallback" in message
+        or "wrapper peer auth fell back" in message
+        or "SO_PEERPIDFD unavailable" in message
+    ]
+    assert not fallback_records, (
+        f"hardened invocation emitted fallback path/warning records: {fallback_records!r}"
+    )
+    machine.log("PASS: unprivileged wrapper uses deployed hardened SO_PEERPIDFD auth path")
 
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo2 hello"))
     assert "hello" in output
