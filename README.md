@@ -10,7 +10,9 @@ handing the reusable secret directly to the caller.
 
 **Frontend platform:** NixOS. The privileged wrapper chain depends on the NixOS
 module for setgid wrappers, file capabilities, dedicated users, systemd units,
-and host hardening. `underwrap-backend` can run on any Linux host.
+and host hardening. `underwrap-backend` can run on any Linux host. Flake package,
+check, and development-shell outputs support `x86_64-linux` and
+`aarch64-linux`.
 
 ## The problem
 
@@ -155,17 +157,18 @@ cargo clippy --all-targets --workspace -- -D warnings
 cd web && npm test && npm run build
 ```
 
-The complete flake gate is:
+Run the deterministic flake gate for the current supported system with:
 
 ```bash
 nix flake check
 ```
 
-NixOS module and wrapper-boundary changes also require:
-
-```bash
-nix build .#checks.x86_64-linux.vm-test
-```
+It covers Rust tests and static checks, the pinned Rust advisory snapshot, SPA
+Vitest and production builds, both complete NixOS examples, the focused NixOS
+module evaluators, and coverage generation. On `x86_64-linux` it also includes
+the NixOS VM test; that check is intentionally unavailable on `aarch64-linux`.
+Playwright browser tests and the live npm advisory query remain separate; see
+[Testing](docs/testing.md) for commands and exact boundaries.
 
 ## Documentation
 

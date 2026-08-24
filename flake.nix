@@ -14,7 +14,7 @@
   outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, ... }:
     let
       # Per-system outputs (packages, devShells, checks).
-      perSystem = flake-utils.lib.eachDefaultSystem (system:
+      perSystem = flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
         let
           pkgs = import nixpkgs {
             inherit system;
@@ -70,34 +70,56 @@
           # Build workspace dependencies first (for caching).
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-          # Build the admin SPA via npm. The resulting `dist/`
-          # directory is what `rust_embed` reads via the
-          # `$UNDERWRAP_WEB_DIST` interpolation in
-          # `crates/underwrap-backend/src/web.rs`. The Rust build
-          # itself doesn't depend on `nodejs`; only this derivation
-          # does, so the resulting binary closure stays node-free.
+          # Fetch the lockfile's npm dependency closure once and reuse it for
+          # both the production SPA artifact and the complete Vitest suite.
+          webNpmDeps = pkgs.fetchNpmDeps {
+            src = ./web;
+            # If this hash drifts the fetch fails with the offending hash
+            # printed; copy it back into this file.
+            hash = "sha256-LHeYCM1f2AjGzQtnaCFsxc0fIWPkCPdDQ6Lm1HgcAx0=";
+          };
+
+          # Both npm scripts generate the API bindings before their main step.
+          # The committed schema lives outside the `./web` source root, so stage
+          # it at the relative path expected by `openapi-typescript`.
+          webPreBuild = ''
+            mkdir -p ../crates/underwrap-backend
+            cp ${./crates/underwrap-backend/openapi.json} \
+              ../crates/underwrap-backend/openapi.json
+          '';
+
+          # Build the admin SPA via npm. The resulting `dist/` directory is what
+          # `rust_embed` reads via the `$UNDERWRAP_WEB_DIST` interpolation in
+          # `crates/underwrap-backend/src/web.rs`. The Rust build itself doesn't
+          # depend on `nodejs`; only this derivation does, so the resulting
+          # binary closure stays node-free.
           underwrapWebDist = pkgs.buildNpmPackage {
             pname = "underwrap-web-dist";
             version = "0.1.0";
             src = ./web;
-            # If this hash drifts the build fails with the
-            # offending hash printed; copy it back into this file.
-            npmDepsHash = "sha256-LHeYCM1f2AjGzQtnaCFsxc0fIWPkCPdDQ6Lm1HgcAx0=";
-            # The npm `prebuild` hook runs `openapi-typescript` against
-            # `../crates/underwrap-backend/openapi.json`, which lives
-            # outside the `./web` source root. Stage it at the
-            # expected relative path before the build phase so the
-            # generator can find it.
-            preBuild = ''
-              mkdir -p ../crates/underwrap-backend
-              cp ${./crates/underwrap-backend/openapi.json} \
-                ../crates/underwrap-backend/openapi.json
-            '';
+            npmDeps = webNpmDeps;
+            preBuild = webPreBuild;
             npmBuildScript = "build";
             installPhase = ''
               runHook preInstall
               mkdir -p $out
               cp -r dist/. $out/
+              runHook postInstall
+            '';
+          };
+
+          # Run `vitest run` through the package's unchanged `npm test` script
+          # using the same pinned dependency closure as the production build.
+          underwrapWebTest = pkgs.buildNpmPackage {
+            pname = "underwrap-web-test";
+            version = "0.1.0";
+            src = ./web;
+            npmDeps = webNpmDeps;
+            preBuild = webPreBuild;
+            npmBuildScript = "test";
+            installPhase = ''
+              runHook preInstall
+              touch $out
               runHook postInstall
             '';
           };
@@ -194,23 +216,39 @@
               inherit cargoArtifacts;
             });
 
-            # Parse and evaluate the relevant wrapper definitions in both
-            # complete NixOS examples. The assertions run during flake
-            # evaluation; the derivation records the gate as a normal check.
-            examples-nix-parse =
+            # The production SPA artifact consumed by every Rust package and the
+            # complete deterministic Vitest suite built from the same npm cache.
+            web-build = underwrapWebDist;
+            web-test = underwrapWebTest;
+
+            # Evaluate both shipped examples as complete NixOS systems through
+            # the real flake module and selected system package. Referencing the
+            # complete toplevels from the check also forces both builds.
+            examples-nixos-eval =
               let
-                fakeUnderwrap = {
-                  nixosModules.default = { };
-                  packages.${system}.default = pkgs.hello;
+                evaluate = example: user: nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  specialArgs = { underwrap = self; };
+                  modules = [
+                    example
+                    ({ ... }: {
+                      boot.isContainer = true;
+                      system.stateVersion = "25.11";
+                      users.users.${user}.isNormalUser = true;
+                    })
+                  ];
                 };
-                exampleArgs = { inherit pkgs; underwrap = fakeUnderwrap; };
-                nixosExample = import ./examples/nixos.nix exampleArgs;
-                agentExample = import ./examples/agent-github-comment.nix exampleArgs;
+                nixosToplevel =
+                  (evaluate ./examples/nixos.nix "alice").config.system.build.toplevel;
+                agentToplevel =
+                  (evaluate ./examples/agent-github-comment.nix "automation").config.system.build.toplevel;
               in
-              assert nixosExample.services.underwrap.instances.demo.wrappers.secret-check.target != "";
-              assert agentExample.services.underwrap.instances.agent.wrappers.agent-gh-comment.target != "";
-              pkgs.runCommand "underwrap-examples-nix-parse" { } ''
-                touch "$out"
+              pkgs.runCommand "underwrap-examples-nixos-eval" {
+                inherit nixosToplevel agentToplevel;
+              } ''
+                mkdir -p "$out"
+                ln -s "$nixosToplevel" "$out/nixos"
+                ln -s "$agentToplevel" "$out/agent-github-comment"
               '';
 
             # Prove the frontend module rejects plaintext runtime endpoints and
@@ -361,8 +399,11 @@
         };
 
     in
-      # Merge all outputs.
+      # Merge all outputs while adding the x86-only VM check without replacing
+      # the complete per-system check set on aarch64-linux.
       perSystem
       // systemIndependent
-      // vmTest;
+      // {
+        checks = perSystem.checks // vmTest.checks;
+      };
 }

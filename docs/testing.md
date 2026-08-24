@@ -40,9 +40,11 @@ cargo fmt -- --check
 cargo clippy --all-targets --workspace -- -D warnings
 ```
 
-## Complete repository checks
+## Deterministic repository checks
 
-The flake declares these checks:
+Flake package, check, and development-shell outputs support exactly
+`x86_64-linux` and `aarch64-linux`. The flake declares these checks on both
+systems:
 
 ```bash
 nix build .#checks.x86_64-linux.workspace-test
@@ -52,23 +54,51 @@ nix build .#checks.x86_64-linux.workspace-fmt
 nix build .#checks.x86_64-linux.workspace-audit
 nix build .#checks.x86_64-linux.workspace-deny
 nix build .#checks.x86_64-linux.workspace-llvm-cov
-nix build .#checks.x86_64-linux.examples-nix-parse
+nix build .#checks.x86_64-linux.web-build
+nix build .#checks.x86_64-linux.web-test
+nix build .#checks.x86_64-linux.examples-nixos-eval
 nix build .#checks.x86_64-linux.frontend-backend-url-eval
 nix build .#checks.x86_64-linux.frontend-swap-posture-eval
-nix build .#checks.x86_64-linux.vm-test
 ```
 
-Run all flake checks for the current system with:
+`web-build` is the production SPA artifact embedded in the Rust package.
+`web-test` runs the complete Vitest suite; both use one npm dependency closure
+pinned by the committed lockfile and flake hash. `examples-nixos-eval` evaluates
+and builds both shipped examples as complete NixOS systems through the real
+underwrap module and selected system package.
+
+Run the complete deterministic flake gate for the current supported system
+with:
 
 ```bash
 nix flake check
 ```
 
-SPA unit tests are not a separate flake check, so run them explicitly:
+This aggregate covers the listed Rust tests, formatting and lint, pinned
+RustSec advisory snapshot, dependency policy, coverage generation, SPA unit and
+production builds, example systems, and focused NixOS module evaluators. On
+`x86_64-linux` it additionally includes the production VM check:
+
+```bash
+nix build .#checks.x86_64-linux.vm-test
+```
+
+The VM check is intentionally not exposed on `aarch64-linux`. Evaluate every
+supported system's outputs without cross-building them with:
+
+```bash
+nix flake check --all-systems --no-build
+```
+
+The direct SPA commands remain useful for a focused local loop:
 
 ```bash
 cd web && npm test && npm run build
 ```
+
+Playwright is a separate host/browser integration suite and the live npm audit
+is a separate advisory-service query; neither is part of the sandboxed flake
+aggregate.
 
 ## Dependency audits
 
