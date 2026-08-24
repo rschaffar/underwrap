@@ -153,6 +153,10 @@
             "CARGO_BIN_EXE_underwrap-backend" = "${workspace}/bin/underwrap-backend";
           };
 
+          workspaceTestArgs = commonArgsWithWeb // workspaceTestBinaries // {
+            inherit cargoArtifacts;
+          };
+
         in {
           packages = {
             default = workspace;
@@ -171,13 +175,10 @@
           checks = {
             # Workspace-wide cargo test.
             # Binary-dependent integration tests skip gracefully in sandbox.
-            workspace-test = craneLib.cargoTest (commonArgsWithWeb // workspaceTestBinaries // {
-              inherit cargoArtifacts;
-            });
+            workspace-test = craneLib.cargoTest workspaceTestArgs;
 
             # Faster, better test runner for local/CI use.
-            workspace-nextest = craneLib.cargoNextest (commonArgsWithWeb // workspaceTestBinaries // {
-              inherit cargoArtifacts;
+            workspace-nextest = craneLib.cargoNextest (workspaceTestArgs // {
               partitions = 1;
               partitionType = "count";
             });
@@ -212,9 +213,7 @@
             };
 
             # Coverage summary / report generation.
-            workspace-llvm-cov = craneLib.cargoLlvmCov (commonArgsWithWeb // workspaceTestBinaries // {
-              inherit cargoArtifacts;
-            });
+            workspace-llvm-cov = craneLib.cargoLlvmCov workspaceTestArgs;
 
             # The production SPA artifact consumed by every Rust package and the
             # complete deterministic Vitest suite built from the same npm cache.
