@@ -357,6 +357,24 @@ let
   isoSecretTool = pkgs.writeShellScript "iso-secret-tool" ''
     exec ${pkgs.libsecret}/bin/secret-tool "$@"
   '';
+  # Live private-bus isolation witness. Both lookups discard the secret; the
+  # only output is fixed lifecycle markers plus the non-secret bus address.
+  # The host test creates the unique release marker only after its isolation
+  # probes have completed.
+  libsecretBusProbe = pkgs.writeShellScript "libsecret-bus-probe" ''
+    set -eu
+    test "$#" -eq 1
+    release_marker="$1"
+    ${pkgs.libsecret}/bin/secret-tool lookup service gh account github.com >/dev/null
+    ${pkgs.coreutils}/bin/printf \
+      'UNDERWRAP_LIBSECRET_BUS_READY DBUS_SESSION_BUS_ADDRESS=%s\n' \
+      "$DBUS_SESSION_BUS_ADDRESS"
+    while ! test -e "$release_marker"; do
+      ${pkgs.coreutils}/bin/sleep 0.05
+    done
+    ${pkgs.libsecret}/bin/secret-tool lookup service gh account github.com >/dev/null
+    ${pkgs.coreutils}/bin/printf 'UNDERWRAP_LIBSECRET_BUS_STILL_READY\n'
+  '';
 in {
   imports = [ nixosModule ];
 
@@ -621,6 +639,11 @@ in {
           };
           test-libsecret = {
             target = "${pkgs.libsecret}/bin/secret-tool";
+            resource = "test/libsecret-store";
+            libsecret = true;
+          };
+          test-libsecret-bus-probe = {
+            target = "${libsecretBusProbe}";
             resource = "test/libsecret-store";
             libsecret = true;
           };

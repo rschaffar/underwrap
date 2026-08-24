@@ -528,6 +528,30 @@ It checks:
   finalization suppression, stable admin size rejection, and byte-identical
   retained storage.
 
+The private-libsecret-bus witness runs one dedicated target in a uniquely named
+transient systemd unit. The target completes a real lookup with its output
+discarded, reports its filesystem D-Bus address, and blocks on a unique release
+marker. While that exact unit is active and running, trusted root instrumentation
+in the host mount namespace proves that the exact reported pathname is absent
+and that no socket exists below the host bus tree. Separately, a process owned by
+the original caller performs exact metadata access and an `AF_UNIX` stream
+`connect_ex` against that pathname; both must return `EACCES` through the
+mode-`0000` bare host mountpoint. The unit must still be active and running after
+those probes. Only then does the test create the marker; the target completes a
+second discarded lookup, reports its fixed post-probe marker, and the unit must
+finish with a clean result and status. Exact-unit cleanup in a `finally` block
+makes the evidence independent of ordinary teardown timing.
+
+This is evidence for the normal filesystem-backed private bus on the tested
+NixOS kernel and deployed wrapper chain. Root's host-namespace absence result and
+the same-caller mode-`0000` metadata/connect denials are distinct observations:
+the caller's `EACCES` does not itself prove pathname absence. The witness does
+not hide or probe abstract Unix sockets, establish protection against host root
+or kernel compromise, or treat the configured target as untrusted. The target
+is trusted with the libsecret projection and can disclose it; the witness only
+exercises the same-caller host mount-namespace boundary while that trusted
+target and its private services are live.
+
 ### Secret hygiene
 
 It checks successful delivery while asserting that configured secret values do

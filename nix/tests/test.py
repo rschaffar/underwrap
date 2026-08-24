@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -463,6 +464,7 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-iso-libsecret": "test/iso-libsecret-store",
     "test-crash": "test/crash-tok",
     "test-libsecret": "test/libsecret-store",
+    "test-libsecret-bus-probe": "test/libsecret-store",
     "test-caps": "test/caps-tok",
     "test-ns-pids": "test/ns-pids-store",
     "test-ns-pids-env": "test/ns-pids-env-store",
@@ -1670,22 +1672,6 @@ def local_target_uid_files_libsecret():
     )
     machine.log("PASS: isolated libsecret state persisted to the backend")
 
-    # While running, the private bus must be invisible to a same-caller host process.
-    machine.succeed(
-        'su testuser -s /bin/sh -c "'
-        "setsid /run/wrappers/bin/underwrap-local test-iso-libsecret lookup "
-        'service iso-svc account iso-acct </dev/null >/dev/null 2>&1 &"'
-    )
-    time.sleep(1)
-    iso_bus = machine.succeed(
-        "find /tmp/.underwrap-ns-bus -type s 2>/dev/null || true"
-    ).strip()
-    assert iso_bus == "", f"FAIL: isolated private bus socket visible on host: {iso_bus}"
-    machine.log("PASS: libsecret private bus invisible to a same-caller host process")
-    machine.execute("pkill -u testuser -x underwrap-ns || true")
-    time.sleep(0.5)
-
-
 def local_target_uid_authority():
     # ============================================================
     # LOCAL INSTANCE: root-owned target-UID authority
@@ -2081,33 +2067,187 @@ def local_libsecret_mode():
     )
     machine.log("PASS: libsecret data stored in backend")
 
-    # Verify the private bus is NOT reachable from outside the namespace.
-    # Run a libsecret wrapper in the background, then try to connect to the
-    # bus socket from a host process. The socket should not exist on the host.
-    machine.succeed(
-        'su testuser -s /bin/sh -c "'
-        'setsid /run/wrappers/bin/underwrap-local test-libsecret lookup service gh account github.com '
-        '</dev/null >/dev/null 2>&1 &"'
+    # Prove the deployed private filesystem bus is absent from the host mount
+    # namespace while the target has just completed a real lookup and remains
+    # blocked before a second lookup. Trusted root instrumentation checks host
+    # absence; a separate same-caller process checks the mode-0000 boundary.
+    # A uniquely named transient unit supplies exact cgroup-scoped liveness and
+    # cleanup.
+    grant_local_unlocked("test-libsecret-bus-probe")
+    probe_id = uuid.uuid4().hex
+    probe_unit = f"underwrap-libsecret-bus-probe-{probe_id}.service"
+    release_marker = f"/tmp/underwrap-libsecret-bus-release-{probe_id}"
+    quoted_unit = shlex.quote(probe_unit)
+    quoted_marker = shlex.quote(release_marker)
+
+    def as_probe_user(command):
+        return f"su testuser -s /bin/sh -c {shlex.quote(command)}"
+
+    def probe_unit_properties():
+        output = machine.succeed(
+            f"systemctl show {quoted_unit} --no-pager "
+            "--property=ActiveState --property=SubState --property=Result "
+            "--property=ExecMainStatus"
+        )
+        return dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+
+    def probe_journal():
+        return machine.succeed(
+            f"journalctl --quiet --unit={quoted_unit} --output=cat --no-pager"
+        )
+
+    def wait_for_probe(predicate, description):
+        deadline = time.monotonic() + 30
+        journal = ""
+        while time.monotonic() < deadline:
+            journal = probe_journal()
+            if predicate(journal):
+                return journal
+            properties = probe_unit_properties()
+            if properties.get("ActiveState") in {"failed", "inactive"}:
+                raise AssertionError(
+                    f"libsecret bus probe became {properties} before {description}: "
+                    f"{journal!r}"
+                )
+            time.sleep(0.1)
+        raise AssertionError(
+            f"timed out waiting for libsecret bus probe {description}: {journal!r}"
+        )
+
+    def assert_probe_running(when):
+        properties = probe_unit_properties()
+        assert properties.get("ActiveState") == "active", (
+            f"libsecret bus probe unit not active {when}: {properties}"
+        )
+        assert properties.get("SubState") == "running", (
+            f"libsecret bus probe unit not running {when}: {properties}"
+        )
+
+    ready_pattern = re.compile(
+        r"^UNDERWRAP_LIBSECRET_BUS_READY DBUS_SESSION_BUS_ADDRESS="
+        r"(unix:path=[^,\s]+(?:,guid=[0-9A-Fa-f]+)?)$"
     )
-    time.sleep(1)
-    # The bus socket is on a namespace-private tmpfs — it should not be visible.
-    bus_files = machine.succeed(
-        "find /tmp/.underwrap-ns-bus/ -type s 2>/dev/null || echo NONE"
-    ).strip()
-    assert bus_files == "NONE" or bus_files == "", \
-        f"FAIL: private bus socket visible on host: {bus_files}"
-    machine.log("PASS: private bus socket not reachable from host")
+    still_ready = "UNDERWRAP_LIBSECRET_BUS_STILL_READY"
+    machine.succeed(f"test ! -e {quoted_marker}")
+    try:
+        machine.succeed(
+            "systemd-run --quiet "
+            f"--unit={quoted_unit} --collect --uid=testuser "
+            "--property=Type=simple --property=RemainAfterExit=yes "
+            "/run/wrappers/bin/underwrap-local test-libsecret-bus-probe "
+            f"{quoted_marker}"
+        )
+        journal = wait_for_probe(
+            lambda text: any(
+                ready_pattern.fullmatch(line) for line in text.splitlines()
+            ),
+            "READY marker",
+        )
+        ready_addresses = [
+            match.group(1)
+            for line in journal.splitlines()
+            if (match := ready_pattern.fullmatch(line)) is not None
+        ]
+        assert len(ready_addresses) == 1, (
+            f"expected exactly one private bus address, got {ready_addresses!r}"
+        )
+        address = ready_addresses[0]
+        address_without_guid = address.split(",guid=", 1)[0]
+        bus_path = address_without_guid.removeprefix("unix:path=")
+        assert address_without_guid == f"unix:path={bus_path}", (
+            f"unexpected private bus address shape: {address!r}"
+        )
+        assert bus_path == "/tmp/.underwrap-ns-bus/bus", (
+            f"unexpected private bus path: {bus_path!r}"
+        )
 
-    # Also check that no dbus sockets under /tmp are accessible.
-    tmp_bus = machine.succeed(
-        "find /tmp/ -path '*underwrap*' -type s 2>/dev/null || echo NONE"
-    ).strip()
-    assert tmp_bus == "NONE" or tmp_bus == "", \
-        f"FAIL: bus socket found in /tmp: {tmp_bus}"
-    machine.log("PASS: no bus sockets in /tmp")
+        assert_probe_running("immediately before host isolation probes")
 
-    machine.execute("pkill -u testuser -x underwrap-ns || true")
-    time.sleep(0.5)
+        exact_path_status = machine.execute(
+            f"test ! -e {shlex.quote(bus_path)}"
+        )[0]
+        assert exact_path_status == 0, (
+            f"trusted host probe sees private bus path {bus_path!r}"
+        )
+
+        host_bus_tree = machine.succeed(
+            "find /tmp/.underwrap-ns-bus -type s -print"
+        ).strip()
+        assert host_bus_tree == "", (
+            f"trusted host probe sees a private bus socket: {host_bus_tree}"
+        )
+
+        caller_probe_source = (
+            "import errno\n"
+            "import os\n"
+            "import socket\n"
+            f"path = {bus_path!r}\n"
+            "try:\n"
+            "    os.stat(path)\n"
+            "except OSError as error:\n"
+            "    stat_errno = error.errno\n"
+            "else:\n"
+            "    stat_errno = 0\n"
+            "with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:\n"
+            "    connect_errno = client.connect_ex(path)\n"
+            "assert stat_errno == errno.EACCES, stat_errno\n"
+            "assert connect_errno == errno.EACCES, connect_errno\n"
+            "print(stat_errno, connect_errno)\n"
+        )
+        caller_probe_command = (
+            f"{shlex.quote(PYTHON3)} -c {shlex.quote(caller_probe_source)}"
+        )
+        caller_probe_result = machine.succeed(
+            as_probe_user(caller_probe_command)
+        ).strip()
+        expected_denials = f"{errno.EACCES} {errno.EACCES}"
+        assert caller_probe_result == expected_denials, (
+            f"private bus stat/connect probe returned {caller_probe_result!r}, "
+            f"expected {expected_denials!r}"
+        )
+
+        assert_probe_running("immediately after host isolation probes")
+        machine.log(
+            "PASS: trusted host probe sees no live private bus path or socket; "
+            "same-caller stat and connect are denied with EACCES"
+        )
+
+        machine.succeed(as_probe_user(f"touch {quoted_marker}"))
+        journal = wait_for_probe(
+            lambda text: still_ready in text.splitlines(),
+            "STILL_READY marker after the second lookup",
+        )
+        assert journal.splitlines().count(still_ready) == 1, (
+            "expected exactly one STILL_READY marker after the second lookup"
+        )
+
+        deadline = time.monotonic() + 30
+        properties = probe_unit_properties()
+        while (
+            properties.get("ActiveState") != "active"
+            or properties.get("SubState") != "exited"
+        ):
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"libsecret bus probe did not exit cleanly: {properties}"
+                )
+            if properties.get("ActiveState") == "failed":
+                raise AssertionError(f"libsecret bus probe failed: {properties}")
+            time.sleep(0.1)
+            properties = probe_unit_properties()
+        assert properties.get("Result") == "success", properties
+        assert properties.get("ExecMainStatus") == "0", properties
+        machine.log(
+            "PASS: live private-bus probe completed its second lookup and exited cleanly"
+        )
+    finally:
+        machine.execute(
+            f"systemctl stop {quoted_unit} >/dev/null 2>&1 || true"
+        )
+        machine.execute(
+            f"systemctl reset-failed {quoted_unit} >/dev/null 2>&1 || true"
+        )
+        machine.execute(f"rm -f -- {quoted_marker}")
 
     # Find ALL files on the system containing the secret, outside the backend.
     # Exclude: backend dir (correct storage), /nix/ (test script literals),
@@ -2291,27 +2431,6 @@ def local_directory_credentials():
         "test-dir-env-override-probe",
     ]:
         grant_local_unlocked(wrapper)
-
-    # While a libsecret wrapper is running, the private bus must also remain
-    # inaccessible to a same-caller host process.
-    machine.succeed(
-        'su testuser -s /bin/sh -c "'
-        'setsid /run/wrappers/bin/underwrap-local test-libsecret lookup service gh account github.com '
-        '</dev/null >/dev/null 2>&1 &"'
-    )
-    time.sleep(1)
-    libsecret_host_view = machine.succeed(
-        "su testuser -s /bin/sh -c 'find /tmp/.underwrap-ns-bus -type s 2>/dev/null || true'"
-    ).strip()
-    assert libsecret_host_view == "", f"FAIL: same-caller host process sees private bus socket: {libsecret_host_view}"
-    libsecret_ls = machine.execute(
-        "su testuser -s /bin/sh -c 'ls /tmp/.underwrap-ns-bus >/dev/null 2>&1'"
-    )[0]
-    assert libsecret_ls != 0, "FAIL: same-caller host process can list private libsecret bus mountpoint"
-    machine.log("PASS: same-caller host process cannot list private libsecret runtime directories or see the bus socket")
-    machine.execute("pkill -u testuser -x underwrap-ns || true")
-    time.sleep(0.5)
-
 
 def journal_cursor():
     """Snapshot the current journal cursor for exact follow-up queries."""

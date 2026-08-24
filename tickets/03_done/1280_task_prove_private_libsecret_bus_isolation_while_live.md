@@ -26,12 +26,14 @@ no longer make the isolation assertion pass vacuously.
   probes with one authoritative live witness in the VM test.
 - Parse and validate the target-reported `unix:path=` address as a pathname
   beneath `/tmp/.underwrap-ns-bus/` before using it as evidence.
-- While the exact wrapper process is still live and before releasing the target,
-  prove from a separate process running as the original caller that:
-  - the exact private socket pathname is absent in the host mount namespace;
-  - the private bus tree exposes no socket; and
-  - an exact `AF_UNIX` connection attempt to that pathname fails with
-    `ENOENT`, not merely with a generic failure.
+- While the exact wrapper process is still live and before releasing the target:
+  - use trusted root test instrumentation to prove the exact socket pathname is
+    absent and the private bus tree contains no socket in the host mount
+    namespace; and
+  - from a separate process running as the original caller, prove exact pathname
+    metadata access and an exact `AF_UNIX` connection attempt both fail with
+    `EACCES` from the existing mode-`0000` bare-mountpoint guard, not merely with
+    a generic failure.
 - Launch the wrapper as the original caller in a uniquely named transient
   systemd unit/cgroup. Require that exact unit to remain active across the host
   probes, release the target only through a unique explicit channel/marker,
@@ -69,9 +71,10 @@ no longer make the isolation assertion pass vacuously.
 - A fixed readiness marker supplies one validated filesystem D-Bus address, and
   the uniquely named transient unit/cgroup for that wrapper invocation is active
   immediately before and after the host isolation probes.
-- During that live interval, the same-caller host view has no socket at the exact
-  private pathname or elsewhere below `/tmp/.underwrap-ns-bus/`, and an exact
-  Unix-stream connection returns `ENOENT`.
+- During that live interval, trusted root instrumentation sees no socket at the
+  exact private pathname or elsewhere below `/tmp/.underwrap-ns-bus/`; the
+  original caller's exact metadata and Unix-stream connection attempts each
+  return `EACCES` through the existing mode-`0000` host mountpoint guard.
 - The target is released only after all host probes through a unique explicit
   channel/marker, emits the fixed post-probe marker only after the second
   lookup, and its transient unit exits cleanly; bounded failure cleanup targets
@@ -105,7 +108,10 @@ no longer make the isolation assertion pass vacuously.
   there is no target readiness, live-process, exact-address, or connection
   witness.
 - Re-run the deterministic desired-evidence inventory and require every live
-  witness condition to pass.
+  witness condition to pass. Preserve the first deployed red run showing
+  `connect_ex == EACCES` while READY/unit liveness already hold; this corrects
+  the ticket's initial over-specific `ENOENT` expectation to the existing
+  mode-`0000` guard without changing production.
 - Parse `nix/tests/test.py` as Python without leaving bytecode.
 - `nix build --no-link .#checks.x86_64-linux.vm-test`
 - `nix flake check --all-systems --no-build`
