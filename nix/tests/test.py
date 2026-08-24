@@ -1777,10 +1777,7 @@ def local_target_uid_readonly_writeback():
     )
 
     # Snapshot the journal cursor so we can scope the audit-event grep.
-    cur_out = machine.succeed("journalctl -n 1 -o export --no-pager")
-    cursor = next(
-        l[len("__CURSOR="):] for l in cur_out.splitlines() if l.startswith("__CURSOR=")
-    )
+    cursor = journal_cursor()
 
     # `rewrite` writes a DISTINCT value, so the post-run blob differs from the
     # baseline — the change the read-only grant must drop.
