@@ -270,7 +270,11 @@ module privacy. Aim to keep each `tests.rs` below roughly 600 lines.
 Validation by area:
 
 - crate logic: `cargo test -p <crate>`
-- cross-component runtime behavior: `cargo test -p integration-tests`
+- cross-component runtime behavior: `./crates/integration-tests/run`
+  (`x86_64-linux`/`aarch64-linux` only; it supplies the exact current-system
+  `web-build`, `packages.<system>.underwrapd/bin/underwrapd`, and
+  `packages.<system>.underwrap-backend/bin/underwrap-backend` paths; host
+  capability-dependent skips remain separate)
 - SPA: `cd web && npm test && npm run build`
 - browser flows: `cd web && npm run test:e2e` inside `nix develop`
 - NixOS module, identities, namespaces, capabilities, mounts, peer auth:

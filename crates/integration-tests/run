@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+  printf 'integration-tests runner: %s\n' "$*" >&2
+  exit 1
+}
+
+command -v nix >/dev/null 2>&1 || die "Nix is required but was not found on PATH"
+
+if ! script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"; then
+  die "cannot resolve the runner directory"
+fi
+repo_root="$(cd -- "$script_dir/../.." && pwd -P)" || die "cannot resolve the repository root"
+[[ -f "$repo_root/flake.nix" && -f "$repo_root/Cargo.toml" ]] \
+  || die "resolved repository root '$repo_root' is missing flake.nix or Cargo.toml"
+cd -- "$repo_root"
+
+if ! system="$(nix eval --impure --raw --expr builtins.currentSystem)"; then
+  die "could not derive builtins.currentSystem with Nix"
+fi
+case "$system" in
+  x86_64-linux | aarch64-linux) ;;
+  *) die "unsupported current system '$system'; supported systems are x86_64-linux and aarch64-linux" ;;
+esac
+
+build_one() {
+  local destination=$1
+  local installable=$2
+  local label=$3
+  local output
+  local -a outputs
+
+  if ! output="$(nix build --no-link --print-out-paths "$installable")"; then
+    die "failed to build $label ($installable)"
+  fi
+  [[ -n "$output" ]] || die "$label ($installable) returned no output path"
+  mapfile -t outputs <<<"$output"
+  if (( ${#outputs[@]} != 1 )) || [[ -z "${outputs[0]}" ]]; then
+    die "$label ($installable) must return exactly one output path; got ${#outputs[@]}"
+  fi
+  printf -v "$destination" '%s' "${outputs[0]}"
+}
+
+build_one web_dist ".#checks.${system}.web-build" "admin SPA"
+build_one daemon_package ".#packages.${system}.underwrapd" "packaged underwrapd"
+build_one backend_package ".#packages.${system}.underwrap-backend" "packaged underwrap-backend"
+
+[[ -f "$web_dist/index.html" ]] \
+  || die "admin SPA output '$web_dist' is missing the required index.html"
+
+daemon_bin="$daemon_package/bin/underwrapd"
+backend_bin="$backend_package/bin/underwrap-backend"
+[[ -f "$daemon_bin" && -x "$daemon_bin" ]] \
+  || die "packaged underwrapd output is missing executable '$daemon_bin'"
+[[ -f "$backend_bin" && -x "$backend_bin" ]] \
+  || die "packaged underwrap-backend output is missing executable '$backend_bin'"
+
+test_env=(
+  env
+  "UNDERWRAP_WEB_DIST=$web_dist"
+  "CARGO_BIN_EXE_underwrapd=$daemon_bin"
+  "CARGO_BIN_EXE_underwrap-backend=$backend_bin"
+)
+if [[ -v CARGO_TARGET_DIR ]]; then
+  test_env+=("CARGO_TARGET_DIR=$CARGO_TARGET_DIR")
+fi
+
+exec nix develop ".#devShells.${system}.default" --command \
+  "${test_env[@]}" cargo test -p integration-tests "$@"

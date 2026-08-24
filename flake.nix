@@ -133,11 +133,6 @@
             UNDERWRAP_WEB_DIST = "${underwrapWebDist}";
           };
 
-          # Build the full workspace — all crates.
-          workspace = craneLib.buildPackage (commonArgsWithWeb // {
-            inherit cargoArtifacts;
-          });
-
           # Individual crate packages (share the same dep artifacts).
           mkCrate = name: craneLib.buildPackage (commonArgsWithWeb // {
             inherit cargoArtifacts;
@@ -145,26 +140,32 @@
             cargoExtraArgs = "--package ${name}";
           });
 
+          underwrapdPackage = mkCrate "underwrapd";
+          underwrapBackendPackage = mkCrate "underwrap-backend";
+
           # The integration-test crate launches these real executables. `cargo
           # test` otherwise exposes only test-harness binaries in its target
-          # directory, so point the harness at the packaged workspace binaries.
+          # directory, so point the harness at the package-specific binaries.
           workspaceTestBinaries = {
-            "CARGO_BIN_EXE_underwrapd" = "${workspace}/bin/underwrapd";
-            "CARGO_BIN_EXE_underwrap-backend" = "${workspace}/bin/underwrap-backend";
+            "CARGO_BIN_EXE_underwrapd" = "${underwrapdPackage}/bin/underwrapd";
+            "CARGO_BIN_EXE_underwrap-backend" = "${underwrapBackendPackage}/bin/underwrap-backend";
           };
 
           workspaceTestArgs = commonArgsWithWeb // workspaceTestBinaries // {
             inherit cargoArtifacts;
           };
 
+          # Build the full workspace — all crates.
+          workspace = craneLib.buildPackage workspaceTestArgs;
+
         in {
           packages = {
             default = workspace;
-            underwrapd = mkCrate "underwrapd";
+            underwrapd = underwrapdPackage;
             underwrap-exec = mkCrate "underwrap-exec";
             underwrap-ns = mkCrate "underwrap-ns";
             underwrap-debug-tool = mkCrate "underwrap-debug-tool";
-            underwrap-backend = mkCrate "underwrap-backend";
+            underwrap-backend = underwrapBackendPackage;
             underwrap-secretsd = mkCrate "underwrap-secretsd";
             # Expose the SPA build separately so the VM test (and any
             # external consumer) can grab the static bundle without
@@ -173,8 +174,8 @@
           };
 
           checks = {
-            # Workspace-wide cargo test.
-            # Binary-dependent integration tests skip gracefully in sandbox.
+            # Workspace-wide cargo test. The packaged daemon and backend
+            # binaries are supplied through the exact environment paths above.
             workspace-test = craneLib.cargoTest workspaceTestArgs;
 
             # Faster, better test runner for local/CI use.

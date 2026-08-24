@@ -1,10 +1,12 @@
 //! End-to-end integration tests.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::net::Shutdown;
 use std::os::fd::FromRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use underwrap_protocol::ipc::{
     read_frame_sync, read_wrapper_resource_frame_sync, write_frame_sync,
@@ -17,52 +19,122 @@ use underwrap_protocol::scm_rights;
 use crate::harness::*;
 
 // ---------------------------------------------------------------------------
-// Utility: binary lookup (must come before tests that use require_bin!)
+// Utility: required packaged binaries
 // ---------------------------------------------------------------------------
 
-/// Find the path to a cargo-built binary.
-/// Returns None if not found (allows tests to skip gracefully).
-fn try_cargo_bin(name: &str) -> Option<String> {
-    let env_key = format!("CARGO_BIN_EXE_{name}");
-    if let Ok(p) = std::env::var(&env_key)
-        && std::path::Path::new(&p).exists()
-    {
-        return Some(p);
-    }
-
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-
-    for profile in &["debug", "release"] {
-        let path = workspace_root.join("target").join(profile).join(name);
-        if path.exists() {
-            return Some(path.to_str().unwrap().to_string());
-        }
-    }
-
-    // Search PATH as fallback.
-    if let Ok(output) = std::process::Command::new("which").arg(name).output()
-        && output.status.success()
-    {
-        return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
-    }
-
-    None
+fn binary_resolver_error(env_key: &str, detail: &str) -> String {
+    format!("{env_key} {detail}; run `./crates/integration-tests/run` from the repository checkout")
 }
 
-/// Find the path to a cargo-built binary, panicking if not found.
-#[allow(dead_code)]
+fn resolve_cargo_bin(
+    env_key: &str,
+    expected_filename: &str,
+    value: Option<&OsStr>,
+) -> Result<PathBuf, String> {
+    let value = value.ok_or_else(|| binary_resolver_error(env_key, "is not set"))?;
+    let path = Path::new(value);
+
+    if !path.is_absolute() {
+        return Err(binary_resolver_error(
+            env_key,
+            "must be an absolute executable path",
+        ));
+    }
+    if path.file_name() != Some(OsStr::new(expected_filename)) {
+        return Err(binary_resolver_error(
+            env_key,
+            &format!("must end with the exact filename `{expected_filename}`"),
+        ));
+    }
+
+    let metadata = path.metadata().map_err(|error| {
+        binary_resolver_error(
+            env_key,
+            &format!("does not identify an existing executable: {error}"),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(binary_resolver_error(
+            env_key,
+            "must identify a regular file",
+        ));
+    }
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(binary_resolver_error(
+            env_key,
+            "must identify an executable file",
+        ));
+    }
+
+    Ok(path.to_path_buf())
+}
+
+/// Resolve the exact packaged executable supplied by the supported test runner.
 fn cargo_bin(name: &str) -> String {
-    try_cargo_bin(name).unwrap_or_else(|| {
+    let env_key = format!("CARGO_BIN_EXE_{name}");
+    let path = resolve_cargo_bin(&env_key, name, std::env::var_os(&env_key).as_deref())
+        .unwrap_or_else(|message| panic!("{message}"));
+    path.into_os_string().into_string().unwrap_or_else(|_| {
         panic!(
-            "binary '{name}' not found. Run `cargo build` first. \
-             Searched: CARGO_BIN_EXE_{name}, target/{{debug,release}}/{name}, PATH",
+            "{}",
+            binary_resolver_error(&env_key, "must be representable as UTF-8")
         )
     })
+}
+
+#[test]
+fn binary_resolver_accepts_absolute_regular_executable_with_exact_name() {
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let binary = tempdir.path().join("underwrapd");
+    std::fs::write(&binary, b"fixture").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert_eq!(
+        resolve_cargo_bin(
+            "CARGO_BIN_EXE_underwrapd",
+            "underwrapd",
+            Some(binary.as_os_str()),
+        ),
+        Ok(binary)
+    );
+}
+
+#[test]
+fn binary_resolver_rejects_every_invalid_prerequisite_shape_actionably() {
+    fn assert_rejected(value: Option<&Path>, expected_detail: &str) {
+        let error = resolve_cargo_bin(
+            "CARGO_BIN_EXE_underwrapd",
+            "underwrapd",
+            value.map(Path::as_os_str),
+        )
+        .unwrap_err();
+        assert!(error.contains("CARGO_BIN_EXE_underwrapd"), "{error}");
+        assert!(error.contains(expected_detail), "{error}");
+        assert!(error.contains("./crates/integration-tests/run"), "{error}");
+    }
+
+    assert_rejected(None, "is not set");
+    assert_rejected(
+        Some(Path::new("underwrapd")),
+        "must be an absolute executable path",
+    );
+
+    let tempdir = tempfile::TempDir::new().unwrap();
+    let missing = tempdir.path().join("underwrapd");
+    assert_rejected(Some(&missing), "does not identify an existing executable");
+
+    std::fs::create_dir(&missing).unwrap();
+    assert_rejected(Some(&missing), "must identify a regular file");
+    std::fs::remove_dir(&missing).unwrap();
+
+    std::fs::write(&missing, b"fixture").unwrap();
+    std::fs::set_permissions(&missing, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_rejected(Some(&missing), "must identify an executable file");
+
+    let wrong_name = tempdir.path().join("underwrapd-copy");
+    std::fs::write(&wrong_name, b"fixture").unwrap();
+    std::fs::set_permissions(&wrong_name, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_rejected(Some(&wrong_name), "must end with the exact filename");
 }
 
 /// Find the `env` binary (absolute path). Returns None if not found.

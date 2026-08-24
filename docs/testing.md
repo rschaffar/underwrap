@@ -21,8 +21,19 @@ cargo test -p <crate>
 For cross-component daemon/backend behavior:
 
 ```bash
-cargo test -p integration-tests
+./crates/integration-tests/run
 ```
+
+The runner supports `x86_64-linux` and `aarch64-linux`. It resolves the current
+system through Nix, builds exactly that system's `web-build` check,
+`packages.<system>.underwrapd`, and `packages.<system>.underwrap-backend` without
+creating result links, verifies `index.html` plus each package-specific
+`/bin/<name>` executable, and runs the crate in the pinned development shell. It
+supplies only those three prerequisite paths to the tests and preserves an
+explicitly set `CARGO_TARGET_DIR`; additional arguments are forwarded to
+`cargo test` after the fixed package selector.
+Host capability-dependent skips remain distinct from these mandatory build
+prerequisites.
 
 For the SPA:
 
