@@ -301,6 +301,13 @@
                 printf '%s\n' "$expectedMessage" > "$out/plaintext-rejection.txt"
               '';
 
+            # Prove every production frontend security assertion and each
+            # independently meaningful combined-predicate class fails closed.
+            frontend-security-assertions-eval = import ./nix/tests/frontend-security-assertions-eval.nix {
+              inherit nixpkgs system;
+              underwrapModule = self.nixosModules.default;
+            };
+
             # Evaluate the production frontend module across the complete
             # ordinary-swap and zram-generator hardened-posture matrix.
             frontend-swap-posture-eval = import ./nix/tests/swap-posture-eval.nix {

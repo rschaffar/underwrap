@@ -69,6 +69,7 @@ nix build .#checks.x86_64-linux.web-build
 nix build .#checks.x86_64-linux.web-test
 nix build .#checks.x86_64-linux.examples-nixos-eval
 nix build .#checks.x86_64-linux.frontend-backend-url-eval
+nix build .#checks.x86_64-linux.frontend-security-assertions-eval
 nix build .#checks.x86_64-linux.frontend-swap-posture-eval
 ```
 
@@ -316,6 +317,31 @@ local-to-tunnel certificate replacement, old-certificate rejection, and
 replacement disable/re-enable behavior. The normal path explicitly restores the
 directory before state assertions; `Drop` provides only a best-effort fallback.
 The daemon/backend stop future is always awaited without an in-test timeout.
+
+The complete frontend security assertion matrix in
+`frontend-security-assertions-eval` uses real `nixpkgs.lib.nixosSystem`
+evaluations of the production module. One valid
+hardened instance/wrapper baseline pins the exact sorted inventory of all 14
+underwrap assertion messages, requires every module-local and global assertion
+to be true, and forces a successful system toplevel. Its 39 option-type-valid
+negative rows cover every assertion family and every independently meaningful
+conjunct or security-sensitive environment-name class within combined
+assertions: runtime-base paths, target-UID hash collision, backend transport,
+wrapper target/resource/projection/files paths, linker and forced environment
+names, managed and path-like fixed environment values, the reserved wrapper
+name, ordinary swap, zram writeback, and the Linux 6.5 floor. Every row requires
+one exact false underwrap message, exactly one false assertion globally, and a
+failed forced toplevel. The deterministic `matrix.tsv` records row, family,
+message, and toplevel result.
+
+This is fail-closed evaluation evidence for the assertion expressions and the
+pinned nixpkgs/NixOS module composition, not runtime-enforcement evidence or a
+proof for arbitrary nixpkgs versions. The target-UID collision row pins two
+known production naming inputs and their current 12-hex SHA-256 prefix; it does
+not analyze collision probability or validate additional configuration input
+shapes. The old-kernel row evaluates the pinned `linuxPackages_6_1` package set
+and checks the exact resulting dynamic message. Finer valid-output evidence
+remains in the existing focused checks and deployed VM.
 
 The `frontend-backend-url-eval` check proves module-level HTTP rejection and
 exact HTTPS URL generation; the VM independently proves a handcrafted plaintext
