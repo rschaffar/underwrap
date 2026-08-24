@@ -24,6 +24,22 @@ def _seg(value):
 def su(cmd):
     return f"su testuser -s /bin/sh -c '{cmd}'"
 
+
+def stage_text_secret_for_testuser(value, guest_path):
+    """Stage a textual secret in a mode-0600 guest file owned by testuser."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".secret", delete=False) as secret:
+        secret.write(value)
+        host_path = secret.name
+    try:
+        machine.copy_from_host(host_path, guest_path)
+        quoted_guest_path = shlex.quote(guest_path)
+        machine.succeed(
+            f"chmod 600 {quoted_guest_path} && chown testuser {quoted_guest_path}"
+        )
+    finally:
+        os.unlink(host_path)
+
+
 # Spoof script path is passed as an env var by the Nix test driver.
 SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PEER_PROBE_SCRIPT = os.environ.get("PEER_PROBE_SCRIPT", "/dev/null")
@@ -1621,17 +1637,7 @@ def local_target_uid_files_libsecret():
 
     # --- libsecret slot under mandatory target UID ---
     grant_local_unlocked("test-iso-libsecret")
-    import tempfile
-    import os
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".secret", delete=False) as f:
-        f.write("iso_libsecret_val")
-        secret_file = f.name
-    machine.copy_from_host(secret_file, "/tmp/.iso-libsecret-secret")
-    os.unlink(secret_file)
-    machine.succeed(
-        "chmod 600 /tmp/.iso-libsecret-secret && chown testuser /tmp/.iso-libsecret-secret"
-    )
+    stage_text_secret_for_testuser("iso_libsecret_val", "/tmp/.iso-libsecret-secret")
     machine.succeed(
         'su testuser -s /bin/sh -c "'
         "cat /tmp/.iso-libsecret-secret | "
@@ -2039,13 +2045,7 @@ def local_libsecret_mode():
     # Write the secret value to a temp file using Python's file write (not
     # a shell command) to prevent it appearing in the systemd journal.
     # Shell command lines are logged by PAM session tracking.
-    import tempfile, os
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.secret', delete=False) as f:
-        f.write('my_gh_token_value')
-        secret_file = f.name
-    machine.copy_from_host(secret_file, "/tmp/.secretsd-test")
-    os.unlink(secret_file)
-    machine.succeed("chmod 600 /tmp/.secretsd-test && chown testuser /tmp/.secretsd-test")
+    stage_text_secret_for_testuser("my_gh_token_value", "/tmp/.secretsd-test")
     machine.succeed(
         'su testuser -s /bin/sh -c "'
         'cat /tmp/.secretsd-test | '
@@ -2143,13 +2143,9 @@ def local_libsecret_two_slot_compatibility():
     # (service, username=<account>) plus an active-slot item keyed by
     # (service, username=""). secretsd must hold both as distinct items.
 
-    import tempfile, os
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.secret', delete=False) as f:
-        f.write('libsecret_two_slot_value')
-        secret_file = f.name
-    machine.copy_from_host(secret_file, "/tmp/.two-slot-secret")
-    os.unlink(secret_file)
-    machine.succeed("chmod 600 /tmp/.two-slot-secret && chown testuser /tmp/.two-slot-secret")
+    stage_text_secret_for_testuser(
+        "libsecret_two_slot_value", "/tmp/.two-slot-secret"
+    )
 
     # User slot: (service=gh:github.com, username=rschaffar).
     machine.succeed(
