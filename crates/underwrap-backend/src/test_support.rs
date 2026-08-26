@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::response::IntoResponse;
 use hyper::StatusCode;
+use serde::de::DeserializeOwned;
 use tracing::subscriber::with_default;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -557,6 +558,18 @@ pub(crate) fn response_body_json(resp: impl axum::response::IntoResponse) -> ser
         serde_json::Value::Number(parts.status.as_u16().into()),
     );
     serde_json::Value::Object(obj)
+}
+
+pub(crate) fn typed_response_body<T: DeserializeOwned>(
+    resp: impl axum::response::IntoResponse,
+) -> T {
+    let body = response_body_json(resp);
+    serde_json::from_value(body).unwrap_or_else(|error| {
+        panic!(
+            "response body did not deserialize as {}: {error}",
+            std::any::type_name::<T>()
+        )
+    })
 }
 
 pub(crate) fn entity_test_state_with_store(tmp: &std::path::Path) -> (Arc<ListenerState>, String) {

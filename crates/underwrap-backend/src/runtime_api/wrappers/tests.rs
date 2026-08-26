@@ -1,5 +1,7 @@
 use super::*;
-use crate::test_support::{TestStore, make_runtime_api_fixture, response_body_json};
+use crate::test_support::{
+    TestStore, make_runtime_api_fixture, response_body_json, typed_response_body,
+};
 
 // ===== Unit tests for the per-stage helpers =====
 
@@ -368,8 +370,7 @@ fn runtime_wrapper_register_seeds_pair_when_auto_create_enabled() {
             }],
         },
     );
-    let parsed: RuntimeWrapperRegisterResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperRegisterResponse = typed_response_body(resp);
     match parsed {
         RuntimeWrapperRegisterResponse::Ok {
             auto_created_resources,
@@ -403,8 +404,7 @@ fn runtime_wrapper_register_refuses_when_auto_create_disabled() {
             }],
         },
     );
-    let parsed: RuntimeWrapperRegisterResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperRegisterResponse = typed_response_body(resp);
     match parsed {
         RuntimeWrapperRegisterResponse::AutoCreateDisabled {
             missing_resources,

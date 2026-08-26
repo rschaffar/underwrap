@@ -1,7 +1,7 @@
 use super::*;
 use crate::storage::documents::{load_pairs_document, save_pairs_document};
 use crate::test_support::{
-    entity_test_state_with_store, make_runtime_api_fixture, response_body_json,
+    entity_test_state_with_store, make_runtime_api_fixture, typed_response_body,
 };
 use underwrap_protocol::variant::WrapperVariant;
 
@@ -84,8 +84,7 @@ fn runtime_wrapper_invocation_open_allows_unlocked_permission() {
             variant: WrapperVariant::Real,
         },
     );
-    let parsed: RuntimeWrapperInvocationOpenResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationOpenResponse = typed_response_body(resp);
     match parsed {
         RuntimeWrapperInvocationOpenResponse::Allow {
             resource_id,
@@ -125,8 +124,7 @@ fn runtime_wrapper_invocation_open_denies_locked_permission() {
             variant: WrapperVariant::Real,
         },
     );
-    let parsed: RuntimeWrapperInvocationOpenResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationOpenResponse = typed_response_body(resp);
     match parsed {
         RuntimeWrapperInvocationOpenResponse::Deny { reason } => {
             assert_eq!(reason, "locked");
@@ -151,8 +149,7 @@ fn runtime_wrapper_invocation_open_denies_unregistered_pair() {
             variant: WrapperVariant::Real,
         },
     );
-    let parsed: RuntimeWrapperInvocationOpenResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationOpenResponse = typed_response_body(resp);
     assert!(matches!(
         parsed,
         RuntimeWrapperInvocationOpenResponse::Deny { reason } if reason == "unregistered-pair"
@@ -176,8 +173,7 @@ fn runtime_wrapper_invocation_finalize_bumps_last_used_without_blob() {
             blob_b64: None,
         },
     );
-    let parsed: RuntimeWrapperInvocationFinalizeResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationFinalizeResponse = typed_response_body(resp);
     assert_eq!(parsed, RuntimeWrapperInvocationFinalizeResponse::Ok);
     let pairs = load_pairs_document(fx.store().as_ref()).unwrap();
     assert!(
@@ -219,8 +215,7 @@ fn runtime_wrapper_invocation_finalize_persists_libsecret_change() {
             blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         },
     );
-    let parsed: RuntimeWrapperInvocationFinalizeResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationFinalizeResponse = typed_response_body(resp);
     assert_eq!(parsed, RuntimeWrapperInvocationFinalizeResponse::Ok);
     let stored = load_resource_blob(fx.store().as_ref(), &fx.resource_id).unwrap();
     assert!(stored.libsecret.collections.contains_key("default"));
@@ -259,8 +254,7 @@ fn runtime_wrapper_invocation_finalize_rejects_env_mutation() {
             blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         },
     );
-    let parsed: RuntimeWrapperInvocationFinalizeResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationFinalizeResponse = typed_response_body(resp);
     assert!(matches!(
         parsed,
         RuntimeWrapperInvocationFinalizeResponse::InvalidBlob { reason }
@@ -298,8 +292,7 @@ fn runtime_wrapper_invocation_finalize_rejects_noncanonical_blob() {
             ),
         },
     );
-    let parsed: RuntimeWrapperInvocationFinalizeResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationFinalizeResponse = typed_response_body(resp);
     assert!(matches!(
         parsed,
         RuntimeWrapperInvocationFinalizeResponse::InvalidBlob { reason }
@@ -331,8 +324,7 @@ fn runtime_wrapper_invocation_finalize_rejects_writeback_when_not_writable() {
             blob_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         },
     );
-    let parsed: RuntimeWrapperInvocationFinalizeResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationFinalizeResponse = typed_response_body(resp);
     assert!(matches!(
         parsed,
         RuntimeWrapperInvocationFinalizeResponse::Deny { reason } if reason == "not-writable"
@@ -357,8 +349,7 @@ fn runtime_wrapper_invocation_open_denies_debug_variant_under_unlocked() {
             variant: WrapperVariant::Debug,
         },
     );
-    let parsed: RuntimeWrapperInvocationOpenResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationOpenResponse = typed_response_body(resp);
     assert!(matches!(
         parsed,
         RuntimeWrapperInvocationOpenResponse::Deny { reason } if reason == "not-unsafe-debug"
@@ -389,8 +380,7 @@ fn runtime_wrapper_invocation_open_allows_both_variants_under_unsafe_debug() {
                 variant,
             },
         );
-        let parsed: RuntimeWrapperInvocationOpenResponse =
-            serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+        let parsed: RuntimeWrapperInvocationOpenResponse = typed_response_body(resp);
         assert!(
             matches!(parsed, RuntimeWrapperInvocationOpenResponse::Allow { .. }),
             "variant {variant:?} should be allowed under unsafe-debug",
@@ -419,8 +409,7 @@ fn runtime_wrapper_invocation_open_denies_expired_unsafe_debug() {
             variant: WrapperVariant::Debug,
         },
     );
-    let parsed: RuntimeWrapperInvocationOpenResponse =
-        serde_json::from_slice(&response_body_json(resp).to_string().into_bytes()).unwrap();
+    let parsed: RuntimeWrapperInvocationOpenResponse = typed_response_body(resp);
     assert!(matches!(
         parsed,
         RuntimeWrapperInvocationOpenResponse::Deny { reason } if reason == "expired"
