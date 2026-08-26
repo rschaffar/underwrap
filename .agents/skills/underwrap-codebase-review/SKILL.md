@@ -1,7 +1,7 @@
 ---
 name: underwrap-codebase-review
 description: Comprehensive multi-agent review of the underwrap repository or an explicitly scoped subsystem. Use for evidence-backed assessment of code and design simplicity, coding practices, documentation quality, current stable Rust/web/Nix standards, tests, and whether documented security claims are fulfilled. Produces one synthesized report and stops before plan creation or implementation.
-compatibility: Intended for the underwrap repository layout. Requires pi-subagents and Python 3. The only project write is one consolidated report under tickets/_review/.
+compatibility: Intended for the underwrap repository layout. Requires pi-subagents and Python 3. The only project write is one new consolidated report under the append-only tickets/_review/ directory.
 ---
 
 # Underwrap codebase review
@@ -33,9 +33,11 @@ During this skill:
 - do not log or quote secret values, credentials, resource blobs, key material,
   tokens, or secret-bearing fixture contents.
 
-The only project write is the final report under `tickets/_review/`. Configured
-subagent artifacts and baseline manifests live outside the repository. Commands
-may create ignored build/test outputs, but tracked-file changes are forbidden.
+The only project write is one new final report under the append-only
+`tickets/_review/` directory. Never overwrite or edit an existing report.
+Configured subagent artifacts and baseline manifests live outside the repository.
+Commands may create ignored build/test outputs, but other tracked-file changes
+are forbidden.
 
 Plan derivation happens only after the controller presents the complete review
 index and the user makes a later explicit request. That request uses

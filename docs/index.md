@@ -73,9 +73,11 @@ or independent audit.
 - [Reviewing code](../.agents/skills/reviewing-code/SKILL.md) — ordinary bounded read-only review
 - [Hardening code paths](../.agents/skills/hardening-code-paths/SKILL.md) — bounded edge-case implementation
 - [Comprehensive code review](../.agents/skills/underwrap-codebase-review/SKILL.md) — whole-repository or explicitly comprehensive review
-- [Historical ticket workflow](../.agents/skills/underwrap-ticket-workflow/SKILL.md) — retained ticket-record compatibility procedure
+- [Historical ticket records](../.agents/skills/underwrap-ticket-workflow/SKILL.md) — interpretation guidance for the superseded ticket procedure
 
-The accepted review report and handover remain under `tickets/_review/` and `tickets/_handover/` as historical evidence.
+The accepted review report, handover, and completed tickets remain immutable historical evidence.
+
+Future comprehensive reviews may append new reports under `tickets/_review/` without overwriting existing files.
 
 `tickets/` is no longer the active work board for new work.
 

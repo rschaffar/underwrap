@@ -36,9 +36,11 @@ Use the existing `.codegraph` index for structural exploration when it is presen
 
 Inspect `tickets/_review/` and `tickets/_handover/` only when accepted review findings or prior ticket decisions overlap the requested work.
 
-Treat completed ticket files and their report references as historical evidence rather than as new plan checklists.
+Treat existing reports, handovers, and completed tickets as immutable historical evidence rather than as new plan checklists.
 
-Search for active ownership in both `docs/plans/` and the retained ticket records before creating a plan.
+`tickets/_review/` is append-only for newly accepted comprehensive-review reports.
+
+Search for active ownership in `docs/plans/` and for historical overlap in the retained ticket records before creating a plan.
 
 State assumptions and unknowns that affect scope, security, implementation, or validation.
 
@@ -56,17 +58,17 @@ A plan cannot authorize a new dependency, a change to the `underwrap-exec` → `
 
 The plan workflow replaces the ticket workflow for new work.
 
-`tickets/` is retained as an immutable historical record of the accepted review program, its reports, its handover, and completed ticket work.
+Existing ticket, handover, and report files are immutable historical evidence; `tickets/_review/` may only append a newly accepted comprehensive-review report.
 
 Do not create a new ticket for work owned by a plan, and do not create both a plan and a ticket for the same implementation.
 
-Do not rewrite existing tickets, review reports, or the accepted review handover to make the migration appear complete.
+The remaining accepted 2026 review program uses one iterative plan rather than one replacement plan per finding.
 
-When an outstanding review finding is migrated, create a new plan only after revalidating it against the current tree and cite the finding, report, handover, and any completed-ticket dependency.
+That plan must cite the report and handover, revalidate each finding before implementation, and carry forward severity ordering, approval and stop gates, independent review, cleanup-before-fix discipline, validation, security boundaries, and durable evidence requirements.
 
-A migrated review plan must carry forward applicable severity ordering, explicit approval gates, independent review, cleanup-before-fix discipline, validation, security boundaries, and durable evidence requirements.
+D-174's standing authority transfers to that plan through F-058, while its stop conditions and mandatory medium → low gate remain binding.
 
-The retained `underwrap-ticket-workflow` skill is a compatibility reference for historical records, not the default entry point for new work.
+The retained `underwrap-ticket-workflow` skill is interpretation guidance for historical records, not an executable workflow.
 
 Use `underwrap-codebase-review` for whole-repository or explicitly comprehensive subsystem review, `reviewing-code` for ordinary bounded review, and `hardening-code-paths` for bounded implementation edge cases.
 
@@ -218,7 +220,7 @@ Include meaningful verification in non-trivial commit bodies.
 
 Local commit authority never authorizes push, tag, publish, amend, rebase, squash, or any history rewrite.
 
-For a migrated review finding, preserve any stricter approval, independent-review, cleanup/fix, handover, or control-commit rule recorded by the accepted review program.
+For the accepted 2026 review program, update the single active remediation plan with ordered cleanup/fix evidence and preserve every stricter approval, independence, validation, stop, and transition rule recorded by D-174 and the historical handover.
 
 ## Curate and archive
 

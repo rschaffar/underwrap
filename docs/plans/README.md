@@ -12,15 +12,13 @@ Tasks use checkboxes and record the exact acceptance evidence required before th
 
 ## Active plans
 
-No active document-based plans currently exist.
+- [`2026-08-26_codebase-review-remediation-plan.md`](2026-08-26_codebase-review-remediation-plan.md) — execute the remaining accepted F-031 through F-058 review program one finding at a time.
 
-The accepted review report and its completed ticket records remain under `tickets/` as historical evidence and are not converted into plans by this workflow migration.
+The accepted report, handover, and completed F-001 through F-030 tickets remain historical evidence and are not converted into plans.
 
-A future plan that addresses an outstanding review finding must revalidate the finding against the current tree and cite the report and handover without duplicating completed ticket tasks.
+The active remediation plan carries D-174's standing execution authority and stop conditions, the mandatory medium → low transition gate, and D-201's strict F-031 grammar.
 
-The handover's D-201 instruction to materialize F-031 as a ticket is historical and is superseded by this plan workflow.
-
-D-201's approved strict configuration grammar remains a decision constraint for any future F-031 plan.
+The handover's D-201 instruction to materialize an F-031 ticket is historical and superseded by the plan workflow.
 
 ## Ownership
 
@@ -28,11 +26,13 @@ The plan workflow replaces the ticket workflow for new work.
 
 `docs/plans/` owns new non-trivial implementation, migration, release, investigation, and cross-cutting work.
 
-`tickets/` is retained as an immutable historical record of the accepted review program and its completed work.
+Existing ticket, report, and handover files are immutable historical evidence.
+
+`tickets/_review/` is append-only for newly accepted comprehensive-review reports.
 
 Do not create both a plan and a ticket to own the same implementation.
 
-Do not rewrite existing ticket, report, or handover records to make this migration appear complete.
+Do not rewrite historical records to make this migration appear complete.
 
 The current product contract remains in `README.md`, `docs/architecture.md`, `docs/security.md`, and the other task-oriented guides.
 

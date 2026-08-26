@@ -120,9 +120,9 @@ Never quote or copy secret values, credentials, resource blobs, tokens, key mate
 | `docs/implementation-notes/` | Current internal mechanisms and empirical findings | Maintained mechanism owner |
 | `docs/research/` | Dated investigations, rejected options, and visible retractions | Evidence record |
 | `docs/roadmaps/` | Future direction without implementation authority | Direction only |
-| `tickets/_review/` | Accepted review reports and review evidence | Historical review record |
-| `tickets/_handover/` | Accepted review-program state and decisions | Historical migration source |
-| `tickets/01_todo/`, `tickets/02_inprogress/`, `tickets/03_done/` | Existing ticket records | Historical work record |
+| `tickets/_review/` | Append-only accepted review reports; existing files are immutable | Historical review evidence |
+| `tickets/_handover/` | Immutable accepted review-program state and decisions | Historical migration source |
+| `tickets/01_todo/`, `tickets/02_inprogress/`, `tickets/03_done/` | Immutable existing ticket records | Historical work evidence |
 
 Current product behavior remains in `README.md`, `docs/architecture.md`, `docs/security.md`, and the other task-oriented public guides.
 
@@ -186,21 +186,17 @@ Never leave the archive as the only owner of durable decisions, mechanisms, meas
 
 ## Plan ownership replaces the ticket workflow
 
-The plan workflow replaces the ticket workflow for new Underwrap work.
+The plan workflow replaces ticket materialization and ticket execution for active Underwrap work.
 
 `docs/plans/` owns new non-trivial implementation, migration, release, investigation, and cross-cutting work.
 
-The retained `tickets/` tree is an immutable historical record of the accepted review program, its reports, its handover, and completed ticket work.
+Existing tickets, handovers, and review reports are immutable evidence; `tickets/_review/` is append-only for newly accepted comprehensive-review reports.
 
-Do not create both a plan and a ticket for the same implementation.
+Do not create both a plan and a ticket for the same implementation, rewrite historical records, or convert completed tickets into plans.
 
-Do not rewrite existing tickets, review reports, or handover records as part of this migration.
+The remaining accepted 2026 review program is owned by [`docs/plans/2026-08-26_codebase-review-remediation-plan.md`](docs/plans/2026-08-26_codebase-review-remediation-plan.md).
 
-Completed tickets are not converted into plans.
-
-Outstanding accepted review findings may be migrated into a newly grounded plan that cites the report and handover and carries forward applicable severity, approval, independent-review, cleanup, fix, validation, and evidence constraints.
-
-The accepted review program's security and evidence conditions remain constraints during migration, but its ticket materialization and execution steps no longer authorize new work.
+That single iterative plan carries forward the report, handover decisions, D-174 execution authority, D-201 grammar decision, severity ordering, approval and stop gates, cleanup-first discipline, independent review, validation, and evidence requirements.
 
 Use [the writing-plans skill](.agents/skills/writing-plans/SKILL.md) for the active workflow.
 
@@ -438,9 +434,11 @@ The accepted program starts directly in critical, and transitions from critical 
 
 Advance a lower-severity prerequisite only when necessary and record the exception and reason in the owning plan and decision record.
 
-Create one active plan at a time for migrated review work and obtain explicit plan or implementation approval before execution.
+Use the single active review-remediation plan and execute exactly one finding at a time.
 
-Do not infer implementation approval from report acceptance, severity-transition approval, or plan creation.
+D-174 remains standing implementation authority through F-058 under that plan, subject to every recorded stop condition and the mandatory medium → low transition gate.
+
+Do not infer implementation authority for work outside D-174, including Opportunities, unresolved items, dependencies, binary-chain changes, weaker security boundaries, or materially expanded scope.
 
 A requested plan revision is limited to that plan, and a rejected plan is not replaced by an unapproved competing artifact.
 
@@ -482,15 +480,13 @@ On resume, inspect Git state, the owning plan, its approval and evidence, the re
 
 Use `.agents/skills/writing-plans/SKILL.md` for migrated review work and `.agents/skills/underwrap-ticket-workflow/SKILL.md` only to interpret the historical ticket procedure.
 
-## Migrating accepted review work
+## Continuing accepted review work
 
-The accepted review report and handover remain the source evidence for their findings and decisions.
+The accepted report and handover remain source evidence, while the active review-remediation plan is the current owner for F-031 through F-058.
 
-Completed ticket records remain historical and are not rewritten or copied into plans.
+Revalidate each promoted finding against the current tree, update that same plan with exact scope and evidence, and never create a replacement ticket or competing per-finding plan.
 
-For an outstanding finding, revalidate the current evidence, create one plan that owns the migrated implementation, and preserve the finding's security boundary, approval conditions, independent review, cleanup-before-fix discipline, validation, and completion evidence.
-
-Record the migration relationship in the plan and in the maintained decision or implementation-note owner when durable facts need to outlive the plan.
+Record durable decisions and current mechanisms in their maintained owners rather than leaving them only in the active plan.
 
 ## Legacy ticket board
 
