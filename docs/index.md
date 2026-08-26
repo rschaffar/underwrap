@@ -59,13 +59,24 @@ Read these in order when reviewing a trust boundary:
 The security documentation describes a pre-release design, not a formal proof
 or independent audit.
 
-## Contributors and coding agents
+## Internal project records
 
-- [`AGENTS.md`](../AGENTS.md) — canonical engineering and security instructions
+- [`AGENTS.md`](../AGENTS.md) — canonical engineering, security, and workflow guidance
+- [Plans](plans/README.md) — active executable plans and their evidence lifecycle
+- [Archived plans](plans/archived/README.md) — completed plan handoffs
+- [ADRs](adr/README.md) — accepted decisions and trade-offs
+- [Implementation notes](implementation-notes/README.md) — maintained current mechanisms and empirical findings
+- [Research](research/README.md) — dated investigations, rejected options, and retractions
+- [Roadmaps](roadmaps/README.md) — future direction without implementation authority
 - [Testing](testing.md) — command and coverage reference
-- `.pi/skills/underwrap-ticket-workflow/SKILL.md` — ticket execution workflow
-- `.pi/skills/underwrap-component-refine/SKILL.md` — review-and-ticket-plan
-  workflow
+- [Writing plans](../.agents/skills/writing-plans/SKILL.md) — active plan workflow
+- [Reviewing code](../.agents/skills/reviewing-code/SKILL.md) — ordinary bounded read-only review
+- [Hardening code paths](../.agents/skills/hardening-code-paths/SKILL.md) — bounded edge-case implementation
+- [Comprehensive code review](../.agents/skills/underwrap-codebase-review/SKILL.md) — whole-repository or explicitly comprehensive review
+- [Historical ticket workflow](../.agents/skills/underwrap-ticket-workflow/SKILL.md) — retained ticket-record compatibility procedure
 
-`CLAUDE.md` is a symlink to `AGENTS.md`, so agent-specific entry points cannot
-drift from the canonical project contract.
+The accepted review report and handover remain under `tickets/_review/` and `tickets/_handover/` as historical evidence.
+
+`tickets/` is no longer the active work board for new work.
+
+`CLAUDE.md` is a symlink to `AGENTS.md`, and `.claude/skills` and `.pi/skills` point to the canonical `.agents/skills/` directory.

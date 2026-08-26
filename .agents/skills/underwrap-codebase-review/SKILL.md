@@ -1,6 +1,6 @@
 ---
 name: underwrap-codebase-review
-description: Comprehensive multi-agent review of the underwrap repository or an explicitly scoped subsystem. Use for evidence-backed assessment of code and design simplicity, coding practices, documentation quality, current stable Rust/web/Nix standards, tests, and whether documented security claims are fulfilled. Produces one synthesized report and stops before ticket planning or implementation.
+description: Comprehensive multi-agent review of the underwrap repository or an explicitly scoped subsystem. Use for evidence-backed assessment of code and design simplicity, coding practices, documentation quality, current stable Rust/web/Nix standards, tests, and whether documented security claims are fulfilled. Produces one synthesized report and stops before plan creation or implementation.
 compatibility: Intended for the underwrap repository layout. Requires pi-subagents and Python 3. The only project write is one consolidated report under tickets/_review/.
 ---
 
@@ -37,9 +37,9 @@ The only project write is the final report under `tickets/_review/`. Configured
 subagent artifacts and baseline manifests live outside the repository. Commands
 may create ignored build/test outputs, but tracked-file changes are forbidden.
 
-Ticket derivation happens only after the controller presents the complete review
+Plan derivation happens only after the controller presents the complete review
 index and the user makes a later explicit request. That request uses
-`underwrap-ticket-workflow`.
+`writing-plans` and must revalidate the report against the current tree.
 
 ## Review posture
 
@@ -57,7 +57,7 @@ Read `docs/security.md` before assessing security.
 - Preserve every evidence-backed minor observation in the deferred low-impact
   section. It must not distract from high-impact work or silently disappear.
 - Relate findings from different perspectives in remediation themes without
-  turning those themes into tickets.
+  turning those themes into plans or implementation work.
 
 Every security concern names the protected asset, attacker, boundary direction,
 documented claim/invariant, and implementation/test evidence. This remains an
@@ -68,7 +68,7 @@ engineering assessment, not a formal proof or claim of independent audit.
 ### Fresh
 
 This is the default. Specialist reviewers receive no prior review report and no
-active ticket inventory.
+active plan inventory and historical ticket overlap.
 
 ### Follow-up
 
@@ -93,8 +93,9 @@ The controller performs only these mechanical steps:
    `docs/security.md`, and `docs/testing.md`, plus other scope-relevant docs.
 4. Inventory pinned toolchains/dependencies. Treat committed generated OpenAPI
    and TypeScript schema files as contract evidence.
-5. Scan `tickets/01_todo/` and `tickets/02_inprogress/` for overlap, but withhold
-   that inventory from research and specialist reviewers to avoid anchoring.
+5. Scan `docs/plans/` for active-plan overlap and the retained ticket directories
+   for historical work that could constrain migration, but withhold that
+   inventory from research and specialist reviewers to avoid anchoring.
 6. Resolve the prior report in follow-up mode, but withhold it from research and
    specialist reviewers.
 7. Select a non-existing report path:
@@ -167,9 +168,9 @@ reference file in each task rather than a vague “review the repository” prom
 Every research/review/validation task includes:
 
 > Review only. Do not modify project/source files; returning evidence through
-> the configured output artifact is allowed. Do not create ticket plans or run
-> subagents. Inspect the current working tree. Never quote secret material,
-> including secret-bearing fixture contents.
+> the configured output artifact is allowed. Do not create plans, tickets, or
+> implementation work, and do not run subagents. Inspect the current working
+> tree. Never quote secret material, including secret-bearing fixture contents.
 
 ### Failure policy
 
@@ -210,7 +211,7 @@ The synthesis subagent receives:
 - all research, raw review, and validation artifacts;
 - current repository access and the baseline-manifest checksum;
 - resolved scope and preflight commit/status metadata;
-- active-ticket inventory;
+- active-plan inventory and historical ticket overlap;
 - intended final report path;
 - the prior report only in follow-up mode;
 - the complete synthesis and report contract from the reference file.
@@ -240,9 +241,9 @@ returns pass/fail against all of these conditions:
   gap;
 - low-impact findings remain present and deferred;
 - opportunities remain separate from defects;
-- active-ticket overlap and follow-up comparison are present when applicable;
-- no ticket plan, ticket filename proposal, implementation plan, secret value,
-  or unsupported claim appears;
+- active-plan overlap, historical ticket context, and follow-up comparison are present when applicable;
+- no plan filename proposal, implementation plan, secret value, or unsupported
+  claim appears;
 - the baseline checksum and material limitations are stated.
 
 A shape-only check is insufficient. Failed validation goes back to the synthesis
@@ -266,8 +267,9 @@ After report validation passes and the baseline manifest is unchanged:
    - every unresolved or rejected item id/title;
    - security status counts and ids of every partial, contradicted, or
      unverified claim;
-   - active-ticket overlaps and follow-up comparison counts where applicable.
-4. Explicitly state that no tickets were derived or created, then stop.
+   - active-plan overlaps and historical-ticket comparison counts where
+     applicable.
+4. Explicitly state that no plans or tickets were derived or created, then stop.
 
-Do not begin ticket reasoning in the presentation. Ticket work requires a later
-explicit request through `underwrap-ticket-workflow`.
+Do not begin plan reasoning in the presentation. Plan work requires a later
+explicit request through `writing-plans`.

@@ -1,12 +1,22 @@
 ---
 name: underwrap-ticket-workflow
-description: Materialize explicitly approved underwrap review findings into epics/stories/tasks, or execute work already tracked under tickets/. Use only after a review report has been presented and separately approved for ticketing, or when asked to pick up, advance, or complete an existing ticket.
+description: Interpret the historical Underwrap ticket workflow and its recorded review-program state without creating new active ticket work.
 compatibility: Intended for the underwrap repository layout with tickets/01_todo, tickets/02_inprogress, tickets/03_done, and tickets/_review.
 ---
 
 # Underwrap ticket workflow
 
-This skill has two explicit entry modes:
+> **Migration status:** The active Underwrap workflow is now plan-based under `.agents/skills/writing-plans`.
+>
+> This skill is retained so agents can read existing ticket records, accepted review decisions, and historical execution evidence.
+>
+> Do not create a new ticket or start new work from this skill.
+>
+> Do not rewrite completed tickets, review reports, or the accepted handover during migration.
+>
+> The detailed procedure below is preserved for historical interpretation and for any already-recorded ticket state that must be understood.
+
+This skill has two historical entry modes:
 
 1. **Report materialization** — derive and create ticket files from selected
    findings in an already-presented, explicitly approved consolidated review.

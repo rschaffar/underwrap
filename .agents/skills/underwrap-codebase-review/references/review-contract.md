@@ -172,7 +172,7 @@ is not discarded merely because other reviewers omitted it.
 
 ## Consolidated report
 
-The synthesis output uses this schema and contains no ticket plan.
+The synthesis output uses this schema and contains no plan or ticket proposal.
 
 ```markdown
 # Underwrap codebase review: <scope>
@@ -221,7 +221,7 @@ Prior report: path | none
 - Related findings/theme: ...
 - Validation evidence: ...
 - Standards sources: ...
-- Active ticket overlap: path | none
+- Active plan overlap or historical ticket context: path | none
 
 ## Deferred low-impact findings
 ### F-0NN — <title>
@@ -243,7 +243,7 @@ Prior report: path | none
 ## Validation results
 | Command | Result | Duration | Evidence/claims | Notes |
 
-## Active ticket overlap
+## Active plan overlap and historical ticket context
 
 ## Follow-up comparison
 <resolved/persistent/superseded/not-reverified/new, or “not applicable”>
@@ -260,6 +260,6 @@ Prior report: path | none
 ```
 
 Recommendations may identify the smallest coherent correction and relationships
-needed for later reasoning. They must not include ticket filenames, ticket
-hierarchy, acceptance criteria for future tickets, migration history, or an
-implementation plan.
+needed for later reasoning. They must not include plan filenames, ticket
+filenames or hierarchy, acceptance criteria for future work, migration history,
+or an implementation plan.

@@ -30,10 +30,10 @@ Prefer the clean design now:
 - keep documentation in present tense, as if the first release had always used
   the resulting design.
 
-Planning history belongs in tickets and Git, not in current-state source
-comments or published documentation. Deliberate format or protocol versioning
-is still valid when it protects the first-release format; greenfield status is
-not a reason to remove useful version identifiers.
+Published and current-state product documentation remains present tense and free of superseded alternatives or planning history.
+Designated internal project-memory directories may retain the decisions, evidence, investigations, and future direction defined below.
+Git remains historical evidence, but it is not the only owner of active obligations.
+Deliberate format or protocol versioning is still valid when it protects the first-release format; greenfield status is not a reason to remove useful version identifiers.
 
 ## Threat model
 
@@ -76,13 +76,145 @@ Documentation rules:
 
 - Describe only the intended first-release design.
 - Do not keep historical plans, migration notes, ticket references, or
-  superseded alternatives in `docs/`.
+  superseded alternatives in published or current-state product documentation.
+- Designated internal project-memory directories may retain the records defined
+  in the project-memory taxonomy below.
 - Prefer one normative explanation and link to it from task-oriented guides.
 - Use the terms **runtime client instance**, **resource**, **wrapper/resource
   pair**, **permission row**, **permission mode**, and **writable flag**
   consistently.
 - Treat code, generated OpenAPI, and tested Nix options as evidence when prose
   and implementation disagree.
+
+## Agent entry points and reusable skills
+
+`AGENTS.md` is the canonical repository guidance for every coding agent.
+
+`CLAUDE.md` is a compatibility symlink to `AGENTS.md` and must remain a symlink.
+
+`.agents/skills/` is the canonical reusable-skill directory.
+
+`.claude/skills` and `.pi/skills` are compatibility symlinks that point directly to `../.agents/skills`.
+
+Do not maintain vendor-specific copies of shared guidance or skills.
+
+## Documentation and communication
+
+Keep documentation and conversations concise, clear, accurate, and useful to a newcomer.
+
+Write one sentence per line in newly written prose so diffs remain reviewable.
+
+State assumptions, unknowns, unavailable checks, and user-reported evidence explicitly.
+
+Do not turn an implementation observation into a security claim without direct evidence.
+
+Never quote or copy secret values, credentials, resource blobs, tokens, key material, or secret-bearing fixture contents into plans, notes, reviews, commits, or logs.
+
+## Project-memory document taxonomy
+
+| Location | Purpose | Authority |
+|---|---|---|
+| `docs/plans/` | Active executable plans with checkboxes, scope, and evidence | Current work owner |
+| `docs/plans/archived/` | Fully evidenced completed plans after durable curation | Workflow handoff only |
+| `docs/adr/` | Accepted decisions and trade-offs | Maintained decision owner |
+| `docs/implementation-notes/` | Current internal mechanisms and empirical findings | Maintained mechanism owner |
+| `docs/research/` | Dated investigations, rejected options, and visible retractions | Evidence record |
+| `docs/roadmaps/` | Future direction without implementation authority | Direction only |
+| `tickets/_review/` | Accepted review reports and review evidence | Historical review record |
+| `tickets/_handover/` | Accepted review-program state and decisions | Historical migration source |
+| `tickets/01_todo/`, `tickets/02_inprogress/`, `tickets/03_done/` | Existing ticket records | Historical work record |
+
+Current product behavior remains in `README.md`, `docs/architecture.md`, `docs/security.md`, and the other task-oriented public guides.
+
+## Active planning workflow
+
+### Grounding
+
+Read `docs/plans/README.md`, inspect active plans, and resolve overlapping ownership before creating or revising a plan.
+
+Read the relevant ADRs, implementation notes, research, roadmap entries, security documentation, architecture documentation, testing guidance, and historical review records before planning affected work.
+
+Use the existing `.codegraph` index before structural exploration when it is present.
+
+Revalidate historical review findings against the current tree instead of assuming that old locations or conclusions still apply.
+
+### Plan structure
+
+Create plans at `docs/plans/YYYY-MM-DD_<topic>-plan.md` with a concise lowercase topic.
+
+Every plan contains `## Goal`, `## Plan`, and `## Completion Checklist`.
+
+Use optional sections only when they carry useful context, relationships, architecture, security invariants, non-goals, assumptions, unknowns, risks, or rollback and recovery details.
+
+Write checkbox tasks that name one action, one object, the expected result, and exact acceptance evidence.
+
+### Execution authority
+
+Creating or revising a plan authorizes the plan artifact and its scoped local commit, not implementation.
+
+Implementation requires explicit user authority or execution authority recorded in the plan by the user.
+
+A plan does not authorize a dependency, a product behavior change, a change to the `underwrap-exec → underwrap-ns` chain, or a weaker security boundary without the required focused decision.
+
+Do not create a plan merely to duplicate a completed ticket or to describe this workflow migration.
+
+### Evidence
+
+Check a task only after its stated acceptance evidence passes.
+
+Distinguish direct, simulated, unavailable, and user-reported evidence.
+
+Reopen a checked task when later work invalidates its evidence or changes the relevant boundary.
+
+Do not claim that a unit test proves kernel behavior, zeroization, filesystem durability, target trustworthiness, or operator behavior unless it directly observes that property.
+
+### Curation and archival
+
+Move accepted decisions and trade-offs to `docs/adr/`.
+
+Move current mechanisms and empirical findings to `docs/implementation-notes/`.
+
+Move dated investigations, rejected options, and retractions to `docs/research/`.
+
+Move future direction without authority to `docs/roadmaps/`.
+
+Move user-visible behavior and limitations to the existing public documentation owners.
+
+Archive a plan only after every task and completion check is evidenced and every durable fact and remaining obligation has a current owner.
+
+Never leave the archive as the only owner of durable decisions, mechanisms, measurements, limitations, or open obligations.
+
+## Plan ownership replaces the ticket workflow
+
+The plan workflow replaces the ticket workflow for new Underwrap work.
+
+`docs/plans/` owns new non-trivial implementation, migration, release, investigation, and cross-cutting work.
+
+The retained `tickets/` tree is an immutable historical record of the accepted review program, its reports, its handover, and completed ticket work.
+
+Do not create both a plan and a ticket for the same implementation.
+
+Do not rewrite existing tickets, review reports, or handover records as part of this migration.
+
+Completed tickets are not converted into plans.
+
+Outstanding accepted review findings may be migrated into a newly grounded plan that cites the report and handover and carries forward applicable severity, approval, independent-review, cleanup, fix, validation, and evidence constraints.
+
+The accepted review program's security and evidence conditions remain constraints during migration, but its ticket materialization and execution steps no longer authorize new work.
+
+Use [the writing-plans skill](.agents/skills/writing-plans/SKILL.md) for the active workflow.
+
+## Skills
+
+| Skill | Use |
+|---|---|
+| `writing-plans` | Draft, execute, track, curate, and archive active plans |
+| `reviewing-code` | Perform ordinary bounded read-only diff, commit, pull-request, or source review |
+| `hardening-code-paths` | Confirm and fix edge cases in one specific authorized flow |
+| `underwrap-codebase-review` | Perform a whole-repository or explicitly comprehensive subsystem review |
+| `underwrap-ticket-workflow` | Read historical ticket records and their prior process; not the default workflow for new work |
+
+Read the selected skill from `.agents/skills/<name>/SKILL.md` before using it.
 
 ## Workspace
 
@@ -103,8 +235,14 @@ web/                         Vite + React admin SPA
 nix/modules/underwrap.nix    NixOS frontend module
 nix/tests/                   end-to-end NixOS VM test
 examples/                    annotated deployment/configuration examples
-docs/                        current first-release documentation
-tickets/                     project work board
+docs/                        current product documentation and internal project memory
+docs/plans/                  active executable plans
+docs/plans/archived/         completed plan handoffs
+docs/adr/                    accepted architecture decisions
+docs/implementation-notes/  maintained internal mechanism notes
+docs/research/              dated investigations and retractions
+docs/roadmaps/              future direction without implementation authority
+tickets/                     retained historical review and work records
 ```
 
 ## Key implementation files
@@ -280,104 +418,94 @@ Validation by area:
 - NixOS module, identities, namespaces, capabilities, mounts, peer auth:
   `nix build .#checks.x86_64-linux.vm-test`
 
-## Accepted code-review program workflow
+## Accepted code-review program — historical record and migration
 
-For the accepted whole-codebase review in
-`tickets/_review/codebase_2026-07-18.md`, maintain the durable program state in
-`tickets/_handover/codebase_2026-07-18.md`. Read the report and handover before
-planning or resuming any review-derived work. Record ticket mappings, approvals,
-decisions, ordered cleanup and fix commits, outcomes, validation, dependencies,
-exceptions, affected findings, and accumulated lessons there so later work is
-informed by earlier results.
+The accepted whole-codebase review report at `tickets/_review/codebase_2026-07-18.md` and its handover at `tickets/_handover/codebase_2026-07-18.md` remain immutable historical evidence for the review program.
 
-The parent/controller remains the sole agent/controller decision-maker, subject
-to the user approvals and conditions below, and controls all repository writes.
-Process findings by severity in the order critical, high, medium, low.
-The program starts directly in the critical band; there is no separate initial
-band gate. Before transitioning critical → high, high → medium, or medium → low,
-the controller must use `ask_user` with comment entry enabled and record the
-result. A lower-severity prerequisite may be advanced only when necessary and
-must be recorded as an exception in the handover.
+Read the report and handover before planning work derived from their findings.
 
-Create exactly one ticket file at a time—normally one task-only ticket, with no
-simultaneous parent/child hierarchy—then stop and ask the user to approve that
-specific ticket with comment entry enabled before implementation. Do not infer
-implementation approval from report acceptance, band-transition approval, or
-ticket creation. Rejection or requested changes permit only revision and
-re-presentation of that same ticket, or stopping. The first committed work after
-approval must also durably move the ticket to in-progress and update the
-handover.
+Do not rewrite those records or infer implementation authority from their historical ticket state.
 
-Before an approved ticket's actual finding fix, run a simplification-cleanup
-phase. Explicitly incentivize workers to find concrete repository-wide as well
-as ticket-local behavior-preserving simplifications. Do not perform a one-time
-broad refactor ahead of the review; keep sequencing fix-led by severity, with
-cleanup immediately before each approved ticket's fix. Accept only cleanup that
-has a clear net reduction in complexity, duplication, or dead structure, is
-independently reversible, and does not chase optional formatting or renaming.
-Cleanup is always behavior-preserving: user approval does not convert a
-behavior-changing or boundary-weakening change into cleanup; handle that only as
-separately approved fix or Opportunity scope. Cleanup must not add a dependency,
-change the `underwrap-exec → underwrap-ns` chain, expose secrets, or absorb an
-unresolved decision without `ask_user`.
+The active plan workflow replaces ticket materialization and ticket execution for new or resumed work.
 
-Every accepted simplification is its own coherent commit before any actual fix
-commit for that ticket. Give each cleanup its own fresh independent review,
-separate fix pass when needed, focused and boundary-required validation,
-controller sanity/scope/diff check, and handover update. A ticket may have
-multiple cleanup commits and multiple fix commits. Apply the same independent
-review/fix and controller checks to each coherent fix unit. The final fix commit
-moves the ticket to `tickets/03_done/` and records final outcome and validation
-in the handover. The ticket registry records the ordered implementation sequence
-and labels each implementation commit `cleanup` or `fix`.
+A migrated review plan cites the relevant findings and carries forward every applicable security, approval, review, cleanup, fix, validation, and evidence condition.
 
-After the final fix commit, the controller presents the completed outcome,
-ordered commits, validation, reviewer result, controller sanity check, handover
-decisions, and effects on later findings, then uses `ask_user` with comment entry
-enabled for completion review. If changes are requested, return the same ticket
-to in-progress for another coherent fix/review/validation/commit cycle; do not
-prepare another ticket. Record completion-review and severity-transition
-responses in exact-allowlist handover-only `control` commits outside the ticket's
-cleanup/fix sequence. Do not derive or prepare the next ticket until the user
-explicitly accepts the completed ticket and authorizes continuation. If
-continuation would cross a severity band, the separate transition gate follows
-this completion-review gate.
+The parent/controller remains the sole agent/controller decision-maker and controls repository writes, subject to explicit user approvals and recorded conditions.
 
-If cleanup changes or resolves evidence for another F-id, immediately record the
-affected finding and cleanup commit in the handover. When that finding is
-reached, revalidate it and link the completed work rather than duplicate a
-ticket. Opportunities and U-items still require their own explicit approval.
-Use one implementation writer, separate fresh reviewer subagent(s), and a
-separate fix-worker subagent for accepted review fixes. The controller
-synthesizes reviews and independently checks scope, the actual diff, sanity,
-security invariants, and required validation.
+Process migrated findings by severity in the order critical, high, medium, low.
 
-On resume, inspect Git state, read the report and handover, locate the sole
-current ticket and its recorded approval, then continue from the next incomplete
-protocol step; never recreate state from memory or assume approval. Use
-`.pi/skills/underwrap-ticket-workflow/SKILL.md` for ticket mechanics, preflight,
-content, validation, moves, and exact staging. For this named program only,
-materialization may write exactly the single new todo ticket and this handover;
-the report, source, tests, configuration, and published docs remain read-only.
-An approval-pending todo ticket may remain untracked; after approval, stage its
-old todo path only if tracked, otherwise stage the new in-progress path. This
-section also supersedes the skill's single-commit per-task loop with the approved
-cleanup-first multi-commit and handover-only control-commit protocol.
+The accepted program starts directly in critical, and transitions from critical to high, high to medium, or medium to low require a focused `ask_user` decision with comment entry enabled.
 
-## Ticket board
+Advance a lower-severity prerequisite only when necessary and record the exception and reason in the owning plan and decision record.
 
-Tickets move through:
+Create one active plan at a time for migrated review work and obtain explicit plan or implementation approval before execution.
+
+Do not infer implementation approval from report acceptance, severity-transition approval, or plan creation.
+
+A requested plan revision is limited to that plan, and a rejected plan is not replaced by an unapproved competing artifact.
+
+The first committed implementation unit after approval must make the plan's approval, scope, and active state durable.
+
+Before an approved finding fix, run a simplification-cleanup phase that searches both the owning plan's scope and the repository for concrete behavior-preserving reductions.
+
+Do not perform a one-time broad refactor ahead of review, and keep sequencing fix-led by severity.
+
+Accept cleanup only when it reduces complexity, duplication, or dead structure, is independently reversible, and is not optional formatting or renaming.
+
+Cleanup is always behavior-preserving, and user approval never turns a behavior-changing or boundary-weakening change into cleanup.
+
+Handle behavior changes and Opportunities only through separate explicit approval.
+
+Cleanup must not add a dependency, change the `underwrap-exec → underwrap-ns` chain, expose secrets, or absorb an unresolved decision without `ask_user`.
+
+Give every accepted cleanup its own fresh independent review, separate fix pass when needed, focused and boundary-required validation, controller scope/diff/security checks, plan evidence update, and coherent local commit before a finding fix.
+
+Give every finding fix unit the same independent review, fix-worker, validation, controller, and commit treatment.
+
+Record cleanup and fix units in order in the owning plan and move durable facts to their maintained documentation owners.
+
+After the final finding fix, present the outcome, ordered commits, validation, review results, controller checks, decisions, and effects on later findings, then obtain the required completion acceptance before continuing.
+
+If completion changes are requested, continue the same plan and fix unit rather than creating competing ownership.
+
+If continuation crosses a severity band, obtain the separate transition decision after completion acceptance.
+
+If cleanup changes or resolves another finding, record the affected finding, evidence, and cleanup commit immediately and link that work when the finding is later planned.
+
+Opportunities and unresolved items retain separate approval or evidence requirements.
+
+Use one implementation writer, separate fresh reviewer subagents, and a separate fix-worker subagent for accepted review corrections.
+
+The controller synthesizes reviews and independently checks scope, actual diffs, sanity, security invariants, validation, and unrelated-change absence.
+
+On resume, inspect Git state, the owning plan, its approval and evidence, the report and handover, and the next incomplete protocol step rather than reconstructing state from memory.
+
+Use `.agents/skills/writing-plans/SKILL.md` for migrated review work and `.agents/skills/underwrap-ticket-workflow/SKILL.md` only to interpret the historical ticket procedure.
+
+## Migrating accepted review work
+
+The accepted review report and handover remain the source evidence for their findings and decisions.
+
+Completed ticket records remain historical and are not rewritten or copied into plans.
+
+For an outstanding finding, revalidate the current evidence, create one plan that owns the migrated implementation, and preserve the finding's security boundary, approval conditions, independent review, cleanup-before-fix discipline, validation, and completion evidence.
+
+Record the migration relationship in the plan and in the maintained decision or implementation-note owner when durable facts need to outlive the plan.
+
+## Legacy ticket board
+
+The following directories are retained as historical records and are not the active work board:
 
 - `tickets/01_todo/`
 - `tickets/02_inprogress/`
 - `tickets/03_done/`
 
-Names use a free four-digit `NNN0_` block at or above `1000_`:
+Historical ticket names use a free four-digit `NNN0_` block at or above `1000_`:
 
 - `epic_<name>.md`
 - `NNNN_story_<name>.md`
 - `NNNN_task_<name>.md`
 
-Lower numbers indicate intended order. Follow
-`.pi/skills/underwrap-ticket-workflow/SKILL.md` when the user asks to execute a
-ticket.
+Do not create a new ticket for work owned by a plan.
+
+Use `.agents/skills/writing-plans/SKILL.md` for new work and `.agents/skills/underwrap-ticket-workflow/SKILL.md` only to interpret existing ticket records.
