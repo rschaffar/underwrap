@@ -141,7 +141,15 @@ Validation commands:
 
 - [x] Revalidate F-031 against the current tree: `git diff --name-only 54bffc6..10a1fc4` changes only workflow guidance and skills; direct inspection confirms `nix/modules/underwrap.nix` and `DaemonConfig::validate()` still accept the D-200 classes. Evidence: direct, 2026-08-26.
 - [x] Obtain fresh independent review of the exact scope, non-goals, boundary, allowlist, and validation above before cleanup discovery. Evidence: direct read-only review PASS on 2026-08-27; no commands were run.
-- [ ] Complete finding-local and repository-wide cleanup discovery and record every accepted or rejected candidate with its reason.
+- [x] Complete finding-local and repository-wide cleanup discovery and record every accepted or rejected candidate with its reason.
+  - Finding-local discovery was exhausted after rejecting marginal helper inlining, fix-coupled path/overlap changes, and premature test abstractions.
+  - Repository-wide discovery accepted one test-only response-decoding consolidation.
+  - Implementation commit `bdc8cc50eebfc41d1944a2122adbc7966dbf029a` (`test: simplify runtime response decoding`) replaces 13 redundant JSON round trips.
+  - Independent review found a secret-bearing panic diagnostic.
+  - A separate fix-worker removed the body copy/output, and fresh re-review passed.
+  - Direct validation: web build passed; 30 focused backend runtime API tests passed; backend all-target Clippy with warnings denied, rustfmt, and diff checks passed.
+  - Generated `web/dist` was removed.
+  - Controller scope/security check: exact three test-only paths, no production behavior or secret output, no F-id resolved; F-054 remains separate.
 - [ ] Mirror D-201 name and path grammar in Nix evaluation and runtime validation without narrowing resource names.
 - [ ] Add positive boundary cases and negative name/path/duplicate/overlap cases that fail at Nix evaluation and runtime validation before malformed trusted artifacts or service startup.
 - [ ] Run focused protocol and Nix evaluator checks, `cargo fmt -- --check`, relevant Clippy/workspace checks, all-system Nix evaluation, and `nix build .#checks.x86_64-linux.vm-test`.
