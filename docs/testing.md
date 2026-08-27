@@ -224,9 +224,10 @@ rejection, exact gate parsing, CLOEXEC/opposite-end ownership, returned-exec
 failure reporting, helper/target fd non-retention, parent death before/after
 arming and after credential-clear rearming, inherited SIGCHLD restoration,
 exact nonblocking target-status framing, wait failure, the real gate × status ×
-relay dispatch seam, and libsecret publication framing/selection. The gate,
-status, and publication channels are independent evidence; none authorizes a
-lifecycle by itself. The VM independently covers the deployed privileged chain,
+relay dispatch seam, and libsecret publication framing/selection.
+The libsecret helper-child tests pin both exact endpoint matrices, retained gate CLOEXEC, selected-endpoint CLOEXEC clearing and usability, controlled-error and caught-panic `_exit` outcomes without return, and a reused descriptor that remains live and readable through injected unwind.
+The gate, status, and publication channels are independent evidence; none authorizes a lifecycle by itself.
+The VM independently covers the deployed privileged chain,
 relay/PID-2 topology, supervisor/relay termination, complete namespace teardown,
 status/writeback preservation, old same-UID pathname irrelevance, legitimate
 mutation persistence, near-cap publication persisted through Checkin and

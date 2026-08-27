@@ -604,6 +604,12 @@ Libsecret mode uses three distinct channels:
 3. one invocation-private CLOEXEC Unix stream socketpair carries versioned
    generations from secretsd to the host and exact ACK/REJECT responses back.
 
+Each post-fork libsecret helper child consumes every unneeded owned endpoint before helper setup.
+Among helper endpoints, the dbus-daemon child retains only the address writer, while the secretsd child retains only the init reader, readiness writer, and publication publisher.
+Those selected endpoints alone have CLOEXEC cleared for exec.
+The exec-gate writer remains open and CLOEXEC so successful helper exec closes the child copy atomically.
+Controlled setup and returned-exec errors terminate through `_exit`, and a fully enclosing unwind boundary also sends a caught panic directly to `_exit` without unwinding inherited PID-2 owners.
+
 The host owns the sole receiver and secretsd owns the sole long-lived publisher.
 Generation zero is strictly validated and ACKed before readiness. For every
 mutation, secretsd retains the store write lock, clones the accepted store once,

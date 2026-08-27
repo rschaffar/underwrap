@@ -11,8 +11,9 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
 
 use crate::supervision::cloexec_pipe;
@@ -39,12 +40,24 @@ fn apply_helper_env(cmd: &mut Command, helper_env: &HashMap<String, String>) {
     }
 }
 
-fn set_cloexec(fd: RawFd, cloexec: bool) -> Result<(), String> {
+fn fd_flags(fd: RawFd) -> Result<i32, String> {
     // SAFETY: F_GETFD reads flags from the live descriptor named by fd.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
+    Ok(flags)
+}
+
+fn require_cloexec(fd: RawFd) -> Result<(), String> {
+    if fd_flags(fd)? & libc::FD_CLOEXEC == 0 {
+        return Err(format!("descriptor {fd} is not close-on-exec"));
+    }
+    Ok(())
+}
+
+fn set_cloexec(fd: RawFd, cloexec: bool) -> Result<(), String> {
+    let flags = fd_flags(fd)?;
     let updated = if cloexec {
         flags | libc::FD_CLOEXEC
     } else {
@@ -56,6 +69,147 @@ fn set_cloexec(fd: RawFd, cloexec: bool) -> Result<(), String> {
         return Err(std::io::Error::last_os_error().to_string());
     }
     Ok(())
+}
+
+const CHILD_ERROR_EXIT: i32 = 1;
+const CHILD_PANIC_EXIT: i32 = 101;
+
+struct DbusChildEndpoints {
+    exec_gate_fd: RawFd,
+    ready_read: OwnedFd,
+    ready_write: OwnedFd,
+    address_read: OwnedFd,
+    address_write: OwnedFd,
+    init_read: OwnedFd,
+    init_write: OwnedFd,
+    publisher: UnixStream,
+}
+
+struct DbusSelectedEndpoint {
+    address_write: OwnedFd,
+}
+
+struct SecretsdChildEndpoints {
+    exec_gate_fd: RawFd,
+    ready_read: OwnedFd,
+    ready_write: OwnedFd,
+    init_read: OwnedFd,
+    init_write: OwnedFd,
+    publisher: UnixStream,
+}
+
+struct SecretsdSelectedEndpoints {
+    ready_write: OwnedFd,
+    init_read: OwnedFd,
+    publisher: UnixStream,
+}
+
+fn prepare_dbus_child(
+    endpoints: DbusChildEndpoints,
+    exec: impl FnOnce(DbusSelectedEndpoint) -> Result<(), String>,
+) -> Result<(), String> {
+    let DbusChildEndpoints {
+        exec_gate_fd,
+        ready_read,
+        ready_write,
+        address_read,
+        address_write,
+        init_read,
+        init_write,
+        publisher,
+    } = endpoints;
+
+    drop(ready_read);
+    drop(ready_write);
+    drop(address_read);
+    drop(init_read);
+    drop(init_write);
+    drop(publisher);
+
+    require_cloexec(exec_gate_fd)
+        .map_err(|error| format!("verifying dbus-daemon exec gate: {error}"))?;
+    set_cloexec(address_write.as_raw_fd(), false)
+        .map_err(|error| format!("preparing dbus address fd: {error}"))?;
+    exec(DbusSelectedEndpoint { address_write })
+}
+
+fn prepare_secretsd_child(
+    endpoints: SecretsdChildEndpoints,
+    exec: impl FnOnce(SecretsdSelectedEndpoints) -> Result<(), String>,
+) -> Result<(), String> {
+    let SecretsdChildEndpoints {
+        exec_gate_fd,
+        ready_read,
+        ready_write,
+        init_read,
+        init_write,
+        publisher,
+    } = endpoints;
+
+    drop(ready_read);
+    drop(init_write);
+
+    require_cloexec(exec_gate_fd)
+        .map_err(|error| format!("verifying secretsd exec gate: {error}"))?;
+    for fd in [
+        init_read.as_raw_fd(),
+        ready_write.as_raw_fd(),
+        publisher.as_raw_fd(),
+    ] {
+        set_cloexec(fd, false)
+            .map_err(|error| format!("preparing secretsd inherited fd {fd}: {error}"))?;
+    }
+    exec(SecretsdSelectedEndpoints {
+        ready_write,
+        init_read,
+        publisher,
+    })
+}
+
+fn run_dbus_child(
+    endpoints: DbusChildEndpoints,
+    exec: impl FnOnce(DbusSelectedEndpoint) -> Result<(), String>,
+) -> ! {
+    // The child is single-threaded and never resumes or exposes captured state.
+    // Every action from the first endpoint consumption through diagnostics and
+    // returned-exec handling is contained by this boundary.
+    match catch_unwind(AssertUnwindSafe(|| {
+        match prepare_dbus_child(endpoints, exec) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("underwrap-ns: {error}");
+                CHILD_ERROR_EXIT
+            }
+        }
+    })) {
+        // SAFETY: both outcomes terminate the post-fork helper child without
+        // running inherited destructors. The panic payload remains undropped.
+        Ok(status) => unsafe { libc::_exit(status) },
+        Err(_panic_payload) => unsafe { libc::_exit(CHILD_PANIC_EXIT) },
+    }
+}
+
+fn run_secretsd_child(
+    endpoints: SecretsdChildEndpoints,
+    exec: impl FnOnce(SecretsdSelectedEndpoints) -> Result<(), String>,
+) -> ! {
+    // The child is single-threaded and never resumes or exposes captured state.
+    // Every action from the first endpoint consumption through diagnostics and
+    // returned-exec handling is contained by this boundary.
+    match catch_unwind(AssertUnwindSafe(|| {
+        match prepare_secretsd_child(endpoints, exec) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("underwrap-ns: {error}");
+                CHILD_ERROR_EXIT
+            }
+        }
+    })) {
+        // SAFETY: both outcomes terminate the post-fork helper child without
+        // running inherited destructors. The panic payload remains undropped.
+        Ok(status) => unsafe { libc::_exit(status) },
+        Err(_panic_payload) => unsafe { libc::_exit(CHILD_PANIC_EXIT) },
+    }
 }
 
 pub(crate) fn setup_libsecret(
@@ -88,36 +242,37 @@ pub(crate) fn setup_libsecret(
         ));
     }
     if dbus_pid == 0 {
-        unsafe {
-            libc::close(exec_gate_fd);
-            libc::close(ready_read.as_raw_fd());
-            libc::close(ready_write.as_raw_fd());
-            libc::close(dbus_addr_read.as_raw_fd());
-            libc::close(init_read.as_raw_fd());
-            libc::close(init_write.as_raw_fd());
-            libc::close(publisher.as_raw_fd());
-        }
-        if let Err(error) = set_cloexec(dbus_addr_write.as_raw_fd(), false) {
-            eprintln!("underwrap-ns: preparing dbus address fd: {error}");
-            std::process::exit(1);
-        }
-        use std::os::unix::process::CommandExt;
-        let mut dbus_cmd = Command::new(&dbus_daemon);
-        dbus_cmd
-            .arg("--session")
-            .arg(format!("--address={bus_address}"))
-            .arg("--nofork")
-            .arg("--nopidfile")
-            .arg(format!("--print-address={}", dbus_addr_write.as_raw_fd()))
-            .stderr({
-                let log = std::fs::File::create(format!("{bus_dir}/dbus-daemon.log"))
-                    .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
-                std::process::Stdio::from(log)
-            });
-        apply_helper_env(&mut dbus_cmd, helper_env);
-        let err = dbus_cmd.exec();
-        eprintln!("underwrap-ns: exec dbus-daemon failed: {err}");
-        std::process::exit(1);
+        run_dbus_child(
+            DbusChildEndpoints {
+                exec_gate_fd,
+                ready_read,
+                ready_write,
+                address_read: dbus_addr_read,
+                address_write: dbus_addr_write,
+                init_read,
+                init_write,
+                publisher,
+            },
+            |selected| {
+                use std::os::unix::process::CommandExt;
+                let address_fd = selected.address_write.as_raw_fd();
+                let mut dbus_cmd = Command::new(&dbus_daemon);
+                dbus_cmd
+                    .arg("--session")
+                    .arg(format!("--address={bus_address}"))
+                    .arg("--nofork")
+                    .arg("--nopidfile")
+                    .arg(format!("--print-address={address_fd}"))
+                    .stderr({
+                        let log = std::fs::File::create(format!("{bus_dir}/dbus-daemon.log"))
+                            .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
+                        std::process::Stdio::from(log)
+                    });
+                apply_helper_env(&mut dbus_cmd, helper_env);
+                let error = dbus_cmd.exec();
+                Err(format!("exec dbus-daemon failed: {error}"))
+            },
+        );
     }
 
     drop(dbus_addr_write);
@@ -144,41 +299,40 @@ pub(crate) fn setup_libsecret(
         ));
     }
     if secretsd_pid == 0 {
-        unsafe {
-            libc::close(exec_gate_fd);
-            libc::close(ready_read.as_raw_fd());
-            libc::close(init_write.as_raw_fd());
-        }
-        for fd in [
-            init_read.as_raw_fd(),
-            ready_write.as_raw_fd(),
-            publisher.as_raw_fd(),
-        ] {
-            if let Err(error) = set_cloexec(fd, false) {
-                eprintln!("underwrap-ns: preparing secretsd inherited fd {fd}: {error}");
-                std::process::exit(1);
-            }
-        }
-        use std::os::unix::process::CommandExt;
-        let mut secretsd_cmd = Command::new(&secretsd);
-        secretsd_cmd
-            .arg("--bus-address")
-            .arg(&actual_bus_address)
-            .arg("--init-fd")
-            .arg(init_read.as_raw_fd().to_string())
-            .arg("--publication-fd")
-            .arg(publisher.as_raw_fd().to_string())
-            .arg("--ready-fd")
-            .arg(ready_write.as_raw_fd().to_string())
-            .stderr({
-                let log = std::fs::File::create(format!("{bus_dir}/secretsd.log"))
-                    .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
-                std::process::Stdio::from(log)
-            });
-        apply_helper_env(&mut secretsd_cmd, helper_env);
-        let err = secretsd_cmd.exec();
-        eprintln!("underwrap-ns: exec secretsd failed: {err}");
-        std::process::exit(1);
+        run_secretsd_child(
+            SecretsdChildEndpoints {
+                exec_gate_fd,
+                ready_read,
+                ready_write,
+                init_read,
+                init_write,
+                publisher,
+            },
+            |selected| {
+                use std::os::unix::process::CommandExt;
+                let init_fd = selected.init_read.as_raw_fd();
+                let publication_fd = selected.publisher.as_raw_fd();
+                let ready_fd = selected.ready_write.as_raw_fd();
+                let mut secretsd_cmd = Command::new(&secretsd);
+                secretsd_cmd
+                    .arg("--bus-address")
+                    .arg(&actual_bus_address)
+                    .arg("--init-fd")
+                    .arg(init_fd.to_string())
+                    .arg("--publication-fd")
+                    .arg(publication_fd.to_string())
+                    .arg("--ready-fd")
+                    .arg(ready_fd.to_string())
+                    .stderr({
+                        let log = std::fs::File::create(format!("{bus_dir}/secretsd.log"))
+                            .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
+                        std::process::Stdio::from(log)
+                    });
+                apply_helper_env(&mut secretsd_cmd, helper_env);
+                let error = secretsd_cmd.exec();
+                Err(format!("exec secretsd failed: {error}"))
+            },
+        );
     }
 
     // PID-2 setup retains no publisher after the secretsd fork, before waiting
