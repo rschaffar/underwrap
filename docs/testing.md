@@ -18,6 +18,9 @@ For one Rust crate:
 cargo test -p <crate>
 ```
 
+`cargo test -p underwrap-protocol config` covers the daemon configuration grammar at runtime-validation boundaries.
+It exercises exact instance and wrapper name lengths, reserved `debug`, the complete privileged path-field inventory, canonical relative files paths, canonical absolute and tilde access-path domains, same-domain duplicate and overlap rejection, forced path environment values, and retained unrestricted resource, URL, arbitrary environment, and `PATH` contracts.
+
 For cross-component daemon/backend behavior:
 
 ```bash
@@ -321,18 +324,14 @@ The daemon/backend stop future is always awaited without an in-test timeout.
 The complete frontend security assertion matrix in
 `frontend-security-assertions-eval` uses real `nixpkgs.lib.nixosSystem`
 evaluations of the production module. One valid
-hardened instance/wrapper baseline pins the exact sorted inventory of all 14
+hardened instance/wrapper baseline pins the exact sorted inventory of all 18
 underwrap assertion messages, requires every module-local and global assertion
-to be true, and forces a successful system toplevel. Its 39 option-type-valid
-negative rows cover every assertion family and every independently meaningful
-conjunct or security-sensitive environment-name class within combined
-assertions: runtime-base paths, target-UID hash collision, backend transport,
-wrapper target/resource/projection/files paths, linker and forced environment
-names, managed and path-like fixed environment values, the reserved wrapper
-name, ordinary swap, zram writeback, and the Linux 6.5 floor. Every row requires
-one exact false underwrap message, exactly one false assertion globally, and a
-failed forced toplevel. The deterministic `matrix.tsv` records row, family,
-message, and toplevel result.
+to be true, and forces a successful system toplevel.
+Seven positive rows cover the exact instance/wrapper length boundaries, canonical root and relative paths, mixed absolute/tilde access domains, exact `~`, ordinary Unicode paths, unrestricted `PATH`, and a `pkgs.writeText` backend CA derivation coerced to its canonical store path; `valid.tsv` records their successful toplevel results.
+The 81 option-type-valid negative rows preserve all prior assertion rows and cover every assertion family and independently meaningful conjunct or security-sensitive class within combined assertions.
+They include strict instance/wrapper names, runtime-base and CA paths, target-UID hash collision, backend transport, wrapper target/resource/projection/files paths, absolute and tilde access paths, linker and forced environment names, managed and path-like fixed environment values, reserved `debug`, ordinary swap, zram writeback, and the Linux 6.5 floor.
+Every negative row requires one exact false underwrap message, exactly one false assertion globally, and a failed forced toplevel.
+The deterministic `matrix.tsv` records row, family, message, and toplevel result.
 
 This is fail-closed evaluation evidence for the assertion expressions and the
 pinned nixpkgs/NixOS module composition, not runtime-enforcement evidence or a

@@ -3,7 +3,7 @@ use clap::Parser;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use underwrap_protocol::config::BackendServiceConfig;
+use underwrap_protocol::config::{BackendServiceConfig, is_canonical_absolute_path};
 use zeroize::Zeroizing;
 
 #[derive(Debug, Parser, Clone)]
@@ -194,8 +194,8 @@ fn harden_process() -> Result<()> {
 
 fn validate_output_path(path: &Path) -> Result<()> {
     anyhow::ensure!(
-        !path.as_os_str().is_empty(),
-        "output path must not be empty"
+        is_canonical_absolute_path(path),
+        "output path must be a canonical absolute path"
     );
     Ok(())
 }

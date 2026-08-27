@@ -24,9 +24,9 @@ The generated daemon schema is documented separately in
 | --- | --- | --- | --- |
 | `enable` | bool | `false` | Enable all configured frontend instances |
 | `package` | package | required | underwrap package containing the frontend binaries |
-| `targetRuntimeDirBase` | string | `/run/underwrap-runtime` | Base for one `0700`, target-owned runtime directory per `(instance, wrapper)` target UID; must be absolute and outside `/run/user` |
+| `targetRuntimeDirBase` | string | `/run/underwrap-runtime` | Base for one `0700`, target-owned runtime directory per `(instance, wrapper)` target UID; must be canonical absolute and outside `/run/user` |
 | `hardenTargetHost` | bool | `true` | Require Linux 6.5+, default Yama `ptrace_scope=2` with `mkDefault`, and admit only no swap, ordinary swap admitted by the random-key/LUKS assertion, or pure RAM-only zram |
-| `instances.<name>` | attribute set | `{}` | Named frontend instances |
+| `instances.<name>` | attribute set | `{}` | Named frontend instances; names match `[a-z][a-z0-9_-]{0,20}` |
 
 The security claim in [Security](security.md#security-claim) assumes
 `hardenTargetHost = true`. In that posture, an enabled typed
@@ -62,8 +62,12 @@ services.underwrap.instances.work = {
 | --- | --- | --- | --- |
 | `allowedUsers` | list of strings | `[]` | Users that receive `<wrapper>` and `debug-<wrapper>` PATH shims; users of an instance literally named `default` also receive an `underwrap` alias |
 | `backend.url` | string | required | Absolute backend endpoint in lowercase `https://` form, with a host; non-root base paths and trailing slashes are preserved |
-| `backend.caFile` | path or string or null | `null` | Complete CA bundle for backend server verification; when set it replaces bundled WebPKI roots, and null uses reqwest's bundled WebPKI roots |
-| `wrappers` | attribute set | `{}` | Wrapper definitions keyed by the canonical wrapper name |
+| `backend.caFile` | path or string or null | `null` | Canonical absolute path to the complete CA bundle for backend server verification; when set it replaces bundled WebPKI roots, and null uses reqwest's bundled WebPKI roots |
+| `wrappers` | attribute set | `{}` | Wrapper definitions keyed by names matching `[A-Za-z0-9][A-Za-z0-9._+-]{0,127}`; `debug` is reserved |
+
+The NixOS module rejects an instance whose name does not match `[a-z][a-z0-9_-]{0,20}`.
+It rejects a wrapper whose name does not match `[A-Za-z0-9][A-Za-z0-9._+-]{0,127}` or whose name is the reserved `debug` token.
+Invalid selectors do not participate in generated users, groups, shims, daemon files, or target-UID rows.
 
 The NixOS module rejects an instance whose `backend.url` does not start with
 lowercase `https://`. `underwrapd` independently parses the URL, requires an
@@ -72,8 +76,8 @@ and constructs an HTTPS-only request client. There is no plaintext override,
 including for loopback or a proxy upstream. An HTTPS proxy endpoint is admitted;
 that admission does not add forwarded-certificate or proxy-identity support.
 See [Remote backend](remote-backend.md#https-endpoint-and-proxy-topology).
-When `backend.caFile` is set, that bundle is the runtime client instance's
-exclusive server trust set. Omitting it uses reqwest's bundled WebPKI roots.
+When `backend.caFile` is set, it must be a canonical absolute path and that bundle is the runtime client instance's exclusive server trust set.
+Omitting it uses reqwest's bundled WebPKI roots.
 This server trust choice is independent of the runtime client's mTLS
 certificate and fingerprint identity.
 
@@ -90,6 +94,11 @@ The module assigns each instance:
 - `/var/lib/underwrap-<instance>/`;
 - `/etc/underwrap/daemon/<instance>.yaml`;
 - `/etc/underwrap/instances/<instance>.yaml`.
+
+The generated daemon configuration uses canonical absolute paths for `socket`, `ns_binary`, `debug_tool_target`, `target_runtime_dir_base`, and `backend.client_identity_file`.
+The module also requires canonical absolute paths for each wrapper `target`, optional `backend.ca_file`, and forced `env_set` home/base-XDG value.
+`underwrapd` applies the same lexical checks to every listed runtime field, including hand-written daemon configuration, without requiring the path to exist.
+Backend URLs, resource names, arbitrary `envSet` values, and `envSet.PATH` retain their separate existing contracts.
 
 ### Runtime client credential
 
@@ -132,28 +141,31 @@ wrappers.gh = {
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `target` | string | required | Absolute daemon-chosen target path for real invocations |
+| `target` | string | required | Canonical absolute daemon-chosen target path for real invocations |
 | `resource` | string | required | Operator-facing backend resource name; one resource per wrapper |
 | `env` | bool | `false` | Project the resource's env slot into the target environment |
 | `files` | null or submodule | `null` | Enable files projection at `files.paths` |
-| `files.paths` | non-empty list of strings | required when `files` is set | Clean, target-home-relative, unique, non-overlapping mount paths |
+| `files.paths` | non-empty list of strings | required when `files` is set | Canonical target-home-relative, unique, non-overlapping mount paths |
 | `libsecret` | bool | `false` | Project the libsecret slot through a private Secret Service |
-| `accessPaths` | list of strings | `[]` | Caller-owned directories exposed through one-pair idmapped bind mounts; entries are `~`, `~/relative`, or absolute paths |
+| `accessPaths` | list of strings | `[]` | Caller-owned directories exposed through one-pair idmapped bind mounts; entries are canonical absolute paths, exact `~`, or canonical `~/relative` paths |
 | `envPassthrough` | list of strings | `[]` | Additional caller environment names beyond the built-in passthrough set |
 | `envSet` | attribute set of strings | `{}` | Fixed trusted target environment values |
 
 Every wrapper must enable at least one of `env`, `files`, or `libsecret`.
-Wrapper name `debug` is reserved.
+
+Canonical path syntax rejects whitespace, controls, empty components, trailing separators, and components equal to `.` or `..`.
+Lexical validation does not require filesystem existence and does not resolve symlinks.
 
 The module rejects:
 
-- non-absolute target paths;
+- non-canonical or non-absolute target paths;
 - empty resource names;
-- invalid or overlapping files paths;
+- non-canonical, duplicate, or overlapping files paths;
+- invalid, duplicate, or same-domain overlapping access paths;
 - `LD_*` variables in `envPassthrough` or `envSet`;
 - forced home/XDG names in `envPassthrough`;
 - `XDG_RUNTIME_DIR` in `envSet`;
-- relative `HOME` or base XDG values in `envSet`.
+- non-canonical or non-absolute `HOME` or base XDG values in `envSet`.
 
 ### Resource size and transport contract
 
@@ -187,10 +199,10 @@ built-ins. `PATH` is not a built-in and should be set through a trusted
 Forced paths are:
 
 - `HOME` — the original caller's passwd home path unless `envSet.HOME` supplies
-  another absolute path;
+  another canonical absolute path;
 - `XDG_RUNTIME_DIR` — the dedicated target UID's provisioned runtime directory;
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` —
-  derived from effective `HOME` unless explicitly set to absolute values.
+  derived from effective `HOME` unless explicitly set to canonical absolute values.
 
 The dedicated target UID does not automatically gain access to the caller's
 home merely because `HOME` names it. Use `accessPaths` for caller-owned state
@@ -205,14 +217,16 @@ Files-slot keys are full paths relative to the caller-home view, for example:
 .config/gh/hosts.yml
 ```
 
-Each key must have one configured `files.paths` prefix. underwrap aborts when a
-key has no route or when configured mount paths overlap.
+Each key must have one configured `files.paths` prefix.
+Configured paths are canonical relative paths, and duplicate or ancestor/descendant entries are rejected before routing.
+underwrap aborts when a key has no route.
 
-`accessPaths` serves a different purpose: it exposes existing caller-owned host
-directories to the dedicated target UID. Each idmapped mount maps only the
-caller UID/GID to the target UID/GID. Unsupported nested submounts are skipped
-with a warning; failure to idmap the named directory itself aborts the
-invocation.
+`accessPaths` serves a different purpose: it exposes existing caller-owned host directories to the dedicated target UID.
+Each entry is a canonical absolute path, exact `~`, or a canonical `~/...` path.
+Duplicates and ancestor/descendant overlaps are rejected within the absolute domain and separately within the tilde domain.
+An absolute path is not compared with a tilde path before caller-home resolution, so apparent cross-domain overlap is neither rejected nor claimed absent at daemon startup.
+Each idmapped mount maps only the caller UID/GID to the target UID/GID.
+Unsupported nested submounts are skipped with a warning; failure to idmap the named directory itself aborts the invocation.
 
 ### Debug variant
 

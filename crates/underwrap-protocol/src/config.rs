@@ -62,28 +62,132 @@ pub struct DaemonConfig {
 /// the debug variant, so a wrapper may not itself be named `debug`.
 pub const RESERVED_WRAPPER_NAME_DEBUG: &str = "debug";
 
+fn is_instance_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=21).contains(&bytes.len())
+        && bytes[0].is_ascii_lowercase()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(byte))
+}
+
+fn is_wrapper_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+}
+
+fn has_forbidden_path_character(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+}
+
+fn is_canonical_relative_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('/')
+        && !has_forbidden_path_character(value)
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+/// Return whether `path` uses the shared canonical absolute lexical grammar.
+pub fn is_canonical_absolute_path(path: &std::path::Path) -> bool {
+    let Some(value) = path.to_str() else {
+        return false;
+    };
+    value == "/"
+        || value
+            .strip_prefix('/')
+            .is_some_and(is_canonical_relative_path)
+}
+
+fn paths_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || (left == "/" && right.starts_with('/'))
+        || (right == "/" && left.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AccessPathDomain {
+    Absolute,
+    Tilde,
+}
+
+fn access_path_domain(value: &str) -> Option<AccessPathDomain> {
+    if is_canonical_absolute_path(std::path::Path::new(value)) {
+        Some(AccessPathDomain::Absolute)
+    } else if value == "~"
+        || value
+            .strip_prefix("~/")
+            .is_some_and(is_canonical_relative_path)
+    {
+        Some(AccessPathDomain::Tilde)
+    } else {
+        None
+    }
+}
+
 impl DaemonConfig {
-    /// Validate the instance-level invariants that are independent of the
-    /// daemon's runtime environment (group/socket existence is checked at
-    /// bind time). Rejects a wrapper named `debug` (reserved subcommand
-    /// token) and a wrapper with no projection slot enabled.
+    /// Validate lexical configuration invariants before any filesystem lookup,
+    /// socket bind, credential read, or wrapper invocation.
     pub fn validate(&self) -> Result<(), String> {
         use crate::target_env::{CONFIGURABLE_FORCED_TARGET_ENV_NAMES, is_forced_target_env_name};
 
-        if self.instance.is_empty() {
-            return Err("instance name must not be empty".to_string());
+        if !is_instance_name(&self.instance) {
+            return Err("instance name must match [a-z][a-z0-9_-]{0,20}".to_string());
         }
-        if !std::path::Path::new(&self.target_runtime_dir_base).is_absolute() {
-            return Err(format!(
-                "target_runtime_dir_base must be an absolute path, got '{}'",
-                self.target_runtime_dir_base
-            ));
+
+        for (field, path) in [
+            ("socket", self.socket.as_path()),
+            ("ns_binary", self.ns_binary.as_path()),
+            ("debug_tool_target", self.debug_tool_target.as_path()),
+            (
+                "target_runtime_dir_base",
+                std::path::Path::new(&self.target_runtime_dir_base),
+            ),
+        ] {
+            if !is_canonical_absolute_path(path) {
+                return Err(format!("{field} must be a canonical absolute path"));
+            }
         }
-        for (name, wrapper) in &self.wrappers {
+        for (field, path) in [
+            ("backend.ca_file", self.backend.ca_file.as_deref()),
+            (
+                "backend.client_identity_file",
+                self.backend.client_identity_file.as_deref(),
+            ),
+        ] {
+            if path.is_some_and(|path| !is_canonical_absolute_path(path)) {
+                return Err(format!("{field} must be a canonical absolute path"));
+            }
+        }
+
+        let mut wrappers = self.wrappers.iter().collect::<Vec<_>>();
+        wrappers.sort_unstable_by_key(|(name, _)| *name);
+        for (name, wrapper) in wrappers {
+            if !is_wrapper_name(name) {
+                return Err("wrapper name must match [A-Za-z0-9][A-Za-z0-9._+-]{0,127}".to_string());
+            }
             if name == RESERVED_WRAPPER_NAME_DEBUG {
                 return Err(format!(
                     "wrapper name '{RESERVED_WRAPPER_NAME_DEBUG}' is reserved \
                      (it is the debug subcommand token)"
+                ));
+            }
+            if !is_canonical_absolute_path(&wrapper.target) {
+                return Err(format!(
+                    "wrapper '{name}' target must be a canonical absolute path"
                 ));
             }
             if !(wrapper.env || wrapper.files.is_some() || wrapper.libsecret) {
@@ -92,6 +196,63 @@ impl DaemonConfig {
                      (set at least one of env/files/libsecret)"
                 ));
             }
+            if let Some(files) = &wrapper.files {
+                if files.paths.is_empty() {
+                    return Err(format!(
+                        "wrapper '{name}' files.paths must contain at least one path"
+                    ));
+                }
+                if !files
+                    .paths
+                    .iter()
+                    .all(|path| is_canonical_relative_path(path))
+                {
+                    return Err(format!(
+                        "wrapper '{name}' files.paths entries must be canonical relative paths"
+                    ));
+                }
+                if files.paths.iter().enumerate().any(|(index, left)| {
+                    files.paths[index + 1..]
+                        .iter()
+                        .any(|right| paths_overlap(left, right))
+                }) {
+                    return Err(format!(
+                        "wrapper '{name}' files.paths must be unique and non-overlapping"
+                    ));
+                }
+            }
+
+            let access_domains = wrapper
+                .access_paths
+                .iter()
+                .map(|path| access_path_domain(path))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    format!(
+                        "wrapper '{name}' access_paths entries must be canonical absolute paths, \
+                         '~', or canonical '~/...' paths"
+                    )
+                })?;
+            if wrapper
+                .access_paths
+                .iter()
+                .enumerate()
+                .any(|(index, left)| {
+                    wrapper.access_paths[index + 1..]
+                        .iter()
+                        .enumerate()
+                        .any(|(offset, right)| {
+                            access_domains[index] == access_domains[index + 1 + offset]
+                                && paths_overlap(left, right)
+                        })
+                })
+            {
+                return Err(format!(
+                    "wrapper '{name}' access_paths must be unique and non-overlapping \
+                     within the absolute and tilde domains"
+                ));
+            }
+
             // The target inherits `env_passthrough` from the caller's
             // environment, so it must never carry an env name that steers
             // where the target finds config/cache/runtime dirs. Those are
@@ -119,11 +280,10 @@ impl DaemonConfig {
             }
             for forced in CONFIGURABLE_FORCED_TARGET_ENV_NAMES {
                 if let Some(value) = wrapper.env_set.get(*forced)
-                    && !std::path::Path::new(value).is_absolute()
+                    && !is_canonical_absolute_path(std::path::Path::new(value))
                 {
                     return Err(format!(
-                        "wrapper '{name}' env_set {forced} must be an absolute \
-                         path, got '{value}'"
+                        "wrapper '{name}' env_set {forced} must be a canonical absolute path"
                     ));
                 }
             }

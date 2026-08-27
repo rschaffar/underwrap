@@ -1,6 +1,6 @@
 use super::*;
 use clap::Parser;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -9,6 +9,27 @@ fn explicit_cli(identity: &str) -> Cli {
         client_identity_out: Some(PathBuf::from(identity)),
         instance_config: None,
     }
+}
+
+fn instance_config_cli(identity: &str) -> (tempfile::TempDir, Cli) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config = tmp.path().join("work.yaml");
+    let backend = BTreeMap::from([
+        ("url", "https://backend.example.internal:8443".to_string()),
+        ("client_identity_file", identity.to_string()),
+    ]);
+    let document = BTreeMap::from([("backend", backend)]);
+    std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+    let cli = Cli {
+        client_identity_out: None,
+        instance_config: Some(config),
+    };
+    (tmp, cli)
+}
+
+fn validate_cli_output(cli: &Cli) -> Result<()> {
+    let targets = cli.resolve_targets()?;
+    validate_output_path(&targets.client_identity_out)
 }
 
 #[test]
@@ -70,6 +91,47 @@ wrappers: {}
         targets.client_identity_out,
         PathBuf::from("/var/lib/underwrap-work/client-work.identity.pem")
     );
+}
+
+#[test]
+fn output_path_gate_accepts_canonical_paths_in_explicit_and_config_modes() {
+    for path in [
+        "/",
+        "/var/lib/underwrap/client.identity.pem",
+        "/var/lib/秘密/身份.identity.pem",
+    ] {
+        validate_cli_output(&explicit_cli(path)).unwrap();
+
+        let (_tmp, cli) = instance_config_cli(path);
+        validate_cli_output(&cli).unwrap();
+    }
+}
+
+#[test]
+fn output_path_gate_rejects_noncanonical_paths_in_explicit_and_config_modes() {
+    for path in [
+        "",
+        "relative/client.identity.pem",
+        "/var/lib/./client.identity.pem",
+        "/var/lib/../client.identity.pem",
+        "/var//lib/client.identity.pem",
+        "/var/lib/client.identity.pem/",
+        "/var/lib/client identity.pem",
+        "/var/lib/client\u{7f}identity.pem",
+    ] {
+        let error = validate_cli_output(&explicit_cli(path)).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("canonical absolute path"),
+            "explicit path {path:?} produced unexpected error: {error:#}"
+        );
+
+        let (_tmp, cli) = instance_config_cli(path);
+        let error = validate_cli_output(&cli).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("canonical absolute path"),
+            "config-derived path {path:?} produced unexpected error: {error:#}"
+        );
+    }
 }
 
 #[test]

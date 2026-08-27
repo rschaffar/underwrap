@@ -3,26 +3,108 @@
 let
   cfg = config.services.underwrap;
 
-  isAbsolutePathString = path:
-    path != null && path != "" && lib.hasPrefix "/" path;
+  pathString = value:
+    if value == null then null else builtins.toString value;
 
-  isCleanRelativePath = path:
+  unicodeCharacter = codepoint:
+    builtins.fromJSON ("\"\\u" + codepoint + "\"");
+
+  # POSIX classes cover ASCII whitespace and controls in Nix's evaluator.
+  # Supplement them with every non-ASCII code point covered by Rust's
+  # char::is_control or char::is_whitespace so both validation layers agree.
+  nonAsciiForbiddenPathCharacters = map unicodeCharacter [
+    "0080" "0081" "0082" "0083" "0084" "0085" "0086" "0087"
+    "0088" "0089" "008A" "008B" "008C" "008D" "008E" "008F"
+    "0090" "0091" "0092" "0093" "0094" "0095" "0096" "0097"
+    "0098" "0099" "009A" "009B" "009C" "009D" "009E" "009F"
+    "00A0" "1680" "2000" "2001" "2002" "2003" "2004" "2005"
+    "2006" "2007" "2008" "2009" "200A" "2028" "2029" "202F"
+    "205F" "3000"
+  ];
+
+  hasForbiddenPathCharacter = value:
+    builtins.match ".*[[:space:][:cntrl:]].*" value != null
+    || lib.any (character: lib.hasInfix character value)
+      nonAsciiForbiddenPathCharacters;
+
+  isCanonicalRelativePath = value:
+    let path = pathString value; in
     path != null
     && path != ""
     && !(lib.hasPrefix "/" path)
+    && !hasForbiddenPathCharacter path
     && lib.all (segment: segment != "" && segment != "." && segment != "..")
       (lib.splitString "/" path);
 
+  isCanonicalAbsolutePath = value:
+    let path = pathString value; in
+    path != null
+    && (
+      path == "/"
+      || (
+        lib.hasPrefix "/" path
+        && isCanonicalRelativePath (lib.removePrefix "/" path)
+      )
+    );
+
+  isCanonicalTildePath = value:
+    let path = pathString value; in
+    path == "~"
+    || (
+      path != null
+      && lib.hasPrefix "~/" path
+      && isCanonicalRelativePath (lib.removePrefix "~/" path)
+    );
+
+  appendPathComponent = base: component:
+    if base == "/" then "/${component}" else "${base}/${component}";
+
   pathsOverlap = left: right:
     left == right
+    || (left == "/" && lib.hasPrefix "/" right)
+    || (right == "/" && lib.hasPrefix "/" left)
     || lib.hasPrefix (left + "/") right
     || lib.hasPrefix (right + "/") left;
+
+  pathsAreUniqueAndNonOverlapping = paths:
+    lib.length paths == lib.length (lib.unique paths)
+    && lib.all (left:
+      lib.all (right: left == right || !pathsOverlap left right) paths
+    ) paths;
+
+  accessPathsAreCanonical = paths:
+    let
+      absolute = lib.filter isCanonicalAbsolutePath paths;
+      tilde = lib.filter isCanonicalTildePath paths;
+    in
+    lib.length paths == lib.length absolute + lib.length tilde
+    && pathsAreUniqueAndNonOverlapping absolute
+    && pathsAreUniqueAndNonOverlapping tilde;
+
+  isInstanceName = value:
+    builtins.isString value
+    && builtins.match "[a-z][a-z0-9_-]{0,20}" value != null;
+
+  isWrapperName = value:
+    builtins.isString value
+    && builtins.match "[A-Za-z0-9][A-Za-z0-9._+-]{0,127}" value != null;
 
   wrapperDirectoryPaths = wrapper:
     if wrapper.files == null then [] else wrapper.files.paths;
 
   wrapperHasProjection = wrapper:
     wrapper.env || wrapper.files != null || wrapper.libsecret;
+
+  # Invalid selectors never participate in generated users, groups, shims,
+  # daemon files, or target-UID rows. Assertions below still inspect the
+  # original option values and reject the complete system evaluation.
+  artifactInstances = lib.mapAttrs (_instName: inst:
+    inst // {
+      wrappers = lib.filterAttrs (name: _wrapper:
+        isWrapperName name && name != "debug"
+      ) inst.wrappers;
+    }
+  ) (lib.filterAttrs (name: _inst: isInstanceName name) cfg.instances);
 
   # Per-instance helper functions. Every instance has one setgid entry point,
   # one gate group, and one wrapper socket. The daemon validates the
@@ -199,8 +281,8 @@ let
 
   };
 
-  # Build all instance configs.
-  instances = lib.mapAttrs mkInstance cfg.instances;
+  # Build artifacts only from selectors admitted by the strict grammar.
+  instances = lib.mapAttrs mkInstance artifactInstances;
 
   # Per-user wrapper namespace.
   #
@@ -218,7 +300,7 @@ let
   # whose `bin/` holds these aliases. NixOS's standard per-user profile
   # machinery puts /etc/profiles/per-user/<u>/bin on that user's PATH.
   allAuthorizedUsers =
-    lib.unique (lib.concatMap (i: i.allowedUsers) (lib.attrValues cfg.instances));
+    lib.unique (lib.concatMap (i: i.allowedUsers) (lib.attrValues artifactInstances));
 
   defaultInstanceName = "default";
 
@@ -244,7 +326,7 @@ let
   # wrapper or assigning the users to separate instances.
   userBinEntries = lib.genAttrs allAuthorizedUsers (user:
     lib.concatMap (instName:
-      let inst = cfg.instances.${instName}; in
+      let inst = artifactInstances.${instName}; in
       if !(lib.elem user inst.allowedUsers)
       then []
       else
@@ -256,7 +338,7 @@ let
           { name = "bin/${wname}"; path = "${mkShim instName wname false}"; }
           { name = "bin/debug-${wname}"; path = "${mkShim instName wname true}"; }
         ]) inst.wrappers)
-    ) (builtins.attrNames cfg.instances));
+    ) (builtins.attrNames artifactInstances));
 
   mkUserBin = user: entries:
     pkgs.linkFarm "underwrap-userbin-${user}" entries;
@@ -272,8 +354,10 @@ let
           and every key in the resource's `files` section is routed to
           the mount whose path is a prefix of the key (e.g. a key
           `.config/gh/hosts.yml` lands under a `.config/gh` mount). The
-          paths must be non-overlapping — one path being a prefix of
-          another is rejected — so routing is unambiguous. Blob keys
+          paths must be canonical relative paths without whitespace, control,
+          empty, dot, or dot-dot components. They must also be unique and
+          non-overlapping — one path being a prefix of another is rejected —
+          so routing is unambiguous. Blob keys
           that match no configured mount abort the wrapper.
         '';
         example = [ ".config/gh" ".config/git" ];
@@ -285,7 +369,7 @@ let
     options = {
       target = lib.mkOption {
         type = lib.types.str;
-        description = "Absolute path to the target binary.";
+        description = "Canonical absolute path to the target binary.";
       };
       resource = lib.mkOption {
         type = lib.types.str;
@@ -328,9 +412,15 @@ let
           writes land back on disk owned by the caller; everything else is left
           untouched. Each entry is either <literal>~</literal> /
           <literal>~/&lt;rel&gt;</literal> (resolved against the calling user's home
-          directory) or an absolute path. Use this to give a target access to
-          just the caller-owned config/state directories it needs (e.g.
-          <literal>[ "~/.config/gh" ]</literal>) instead of its whole home.
+          directory) or a canonical absolute path. Tilde-relative entries must
+          be exact <literal>~</literal> or canonical <literal>~/...</literal>
+          paths. Whitespace, controls, empty, dot, and dot-dot components are
+          rejected. Duplicates and ancestor/descendant overlaps are rejected
+          separately within the absolute and tilde domains; the two domains
+          cannot be compared until the caller home is known. Use this to give a
+          target access to just the caller-owned config/state directories it
+          needs (e.g. <literal>[ "~/.config/gh" ]</literal>) instead of its whole
+          home.
         '';
         example = [ "~/.config/gh" "~/.config/git" ];
       };
@@ -353,10 +443,11 @@ let
         description = ''
           Fixed environment variables to set on the target process.
           These override any inherited values. HOME and the base XDG directory
-          variables may be set here intentionally; XDG_RUNTIME_DIR may not — it
-          is managed by underwrap (each isolated target gets its own provisioned
-          runtime dir; relocate the base via
-          <option>services.underwrap.targetRuntimeDirBase</option>).
+          variables may be set here intentionally and must be canonical
+          absolute paths; XDG_RUNTIME_DIR may not — it is managed by underwrap
+          (each isolated target gets its own provisioned runtime dir; relocate
+          the base via <option>services.underwrap.targetRuntimeDirBase</option>).
+          Other values, including PATH, do not use the path grammar.
         '';
         example = { NO_COLOR = "1"; };
       };
@@ -374,8 +465,9 @@ let
         default = null;
         description = ''
           Complete CA bundle used to verify the backend service certificate.
-          When set, it replaces reqwest's bundled WebPKI roots for server
-          verification. Leave as `null` to use the bundled WebPKI roots.
+          When set, it must be a canonical absolute path and replaces reqwest's
+          bundled WebPKI roots for server verification. Leave as `null` to use
+          the bundled WebPKI roots.
         '';
       };
     };
@@ -406,6 +498,7 @@ let
       wrappers = lib.mkOption {
         type = lib.types.attrsOf wrapperSubmodule;
         default = {};
+        description = "Wrapper definitions keyed by names matching [A-Za-z0-9][A-Za-z0-9._+-]{0,127}; debug is reserved.";
       };
     };
   };
@@ -489,7 +582,7 @@ let
       wrapper = wname;
       target = w.target;
     }) inst.wrappers
-  ) cfg.instances);
+  ) artifactInstances);
 
   # Stable sandbox user name per pair: a 48-bit hash prefix of
   # "<instance>/<wrapper>" (NOT a sequential index, so adding/removing pairs
@@ -544,7 +637,7 @@ let
       ([ "d ${cfg.targetRuntimeDirBase} 0755 root root -" ]
        ++ map (p:
          let n = targetUserName p.instance p.wrapper; in
-         "d ${cfg.targetRuntimeDirBase}/${n} 0700 ${n} ${n} -"
+         "d ${appendPathComponent cfg.targetRuntimeDirBase n} 0700 ${n} ${n} -"
        ) targetPairs);
 
 in {
@@ -567,8 +660,8 @@ in {
         <literal>/run/user/&lt;uid&gt;</literal>; underwrap provisions it one here
         instead, and underwrap-ns exports it as the default
         <literal>XDG_RUNTIME_DIR</literal>
-        (<literal>&lt;base&gt;/&lt;target-user-name&gt;</literal>). Must be an
-        absolute path, and must NOT be <literal>/run/user</literal> (that is
+        (<literal>&lt;base&gt;/&lt;target-user-name&gt;</literal>). Must be a
+        canonical absolute path, and must NOT be <literal>/run/user</literal> (that is
         logind's per-login-session tree). The base is system-wide; each target
         user name is unique to its instance/wrapper pair.
       '';
@@ -612,7 +705,7 @@ in {
     instances = lib.mkOption {
       type = lib.types.attrsOf instanceSubmodule;
       default = {};
-      description = "Named underwrap instances, fully isolated from each other on the frontend side.";
+      description = "Named underwrap instances, fully isolated from each other on the frontend side. Names must match [a-z][a-z0-9_-]{0,20}.";
     };
   };
 
@@ -620,8 +713,8 @@ in {
     assertions =
       [
         {
-          assertion = isAbsolutePathString cfg.targetRuntimeDirBase;
-          message = "services.underwrap.targetRuntimeDirBase: must be an absolute path";
+          assertion = isCanonicalAbsolutePath cfg.targetRuntimeDirBase;
+          message = "services.underwrap.targetRuntimeDirBase: must be a canonical absolute path";
         }
         {
           # /run/user is logind's per-login-session tree; provisioning the
@@ -636,27 +729,36 @@ in {
         }
       ]
       ++ (lib.flatten (lib.mapAttrsToList (instName: inst:
-        [ {
-          assertion = lib.hasPrefix "https://" inst.backend.url;
-          message = "services.underwrap.instances.${instName}.backend.url: must use lowercase https://; plaintext runtime backend transport is not supported";
-        } ]
+        [
+          {
+            assertion = isInstanceName instName;
+            message = "services.underwrap.instances: instance names must match [a-z][a-z0-9_-]{0,20}";
+          }
+          {
+            assertion = lib.hasPrefix "https://" inst.backend.url;
+            message = "services.underwrap.instances.${instName}.backend.url: must use lowercase https://; plaintext runtime backend transport is not supported";
+          }
+          {
+            assertion = inst.backend.caFile == null
+              || isCanonicalAbsolutePath inst.backend.caFile;
+            message = "services.underwrap.instances.${instName}.backend.caFile: must be a canonical absolute path when set";
+          }
+        ]
         ++ (lib.mapAttrsToList (wrapperName: wrapper:
-          let
-            paths = wrapperDirectoryPaths wrapper;
-            pairs = lib.concatMap (left:
-              map (right: { inherit left right; })
-                (lib.filter (right: right != left) paths)
-            ) paths;
+          let paths = wrapperDirectoryPaths wrapper;
           in {
-            assertion = isAbsolutePathString wrapper.target
+            assertion = isCanonicalAbsolutePath wrapper.target
               && wrapper.resource != ""
               && wrapperHasProjection wrapper
-              && lib.length paths == lib.length (lib.unique paths)
-              && lib.all (path: isCleanRelativePath path) paths
-              && lib.all (pair: !pathsOverlap pair.left pair.right) pairs;
-            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: must declare an absolute target path, a non-empty resource, enable at least one projection slot (env, files, or libsecret), and supply files paths that are clean, unique, and non-overlapping";
+              && lib.all isCanonicalRelativePath paths
+              && pathsAreUniqueAndNonOverlapping paths;
+            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}: must declare a canonical absolute target path, a non-empty resource, enable at least one projection slot (env, files, or libsecret), and supply canonical relative files paths that are unique and non-overlapping";
           }
         ) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: wrapper: {
+          assertion = accessPathsAreCanonical wrapper.accessPaths;
+          message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.accessPaths: entries must be canonical absolute paths, exact '~', or canonical '~/...' paths, with duplicates and overlaps rejected within each path domain";
+        }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: wrapper: {
           assertion = !(lib.any linkerLikeEnvPrefix wrapper.envPassthrough);
           message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envPassthrough: LD_* environment variables must not be passed through — they would let the caller redirect dynamic linking in the target process and defeat the NO_NEW_PRIVS + env_clear() hardening";
@@ -684,13 +786,17 @@ in {
             ];
             invalid = lib.filter (name:
               (builtins.hasAttr name wrapper.envSet)
-              && !isAbsolutePathString wrapper.envSet.${name}
+              && !isCanonicalAbsolutePath wrapper.envSet.${name}
             ) pathLikeEnvSetNames;
           in {
             assertion = invalid == [];
-            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, and XDG_STATE_HOME must be absolute paths when set";
+            message = "services.underwrap.instances.${instName}.wrappers.${wrapperName}.envSet: HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, and XDG_STATE_HOME must be canonical absolute paths when set";
           }
         ) inst.wrappers)
+        ++ (lib.mapAttrsToList (wrapperName: _wrapper: {
+          assertion = isWrapperName wrapperName;
+          message = "services.underwrap.instances.${instName}.wrappers: wrapper names must match [A-Za-z0-9][A-Za-z0-9._+-]{0,127}";
+        }) inst.wrappers)
         ++ (lib.mapAttrsToList (wrapperName: _wrapper: {
           # `debug` is the subcommand token (`underwrap-<instance> debug <wrapper>`),
           # so a wrapper may not be named `debug`. The daemon rejects this at
@@ -796,7 +902,7 @@ in {
     # One frontend service per instance.
     systemd.services = lib.mapAttrs' (name: _:
       lib.nameValuePair "underwrapd-${name}" instances.${name}.service
-    ) cfg.instances;
+    ) artifactInstances;
 
     # Target-host hardening: default kernel.yama.ptrace_scope to 2. This gates
     # only the ATTACH-mode vectors (/proc/<pid>/mem, ptrace, process_vm_readv);

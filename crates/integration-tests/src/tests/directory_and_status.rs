@@ -9,7 +9,7 @@ async fn overlapping_directory_paths_rejected_at_startup() {
     );
 
     let err = daemon_config_error(wrapper_def).await;
-    assert!(err.contains("overlapping files paths"));
+    assert!(err.contains("files.paths must be unique and non-overlapping"));
 }
 
 #[tokio::test]
@@ -21,7 +21,7 @@ async fn duplicate_directory_paths_rejected_at_startup() {
     );
 
     let err = daemon_config_error(wrapper_def).await;
-    assert!(err.contains("overlapping files paths"));
+    assert!(err.contains("files.paths must be unique and non-overlapping"));
 }
 
 #[tokio::test]
@@ -29,7 +29,7 @@ async fn absolute_directory_path_rejected_at_startup() {
     let wrapper_def = files_wrapper("/usr/bin/true", "gws/state", "/etc/gws");
 
     let err = daemon_config_error(wrapper_def).await;
-    assert!(err.contains("invalid path") || err.contains("path must be relative"));
+    assert!(err.contains("files.paths entries must be canonical relative paths"));
 }
 
 #[tokio::test]
@@ -37,7 +37,7 @@ async fn traversal_directory_path_rejected_at_startup() {
     let wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config/../gws");
 
     let err = daemon_config_error(wrapper_def).await;
-    assert!(err.contains("invalid path") || err.contains("path must be clean"));
+    assert!(err.contains("files.paths entries must be canonical relative paths"));
 }
 
 #[tokio::test]
@@ -45,7 +45,7 @@ async fn empty_segment_directory_path_rejected_at_startup() {
     let wrapper_def = files_wrapper("/usr/bin/true", "gws/state", ".config//gws");
 
     let err = daemon_config_error(wrapper_def).await;
-    assert!(err.contains("invalid path") || err.contains("empty segments"));
+    assert!(err.contains("files.paths entries must be canonical relative paths"));
 }
 
 #[tokio::test]
