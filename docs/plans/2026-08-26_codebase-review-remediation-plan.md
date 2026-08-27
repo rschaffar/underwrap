@@ -275,6 +275,54 @@ O-008 validation commands:
 - `nix flake check --all-systems --no-build`
 - `nix build .#checks.x86_64-linux.vm-test`
 
+Approved libsecret post-fork correction after the second mandated stop:
+
+- The resumed semantic pass stopped because both libsecret helper child branches raw-close descriptors that remain owned by inherited `OwnedFd`/`UnixStream` values, then run panic-capable Rust before exec or `process::exit`.
+- With unwind enabled, a panic can run stale owners after a descriptor number has been reused and close an unrelated helper, publication, readiness, logging, or lifecycle endpoint. Independent review confirmed the ownership defect; no direct secret disclosure was established.
+- On 2026-08-27 the user selected **Fix narrowly in F-032**, approving an ownership-correct and unwind-contained correction without a dependency or binary-chain change.
+- Consume every child-unneeded owned endpoint with `drop` rather than raw-closing its borrowed integer.
+- In the dbus-daemon child, consume readiness reader/writer, address reader, init reader/writer, and publisher; retain the gate as CLOEXEC; clear CLOEXEC only on the address writer; and map the helper log to stderr.
+- Before the secretsd fork, preserve the existing parent consumption of both address endpoints. In the secretsd child, consume the readiness reader and init writer; retain the gate as CLOEXEC; clear CLOEXEC only on init reader, readiness writer, and publisher; and map the helper log to stderr.
+- Do not raw-close the borrowed exec-gate descriptor while its `GateWriter` owner remains live. Verify and preserve its kernel-set CLOEXEC state so successful helper exec closes it atomically.
+- Contain every child action from the first endpoint consumption through setup, diagnostics, and returned-exec handling in one `catch_unwind(AssertUnwindSafe(...))` boundary. The assertion is justified because the single-threaded child never exposes or resumes captured state after either success or panic.
+- After the boundary returns or catches, call `_exit` immediately without formatting, logging, allocation, or panic/error-payload destruction. Abort or double-panic may terminate without being caught; neither may unwind into inherited PID-2 state.
+- Preserve helper executable selection, arguments, sanitized environment, logging paths, readiness/address/init/publication endpoint roles, allocation order, and parent behavior.
+- Add fork-isolated controlled-error and injected-panic evidence for both endpoint matrices proving `_exit` status and absence of a return marker.
+- Prove the gate remains open with `FD_CLOEXEC`, only selected endpoints have CLOEXEC cleared and remain usable before exec, and a descriptor number reused after consuming an unwanted owner remains live through injected unwind; an `EBADF`-only assertion is insufficient.
+- Preserve deployed argv, environment, log, readiness, publication, store/lookup/writeback, live private-bus, host-only receiver, and secretsd-only publisher evidence.
+
+Libsecret correction security boundary:
+
+- Protected asset: integrity and exact lifetime of exec-gate, readiness, address, init, publication, log, and helper descriptors in the secret-bearing PID-2 setup branch.
+- Attacker or failure source: an ordinary setup I/O error or panic after raw close but before helper exec, followed by descriptor-number reuse during unwinding.
+- Boundary direction: PID-2 owned Rust descriptors → post-fork helper child setup → dbus-daemon or secretsd exec.
+- Invariant: every owned descriptor closes exactly once; no panic unwinds into inherited PID-2 state; unneeded endpoints are consumed before helper-visible work; selected endpoints alone have CLOEXEC cleared; all failure paths `_exit` without exposing an alternate channel.
+
+Libsecret correction allowlist:
+
+- `crates/underwrap-ns/src/libsecret.rs`
+- `crates/underwrap-ns/src/libsecret/tests.rs`
+- `docs/security.md`
+- `docs/testing.md`
+- this plan for evidence
+
+Libsecret correction non-goals:
+
+- no helper, target, protocol, channel, fd number, namespace, mount, privilege, publication, readiness, environment, log-content, dependency, or wrapper-chain redesign;
+- no general post-fork abstraction outside the two libsecret helper branches and no later finding or Opportunity.
+
+Libsecret correction validation commands:
+
+- `cargo test -p underwrap-ns libsecret`
+- `cargo test -p underwrap-ns`
+- `cargo test --workspace --exclude integration-tests` with the exact Nix `web-build` artifact
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets --workspace -- -D warnings`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- `nix build .#checks.x86_64-linux.vm-test`, including the existing libsecret store/lookup/writeback, live private-bus, host-only receiver, and secretsd-only publisher assertions
+- `nix flake check --all-systems --no-build`
+
 Expected source allowlist:
 
 - `crates/underwrap-backend/src/{cli.rs,main.rs}`
@@ -323,7 +371,11 @@ Validation commands:
   - The first plain workspace test attempt lacked the intentionally absent `web/dist`; the unchanged suite passed with the exact Nix `web-build` artifact through `UNDERWRAP_WEB_DIST`. One integration run had a connection-refusal fixture transient and all 105 tests passed on the full rerun.
   - Controller check: exact eight-file allowlist and staged checksum `5335dcd0ae5203d483eee2b06c4982adb201e18c966cfd6e0b32fdf84be6d5ed`; no dependency, protocol message, fixed-fd, authorization, backend, target, or underwrap-ns change; no descriptor leak/double ownership, secret-bearing diagnostic, generated artifact, later finding, or unapproved Opportunity.
   - O-008 is resolved under the user's explicit approval. It resolves no F-id by itself and reduces the remaining F-032 inventory to 209 unsafe expressions across 26 production files with 107 `SAFETY:` markers; counts remain discovery evidence only.
-- [ ] Resume the semantic per-site pass over every remaining in-scope unsafe expression and add adequate adjacent rationale without further executable behavior changes.
+- [x] Stop the resumed semantic pass when it found the libsecret post-fork raw-close/owned-destructor defect; do not retain the unjustifiable rationale. Evidence: implementation worker completed a comment-only draft but partitioned review rejected the helper-child ownership claim, and a fresh focused review confirmed the executable defect on 2026-08-27.
+- [x] Obtain the required user decision for the second adjacent executable correction. Evidence: on 2026-08-27 the user selected **Fix narrowly in F-032**.
+- [x] Obtain fresh independent approval of the exact libsecret correction scope, boundary, allowlist, non-goals, and validation above before implementation. Evidence: initial review required exact endpoint matrices, a fully enclosing unwind boundary with immediate `_exit`, gate/selected/reused-fd tests, maintained testing documentation, a tighter allowlist, and named VM witnesses; the plan incorporated every correction and fresh re-review passed on 2026-08-27; no commands were run.
+- [ ] Implement and independently review the libsecret post-fork correction, run its validation, commit it as a separate fix unit, and update the unsafe inventory.
+- [ ] Correct every rejected or overstated rationale from the partitioned review, resume the semantic per-site pass over every remaining in-scope unsafe expression, and add adequate adjacent rationale without further executable behavior changes.
 - [ ] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
 - [ ] Record F-032 completion and every cross-finding effect before promoting F-033.
 
