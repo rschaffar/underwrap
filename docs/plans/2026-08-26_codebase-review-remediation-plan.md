@@ -323,6 +323,52 @@ Libsecret correction validation commands:
 - `nix build .#checks.x86_64-linux.vm-test`, including the existing libsecret store/lookup/writeback, live private-bus, host-only receiver, and secretsd-only publisher assertions
 - `nix flake check --all-systems --no-build`
 
+Approved keygen reentrant NSS correction after the third mandated stop:
+
+- Final rationale review rejected `underwrap-keygen`'s claim that public safe `Cli::resolve_targets` and `run` can rely on single-threaded `getpwnam`/`getgrnam` static storage.
+- Concurrent safe library callers or unrelated same-process NSS lookups can replace that storage between FFI return and field dereference. Independent review confirmed potential undefined behavior; the shipped command's current single-threaded call pattern is not a valid public-API safety precondition.
+- On 2026-08-27 the user selected **Fix reentrantly in F-032**, approving caller-owned `getpwnam_r`/`getgrnam_r` state without a dependency or binary-chain change.
+- Replace static NSS lookup state with caller-owned output structures and buffers on the supported NixOS/Linux `x86_64` and `aarch64` surface; make no broader portability claim.
+- Use `_SC_GETPW_R_SIZE_MAX`/`_SC_GETGR_R_SIZE_MAX` only as a hint. Zero, negative, or unavailable hints select a 16-KiB fallback; an unrepresentable or greater-than-1-MiB hint is an operational error. Allocate through checked fallible reservation.
+- Grow only on `ERANGE`, using checked doubling capped at exactly 1 MiB. `ERANGE` at that maximum, arithmetic failure, or allocation failure aborts resolution. `EINTR` and every other non-`ERANGE` code propagate without retry or growth.
+- Treat return zero plus a null result as ordinary not-found so the existing workstation/no-local-daemon ownership fallback remains. A successful non-null result must equal the caller-provided output-structure pointer before that structure is considered initialized; never dereference a foreign result pointer.
+- Propagate NSS errors, invalid input, impossible result pointers, and exhausted buffer growth before key generation or identity-file mutation instead of silently treating them as no account. `harden_process()` remains the intentional earlier process-only side effect.
+- Copy only the initialized UID/GID field before caller-owned storage is dropped; do not expose an NSS pointer or borrowed field.
+- Preserve output-path selection and owner precedence: resolved daemon account, then existing identity owner, then invoking identity. Preserve explicit-path behavior, generated identity content, atomic installation, mode, stdout timing, and no-secret diagnostics.
+- Add deterministic injected unavailable, zero, distinct negative, unrepresentable, and oversized hints; exact growth and exact-maximum `ERANGE`; arithmetic/allocation; `EINTR`/other error; not-found; and foreign-result-pointer tests. Prove every operational failure precedes key generation and identity-file mutation. Add real root/not-found lookup evidence and concurrent public `resolve_targets` evidence without relying on a data race to fail.
+- Document fallback-versus-abort ordering and ownership precedence in `docs/security.md`, and enumerate injected growth/error/result-pointer plus concurrent public-API evidence in `docs/testing.md`.
+
+Keygen NSS security boundary:
+
+- Protected asset: correct restrictive ownership and availability of the frontend runtime-client identity file.
+- Attacker or failure source: concurrent same-process calls through the public safe keygen API or unrelated NSS activity replacing static libc storage.
+- Boundary direction: public safe Rust configuration resolution → libc/NSS account lookup → selected UID/GID for atomic identity installation.
+- Invariant: every FFI output and backing string buffer is caller-owned for the complete dereference lifetime; not-found alone selects the documented fallback, while operational lookup failure aborts before key generation or filesystem mutation.
+
+Keygen NSS allowlist:
+
+- `crates/underwrap-keygen/src/lib.rs`
+- `crates/underwrap-keygen/src/tests.rs`
+- `docs/security.md`
+- `docs/testing.md`
+- this plan for evidence
+
+Keygen NSS non-goals:
+
+- no account naming, configuration, output-path, ownership precedence, file mode, credential format, key generation, persistence, stdout, caching, dependency, daemon, backend, or wrapper-chain redesign;
+- no general NSS refactor in private single-threaded privileged binaries and no later finding or Opportunity.
+
+Keygen NSS validation commands:
+
+- `cargo test -p underwrap-keygen`
+- `cargo test --workspace --exclude integration-tests` with the exact Nix `web-build` artifact
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets --workspace -- -D warnings`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- `nix build .#checks.x86_64-linux.vm-test`, including deployed exact identity ownership/mode and successful wrapper use
+- `nix flake check --all-systems --no-build`
+
 Expected source allowlist:
 
 - `crates/underwrap-backend/src/{cli.rs,main.rs}`
@@ -384,6 +430,10 @@ Validation commands:
   - The first VM run failed an F-007 unchanged-state disk equality after the invocation itself emitted `UsageSignal`, so the changed path had submitted no mutation; the unchanged derivation passed completely on rerun. This is classified as a VM lifecycle-fixture transient, not product evidence.
   - Controller check: exact four-file allowlist and staged checksum `465237b644aac1a2f2130c4a5c21908f78f2e9cb1245212966602be1baefc6e4`; no dependency, binary-chain, helper argument/environment/log, protocol, fd number, namespace, mount, privilege, publication, readiness, target, or later-finding change; no secret-bearing diagnostic or generated artifact.
   - The post-fork ownership defect is resolved and affects no other F-id. The current production inventory is 211 unsafe expressions across 26 files; the in-progress comment draft has 208 `SAFETY:` markers, and semantic adjacency still requires final correction and review.
+- [x] Stop the final rationale pass when review found the public-safe keygen API's non-reentrant NSS lookup defect; do not retain the unenforceable single-threading rationale. Evidence: partitioned review and focused independent confirmation on 2026-08-27.
+- [x] Obtain the required user decision for the third adjacent executable correction. Evidence: on 2026-08-27 the user selected **Fix reentrantly in F-032**.
+- [x] Obtain fresh independent approval of the exact keygen NSS scope, boundary, allowlist, non-goals, and validation above before implementation. Evidence: initial review required exact bounded hint/growth/allocation, `EINTR`, result-pointer, platform, documentation, and test semantics; re-review then required distinct negative/unrepresentable hint evidence and pre-side-effect assertions. The plan incorporated every correction and fresh final re-review passed on 2026-08-27; no commands were run.
+- [ ] Implement and independently review the keygen NSS correction, run its validation, commit it as a separate fix unit, and update the unsafe inventory.
 - [ ] Correct every rejected or overstated rationale from the partitioned review, resume the semantic per-site pass over every remaining in-scope unsafe expression, and add adequate adjacent rationale without further executable behavior changes.
 - [ ] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
 - [ ] Record F-032 completion and every cross-finding effect before promoting F-033.
