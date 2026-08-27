@@ -224,6 +224,57 @@ Exact scope:
 - Do not regroup calls, change scopes, refactor FFI, alter error handling, add a lint/gate, or modify executable tokens as part of the finding fix.
 - If semantic review finds a real pointer, ownership, privilege, descriptor, syscall, or error-handling defect, stop and record the evidence rather than hiding a behavior change inside F-032.
 
+Approved O-008 expansion after the mandated stop:
+
+- The first semantic pass stopped without edits after finding that `scm_rights.rs` allocates ancillary storage as `Vec<u8>` and then dereferences it as `cmsghdr` and copies through `RawFd`; Rust guarantees only byte alignment for that allocation, so the unsafe precondition cannot be justified.
+- Independent read-only confirmation classified this as undefined behavior under Rust's alignment guarantees.
+- On 2026-08-27 the user explicitly selected **Implement full O-008 now**, approving a broader executable correction before the remaining comment-only pass.
+- Replace ancillary storage with correctly sized and aligned `MaybeUninit<cmsghdr>` storage for send and receive.
+- Make ownership explicit: `send_fd` accepts borrowed descriptors, `recv_fd` returns `OwnedFd`, and production/test callers use `AsFd` rather than constructing a temporary owning `UnixStream` over a borrowed raw descriptor.
+- Create SCM_RIGHTS socketpairs with `SOCK_CLOEXEC` and receive with `MSG_CMSG_CLOEXEC` so both local and received descriptors acquire close-on-exec atomically.
+- Require exactly one received SCM_RIGHTS descriptor. Adopt every kernel-installed descriptor before validation completes so truncation, extra descriptors, an unexpected control message, or any later error drops all received ownership without leaks.
+- Thread the owned received descriptor through `underwrap-exec` relocation; do not convert it back to an ambiguously owned integer before the deliberate fixed-fd mapping.
+- Add structural alignment, socketpair/received CLOEXEC, exact-one success, extra/truncated rejection-with-closure, unexpected-control-plus-SCM_RIGHTS rejection-with-closure, and existing round-trip evidence.
+- Update the maintained security mechanism description without claiming formal proof, cross-platform support, or general descriptor noninterference.
+
+O-008 security boundary:
+
+- Protected asset: the scoped resource-channel capability and every process descriptor table that must not retain it across an unrelated exec or malformed receive.
+- Attacker or failure source: a malformed ancillary message, future concurrent exec, allocator alignment permitted by Rust but insufficient for C structures, or an ownership error on a rejection path.
+- Boundary direction: daemon-owned scoped channel → SCM_RIGHTS kernel transfer → setgid entry-stage owned descriptor → deliberate fd-20 handoff.
+- Invariant: control storage is correctly aligned; each installed descriptor has exactly one Rust owner immediately; all local and received descriptors are CLOEXEC until deliberate `dup2` to fd 20; malformed or multi-descriptor input fails closed and drops every received descriptor.
+
+O-008 source/test allowlist:
+
+- `crates/underwrap-protocol/src/scm_rights.rs`
+- `crates/underwrap-protocol/src/scm_rights/tests.rs`
+- `crates/underwrapd/src/wrapper_flow/channels.rs`
+- `crates/underwrap-exec/src/main.rs`
+- `crates/underwrap-exec/src/main/tests.rs`
+- `crates/integration-tests/src/tests/mod.rs`
+- `crates/integration-tests/src/tests/wrapper_writeback.rs`
+- `docs/security.md`
+- this plan for evidence
+
+O-008 non-goals:
+
+- no new dependency, alternate transport, protocol message, fixed-fd number, daemon authorization, channel multiplicity, timeout, retry, wrapper target, or backend behavior;
+- no underwrap-ns fd-20 authentication or lifecycle change and no general conversion of unrelated raw-fd code;
+- no O-020 generated gate, F-033 dependency split, or other Opportunity/finding.
+
+O-008 validation commands:
+
+- `cargo test -p underwrap-protocol scm_rights`
+- `cargo test -p underwrap-exec`
+- `cargo test -p underwrapd`
+- `cargo test --workspace --exclude integration-tests`
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets --workspace -- -D warnings`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- `nix flake check --all-systems --no-build`
+- `nix build .#checks.x86_64-linux.vm-test`
+
 Expected source allowlist:
 
 - `crates/underwrap-backend/src/{cli.rs,main.rs}`
@@ -261,7 +312,11 @@ Validation commands:
   - Controller check: exact four-file allowlist, 22 net lines removed, immediate errno capture, exact one-time ownership adoption, no dependency/protocol/wrapper-chain/security behavior change, no secret diagnostics, no generated artifact, and no O-008/O-020/F-033 scope.
   - Rejected SCM_RIGHTS safe-fd/CLOEXEC redesign as O-008; a generated unsafe gate as O-020; cross-binary pipe, signal/wait, NSS, mount, syscall, hardening, or CLOEXEC abstractions as marginal or boundary-coupling; first resource-channel relocation removal as behavior-changing; no-op scope/config cleanup as F-043; and comment edits as the F-032 fix rather than cleanup.
   - Discovery is exhausted. The cleanup reduces the current comment-fix inventory to 211 unsafe expressions across 27 production files and 95 `SAFETY:` markers; those lexical counts remain discovery evidence only.
-- [ ] Give every in-scope unsafe expression a semantic per-site review and an adequate adjacent rationale without changing executable behavior.
+- [x] Stop the initial semantic pass when it found the SCM_RIGHTS ancillary-buffer alignment defect; do not add misleading rationale. Evidence: implementation worker stopped with no file changes on 2026-08-27, and a fresh independent read-only review confirmed the undefined-behavior precondition.
+- [x] Obtain the required user decision for the adjacent Opportunity and executable security correction. Evidence: on 2026-08-27 the user selected **Implement full O-008 now**.
+- [x] Obtain fresh independent approval of the exact O-008 scope, boundary, allowlist, non-goals, and validation above before implementation. Evidence: review identified one missing mixed unexpected-control-plus-SCM_RIGHTS closure case; the plan added it, and fresh re-review passed the corrected alignment, ownership, atomic-CLOEXEC, exact-one, error-closure, caller, scope, and validation matrix on 2026-08-27; no commands were run.
+- [ ] Implement and independently review the complete O-008 correction, run its validation, commit it as a separate fix unit, and record any effect on the remaining unsafe inventory.
+- [ ] Resume the semantic per-site pass over every remaining in-scope unsafe expression and add adequate adjacent rationale without further executable behavior changes.
 - [ ] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
 - [ ] Record F-032 completion and every cross-finding effect before promoting F-033.
 
