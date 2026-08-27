@@ -102,6 +102,7 @@ Exact scope:
 - Add shared lexical name/path predicates in `nix/modules/underwrap.nix` and mirror them in `crates/underwrap-protocol/src/config.rs`.
 - Validate instance and wrapper names with D-201's exact token grammars.
 - Require canonical absolute lexical paths for `socket`, `ns_binary`, `debug_tool_target`, `target_runtime_dir_base`, wrapper `target`, optional `backend.ca_file`, optional `backend.client_identity_file`, and `env_set.{HOME,XDG_CONFIG_HOME,XDG_DATA_HOME,XDG_CACHE_HOME,XDG_STATE_HOME}`.
+- Apply the same shared canonical-absolute predicate to `underwrap-keygen` before either a config-derived or explicit client-identity output path reaches key generation or filesystem mutation.
 - Keep `files.paths` canonical target-home-relative paths and reject duplicates or ancestor/descendant overlap in that relative domain.
 - Admit each `access_paths` value only as a canonical absolute path, exact `~`, or canonical `~/...`; reject duplicates or ancestor/descendant overlap within the absolute domain and separately within the tilde domain.
 - Do not claim that daemon startup can compare an absolute `access_paths` value with a tilde value before caller-home resolution.
@@ -116,6 +117,8 @@ Expected source/test allowlist:
 - `nix/tests/frontend-security-assertions-eval.nix`
 - `crates/underwrap-protocol/src/config.rs`
 - `crates/underwrap-protocol/src/config/tests.rs`
+- `crates/underwrap-keygen/src/lib.rs`
+- `crates/underwrap-keygen/src/tests.rs`
 - `docs/configuration.md`
 - `docs/testing.md`
 - this plan for evidence
@@ -130,6 +133,7 @@ Non-goals:
 Validation commands:
 
 - `cargo test -p underwrap-protocol config`
+- `cargo test -p underwrap-keygen`
 - `cargo test --workspace`
 - `cargo fmt -- --check`
 - `cargo clippy --all-targets --workspace -- -D warnings`
@@ -150,7 +154,9 @@ Validation commands:
   - Direct validation: web build passed; 30 focused backend runtime API tests passed; backend all-target Clippy with warnings denied, rustfmt, and diff checks passed.
   - Generated `web/dist` was removed.
   - Controller scope/security check: exact three test-only paths, no production behavior or secret output, no F-id resolved; F-054 remains separate.
-- [ ] Mirror D-201 name and path grammar in Nix evaluation and runtime validation without narrowing resource names.
+- [x] Correct the F-031 scope after independent implementation review found that `underwrap-keygen` partially parses `BackendServiceConfig` without `DaemonConfig::validate()`. Evidence: direct source trace on 2026-08-27. This is a necessary direct client-identity-path consumer, not a product choice or material adjacent expansion. The allowlist adds only keygen's implementation and sibling tests, validation adds `cargo test -p underwrap-keygen`, and a fresh independent scope review is required before correction.
+- [x] Obtain fresh independent approval of the keygen scope correction. Evidence: direct read-only PASS on 2026-08-27; both config-derived and explicit output modes belong to the same approved path grammar, and sharing the protocol predicate is the smallest correction.
+- [ ] Mirror D-201 name and path grammar in Nix evaluation and every runtime consumer without narrowing resource names.
 - [ ] Add positive boundary cases and negative name/path/duplicate/overlap cases that fail at Nix evaluation and runtime validation before malformed trusted artifacts or service startup.
 - [ ] Run focused protocol and Nix evaluator checks, `cargo fmt -- --check`, relevant Clippy/workspace checks, all-system Nix evaluation, and `nix build .#checks.x86_64-linux.vm-test`.
 - [ ] Complete independent review, any separate correction pass, controller checks, coherent commits, and the F-031 evidence update in this plan.
