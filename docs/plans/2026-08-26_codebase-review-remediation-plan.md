@@ -56,6 +56,27 @@ Cleanup or intervening fixes may resolve, narrow, invalidate, or create a prereq
 
 The plan becomes misleading if evidence is checked before validation passes or if cross-finding effects are not recorded immediately.
 
+## Current-tree revalidation survey
+
+On 2026-08-27 the user directed the controller to adapt this plan to the current findings and continue through all of them. This confirms continued one-finding-at-a-time execution under D-174; it does not waive any stop condition or the mandatory medium → low transition gate.
+
+Direct current-tree inspection at `0b7d971a0808aa516130377e476bc12f69b6cf45`, four independent domain passes, and a separate challenge review found no remaining finding that can be closed without work:
+
+- F-033, F-034, F-036, F-037, F-039, F-041, F-042, F-044, F-046 through F-048, F-050, F-052, F-053, and F-055 through F-057 persist substantially as reported.
+- F-032, F-035, F-038, F-043, F-049, and F-054 remain valid with narrower current evidence because intervening work addressed part of each finding.
+- F-040, F-045, F-051, and F-058 require a current recommendation rather than mechanical execution of stale report wording.
+
+The required later adaptations are:
+
+- F-040 describes the in-memory store → private host-publication channel; it must not restore the superseded tmpfs state pathname.
+- F-045 records that strict host validation and commit-after-ACK prevent malformed or dangling graphs from committing, while `SetAlias` still lacks early `InvalidArgs` validation and an unexpected non-root collection path can be interpreted as alias removal and persist that unintended valid mutation.
+- F-051 retains valid plan/history navigation and removes only remaining stale temporal or current-state wording.
+- F-058 separates current support-matrix documentation and compatible patch/minor refreshes from major frontend/tool upgrades; major upgrades require the applicable D-174 decision before implementation.
+
+Direct executable probes confirmed that the tablet Playwright project still discovers zero tests and that strict denied-warning Rustdoc still fails with invalid HTML, a broken `argv[0]` link, private-module links, and no aggregate gate. Registry comparison also confirms that some F-058 packages are current while Vite, Vitest, and TypeScript remain behind current majors; latest-version numbers alone do not establish compatibility.
+
+No low finding is promoted by this survey. F-038 remains blocked until F-032 through F-037 are complete or explicitly closed and the user approves the medium → low transition with comment entry enabled.
+
 ## Plan
 
 ### Iteration protocol
@@ -179,17 +200,69 @@ Validation commands:
   - Controller check: exact approved scope, no dependency or wrapper-chain change, no weakened boundary, no secret-bearing diagnostics, no generated artifact, and no unrelated diff.
   - F-031 is resolved; F-030 evidence remains intact, and F-032 through F-058 remain open.
 
-### Next iteration — F-032 unsafe invariant rationale
+### Current iteration — F-032 unsafe invariant rationale
 
-F-032 has not yet been revalidated against the current tree.
+The report's lexical inventory of 148 production unsafe blocks and 20 `SAFETY` markers is obsolete after the privileged lifecycle work completed for F-006 through F-031.
 
-Do not begin cleanup or implementation until its current evidence, exact scope, security boundary, allowlist, validation, and fresh independent scope review replace the queue row below.
+A direct current scan excluding integration-test code, sibling test modules, and test support finds 220 `unsafe { ... }` expressions across 28 production files and 104 `SAFETY:` markers. The counts are only discovery evidence: one comment can cover multiple expressions, and only semantic per-site inspection can establish whether pointer, lifetime, initialization, descriptor-ownership, syscall, and privilege invariants are stated correctly.
+
+Current source confirms that many newer lifecycle blocks carry useful rationale while older sites such as `underwrap-protocol/src/scm_rights.rs` still do not. The finding therefore remains valid with updated scope.
+
+Security boundary:
+
+- Protected assets: brokered resource confidentiality and integrity, authenticated fd 20/fd 3 ownership, target identity and privilege transitions, process lifecycle, runtime client identity, and backend state touched by syscall/FFI code.
+- Attacker or failure source: the untrusted local caller, untrusted target protocol input, malformed descriptors or frames, and kernel/syscall failure interacting with an incorrectly maintained unsafe precondition.
+- Boundary direction: validated Rust state and owned descriptors/buffers → libc/kernel FFI → privileged or secret-bearing process state.
+- Preserved invariant: this iteration changes no executable behavior; every production unsafe expression has an adjacent rationale sufficient for a reviewer to verify pointer validity, initialization, lifetime, alignment where applicable, raw-fd ownership, syscall arguments, and return-value interpretation. Discovery of an actual defect stops this comment-only iteration for separate scope.
+
+Exact scope:
+
+- Semantically inspect every production `unsafe { ... }` expression under `crates/*/src`.
+- Exclude `crates/integration-tests`, sibling `tests.rs`/`tests/` modules, and `test_support.rs`; test-only unsafe code is not evidence for the production FFI boundary in F-032.
+- Preserve every already adequate rationale and add concise immediately adjacent `// SAFETY:` comments where the invariant is absent or incomplete.
+- Keep comments specific to the operation; do not use generic statements such as “the call is safe.”
+- Do not regroup calls, change scopes, refactor FFI, alter error handling, add a lint/gate, or modify executable tokens as part of the finding fix.
+- If semantic review finds a real pointer, ownership, privilege, descriptor, syscall, or error-handling defect, stop and record the evidence rather than hiding a behavior change inside F-032.
+
+Expected source allowlist:
+
+- `crates/underwrap-backend/src/{cli.rs,main.rs}`
+- `crates/underwrap-debug-tool/src/main.rs`
+- `crates/underwrap-exec/src/{main.rs,supervision.rs}`
+- `crates/underwrap-keygen/src/lib.rs`
+- `crates/underwrap-ns/src/{boundary.rs,caps.rs,directory_credential.rs,exec_gate.rs,handoff.rs,idmap.rs,libsecret.rs,main.rs,mounts.rs,publication.rs,resource_channel.rs,supervision.rs,target_status.rs,target_uid.rs,writeback.rs}`
+- `crates/underwrap-protocol/src/scm_rights.rs`
+- `crates/underwrap-secretsd/src/{main.rs,publication.rs}`
+- `crates/underwrapd/src/{main.rs,peer_auth.rs,startup.rs,wrapper_flow/channels.rs}`
+- this plan for evidence
+
+Non-goals:
+
+- no production behavior, FFI shape, dependency, protocol, wire format, error, log, target, privilege, descriptor, or wrapper-chain change;
+- no test-only unsafe annotation, generated gate, lint configuration, formal proof, or claim that comments replace tests;
+- no O-008 SCM_RIGHTS redesign, O-020 documentation gate, F-033 dependency work, or later finding.
+
+Validation commands:
+
+- `cargo test --workspace --exclude integration-tests`
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets --workspace -- -D warnings`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- `nix flake check --all-systems --no-build`
+- `nix build .#checks.x86_64-linux.vm-test`
+- direct controller/reviewer inspection that the diff adds only accurate non-doc comments and plan evidence
+
+- [x] Revalidate F-032 and replace the report's stale lexical counts with current direct evidence. Evidence: direct scan and source inspection plus four independent domain reviews and one challenge review on 2026-08-27; all agree the finding persists with narrower current evidence.
+- [x] Obtain fresh independent approval of the exact F-032 scope, boundary, allowlist, non-goals, and validation above. Evidence: read-only PASS on 2026-08-27 independently reproduced the exact per-crate totals, 220-expression/28-file/104-marker inventory and allowlist, confirmed comment-only sufficiency, and found no absorbed Opportunity, later finding, or bypassed D-174/gate condition; no tests or builds were run.
+- [ ] Complete finding-local and repository-wide cleanup discovery; record every accepted or rejected candidate and independently process each accepted cleanup before the comment-only fix.
+- [ ] Give every in-scope unsafe expression a semantic per-site review and an adequate adjacent rationale without changing executable behavior.
+- [ ] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
+- [ ] Record F-032 completion and every cross-finding effect before promoting F-033.
 
 ### Remaining medium queue
 
 Promote one row at a time by replacing it with exact iteration tasks after revalidation.
-
-- [ ] F-032 — add explicit invariant rationale for security-critical unsafe blocks.
 - [ ] F-033 — reduce privileged namespace dependency breadth.
 - [ ] F-034 — document offline administrator lockout recovery.
 - [ ] F-035 — correct resource-name versus resource-id vocabulary.
