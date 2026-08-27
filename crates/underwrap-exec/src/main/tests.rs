@@ -99,46 +99,56 @@ target: /usr/bin/gh
 }
 
 #[test]
-fn relocate_resource_channel_fd_preserves_socket_and_closes_source() {
+fn relocate_resource_channel_fd_preserves_owned_socket_and_closes_source() {
     let mut fds = [-1; 2];
+    // SAFETY: fds has room for both results, which are adopted exactly once below.
     assert_eq!(
-        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) },
+        unsafe {
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                0,
+                fds.as_mut_ptr(),
+            )
+        },
         0
     );
-    let source = fds[0];
-    let peer = fds[1];
+    // SAFETY: successful socketpair returned a newly owned descriptor.
+    let source = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    // SAFETY: the peer descriptor is distinct and likewise newly owned.
+    let peer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    let source_raw = source.as_raw_fd();
 
     let relocated = relocate_resource_channel_fd(source).unwrap();
-    assert!(relocated >= 21);
-    assert_eq!(unsafe { libc::fcntl(source, libc::F_GETFD) }, -1);
+    assert!(relocated.as_raw_fd() >= supervision::RELOCATED_FD_MIN);
+    // SAFETY: source_raw is only inspected to prove the moved source was closed.
+    assert_eq!(unsafe { libc::fcntl(source_raw, libc::F_GETFD) }, -1);
     assert_eq!(
         std::io::Error::last_os_error().raw_os_error(),
         Some(libc::EBADF)
     );
-    let flags = unsafe { libc::fcntl(relocated, libc::F_GETFD) };
+    // SAFETY: relocated remains open while F_GETFD reads its descriptor flags.
+    let flags = unsafe { libc::fcntl(relocated.as_raw_fd(), libc::F_GETFD) };
     assert_ne!(flags, -1);
     assert_ne!(flags & libc::FD_CLOEXEC, 0);
 
     let byte = [0x5a_u8];
+    // SAFETY: peer is open and byte is readable for one byte.
     assert_eq!(
-        unsafe { libc::write(peer, byte.as_ptr().cast(), byte.len()) },
+        unsafe { libc::write(peer.as_raw_fd(), byte.as_ptr().cast(), byte.len()) },
         1
     );
     let mut received = [0_u8; 1];
+    // SAFETY: relocated is open and received is writable for one byte.
     assert_eq!(
-        unsafe { libc::read(relocated, received.as_mut_ptr().cast(), received.len()) },
+        unsafe {
+            libc::read(
+                relocated.as_raw_fd(),
+                received.as_mut_ptr().cast(),
+                received.len(),
+            )
+        },
         1
     );
     assert_eq!(received, byte);
-
-    unsafe {
-        libc::close(relocated);
-        libc::close(peer);
-    }
-}
-
-#[test]
-fn relocate_resource_channel_fd_rejects_invalid_source() {
-    let err = relocate_resource_channel_fd(-1).unwrap_err().to_string();
-    assert!(err.contains("relocating wrapper-resource channel"), "{err}");
 }

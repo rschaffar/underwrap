@@ -193,10 +193,23 @@ the caller's UID or root.
 
 ### 4. Secret-bearing channels are authenticated before use
 
-The local resource socketpair is created by `underwrapd` only after wrapper-peer
-authentication, wrapper validation, and backend authorization. Linux records the
-creator's credentials on an `AF_UNIX` socketpair and preserves them when an
-endpoint crosses `SCM_RIGHTS`, `dup2`, fork, and exec.
+The local resource socketpair is created by `underwrapd` with `SOCK_CLOEXEC`
+only after wrapper-peer authentication, wrapper validation, and backend
+authorization.
+Linux records the creator's credentials on an `AF_UNIX` socketpair and preserves
+them when an endpoint crosses `SCM_RIGHTS`, `dup2`, fork, and exec.
+
+The daemon lends the wrapper endpoint to `sendmsg` without transferring its
+local ownership.
+`underwrap-exec` receives into `cmsghdr`-aligned control storage with
+`MSG_CMSG_CLOEXEC`, immediately adopts every descriptor installed through
+`SCM_RIGHTS`, and accepts only one rights message containing exactly one
+descriptor and no other control message.
+Truncated, extra, malformed, or mixed control data drops every adopted
+descriptor before rejection.
+The received channel remains owned and close-on-exec through
+`F_DUPFD_CLOEXEC` relocation; only the deliberate `dup2` mapping to fixed fd 20
+clears close-on-exec for the namespace-stage handoff.
 
 `underwrap-ns` is a system-wide capability wrapper. Its first trust decision is
 therefore to require fixed fd 20 to be an `AF_UNIX` `SOCK_STREAM` endpoint whose

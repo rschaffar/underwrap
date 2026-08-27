@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::net::Shutdown;
-use std::os::fd::FromRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
@@ -215,9 +215,8 @@ fn checkout_resource_sync(
     let response: WrapperResponse = read_frame_sync(&mut control).unwrap();
     assert!(matches!(response, WrapperResponse::ReadOk { .. }));
 
-    let fd = scm_rights::recv_fd(&control).unwrap();
-    // SAFETY: SCM_RIGHTS transferred one newly owned descriptor to this process.
-    let mut resource = unsafe { StdUnixStream::from_raw_fd(fd) };
+    let fd = scm_rights::recv_fd(control.as_fd()).unwrap();
+    let mut resource = StdUnixStream::from(fd);
     write_wrapper_resource_frame_sync(&mut resource, &WrapperResourceRequest::Checkout).unwrap();
     let checkout: WrapperResourceResponse =
         read_wrapper_resource_frame_sync(&mut resource).unwrap();

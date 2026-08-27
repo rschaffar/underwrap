@@ -23,7 +23,7 @@
 //!   the admin PUT contract.
 
 use std::collections::{BTreeMap, HashMap};
-use std::os::unix::io::FromRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 
@@ -66,14 +66,11 @@ fn open_run(socket_path: &Path, wrapper_name: &str) -> StdUnixStream {
         other => panic!("expected ReadOk, got {other:?}"),
     };
 
-    let fd =
-        scm_rights::recv_fd(&stream).unwrap_or_else(|e| panic!("recv_fd for '{resource_id}': {e}"));
+    let fd = scm_rights::recv_fd(stream.as_fd())
+        .unwrap_or_else(|e| panic!("recv_fd for '{resource_id}': {e}"));
     stream.shutdown(std::net::Shutdown::Both).unwrap();
     drop(stream);
-    // SAFETY: the fd was just received via SCM_RIGHTS and is owned
-    // by this process; wrapping it in a UnixStream gives us a
-    // standard owned handle for the channel.
-    unsafe { StdUnixStream::from_raw_fd(fd) }
+    StdUnixStream::from(fd)
 }
 
 fn send_checkout(stream: &mut StdUnixStream) -> (Vec<u8>, bool) {

@@ -25,16 +25,13 @@ pub(super) async fn establish_scoped_channels(
 }
 
 async fn setup_wrapper_resource_channel(stream: &UnixStream, ctx: ChannelContext) -> Result<()> {
-    use std::os::unix::io::{AsRawFd, FromRawFd};
+    use std::os::fd::AsFd;
 
     let (daemon_end, wrapper_end) =
         underwrap_protocol::scm_rights::create_socketpair().context("creating socketpair")?;
 
-    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(stream.as_raw_fd()) };
-    let wrapper_fd = wrapper_end.as_raw_fd();
-    let send_result = underwrap_protocol::scm_rights::send_fd(&std_stream, wrapper_fd);
-    std::mem::forget(std_stream);
-    send_result.context("sending wrapper-resource channel fd fd")?;
+    underwrap_protocol::scm_rights::send_fd(stream.as_fd(), wrapper_end.as_fd())
+        .context("sending wrapper-resource channel fd")?;
     drop(wrapper_end);
 
     daemon_end.set_nonblocking(true)?;

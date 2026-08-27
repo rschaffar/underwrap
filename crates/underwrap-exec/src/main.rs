@@ -34,7 +34,7 @@
 mod supervision;
 
 use anyhow::{Context, Result, bail};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 use underwrap_protocol::config::AccessMode;
@@ -88,7 +88,7 @@ struct ReceivedResourceBinding {
     access: AccessMode,
     libsecret: bool,
     files_target_paths: Vec<String>,
-    channel_fd: i32,
+    channel_fd: OwnedFd,
 }
 
 fn main() -> Result<()> {
@@ -306,7 +306,7 @@ fn request_secret(
         }
     };
 
-    let fd = underwrap_protocol::scm_rights::recv_fd(&stream).with_context(|| {
+    let fd = underwrap_protocol::scm_rights::recv_fd(stream.as_fd()).with_context(|| {
         format!("failed to receive wrapper-resource channel fd for '{resource_id}'")
     })?;
 
@@ -333,20 +333,21 @@ fn request_secret(
 /// from letting the first `dup2` clobber the channel. `F_DUPFD_CLOEXEC` keeps the
 /// temporary copy out of an accidental exec; the deliberate `dup2` to fd 20
 /// clears close-on-exec on the fixed destination.
-fn relocate_resource_channel_fd(fd: i32) -> Result<i32> {
+fn relocate_resource_channel_fd(fd: OwnedFd) -> Result<OwnedFd> {
+    let source = fd.as_raw_fd();
+    // SAFETY: source is held open by fd; F_DUPFD_CLOEXEC creates a distinct
+    // descriptor at or above the reserved handoff slots without borrowing memory.
     let relocated =
-        unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, supervision::RELOCATED_FD_MIN) };
+        unsafe { libc::fcntl(source, libc::F_DUPFD_CLOEXEC, supervision::RELOCATED_FD_MIN) };
     if relocated < 0 {
         bail!(
-            "relocating wrapper-resource channel fd {fd}: {}",
+            "relocating wrapper-resource channel fd {source}: {}",
             std::io::Error::last_os_error()
         );
     }
-    if unsafe { libc::close(fd) } != 0 {
-        let err = std::io::Error::last_os_error();
-        unsafe { libc::close(relocated) };
-        bail!("closing original wrapper-resource channel fd {fd}: {err}");
-    }
+    // SAFETY: successful F_DUPFD_CLOEXEC returned one new uniquely owned fd.
+    let relocated = unsafe { OwnedFd::from_raw_fd(relocated) };
+    drop(fd);
     Ok(relocated)
 }
 
@@ -375,10 +376,8 @@ fn exec_via_ns(
         );
     }
 
-    let mut resource_binding = read.resource_binding;
-    resource_binding.channel_fd = relocate_resource_channel_fd(resource_binding.channel_fd)?;
-    // SAFETY: relocate_resource_channel_fd returned a new uniquely owned fd.
-    let resource_source = unsafe { OwnedFd::from_raw_fd(resource_binding.channel_fd) };
+    let resource_binding = read.resource_binding;
+    let resource_source = relocate_resource_channel_fd(resource_binding.channel_fd)?;
 
     let mut bundle_fds = [-1; 2];
     // SAFETY: the array has room for both pipe2 results; successful descriptors
