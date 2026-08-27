@@ -675,8 +675,13 @@ followed by its matching private key. The daemon config names it only through
 that path from `--instance-config`, or accepts the sole explicit output flag
 `--client-identity-out`.
 
+Before key generation, config-derived daemon ownership is resolved with reentrant `getpwnam_r` and `getgrnam_r` calls whose output structures and backing buffers remain caller-owned through the UID/GID copy.
+The `_SC_GETPW_R_SIZE_MAX` and `_SC_GETGR_R_SIZE_MAX` values are hints: unavailable, zero, or negative values use a 16-KiB buffer, while an unrepresentable or greater-than-1-MiB value aborts.
+Only `ERANGE` grows the buffer by checked doubling up to 1 MiB; allocation failure, exhausted growth, `EINTR`, another NSS error, invalid input, or an unexpected result pointer aborts before key generation or identity-file mutation.
+Only an ordinary not-found result selects the no-local-daemon fallback.
+
 Keygen prepares exactly one mode-`0400` temporary file in the identity's parent
-directory. The daemon account selected from instance config takes ownership
+directory. The resolved daemon account selected from instance config takes ownership
 precedence; otherwise keygen preserves an existing identity's owner, then falls
 back to the invoking process identity. It writes the complete combined PEM,
 applies the selected UID/GID and exact mode, syncs the file, and then uses one

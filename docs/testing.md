@@ -236,6 +236,11 @@ admin/files mutations with byte-identical prior storage, host-only
 receiver/secretsd-only publisher ownership, and plaintext/exact-base64 log
 hygiene.
 
+Keygen NSS tests inject unavailable, zero, distinct negative, unrepresentable, and oversized buffer hints; exact checked growth and exact-maximum `ERANGE`; arithmetic and initial/growth allocation failures; `EINTR` and another non-`ERANGE` error; not-found, success, and a foreign result pointer.
+They prove that only `ERANGE` grows, non-`ERANGE` errors are not retried, operational failures precede key generation and identity-file mutation, and daemon-owner success/not-found behavior retains its ordering.
+Real NSS probes cover root and a missing account.
+Synchronized calls through public `Cli::resolve_targets` are a concurrent public-API smoke/stability check: they verify stable results when calls start concurrently, but do not prove overlap inside NSS or the absence of races.
+
 The keygen identity-installation tests exercise a five-phase precommit failure
 matrix: complete temporary-file write, owner application, exact mode application,
 file sync, and the persist boundary. Every injected failure must preserve the old

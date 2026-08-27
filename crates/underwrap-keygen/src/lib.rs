@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use std::ffi::{CStr, CString};
 use std::io::Write;
+use std::mem::MaybeUninit;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use underwrap_protocol::config::{BackendServiceConfig, is_canonical_absolute_path};
@@ -42,58 +44,7 @@ pub struct ResolvedTargets {
 
 impl Cli {
     pub fn resolve_targets(&self) -> Result<ResolvedTargets> {
-        if let Some(path) = self.instance_config.as_deref() {
-            let yaml = std::fs::read_to_string(path)
-                .with_context(|| format!("reading instance config '{}'", path.display()))?;
-            // keygen only needs the backend credential paths, so it
-            // pulls out just the `backend` section rather than the full
-            // `DaemonConfig` (whose daemon-only fields are irrelevant
-            // here and would otherwise force every keygen config to
-            // carry them).
-            let doc: serde_yaml::Value = serde_yaml::from_str(&yaml)
-                .with_context(|| format!("parsing instance config '{}'", path.display()))?;
-            let backend_value = doc.get("backend").cloned().with_context(|| {
-                format!(
-                    "instance config '{}' has no backend section",
-                    path.display()
-                )
-            })?;
-            let backend: BackendServiceConfig = serde_yaml::from_value(backend_value)
-                .with_context(|| {
-                    format!(
-                        "parsing backend section of instance config '{}'",
-                        path.display()
-                    )
-                })?;
-            let client_identity_out = backend.client_identity_file.with_context(|| {
-                format!(
-                    "instance config '{}' has no backend.client_identity_file",
-                    path.display()
-                )
-            })?;
-            // The instance name is the config file's stem
-            // (`/etc/underwrap/daemon/work.yaml` → `work`). The
-            // NixOS module names the daemon user `underwrap-<instance>`
-            // by the same convention, so this preserves chown without
-            // needing a redundant field inside the config.
-            let credential_owner = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(derive_instance_owner);
-            Ok(ResolvedTargets {
-                client_identity_out,
-                credential_owner,
-            })
-        } else {
-            let client_identity_out = self
-                .client_identity_out
-                .clone()
-                .context("either --instance-config or --client-identity-out is required")?;
-            Ok(ResolvedTargets {
-                client_identity_out,
-                credential_owner: None,
-            })
-        }
+        resolve_targets_with(self, &mut SystemAccountResolver)
     }
 }
 
@@ -101,45 +52,275 @@ impl Cli {
 /// `underwrap-<instance>` naming convention. Returns `None` if either the
 /// instance name is empty or the user/group doesn't exist on this host
 /// (e.g., generating credentials on a workstation that doesn't run the daemon).
-fn derive_instance_owner(instance: &str) -> Option<(u32, u32)> {
+/// Operational NSS failures are returned rather than treated as not-found.
+#[cfg(test)]
+fn derive_instance_owner(instance: &str) -> Result<Option<(u32, u32)>> {
+    derive_instance_owner_with(instance, &mut SystemAccountResolver)
+}
+
+const NSS_BUFFER_FALLBACK: usize = 16 * 1024;
+const NSS_BUFFER_MAX: usize = 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NssBufferHint {
+    Unavailable,
+    Value(i128),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NssBufferLimits {
+    fallback: usize,
+    max: usize,
+}
+
+const NSS_BUFFER_LIMITS: NssBufferLimits = NssBufferLimits {
+    fallback: NSS_BUFFER_FALLBACK,
+    max: NSS_BUFFER_MAX,
+};
+
+fn sysconf_buffer_hint(key: libc::c_int) -> NssBufferHint {
+    // SAFETY: `key` is one of the supported NSS buffer-size constants, and
+    // sysconf returns a scalar hint without writing through any pointer.
+    let value = unsafe { libc::sysconf(key) };
+    if value == -1 {
+        NssBufferHint::Unavailable
+    } else {
+        NssBufferHint::Value(i128::from(value))
+    }
+}
+
+fn initial_nss_buffer_size(
+    account_kind: &str,
+    hint: NssBufferHint,
+    limits: NssBufferLimits,
+) -> Result<usize> {
+    let hinted = match hint {
+        NssBufferHint::Unavailable | NssBufferHint::Value(..=0) => limits.fallback,
+        NssBufferHint::Value(value) => usize::try_from(value).with_context(|| {
+            format!("{account_kind} NSS buffer-size hint {value} is not representable")
+        })?,
+    };
+    anyhow::ensure!(
+        hinted <= limits.max,
+        "{account_kind} NSS buffer-size hint {hinted} exceeds the {}-byte maximum",
+        limits.max
+    );
+    Ok(hinted)
+}
+
+fn reserve_nss_buffer(buffer: &mut Vec<MaybeUninit<u8>>, additional: usize) -> Result<()> {
+    buffer
+        .try_reserve_exact(additional)
+        .context("allocating caller-owned NSS lookup buffer")
+}
+
+fn resize_nss_buffer(
+    buffer: &mut Vec<MaybeUninit<u8>>,
+    target_len: usize,
+    reserve: &mut impl FnMut(&mut Vec<MaybeUninit<u8>>, usize) -> Result<()>,
+) -> Result<()> {
+    let additional = target_len
+        .checked_sub(buffer.len())
+        .context("NSS buffer target length is smaller than its current length")?;
+    reserve(buffer, additional)?;
+    buffer.resize_with(target_len, MaybeUninit::uninit);
+    Ok(())
+}
+
+fn next_nss_buffer_size(current: usize, max: usize) -> Result<usize> {
+    anyhow::ensure!(
+        current < max,
+        "NSS lookup exhausted the {max}-byte buffer maximum"
+    );
+    let doubled = current
+        .checked_mul(2)
+        .context("NSS buffer growth arithmetic overflow")?;
+    Ok(doubled.min(max))
+}
+
+fn lookup_account<T>(
+    name: &str,
+    account_kind: &str,
+    hint: NssBufferHint,
+    limits: NssBufferLimits,
+    mut reserve: impl FnMut(&mut Vec<MaybeUninit<u8>>, usize) -> Result<()>,
+    mut lookup: impl FnMut(&CStr, *mut T, *mut libc::c_char, usize, *mut *mut T) -> libc::c_int,
+    id: impl FnOnce(&T) -> u32,
+) -> Result<Option<u32>> {
+    let cname = CString::new(name)
+        .with_context(|| format!("{account_kind} NSS lookup name contains an interior NUL"))?;
+    let initial = initial_nss_buffer_size(account_kind, hint, limits)?;
+    let mut buffer = Vec::new();
+    resize_nss_buffer(&mut buffer, initial, &mut reserve)?;
+    let mut output = MaybeUninit::<T>::uninit();
+
+    loop {
+        let mut result = std::ptr::null_mut();
+        let status = lookup(
+            &cname,
+            output.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        );
+        if status == libc::ERANGE {
+            let next = next_nss_buffer_size(buffer.len(), limits.max).with_context(|| {
+                format!("resolving {account_kind} account {name:?} through NSS")
+            })?;
+            resize_nss_buffer(&mut buffer, next, &mut reserve).with_context(|| {
+                format!("growing {account_kind} NSS buffer for account {name:?}")
+            })?;
+            continue;
+        }
+        if status != 0 {
+            return Err(std::io::Error::from_raw_os_error(status))
+                .with_context(|| format!("resolving {account_kind} account {name:?} through NSS"));
+        }
+        if result.is_null() {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            result == output.as_mut_ptr(),
+            "{account_kind} NSS lookup for {name:?} returned an unexpected result pointer"
+        );
+        // SAFETY: a zero return with the exact caller-provided non-null result
+        // pointer is the getpwnam_r/getgrnam_r contract that initializes `output`.
+        let resolved_id = id(unsafe { output.assume_init_ref() });
+        return Ok(Some(resolved_id));
+    }
+}
+
+fn lookup_uid(name: &str) -> Result<Option<u32>> {
+    lookup_account(
+        name,
+        "user",
+        sysconf_buffer_hint(libc::_SC_GETPW_R_SIZE_MAX),
+        NSS_BUFFER_LIMITS,
+        reserve_nss_buffer,
+        |cname, output, buffer, buffer_len, result| {
+            // SAFETY: `cname` is NUL-terminated; `output`, `buffer`, and `result`
+            // are caller-owned, valid for their stated sizes, and remain live
+            // until the return code and exact result pointer are checked.
+            unsafe { libc::getpwnam_r(cname.as_ptr(), output, buffer, buffer_len, result) }
+        },
+        |passwd: &libc::passwd| passwd.pw_uid,
+    )
+}
+
+fn lookup_gid(name: &str) -> Result<Option<u32>> {
+    lookup_account(
+        name,
+        "group",
+        sysconf_buffer_hint(libc::_SC_GETGR_R_SIZE_MAX),
+        NSS_BUFFER_LIMITS,
+        reserve_nss_buffer,
+        |cname, output, buffer, buffer_len, result| {
+            // SAFETY: `cname` is NUL-terminated; `output`, `buffer`, and `result`
+            // are caller-owned, valid for their stated sizes, and remain live
+            // until the return code and exact result pointer are checked.
+            unsafe { libc::getgrnam_r(cname.as_ptr(), output, buffer, buffer_len, result) }
+        },
+        |group: &libc::group| group.gr_gid,
+    )
+}
+
+trait AccountResolver {
+    fn lookup_uid(&mut self, name: &str) -> Result<Option<u32>>;
+    fn lookup_gid(&mut self, name: &str) -> Result<Option<u32>>;
+}
+
+struct SystemAccountResolver;
+
+impl AccountResolver for SystemAccountResolver {
+    fn lookup_uid(&mut self, name: &str) -> Result<Option<u32>> {
+        lookup_uid(name)
+    }
+
+    fn lookup_gid(&mut self, name: &str) -> Result<Option<u32>> {
+        lookup_gid(name)
+    }
+}
+
+fn derive_instance_owner_with(
+    instance: &str,
+    resolver: &mut impl AccountResolver,
+) -> Result<Option<(u32, u32)>> {
     let inst = instance.trim();
     if inst.is_empty() {
-        return None;
+        return Ok(None);
     }
     let name = format!("underwrap-{inst}");
-    let uid = lookup_uid(&name)?;
-    let gid = lookup_gid(&name)?;
-    Some((uid, gid))
+    let Some(uid) = resolver.lookup_uid(&name)? else {
+        return Ok(None);
+    };
+    let Some(gid) = resolver.lookup_gid(&name)? else {
+        return Ok(None);
+    };
+    Ok(Some((uid, gid)))
 }
 
-fn lookup_uid(name: &str) -> Option<u32> {
-    let cname = std::ffi::CString::new(name).ok()?;
-    // getpwnam is not reentrant but the helper is single-threaded.
-    let pw = unsafe { libc::getpwnam(cname.as_ptr()) };
-    if pw.is_null() {
-        None
+fn resolve_targets_with(cli: &Cli, resolver: &mut impl AccountResolver) -> Result<ResolvedTargets> {
+    if let Some(path) = cli.instance_config.as_deref() {
+        let yaml = std::fs::read_to_string(path)
+            .with_context(|| format!("reading instance config '{}'", path.display()))?;
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml)
+            .with_context(|| format!("parsing instance config '{}'", path.display()))?;
+        let backend_value = doc.get("backend").cloned().with_context(|| {
+            format!(
+                "instance config '{}' has no backend section",
+                path.display()
+            )
+        })?;
+        let backend: BackendServiceConfig =
+            serde_yaml::from_value(backend_value).with_context(|| {
+                format!(
+                    "parsing backend section of instance config '{}'",
+                    path.display()
+                )
+            })?;
+        let client_identity_out = backend.client_identity_file.with_context(|| {
+            format!(
+                "instance config '{}' has no backend.client_identity_file",
+                path.display()
+            )
+        })?;
+        let credential_owner = match path.file_stem().and_then(|stem| stem.to_str()) {
+            Some(instance) => derive_instance_owner_with(instance, resolver)?,
+            None => None,
+        };
+        Ok(ResolvedTargets {
+            client_identity_out,
+            credential_owner,
+        })
     } else {
-        Some(unsafe { (*pw).pw_uid })
-    }
-}
-
-fn lookup_gid(name: &str) -> Option<u32> {
-    let cname = std::ffi::CString::new(name).ok()?;
-    let gr = unsafe { libc::getgrnam(cname.as_ptr()) };
-    if gr.is_null() {
-        None
-    } else {
-        Some(unsafe { (*gr).gr_gid })
+        let client_identity_out = cli
+            .client_identity_out
+            .clone()
+            .context("either --instance-config or --client-identity-out is required")?;
+        Ok(ResolvedTargets {
+            client_identity_out,
+            credential_owner: None,
+        })
     }
 }
 
 pub fn run(cli: Cli) -> Result<()> {
     harden_process()?;
-    let targets = cli.resolve_targets()?;
+    run_after_hardening(cli, &mut SystemAccountResolver, || {
+        generate_key_and_self_signed_cert()
+    })
+}
+
+fn run_after_hardening(
+    cli: Cli,
+    resolver: &mut impl AccountResolver,
+    generate: impl FnOnce() -> Result<(Zeroizing<Vec<u8>>, String)>,
+) -> Result<()> {
+    let targets = resolve_targets_with(&cli, resolver)?;
     validate_output_path(&targets.client_identity_out)?;
 
     eprintln!("underwrap-keygen: generating client key and self-signed cert");
-    let (identity_pem, cert_pem) = generate_key_and_self_signed_cert()?;
+    let (identity_pem, cert_pem) = generate()?;
 
     eprintln!("underwrap-keygen: installing client identity atomically");
     install_identity(
