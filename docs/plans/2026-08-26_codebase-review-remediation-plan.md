@@ -76,7 +76,7 @@ Routine per-finding approval and completion prompts are not required under D-174
 
 After F-031 through F-037 are resolved or explicitly closed, the medium → low transition requires a focused `ask_user` decision with comment entry enabled before F-038 starts.
 
-### Current iteration — F-031 strict privileged configuration grammar
+### Completed iteration — F-031 strict privileged configuration grammar
 
 D-200 directly reproduced late failure for relative `backend.caFile`, relative `accessPaths`, and tab-bearing names.
 
@@ -160,10 +160,30 @@ Validation commands:
 - [x] Obtain fresh independent approval of the keygen scope correction. Evidence: direct read-only PASS on 2026-08-27; both config-derived and explicit output modes belong to the same approved path grammar, and sharing the protocol predicate is the smallest correction.
 - [x] Correct validation scope after the unsupported raw `cargo test --workspace` invocation exposed five stale integration assertions for the deliberately changed early validation messages. Evidence: direct run on 2026-08-27 produced 95 passes and 10 failures: four expected missing runner-provided binaries, five exact stale message checks in `directory_and_status.rs`, and one connection refusal after fixture failures. Replace the unsupported aggregate invocation with non-integration workspace tests plus the repository integration runner, and add only `directory_and_status.rs` to align those directly affected assertions. This is test evidence for F-031, not adjacent product scope.
 - [x] Obtain fresh independent approval of the integration-test scope correction. Evidence: direct read-only PASS on 2026-08-27; exactly five assertions are stale, the runner is the supported complete integration command, and no harness or product expansion is justified.
-- [ ] Mirror D-201 name and path grammar in Nix evaluation and every runtime consumer without narrowing resource names.
-- [ ] Add positive boundary cases and negative name/path/duplicate/overlap cases that fail at Nix evaluation and runtime validation before malformed trusted artifacts or service startup.
-- [ ] Run focused protocol and Nix evaluator checks, `cargo fmt -- --check`, relevant Clippy/workspace checks, all-system Nix evaluation, and `nix build .#checks.x86_64-linux.vm-test`.
-- [ ] Complete independent review, any separate correction pass, controller checks, coherent commits, and the F-031 evidence update in this plan.
+- [x] Mirror D-201 name and path grammar in Nix evaluation and every runtime consumer without narrowing resource names.
+  - Fix commit `117e51b7ded3bdbe38bdee3e1c543184c8ea1bd6` (`fix: reject invalid privileged configuration early`) enforces the grammar in Nix, `DaemonConfig`, and both keygen output modes.
+  - Invalid instance and wrapper selectors cannot generate users, groups, shims, services, daemon files, or target-UID rows before evaluation fails.
+  - Resource names, backend URL semantics, arbitrary `envSet`, and `envSet.PATH` remain unchanged.
+- [x] Add positive boundary cases and negative name/path/duplicate/overlap cases that fail at Nix evaluation and runtime validation before malformed trusted artifacts or service startup.
+  - Rust covers 20 configuration tests and 14 keygen tests.
+  - The Nix matrix pins 18 assertion messages, 81 exact-singleton negative rows, and 7 positive rows, including Unicode parity, exact `~`, mixed access domains, and derivation-backed CA paths.
+  - Five integration scenarios prove the earlier canonical-path errors through daemon startup.
+- [x] Run focused protocol and Nix evaluator checks, `cargo fmt -- --check`, relevant Clippy/workspace checks, all-system Nix evaluation, and `nix build .#checks.x86_64-linux.vm-test`.
+  - Direct PASS: protocol configuration tests, keygen tests, non-integration workspace tests, 105 self-contained integration-runner tests, workspace Clippy with warnings denied, rustfmt, focused assertion evaluator, examples evaluation, workspace Nix tests, all-system no-build evaluation, and the NixOS VM with `ALL TESTS PASSED`.
+  - The first raw `cargo test --workspace` attempt was unsupported by F-027's runner contract and exposed five stale assertions; the supported split commands passed after their reviewed correction.
+  - The first all-system no-build attempts reached an unrealized VM fingerprint derivation; building the VM realized the direct input, the VM passed, and the unchanged all-system evaluation then passed.
+  - Generated `web/dist` was removed.
+- [x] Complete independent review, separate correction passes, controller checks, coherent commits, and the F-031 evidence update in this plan.
+  - Review corrections covered secret-free cleanup diagnostics, Unicode whitespace/control parity, deterministic wrapper error order, exact-tilde evidence, keygen's direct client-identity path consumer, directly affected integration assertions, Clippy, and coercible Nix derivation paths.
+  - Every correction used a separate fix-worker and received fresh re-review; final cleanup and F-031 reviews passed.
+  - Controller check: exact approved scope, no dependency or wrapper-chain change, no weakened boundary, no secret-bearing diagnostics, no generated artifact, and no unrelated diff.
+  - F-031 is resolved; F-030 evidence remains intact, and F-032 through F-058 remain open.
+
+### Next iteration — F-032 unsafe invariant rationale
+
+F-032 has not yet been revalidated against the current tree.
+
+Do not begin cleanup or implementation until its current evidence, exact scope, security boundary, allowlist, validation, and fresh independent scope review replace the queue row below.
 
 ### Remaining medium queue
 
