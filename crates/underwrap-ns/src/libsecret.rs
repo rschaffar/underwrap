@@ -11,9 +11,11 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
+
+use crate::supervision::cloexec_pipe;
 
 pub(crate) fn require_absolute_env_path(var_name: &str) -> Result<String, String> {
     let value = std::env::var(var_name)
@@ -35,21 +37,6 @@ fn apply_helper_env(cmd: &mut Command, helper_env: &HashMap<String, String>) {
     for (key, value) in helper_env {
         cmd.env(key, value);
     }
-}
-
-fn cloexec_pipe(role: &str) -> Result<(OwnedFd, OwnedFd), String> {
-    let mut fds = [-1; 2];
-    // SAFETY: fds points to two writable integers; on success pipe2 initializes
-    // both descriptors with CLOEXEC atomically and ownership transfers below.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(format!(
-            "pipe2(O_CLOEXEC) for {role} failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    // SAFETY: successful pipe2 returned two fresh descriptors, each adopted
-    // exactly once by OwnedFd for branch-local RAII.
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
 fn set_cloexec(fd: RawFd, cloexec: bool) -> Result<(), String> {
@@ -85,10 +72,13 @@ pub(crate) fn setup_libsecret(
     let bus_socket = format!("{bus_dir}/bus");
     let bus_address = format!("unix:path={bus_socket}");
 
-    let (ready_read, ready_write) = cloexec_pipe("readiness")?;
-    let (dbus_addr_read, dbus_addr_write) = cloexec_pipe("dbus address")?;
+    let (ready_read, ready_write) = cloexec_pipe()
+        .map_err(|error| format!("pipe2(O_CLOEXEC) for readiness failed: {error}"))?;
+    let (dbus_addr_read, dbus_addr_write) = cloexec_pipe()
+        .map_err(|error| format!("pipe2(O_CLOEXEC) for dbus address failed: {error}"))?;
     // One-shot init pipe carrying the libsecret section bytes.
-    let (init_read, init_write) = cloexec_pipe("libsecret init")?;
+    let (init_read, init_write) = cloexec_pipe()
+        .map_err(|error| format!("pipe2(O_CLOEXEC) for libsecret init failed: {error}"))?;
 
     let dbus_pid = unsafe { libc::fork() };
     if dbus_pid < 0 {

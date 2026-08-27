@@ -8,9 +8,13 @@
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(test)]
+use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, RawFd};
 
 use underwrap_protocol::exec::{EXEC_BUNDLE_FD, WRAPPER_RESOURCE_CHANNEL_FD};
+
+use crate::supervision::cloexec_pipe;
 
 const ARMED: &[u8] = b"Armed\n";
 const FAILED: &[u8] = b"Failed\n";
@@ -54,21 +58,8 @@ impl ExecGate {
     }
 
     fn create(require_reserved_fds_occupied: bool) -> Result<Self, String> {
-        let mut fds = [-1; 2];
-        // SAFETY: `fds` points to two writable integers. On success pipe2
-        // returns two new, uniquely owned descriptors with CLOEXEC set
-        // atomically; both are immediately adopted by OwnedFd.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-            return Err(format!(
-                "creating exec authorization gate: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        // SAFETY: successful pipe2 returned two distinct, open descriptors and
-        // ownership has not been transferred elsewhere.
-        let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        // SAFETY: same invariant as above for the pipe writer.
-        let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+        let (reader, writer) =
+            cloexec_pipe().map_err(|error| format!("creating exec authorization gate: {error}"))?;
 
         // The gate is created while fixed fd 3 and fd 20 are still occupied.
         // Reject rather than corrupt either local ABI if that ordering ever

@@ -1,6 +1,8 @@
 //! Exact private relay-to-host direct-target status framing.
 
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
+
+use crate::supervision::cloexec_pipe;
 
 const MAGIC: [u8; 4] = *b"UWTS";
 const VERSION: u8 = 1;
@@ -28,19 +30,10 @@ pub(crate) struct TargetStatusWriter(OwnedFd);
 
 impl TargetStatusPipe {
     pub(crate) fn new() -> Result<Self, String> {
-        let mut fds = [-1; 2];
-        // SAFETY: the array contains two writable descriptor slots; successful
-        // descriptors are uniquely adopted below.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-            return Err(format!(
-                "creating target-status pipe: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        // SAFETY: pipe2 returned two new uniquely owned descriptors.
-        let reader = TargetStatusReader(unsafe { OwnedFd::from_raw_fd(fds[0]) });
-        // SAFETY: same invariant for the writer.
-        let writer = TargetStatusWriter(unsafe { OwnedFd::from_raw_fd(fds[1]) });
+        let (reader, writer) =
+            cloexec_pipe().map_err(|error| format!("creating target-status pipe: {error}"))?;
+        let reader = TargetStatusReader(reader);
+        let writer = TargetStatusWriter(writer);
         Ok(Self { reader, writer })
     }
 

@@ -11,21 +11,25 @@ pub(crate) struct LivenessPipe {
 pub(crate) struct LivenessReader(OwnedFd);
 pub(crate) struct LivenessWriter(OwnedFd);
 
+pub(crate) fn cloexec_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [-1; 2];
+    // SAFETY: the array has room for both results. On success pipe2 returns two
+    // new, uniquely owned descriptors with CLOEXEC set atomically.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(error);
+    }
+    // SAFETY: successful pipe2 returned two distinct, open descriptors whose
+    // ownership is transferred exactly once to these OwnedFd values.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
 impl LivenessPipe {
     pub(crate) fn new() -> Result<Self, String> {
-        let mut fds = [-1; 2];
-        // SAFETY: the array has room for both results; successful descriptors
-        // are uniquely adopted below.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-            return Err(format!(
-                "creating namespace liveness pipe: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        // SAFETY: pipe2 returned two new uniquely owned descriptors.
-        let reader = LivenessReader(unsafe { OwnedFd::from_raw_fd(fds[0]) });
-        // SAFETY: same ownership invariant for the writer.
-        let writer = LivenessWriter(unsafe { OwnedFd::from_raw_fd(fds[1]) });
+        let (reader, writer) =
+            cloexec_pipe().map_err(|error| format!("creating namespace liveness pipe: {error}"))?;
+        let reader = LivenessReader(reader);
+        let writer = LivenessWriter(writer);
         Ok(Self { reader, writer })
     }
 
