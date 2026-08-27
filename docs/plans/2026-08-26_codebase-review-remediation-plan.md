@@ -119,6 +119,7 @@ Expected source/test allowlist:
 - `crates/underwrap-protocol/src/config/tests.rs`
 - `crates/underwrap-keygen/src/lib.rs`
 - `crates/underwrap-keygen/src/tests.rs`
+- `crates/integration-tests/src/tests/directory_and_status.rs`
 - `docs/configuration.md`
 - `docs/testing.md`
 - this plan for evidence
@@ -134,7 +135,8 @@ Validation commands:
 
 - `cargo test -p underwrap-protocol config`
 - `cargo test -p underwrap-keygen`
-- `cargo test --workspace`
+- `cargo test --workspace --exclude integration-tests`
+- `./crates/integration-tests/run`
 - `cargo fmt -- --check`
 - `cargo clippy --all-targets --workspace -- -D warnings`
 - `nix build .#checks.x86_64-linux.frontend-security-assertions-eval`
@@ -156,6 +158,8 @@ Validation commands:
   - Controller scope/security check: exact three test-only paths, no production behavior or secret output, no F-id resolved; F-054 remains separate.
 - [x] Correct the F-031 scope after independent implementation review found that `underwrap-keygen` partially parses `BackendServiceConfig` without `DaemonConfig::validate()`. Evidence: direct source trace on 2026-08-27. This is a necessary direct client-identity-path consumer, not a product choice or material adjacent expansion. The allowlist adds only keygen's implementation and sibling tests, validation adds `cargo test -p underwrap-keygen`, and a fresh independent scope review is required before correction.
 - [x] Obtain fresh independent approval of the keygen scope correction. Evidence: direct read-only PASS on 2026-08-27; both config-derived and explicit output modes belong to the same approved path grammar, and sharing the protocol predicate is the smallest correction.
+- [x] Correct validation scope after the unsupported raw `cargo test --workspace` invocation exposed five stale integration assertions for the deliberately changed early validation messages. Evidence: direct run on 2026-08-27 produced 95 passes and 10 failures: four expected missing runner-provided binaries, five exact stale message checks in `directory_and_status.rs`, and one connection refusal after fixture failures. Replace the unsupported aggregate invocation with non-integration workspace tests plus the repository integration runner, and add only `directory_and_status.rs` to align those directly affected assertions. This is test evidence for F-031, not adjacent product scope.
+- [x] Obtain fresh independent approval of the integration-test scope correction. Evidence: direct read-only PASS on 2026-08-27; exactly five assertions are stale, the runner is the supported complete integration command, and no harness or product expansion is justified.
 - [ ] Mirror D-201 name and path grammar in Nix evaluation and every runtime consumer without narrowing resource names.
 - [ ] Add positive boundary cases and negative name/path/duplicate/overlap cases that fail at Nix evaluation and runtime validation before malformed trusted artifacts or service startup.
 - [ ] Run focused protocol and Nix evaluator checks, `cargo fmt -- --check`, relevant Clippy/workspace checks, all-system Nix evaluation, and `nix build .#checks.x86_64-linux.vm-test`.
