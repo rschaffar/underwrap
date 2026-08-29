@@ -708,10 +708,61 @@ Validation commands and evidence:
   - Fresh evidence re-review passed the corrected artifact provenance and completed record on 2026-08-27.
   - F-035 is the next medium finding.
 
+### Current iteration — F-035 wrapper resource-name vocabulary
+
+F-035 remains valid but narrowed at current HEAD `0e332f338fc9c09aaf688b07c24dcbd0ceaa71ac`.
+
+`docs/configuration.md` already calls `wrappers.<name>.resource` an operator-facing backend resource name, and runtime DTOs carry it as `resource_name` before the backend resolves it to a generated stable `res_<hex>` id.
+
+The Nix option description and Rust `WrapperDef.resource` doc comment still call this value a backend resource id, and the VM fixture map comment likewise labels its operator-facing names as ids.
+
+Security boundary:
+
+- Protected asset: correct operator understanding of the wrapper/resource authorization binding and the intended backend resource selected by trusted frontend configuration.
+- Failure source: a trusted operator pasting a generated backend id where configuration requires an operator-facing resource name, which can fail closed or create an unintended named resource when wrapper-asset auto-create is enabled.
+- Boundary direction: Nix or daemon wrapper configuration `resource` string → daemon runtime `resource_name` registration/open/finalize → backend name resolution → stable resource id used by pairs, permissions, storage, and audit metadata.
+- Preserved invariant: terminology changes only; the config key, string value, validation, registration, name resolution, generated ids, permissions, storage keys, wire fields, and runtime behavior remain byte-for-byte unchanged.
+
+Exact scope:
+
+- Change the `services.underwrap.instances.<instance>.wrappers.<wrapper>.resource` Nix option description to **operator-facing backend resource name** and state that the backend resolves it to a stable generated id.
+- Apply the same terminology to the Rust `WrapperDef.resource` doc comment.
+- Correct the VM fixture comment to say its wrapper map contains operator-facing resource names and that helper code resolves them through `LOCAL_RESOURCE_IDS` before id-addressed admin operations.
+- Preserve the already correct `docs/configuration.md` table as the normative configuration wording without editing it.
+- Leave legitimate uses of **resource id** intact for generated `res_<hex>` records, pair/permission references, admin paths, storage keys, and backend/runtime responses.
+
+Expected source/documentation allowlist:
+
+- `nix/modules/underwrap.nix`
+- `crates/underwrap-protocol/src/config.rs`
+- `nix/tests/test.py`
+- this plan for evidence
+
+Non-goals:
+
+- no field, option, variable, DTO, serde key, API, OpenAPI, schema, config grammar, validation, resource-name grammar, resource-id generation, auto-create, pair, permission, storage, audit, logging, UI, or runtime behavior change;
+- no rename of `resource`, `resource_name`, `resource_id`, `LOCAL_WRAPPER_RESOURCES`, or any backend/admin path;
+- no correction of legitimate id terminology, broad vocabulary sweep, F-043 dead-field cleanup, F-051 general documentation cleanup, later finding, Opportunity, or unresolved item.
+
+Validation commands and evidence:
+
+- `cargo test -p underwrap-protocol config`
+- parse `nix/tests/test.py` with Python `ast.parse` without writing bytecode
+- static positive checks for **operator-facing backend resource name** in the Nix and Rust option comments and **resource name** in the VM fixture comment
+- static negative checks that the three stale contexts no longer label configured names as ids, while generated-id references remain present
+- `cargo fmt -- --check`
+- `nix flake check --all-systems --no-build`
+- `git diff --check`
+
+- [x] Revalidate F-035 through the current option/config docs, runtime DTO and backend name-resolution flow, generated-id model, VM fixture use, and historical report/handover. Evidence: direct CodeGraph/source/documentation trace and focused repository terminology search on 2026-08-27; exactly three stale comments remain and published configuration wording is already correct.
+- [x] Obtain fresh independent approval of the exact three-comment scope, authorization boundary, legitimate-id exclusions, allowlist, non-goals, and static validation before cleanup discovery. Evidence: security review passed; scope review found one incorrect `WrapperConfig` symbol name, the plan corrected it to `WrapperDef.resource`, and fresh re-review passed on 2026-08-27; no commands were run.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before terminology correction.
+- [ ] Correct and independently review the three comments without changing executable behavior.
+- [ ] Validate, run controller scope/diff checks, commit coherently, and record F-035 completion/cross-effects before promoting F-036.
+
 ### Remaining medium queue
 
 Promote one row at a time by replacing it with exact iteration tasks after revalidation.
-- [ ] F-035 — correct resource-name versus resource-id vocabulary.
 - [ ] F-036 — restore visible keyboard focus on dialog and drawer close controls.
 - [ ] F-037 — reconcile stale store routes and list-error handling.
 - [ ] Obtain and record the mandatory medium → low transition decision.
