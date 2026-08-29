@@ -609,7 +609,12 @@ Validation commands and evidence:
 
 - [x] Revalidate F-033 against the current isolated package graph and replace the report's stale versions with exact current source/dependency evidence. Evidence: direct locked fresh-target check, dep-info inspection, Cargo tree, manifest/source trace, historical report/handover constraints, and two focused independent design/evidence consultations on 2026-08-27.
 - [x] Obtain fresh independent approval of the exact F-033 profile design, security boundary, allowlist, non-goals, isolation evidence, and validation before cleanup discovery. Evidence: architecture review passed; evidence review required fresh-target/clean-tree precision, local-profile tests and Clippy, and a mandatory complete VM or fresh decision; the plan incorporated every correction, the controller recalculated all hashes, and fresh final re-review passed on 2026-08-27; no review commands were run.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process each accepted cleanup before the feature-boundary fix.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process each accepted cleanup before the feature-boundary fix.
+  - Finding-local discovery proposed deleting the inferred three-line `[lib]` target declaration from `underwrap-protocol`; independent review rejected it as below-value, contrary to repository manifest consistency, and imminent same-file churn.
+  - Repository-wide bounded definition/reachability discovery found no high-confidence independently useful deletion outside the fix paths.
+  - Feature declarations, optional-dependency changes, Serde YAML reclassification, `AccessMode` extraction, cfg gates, import/test updates, dependency evidence, and docs are the F-033 fix rather than cleanup.
+  - Dead ABI/config fields remain F-043; crate splits, broad module moves, test deletion, Nix changes, dependencies, generated surfaces, later findings, renames, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved feature-boundary fix may begin.
 - [ ] Implement the approved full/local-ABI split with one writer and prove the isolated namespace package excludes every forbidden module and dependency while preserving default-full behavior.
 - [ ] Complete fresh independent implementation review, separate correction passes where accepted, validation, controller scope/security/diff checks, coherent local commits, and plan evidence.
 - [ ] Record F-033 completion and every cross-finding effect before promoting F-034.
