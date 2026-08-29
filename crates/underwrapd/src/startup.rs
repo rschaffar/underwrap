@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
+use std::mem::MaybeUninit;
 use tokio::net::UnixListener;
 use tokio::task::JoinSet;
 use tracing::info;
 
 use underwrap_protocol::config::DaemonConfig;
 
-/// Resolve the single instance group to a GID via libc getgrnam at
+/// Resolve the single instance group to a GID via caller-owned NSS state at
 /// startup. Acquiring this group (setgid on the `underwrap-<instance>` binary)
 /// is the sole kernel-enforced gate for the instance's wrapper socket;
 /// the wrapper name is a client-supplied selector validated by the
@@ -17,15 +18,162 @@ pub(crate) fn resolve_instance_gid(config: &DaemonConfig) -> Result<u32> {
     Ok(gid)
 }
 
-/// Resolve a Unix group name to a GID.
-pub(crate) fn resolve_group_gid(name: &str) -> Result<u32> {
+const GROUP_BUFFER_FALLBACK: usize = 16 * 1024;
+const GROUP_BUFFER_MAX: usize = 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GroupBufferHint {
+    Unavailable,
+    Value(i128),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GroupBufferLimits {
+    fallback: usize,
+    max: usize,
+}
+
+const GROUP_BUFFER_LIMITS: GroupBufferLimits = GroupBufferLimits {
+    fallback: GROUP_BUFFER_FALLBACK,
+    max: GROUP_BUFFER_MAX,
+};
+
+fn group_buffer_hint() -> GroupBufferHint {
+    // SAFETY: `_SC_GETGR_R_SIZE_MAX` requests a scalar group-lookup buffer hint;
+    // `sysconf` does not receive or write through any caller-owned pointer.
+    let value = unsafe { libc::sysconf(libc::_SC_GETGR_R_SIZE_MAX) };
+    if value == -1 {
+        GroupBufferHint::Unavailable
+    } else {
+        GroupBufferHint::Value(i128::from(value))
+    }
+}
+
+fn initial_group_buffer_size(hint: GroupBufferHint, limits: GroupBufferLimits) -> Result<usize> {
+    anyhow::ensure!(
+        limits.max <= GROUP_BUFFER_MAX,
+        "group NSS buffer limit {} exceeds the {GROUP_BUFFER_MAX}-byte hard maximum",
+        limits.max
+    );
+    let hinted = match hint {
+        GroupBufferHint::Unavailable | GroupBufferHint::Value(..=0) => limits.fallback,
+        GroupBufferHint::Value(value) => usize::try_from(value)
+            .with_context(|| format!("group NSS buffer-size hint {value} is not representable"))?,
+    };
+    anyhow::ensure!(
+        hinted <= limits.max,
+        "group NSS buffer-size hint {hinted} exceeds the {}-byte maximum",
+        limits.max
+    );
+    Ok(hinted)
+}
+
+fn reserve_group_buffer(buffer: &mut Vec<MaybeUninit<u8>>, additional: usize) -> Result<()> {
+    buffer
+        .try_reserve_exact(additional)
+        .context("allocating caller-owned group NSS lookup buffer")
+}
+
+fn resize_group_buffer(
+    buffer: &mut Vec<MaybeUninit<u8>>,
+    target_len: usize,
+    limits: GroupBufferLimits,
+    reserve: &mut impl FnMut(&mut Vec<MaybeUninit<u8>>, usize) -> Result<()>,
+) -> Result<()> {
+    anyhow::ensure!(
+        target_len <= limits.max,
+        "group NSS buffer request {target_len} exceeds the {}-byte maximum",
+        limits.max
+    );
+    let additional = target_len
+        .checked_sub(buffer.len())
+        .context("group NSS buffer target length is smaller than its current length")?;
+    reserve(buffer, additional)?;
+    buffer.resize_with(target_len, MaybeUninit::uninit);
+    Ok(())
+}
+
+fn next_group_buffer_size(current: usize, max: usize) -> Result<usize> {
+    anyhow::ensure!(
+        current < max,
+        "group NSS lookup exhausted the {max}-byte buffer maximum"
+    );
+    let doubled = current
+        .checked_mul(2)
+        .context("group NSS buffer growth arithmetic overflow")?;
+    Ok(doubled.min(max))
+}
+
+fn resolve_group_gid_with(
+    name: &str,
+    hint: GroupBufferHint,
+    limits: GroupBufferLimits,
+    mut reserve: impl FnMut(&mut Vec<MaybeUninit<u8>>, usize) -> Result<()>,
+    mut lookup: impl FnMut(
+        &std::ffi::CStr,
+        *mut libc::group,
+        *mut libc::c_char,
+        usize,
+        *mut *mut libc::group,
+    ) -> libc::c_int,
+) -> Result<Option<u32>> {
     let c_name = std::ffi::CString::new(name)
         .with_context(|| format!("group name '{name}' contains null byte"))?;
-    let grp = unsafe { libc::getgrnam(c_name.as_ptr()) };
-    if grp.is_null() {
-        anyhow::bail!("group '{name}' not found");
+    let initial = initial_group_buffer_size(hint, limits)?;
+    let mut buffer = Vec::new();
+    resize_group_buffer(&mut buffer, initial, limits, &mut reserve)?;
+    let mut output = MaybeUninit::<libc::group>::uninit();
+
+    loop {
+        let mut result = std::ptr::null_mut();
+        let status = lookup(
+            &c_name,
+            output.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        );
+        if status == libc::ERANGE {
+            let next = next_group_buffer_size(buffer.len(), limits.max)
+                .with_context(|| format!("resolving group {name:?} through NSS"))?;
+            resize_group_buffer(&mut buffer, next, limits, &mut reserve)
+                .with_context(|| format!("growing group NSS buffer for {name:?}"))?;
+            continue;
+        }
+        if status != 0 {
+            return Err(std::io::Error::from_raw_os_error(status))
+                .with_context(|| format!("resolving group {name:?} through NSS"));
+        }
+        if result.is_null() {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            result == output.as_mut_ptr(),
+            "group NSS lookup for {name:?} returned an unexpected result pointer"
+        );
+        // SAFETY: a zero return with the exact caller-provided non-null result
+        // pointer is the `getgrnam_r` contract that initializes `output`; the
+        // caller-owned backing buffer remains live while `gr_gid` is copied.
+        let gid = unsafe { output.assume_init_ref().gr_gid };
+        return Ok(Some(gid));
     }
-    Ok(unsafe { (*grp).gr_gid })
+}
+
+/// Resolve a Unix group name to a copied GID.
+fn resolve_group_gid(name: &str) -> Result<u32> {
+    resolve_group_gid_with(
+        name,
+        group_buffer_hint(),
+        GROUP_BUFFER_LIMITS,
+        reserve_group_buffer,
+        |c_name, output, buffer, buffer_len, result| {
+            // SAFETY: `c_name` is NUL-terminated, and `output`, `buffer`, and
+            // `result` are caller-owned, valid for the supplied sizes, and live
+            // until the status and exact result pointer are validated.
+            unsafe { libc::getgrnam_r(c_name.as_ptr(), output, buffer, buffer_len, result) }
+        },
+    )?
+    .ok_or_else(|| anyhow::anyhow!("group '{name}' not found"))
 }
 
 /// Parse and validate the runtime backend endpoint without performing any I/O.

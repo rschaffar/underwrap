@@ -241,6 +241,11 @@ They prove that only `ERANGE` grows, non-`ERANGE` errors are not retried, operat
 Real NSS probes cover root and a missing account.
 Synchronized calls through public `Cli::resolve_targets` are a concurrent public-API smoke/stability check: they verify stable results when calls start concurrently, but do not prove overlap inside NSS or the absence of races.
 
+Daemon startup NSS tests inject unavailable, zero, distinct negative, unrepresentable, and oversized group-buffer hints; exact doubling and cap-to-1-MiB growth; success and `ERANGE` at the maximum; checked arithmetic; initial and growth allocation failures; `EINTR` and another non-`ERANGE` error; embedded-NUL, not-found, exact-result, and foreign-result-pointer outcomes.
+They pin caller-owned `getgrnam_r` result validation, copied `gr_gid`, ERANGE-only growth, and the exact reservation/request bound.
+Real NSS probes cover root and generated missing groups, while a production `server::run` test proves a missing configured group returns before creating the wrapper socket.
+These tests exercise underwrap's ordering and response handling; they do not prove NSS-provider implementation details or scheduler behavior.
+
 The keygen identity-installation tests exercise a five-phase precommit failure
 matrix: complete temporary-file write, owner application, exact mode application,
 file sync, and the persist boundary. Every injected failure must preserve the old

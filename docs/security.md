@@ -169,6 +169,11 @@ The instance socket is `0660` and group-owned by
 `underwrap-<instance>`. A non-root process must execute the root-installed
 setgid instance entry point to acquire that effective GID and connect.
 
+Before binding that socket, the daemon resolves the configured instance group with reentrant `getgrnam_r` state whose output structure and backing buffer remain caller-owned through exact result-pointer validation and the `gr_gid` copy.
+The `_SC_GETGR_R_SIZE_MAX` value is only a hint: unavailable, zero, or negative values select a 16-KiB fallback, while an unrepresentable or greater-than-1-MiB value aborts startup.
+Only `ERANGE` grows the buffer by checked doubling to exactly 1 MiB; allocation failure, exhausted growth, `EINTR`, another NSS error, invalid input, or an unexpected result pointer aborts before socket binding without an identity fallback.
+A zero return with a null result retains ordinary group-not-found behavior.
+
 The wrapper name remains caller-supplied data. `underwrapd` rejects unknown
 names and the reserved `debug` token, resolves the configured resource, and
 chooses the target after backend authorization. Neither `argv[0]` nor a
