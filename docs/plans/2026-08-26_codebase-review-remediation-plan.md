@@ -495,10 +495,21 @@ Validation commands:
 - [x] Stop the next final rationale review when it found the daemon's non-reentrant group lookup defect; do not retain the false startup-order rationale. Evidence: partitioned review and focused independent call-path confirmation on 2026-08-27.
 - [x] Obtain the required user decision for the fourth adjacent executable correction. Evidence: on 2026-08-27 the user selected **Fix locally in F-032** and then explicitly resumed the work.
 - [x] Obtain fresh independent approval of the exact daemon NSS scope, boundary, allowlist, non-goals, and validation above before implementation. Evidence: initial review required an exact hint/growth/maximum/allocation/error/pointer matrix, a strict 1-MiB request bound, no initialized read before exact success, and a real `server::run` no-socket witness; the plan incorporated every correction and fresh re-review passed on 2026-08-27; no commands were run.
-- [ ] Implement and independently review the daemon NSS correction, run its validation, commit it as a separate fix unit, and update the unsafe inventory.
+- [x] Implement and independently review the daemon NSS correction, run its validation, commit it as a separate fix unit, and update the unsafe inventory.
+  - Fix commit `ce4c906178d4e362a52fb66fe4367e5b3658dcb5` (`fix: make daemon group lookup reentrant`) replaces static `getgrnam` storage with private caller-owned `getgrnam_r` output and bounded fallible buffers, validates exact success before copying `gr_gid`, and aborts every lookup failure before wrapper-socket binding.
+  - Tests cover every approved hint, request bound, growth, exact maximum, arithmetic, reservation, non-`ERANGE`, invalid-input, not-found, exact/foreign-pointer, real NSS, and production `server::run` no-socket row.
+  - Fresh FFI and evidence/scope implementation reviews passed without a correction worker.
+  - Direct validation passed 25 focused startup tests, 68 daemon-library tests plus 2 binary tests, all non-integration workspace tests with the supported four-thread bound, 105 integration-runner tests, workspace Clippy with warnings denied, rustfmt, Nix workspace tests, and all-system evaluation.
+  - The first raw workspace run saw one unrelated fd-number reuse assertion in the libsecret test module; the exact test and the unchanged supported four-thread workspace run passed.
+  - Five exact-tree VM runs reached and passed daemon GID 992 resolution, `0660` socket publication, effective-GID peer acceptance/rejection, and deployed wrapper use, then stopped at varying F-007/F-009 large raw-blob equality assertions after an expected usage signal or no terminal mutation.
+  - A clean detached worktree at unchanged HEAD `83b98152ec340914152fca979214e3ef44fb9a14` reproduced the same F-007 raw-blob equality failure without the daemon NSS implementation.
+  - The full VM tail is therefore unavailable as non-regression evidence rather than a product regression; on 2026-08-27 the user explicitly accepted the bounded exact-tree VM evidence and required the harness failure to remain a separate durable obligation.
+  - Controller check: exact four-file allowlist and staged checksum `cb6920ef425b67ae290db94b4854a14662b026f33e282424723c5a9526da0740`; no dependency, shared abstraction, configured group, daemon account, socket path/mode/owner, peer-auth, startup registration, retry, fallback identity, protocol, target, backend, wrapper-chain, later-finding, or secret-diagnostic change.
+  - The daemon static-NSS defect is resolved and affects no other F-id. The current production inventory is 212 unsafe expressions across 26 files with 212 `SAFETY:` markers; those lexical counts remain discovery evidence only.
 - [ ] Correct every rejected or overstated rationale from the partitioned review, resume the semantic per-site pass over every remaining in-scope unsafe expression, and add adequate adjacent rationale without further executable behavior changes.
 - [ ] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
 - [ ] Record F-032 completion and every cross-finding effect before promoting F-033.
+- [ ] Resolve or explicitly close the large raw-blob VM equality-harness obligation before final program completion; it is non-blocking for F-032 under the user's bounded-evidence decision and has no implementation authority yet.
 
 ### Remaining medium queue
 
