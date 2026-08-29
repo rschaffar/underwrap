@@ -55,9 +55,13 @@ fn print_summary() -> Result<()> {
     println!("=============================");
     println!("debug tool exe: {}", exe.display());
     println!("cwd: {}", cwd.display());
+    // SAFETY: getuid takes no arguments and returns the calling process's real UID.
     println!("uid: {}", unsafe { libc::getuid() });
+    // SAFETY: geteuid takes no arguments and returns the calling process's effective UID.
     println!("euid: {}", unsafe { libc::geteuid() });
+    // SAFETY: getgid takes no arguments and returns the calling process's real GID.
     println!("gid: {}", unsafe { libc::getgid() });
+    // SAFETY: getegid takes no arguments and returns the calling process's effective GID.
     println!("egid: {}", unsafe { libc::getegid() });
 
     println!();

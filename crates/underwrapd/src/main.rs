@@ -18,6 +18,8 @@ fn parse_daemon_config(config_text: &str) -> Result<underwrap_protocol::config::
 #[tokio::main]
 async fn main() -> Result<()> {
     // Harden: non-dumpable + no core dumps. The daemon holds secrets in memory.
+    // SAFETY: PR_SET_DUMPABLE takes trusted scalar arguments and changes only
+    // calling-process state; the return is checked before daemon startup.
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if ret != 0 {
         eprintln!(
@@ -30,6 +32,8 @@ async fn main() -> Result<()> {
         rlim_cur: 0,
         rlim_max: 0,
     };
+    // SAFETY: `rlim` is initialized, aligned, and live for the call; RLIMIT_CORE
+    // is trusted and the return value is checked before daemon startup.
     let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
     if ret != 0 {
         eprintln!(

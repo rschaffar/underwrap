@@ -102,12 +102,14 @@ fn resolve_isolation_from(
 /// target's own runtime-dir path component — the NixOS module provisions that
 /// dir keyed on the target user *name*, so ns resolves the same name from X.
 pub(crate) fn user_name(uid: libc::uid_t) -> Result<String, String> {
-    // SAFETY: getpwuid returns a pointer into static storage or NULL.
+    // SAFETY: getpwuid takes a scalar UID. This process is single-threaded with
+    // no concurrent NSS lookup; the returned static pointer is checked before use.
     let pw = unsafe { libc::getpwuid(uid) };
     if pw.is_null() {
         return Err(format!("getpwuid({uid}) returned null (no such uid)"));
     }
-    // SAFETY: pw is non-null; pw_name is a valid NUL-terminated C string.
+    // SAFETY: `pw` is non-null and no intervening NSS lookup replaced its static
+    // storage; `pw_name` is an initialized NUL-terminated string copied below.
     let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
     name.to_str()
         .map(str::to_string)
@@ -116,22 +118,27 @@ pub(crate) fn user_name(uid: libc::uid_t) -> Result<String, String> {
 
 fn resolve_uid(name: &str) -> Result<libc::uid_t, String> {
     let c = CString::new(name).map_err(|_| format!("user name {name:?} has an interior NUL"))?;
-    // SAFETY: `c` is a valid NUL-terminated string; getpwnam returns a pointer
-    // into static storage or NULL.
+    // SAFETY: `c` is a live NUL-terminated string. This single-threaded process
+    // has no concurrent NSS lookup; the returned static pointer is checked.
     let pw = unsafe { libc::getpwnam(c.as_ptr()) };
     if pw.is_null() {
         return Err(format!("getpwnam({name:?}) returned null (no such user)"));
     }
+    // SAFETY: `pw` is non-null and its static storage remains valid until a later
+    // NSS lookup; copy the initialized UID field immediately.
     Ok(unsafe { (*pw).pw_uid })
 }
 
 fn resolve_gid(name: &str) -> Result<libc::gid_t, String> {
     let c = CString::new(name).map_err(|_| format!("group name {name:?} has an interior NUL"))?;
-    // SAFETY: as above for getgrnam.
+    // SAFETY: `c` is a live NUL-terminated string. No concurrent NSS lookup can
+    // replace getgrnam's static result, which is checked before dereferencing.
     let gr = unsafe { libc::getgrnam(c.as_ptr()) };
     if gr.is_null() {
         return Err(format!("getgrnam({name:?}) returned null (no such group)"));
     }
+    // SAFETY: `gr` is non-null and its static storage remains valid until a later
+    // NSS lookup; copy the initialized GID field immediately.
     Ok(unsafe { (*gr).gr_gid })
 }
 
@@ -150,18 +157,24 @@ fn resolve_gid(name: &str) -> Result<libc::gid_t, String> {
 pub(crate) fn switch_to(iso: Isolation) -> Result<(), String> {
     let Isolation { uid, gid } = iso;
     let groups = [gid];
+    // SAFETY: `groups` is initialized, aligned, and live for the advertised one
+    // entry; the trusted target GID and syscall return are checked.
     if unsafe { libc::setgroups(1, groups.as_ptr()) } != 0 {
         return Err(format!(
             "setgroups([{gid}]) failed: {}",
             std::io::Error::last_os_error()
         ));
     }
+    // SAFETY: `gid` comes from the root-owned isolation table; all real,
+    // effective, and saved GID slots are deliberately set and success is required.
     if unsafe { libc::setresgid(gid, gid, gid) } != 0 {
         return Err(format!(
             "setresgid({gid},{gid},{gid}) failed: {}",
             std::io::Error::last_os_error()
         ));
     }
+    // SAFETY: `uid` comes from the root-owned isolation table; all real,
+    // effective, and saved UID slots are deliberately set and success is required.
     if unsafe { libc::setresuid(uid, uid, uid) } != 0 {
         return Err(format!(
             "setresuid({uid},{uid},{uid}) failed: {}",
@@ -177,6 +190,8 @@ pub(crate) fn switch_to(iso: Isolation) -> Result<(), String> {
 /// root-owned table from outside the namespace.
 pub(crate) fn verify_switched() -> Result<(), String> {
     let (mut r, mut e, mut s): (libc::uid_t, libc::uid_t, libc::uid_t) = (0, 0, 0);
+    // SAFETY: all three references are distinct, aligned writable UID objects;
+    // their values are inspected only after the checked syscall succeeds.
     if unsafe { libc::getresuid(&mut r, &mut e, &mut s) } != 0 {
         return Err(format!(
             "getresuid failed: {}",
@@ -192,6 +207,8 @@ pub(crate) fn verify_switched() -> Result<(), String> {
         return Err("post-switch uid is 0 (root) — refusing to exec".to_string());
     }
     let (mut gr, mut ge, mut gs): (libc::gid_t, libc::gid_t, libc::gid_t) = (0, 0, 0);
+    // SAFETY: all three references are distinct, aligned writable GID objects;
+    // their values are inspected only after the checked syscall succeeds.
     if unsafe { libc::getresgid(&mut gr, &mut ge, &mut gs) } != 0 {
         return Err(format!(
             "getresgid failed: {}",
@@ -205,6 +222,8 @@ pub(crate) fn verify_switched() -> Result<(), String> {
     }
     // With caps cleared, a regain attempt MUST fail: setresuid(0,0,0) from a
     // non-root uid without CAP_SETUID returns EPERM.
+    // SAFETY: this deliberate scalar credential operation occurs only after the
+    // nonzero UID and empty capability state are established; success is rejected.
     if unsafe { libc::setresuid(0, 0, 0) } == 0 {
         return Err(
             "SECURITY: setresuid(0,0,0) succeeded after the drop — capabilities were not \
@@ -234,7 +253,11 @@ pub(crate) fn verify_switched() -> Result<(), String> {
 /// surfaced (a leaked fsuid would be a security problem) and `f`'s value is
 /// dropped.
 pub(crate) fn with_target_fsuid<T>(iso: Isolation, f: impl FnOnce() -> T) -> Result<T, String> {
+    // SAFETY: getuid takes no arguments and captures the real supervisor UID
+    // before the temporary filesystem-identity transition.
     let caller_uid = unsafe { libc::getuid() };
+    // SAFETY: getgid takes no arguments and captures the real supervisor GID
+    // before the temporary filesystem-identity transition.
     let caller_gid = unsafe { libc::getgid() };
     enter_fsids(iso.uid, iso.gid)?;
     let result = f();
@@ -247,16 +270,28 @@ pub(crate) fn with_target_fsuid<T>(iso: Isolation, f: impl FnOnce() -> T) -> Res
 /// id), so a follow-up query call (`-1`) confirms the change landed.
 fn enter_fsids(uid: libc::uid_t, gid: libc::gid_t) -> Result<(), String> {
     // gid first, mirroring the gid-before-uid discipline of the real switch.
+    // SAFETY: `gid` is the root-owned target GID; setfsgid changes only calling-
+    // process filesystem credentials, and the ignored prior value is verified next.
     unsafe { libc::setfsgid(gid) };
+    // SAFETY: Linux treats `(gid_t)-1` as a no-change query and returns the
+    // current fsgid, which is compared with the requested trusted value.
     if unsafe { libc::setfsgid(libc::gid_t::MAX) } as libc::gid_t != gid {
         return Err(format!(
             "setfsgid({gid}) did not take effect (missing CAP_SETGID?)"
         ));
     }
+    // SAFETY: `uid` is the root-owned target UID; setfsuid changes only calling-
+    // process filesystem credentials, and the ignored prior value is verified next.
     unsafe { libc::setfsuid(uid) };
+    // SAFETY: Linux treats `(uid_t)-1` as a no-change query and returns the
+    // current fsuid, which is compared with the requested trusted value.
     if unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t != uid {
-        // Roll the gid back before bailing so we never leave a half-applied window.
+        // Attempt to restore the real GID before returning the fatal setup error.
+        // SAFETY: getgid takes no arguments and returns the real supervisor GID.
         let cur_gid = unsafe { libc::getgid() };
+        // SAFETY: this pointer-free scalar call makes a best-effort restoration
+        // attempt before the failing path exits; its ignored return does not
+        // verify that restoration succeeded.
         unsafe { libc::setfsgid(cur_gid) };
         return Err(format!(
             "setfsuid({uid}) did not take effect (missing CAP_SETUID?)"
@@ -268,11 +303,19 @@ fn enter_fsids(uid: libc::uid_t, gid: libc::gid_t) -> Result<(), String> {
 /// Restore the filesystem ids to the caller's own uid/gid (no capability
 /// needed) and verify. A failure here is fatal to the run.
 fn restore_fsids(uid: libc::uid_t, gid: libc::gid_t) -> Result<(), String> {
+    // SAFETY: `uid` is the previously captured real UID; setfsuid changes only
+    // filesystem credentials and the ignored prior value is verified next.
     unsafe { libc::setfsuid(uid) };
+    // SAFETY: `(uid_t)-1` is Linux's no-change query; compare the returned current
+    // fsuid with the trusted restoration value.
     if unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t != uid {
         return Err(format!("failed to restore fsuid to {uid}"));
     }
+    // SAFETY: `gid` is the previously captured real GID; setfsgid changes only
+    // filesystem credentials and the ignored prior value is verified next.
     unsafe { libc::setfsgid(gid) };
+    // SAFETY: `(gid_t)-1` is Linux's no-change query; compare the returned current
+    // fsgid with the trusted restoration value.
     if unsafe { libc::setfsgid(libc::gid_t::MAX) } as libc::gid_t != gid {
         return Err(format!("failed to restore fsgid to {gid}"));
     }

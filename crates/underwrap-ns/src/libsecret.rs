@@ -234,6 +234,8 @@ pub(crate) fn setup_libsecret(
     let (init_read, init_write) = cloexec_pipe()
         .map_err(|error| format!("pipe2(O_CLOEXEC) for libsecret init failed: {error}"))?;
 
+    // SAFETY: PID-2 setup is single-threaded here. The child moves its Rust-owned
+    // endpoints into the no-return, unwind-contained dbus helper path.
     let dbus_pid = unsafe { libc::fork() };
     if dbus_pid < 0 {
         return Err(format!(
@@ -291,6 +293,8 @@ pub(crate) fn setup_libsecret(
         return Err("dbus-daemon did not print its address (crashed?)".to_string());
     }
 
+    // SAFETY: PID-2 setup remains single-threaded. The child moves its Rust-owned
+    // endpoints into the no-return, unwind-contained secretsd helper path.
     let secretsd_pid = unsafe { libc::fork() };
     if secretsd_pid < 0 {
         return Err(format!(
@@ -350,6 +354,8 @@ pub(crate) fn setup_libsecret(
 
     let mut ready_buf = [0u8; 1];
     loop {
+        // SAFETY: `ready_read` owns the live pipe endpoint and `ready_buf` is
+        // writable for the requested byte; only the returned count bounds use.
         let n = unsafe {
             libc::read(
                 ready_read.as_raw_fd(),

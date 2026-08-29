@@ -136,6 +136,8 @@ fn run() -> Result<(), String> {
     // bundle is checked against the hint immediately afterward.
     let idmap_required = idmap_required_hint()?;
     let idmap_userns = if idmap_required {
+        // SAFETY: getgid takes no arguments and returns the real caller GID
+        // before any namespace-stage credential transition.
         let caller_gid = unsafe { libc::getgid() };
         Some(
             idmap::create_idmap_userns(target_identity.uid, caller_gid, isolation)
@@ -325,6 +327,8 @@ fn parse_target_invocation(args: Vec<String>) -> Result<(String, Vec<String>), S
 }
 
 fn make_process_non_dumpable() -> Result<(), String> {
+    // SAFETY: PR_SET_DUMPABLE takes trusted scalar arguments and changes only
+    // calling-process state; the return is checked before handoff bytes are read.
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if ret != 0 {
         return Err(format!(
@@ -343,6 +347,8 @@ fn prepare_namespace() -> Result<(), String> {
     // and POSIX message queues, so create IPC and UTS namespaces as well. This
     // setup still holds CAP_SYS_ADMIN.
     let flags = libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
+    // SAFETY: `flags` combines only trusted namespace constants and the process
+    // still has the required capability; the return is checked before forking.
     let ret = unsafe { libc::unshare(flags) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
@@ -382,6 +388,8 @@ fn realize_files_mounts(target_home: &Path, plan: &DirectoryProjectionPlan) -> R
 }
 
 fn fork_into_namespace() -> Result<libc::pid_t, String> {
+    // SAFETY: underwrap-ns is single-threaded here; each branch immediately
+    // follows the designated owned-fd relay or host-supervisor path.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         let err = std::io::Error::last_os_error();
@@ -547,15 +555,21 @@ fn run_relay(
         Ok(status) => status,
         Err(error) => {
             eprintln!("underwrap-ns: {error}");
+            // SAFETY: PID 1 cannot encode a valid direct-child status; `_exit`
+            // terminates without unwinding duplicated post-fork process state.
             unsafe { libc::_exit(1) }
         }
     };
     if let Err(error) = status_writer.write(status) {
         eprintln!("underwrap-ns: {error}");
+        // SAFETY: PID 1 failed its sole-writer status handoff; `_exit` avoids
+        // unwinding inherited state and makes the relay reap unclean.
         unsafe { libc::_exit(1) }
     }
     // Exiting namespace init makes the kernel SIGKILL every helper or detached
     // descendant before the host can reap this relay.
+    // SAFETY: the status frame was written successfully; `_exit` terminates PID
+    // 1 directly so namespace teardown, rather than Rust unwinding, follows.
     unsafe { libc::_exit(0) }
 }
 
@@ -622,6 +636,8 @@ fn disable_core_dumps() -> Result<(), String> {
         rlim_cur: 0,
         rlim_max: 0,
     };
+    // SAFETY: `rlim` is initialized, aligned, and live for the call; RLIMIT_CORE
+    // is trusted and the return is checked before configured-target exec.
     let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
     if ret != 0 {
         return Err(format!(
@@ -846,6 +862,8 @@ fn wait_for_target_with_liveness(
 fn wait_for_child(pid: libc::pid_t) -> Result<libc::c_int, String> {
     let mut status: libc::c_int = 0;
     loop {
+        // SAFETY: `pid` names the direct child and `status` is aligned writable
+        // storage; only a matching successful return permits status inspection.
         let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
         if ret == pid {
             if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
@@ -1069,7 +1087,11 @@ fn propagate_target_status(status: TargetStatus) -> Result<(), String> {
 }
 
 fn resolve_target_identity() -> Result<TargetIdentity, std::io::Error> {
+    // SAFETY: getuid takes no arguments and returns the real caller UID before
+    // the dedicated target-identity switch.
     let uid = unsafe { libc::getuid() };
+    // SAFETY: getpwuid takes a scalar UID. This process is single-threaded and
+    // makes no concurrent NSS lookup; the static result is checked before use.
     let pwd = unsafe { libc::getpwuid(uid) };
     if pwd.is_null() {
         return Err(std::io::Error::new(
@@ -1077,6 +1099,8 @@ fn resolve_target_identity() -> Result<TargetIdentity, std::io::Error> {
             format!("getpwuid({uid}) returned null"),
         ));
     }
+    // SAFETY: `pwd` is non-null and no intervening NSS call has replaced its
+    // static storage; `pw_dir` is an initialized NUL-terminated string copied now.
     let home = unsafe { std::ffi::CStr::from_ptr((*pwd).pw_dir) }
         .to_str()
         .map_err(std::io::Error::other)?;
@@ -1090,7 +1114,9 @@ fn resolve_target_identity() -> Result<TargetIdentity, std::io::Error> {
 fn read_secret_fd() -> Result<ExecBundle, std::io::Error> {
     use std::os::unix::io::FromRawFd;
 
-    // SAFETY: fd 3 is expected to be a valid pipe read-end passed by underwrap-exec.
+    // SAFETY: after fd-20 peer authentication, fixed fd 3 is the live pipe
+    // read-end passed by underwrap-exec. This function runs once and transfers
+    // its sole process-local ownership into `File` for exact RAII closure.
     let mut file = unsafe { std::fs::File::from_raw_fd(EXEC_BUNDLE_FD) };
     underwrap_protocol::ipc::read_frame_sync(&mut file).map_err(std::io::Error::other)
 }

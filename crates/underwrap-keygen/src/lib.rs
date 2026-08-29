@@ -352,6 +352,8 @@ fn write_public_certificate(writer: &mut impl Write, cert_pem: &str) -> Result<(
 }
 
 fn harden_process() -> Result<()> {
+    // SAFETY: PR_SET_DUMPABLE takes trusted scalar arguments and changes only
+    // calling-process state; the return is checked before key generation.
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if ret != 0 {
         bail!(
@@ -363,6 +365,8 @@ fn harden_process() -> Result<()> {
         rlim_cur: 0,
         rlim_max: 0,
     };
+    // SAFETY: `rlim` is initialized, aligned, and live for the call; RLIMIT_CORE
+    // is trusted and the return is checked before key generation.
     let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
     if ret != 0 {
         bail!(
@@ -452,6 +456,8 @@ fn write_identity_atomic(path: &Path, contents: &[u8], owner: Option<(u32, u32)>
 
     if let Some((uid, gid)) = owner {
         install_checkpoint!(Chown);
+        // SAFETY: the temporary file owns this live descriptor; `uid` and `gid`
+        // are selected scalar ownership values and the return is checked before persist.
         let ret = unsafe { libc::fchown(temp.as_file().as_raw_fd(), uid, gid) };
         if ret != 0 {
             bail!(

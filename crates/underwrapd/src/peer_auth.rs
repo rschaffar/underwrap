@@ -245,8 +245,12 @@ fn finish_peer_cred(
 
 /// `SO_PEERCRED` (real UID/GID + PID, captured by the kernel at connect).
 fn peer_ucred(fd: RawFd) -> Option<libc::ucred> {
+    // SAFETY: all-zero is a valid initialized `ucred` value and supplies aligned,
+    // writable output storage; only a successful Linux SO_PEERCRED call is used.
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` are live aligned writable objects advertising the
+    // exact buffer size; getsockopt borrows `fd` and success initializes ucred.
     let ret = unsafe {
         libc::getsockopt(
             fd,
@@ -265,6 +269,9 @@ fn peer_ucred(fd: RawFd) -> Option<libc::ucred> {
 fn peer_pidfd(fd: RawFd) -> std::io::Result<Option<RawFd>> {
     let mut pidfd: libc::c_int = -1;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `pidfd` and `len` are live aligned writable integers advertising
+    // the exact payload size. A successful kernel-installed fd is adopted before
+    // payload validation; failures install no owned descriptor.
     let ret = unsafe {
         libc::getsockopt(
             fd,
@@ -408,18 +415,24 @@ pub(crate) fn log_peer_auth_mode() {
 
 fn peerpidfd_supported() -> std::io::Result<bool> {
     let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: `fds` is aligned writable storage for two descriptors; trusted
+    // socket arguments create two fresh raw fds, both closed below on success.
     let ret = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     if ret != 0 {
         return Err(std::io::Error::last_os_error());
     }
     let supported = peer_pidfd(fds[0]).map(|pidfd| {
         if let Some(pidfd) = pidfd {
+            // SAFETY: peer_pidfd transferred ownership of this live raw fd; this
+            // probe consumes it exactly once and performs no later use.
             unsafe { libc::close(pidfd) };
             true
         } else {
             false
         }
     });
+    // SAFETY: successful socketpair gave this function sole ownership of both
+    // raw endpoints; each is closed once after the pidfd probe and never reused.
     unsafe {
         libc::close(fds[0]);
         libc::close(fds[1]);

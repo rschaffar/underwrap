@@ -64,6 +64,8 @@ enum AdminCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Harden: non-dumpable + no core dumps. The backend daemon holds secrets.
+    // SAFETY: PR_SET_DUMPABLE takes only trusted scalar arguments and changes
+    // process state; the return value is checked before secret-handling startup.
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if ret != 0 {
         eprintln!(
@@ -76,6 +78,8 @@ async fn main() -> Result<()> {
         rlim_cur: 0,
         rlim_max: 0,
     };
+    // SAFETY: `rlim` is an initialized, aligned `rlimit` that remains live for
+    // the call; RLIMIT_CORE is trusted and the return value is checked.
     let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
     if ret != 0 {
         eprintln!(

@@ -40,8 +40,9 @@ pub(crate) fn relocate_owned(fd: RawFd, what: &str) -> Result<OwnedFd> {
 }
 
 pub(crate) fn map_fixed(source: &OwnedFd, destination: RawFd, what: &str) -> Result<()> {
-    // SAFETY: source is open and destination is the deliberate fixed handoff
-    // slot. dup2 atomically replaces destination and clears CLOEXEC there.
+    // SAFETY: `source` is the live relocated descriptor at or above
+    // RELOCATED_FD_MIN, so it differs from the deliberate fixed handoff
+    // `destination`. dup2 atomically replaces the destination and clears CLOEXEC.
     if unsafe { libc::dup2(source.as_raw_fd(), destination) } < 0 {
         bail!(
             "mapping {what} to fd {destination}: {}",
@@ -110,6 +111,8 @@ fn set_signal_blocked(signal: libc::c_int, blocked: bool) -> Result<()> {
     let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
     // SAFETY: set is valid mutable storage and signal is supplied by trusted code.
     if unsafe { libc::sigemptyset(&mut set) } != 0
+        // SAFETY: `set` remains initialized, aligned, and exclusively borrowed;
+        // `signal` is a trusted libc signal constant or validated wait result.
         || unsafe { libc::sigaddset(&mut set, signal) } != 0
     {
         return Err(std::io::Error::last_os_error()).context("building signal set");

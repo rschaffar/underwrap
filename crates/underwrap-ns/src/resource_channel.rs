@@ -60,6 +60,8 @@ pub fn checkout(binding: &ExecResourceBinding) -> Result<ResourceChannel, String
 }
 
 fn send_checkout(fd: i32) -> Result<(Vec<u8>, bool), String> {
+    // SAFETY: `fd` is the live authenticated fixed resource-channel endpoint;
+    // dup borrows it and returns either an error or one fresh owned descriptor.
     let dup_fd = unsafe { libc::dup(fd) };
     if dup_fd < 0 {
         return Err(format!(
@@ -67,6 +69,8 @@ fn send_checkout(fd: i32) -> Result<(Vec<u8>, bool), String> {
             std::io::Error::last_os_error()
         ));
     }
+    // SAFETY: successful dup returned this nonnegative descriptor with unique
+    // ownership, transferred exactly once into UnixStream RAII.
     let mut stream = unsafe { UnixStream::from_raw_fd(dup_fd) };
     write_wrapper_resource_frame_sync(&mut stream, &WrapperResourceRequest::Checkout)
         .map_err(|e| format!("sending Checkout: {e}"))?;

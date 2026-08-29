@@ -357,6 +357,9 @@ fn ensure_mount_target(target_home: &Path, relative_path: &str) -> Result<PathBu
 fn bind_mount_dir(source: &Path, target: &Path) -> Result<(), String> {
     let source = path_to_cstring(source)?;
     let target = path_to_cstring(target)?;
+    // SAFETY: `source` and `target` are live NUL-terminated path buffers;
+    // MS_BIND permits null filesystem-type and data pointers, and the trusted
+    // bind flag plus syscall return are checked before the mount is used.
     let ret = unsafe {
         libc::mount(
             source.as_ptr(),

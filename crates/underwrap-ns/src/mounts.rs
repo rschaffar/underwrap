@@ -6,6 +6,9 @@ use std::os::unix::fs::PermissionsExt;
 /// after `unshare(CLONE_NEWNS)` in every mode.
 pub(crate) fn make_mount_namespace_private() -> Result<(), String> {
     let root = std::ffi::CString::new("/").unwrap();
+    // SAFETY: `root` is a live NUL-terminated path; this propagation-only mount
+    // operation permits null source, filesystem-type, and data pointers. Flags
+    // are trusted and the return is checked inside the new mount namespace.
     let ret = unsafe {
         libc::mount(
             std::ptr::null(),
@@ -52,6 +55,8 @@ pub(crate) fn setup_directory_staging_tmpfs(staging_root_path: &str) -> Result<(
     guard_mountpoint_mode(staging_root_path)?;
     let staging_root = std::ffi::CString::new(staging_root_path).unwrap();
     let tmpfs = std::ffi::CString::new("tmpfs").unwrap();
+    // SAFETY: both CStrings and the static NUL-terminated options string remain
+    // live for the call; trusted tmpfs arguments are checked before staging use.
     let ret = unsafe {
         libc::mount(
             tmpfs.as_ptr(),
@@ -82,6 +87,8 @@ pub(crate) fn setup_directory_staging_tmpfs(staging_root_path: &str) -> Result<(
 pub(crate) fn remount_proc() -> Result<(), String> {
     let proc_path = std::ffi::CString::new("/proc").unwrap();
     let proc_type = std::ffi::CString::new("proc").unwrap();
+    // SAFETY: both CStrings are live NUL-terminated buffers; null data is valid
+    // for this trusted proc mount and the return is checked before target exec.
     let ret = unsafe {
         libc::mount(
             proc_type.as_ptr(),
@@ -109,6 +116,8 @@ pub(crate) fn setup_mount_namespace() -> Result<(), String> {
     guard_mountpoint_mode(bus_dir)?;
     let bus_dir_c = std::ffi::CString::new(bus_dir).unwrap();
     let tmpfs_c = std::ffi::CString::new("tmpfs").unwrap();
+    // SAFETY: both CStrings and the static NUL-terminated options string remain
+    // live for the call; trusted tmpfs arguments are checked before helper use.
     let ret = unsafe {
         libc::mount(
             tmpfs_c.as_ptr(),

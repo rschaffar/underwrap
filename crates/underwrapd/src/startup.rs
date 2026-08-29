@@ -244,6 +244,8 @@ pub(crate) fn validate_config(config: &DaemonConfig) -> Result<()> {
 /// parent directory is. This turns a key-leak misconfiguration into a
 /// loud startup failure instead of silent operator-discipline reliance.
 pub(crate) fn check_credential_permissions(config: &DaemonConfig) -> Result<()> {
+    // SAFETY: geteuid takes no arguments and returns the calling process's
+    // effective UID, which is copied as a scalar for ownership comparisons.
     let euid = unsafe { libc::geteuid() };
     let Some(path) = config.backend.client_identity_file.as_ref() else {
         return Ok(());

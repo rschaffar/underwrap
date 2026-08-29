@@ -2,6 +2,8 @@
 mod tests;
 
 pub(crate) fn set_no_new_privs() -> Result<(), String> {
+    // SAFETY: PR_SET_NO_NEW_PRIVS takes trusted scalar arguments and changes
+    // only calling-process state; its return is checked before target exec.
     let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if ret != 0 {
         return Err(std::io::Error::last_os_error().to_string());
@@ -11,6 +13,11 @@ pub(crate) fn set_no_new_privs() -> Result<(), String> {
 
 /// Drop all Linux capabilities.
 pub(crate) fn drop_caps() -> Result<(), String> {
+    // SAFETY: every prctl receives only trusted capability operations and scalar
+    // values, and each return is checked with only documented EINVAL/EPERM cases
+    // accepted. The repr(C) capset header and two-element data array are fully
+    // initialized, naturally aligned, and live for the syscall; version 3
+    // requires exactly those two data entries for the calling process (pid 0).
     unsafe {
         let ret = libc::prctl(
             libc::PR_CAP_AMBIENT,

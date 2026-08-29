@@ -126,6 +126,8 @@ async fn main() -> Result<()> {
 
     // Set non-dumpable BEFORE reading any secrets from the init pipe.
     // This blocks /proc/<pid>/fd/ access from same-UID processes.
+    // SAFETY: PR_SET_DUMPABLE takes trusted scalar arguments and changes only
+    // calling-process state; the return is checked before any secret is read.
     let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if ret != 0 {
         bail!(

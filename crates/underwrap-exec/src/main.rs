@@ -161,6 +161,8 @@ fn parse_invocation(args: &[String]) -> Result<Invocation> {
 /// `underwrap-<instance>`; acquiring it (via setgid) is the sole
 /// kernel-enforced gate, so it is the only trusted identity source.
 fn instance_from_egid() -> Result<String> {
+    // SAFETY: getegid takes no arguments and returns this single-threaded
+    // process's effective GID as a scalar for the trusted instance lookup.
     let egid = unsafe { libc::getegid() };
     let group_name = resolve_gid_name(egid)
         .with_context(|| format!("cannot resolve effective GID {egid} to a group name"))?;
@@ -179,10 +181,14 @@ fn instance_from_egid() -> Result<String> {
 
 /// Resolve a GID to a group name via getgrgid.
 fn resolve_gid_name(gid: u32) -> Result<String> {
+    // SAFETY: getgrgid takes a scalar GID. This process is single-threaded and
+    // performs no concurrent NSS lookup; the returned static pointer is checked.
     let grp = unsafe { libc::getgrgid(gid) };
     if grp.is_null() {
         bail!("getgrgid({gid}) returned null");
     }
+    // SAFETY: `grp` is non-null and no later NSS call has replaced its static
+    // storage; `gr_name` is an initialized NUL-terminated string copied below.
     let name = unsafe { std::ffi::CStr::from_ptr((*grp).gr_name) };
     Ok(name
         .to_str()
@@ -369,6 +375,8 @@ fn exec_via_ns(
 
     // Make this process non-dumpable. Since stage 1 waits rather than execing,
     // the setting protects its in-memory handoff state for the full invocation.
+    // SAFETY: PR_SET_DUMPABLE takes trusted scalar arguments and changes only
+    // calling-process state; failure is checked before handoff bytes are read.
     if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 {
         bail!(
             "prctl(PR_SET_DUMPABLE, 0) failed: {}",
@@ -420,8 +428,10 @@ fn exec_via_ns(
     let inherited_sigchld = supervision::SigchldState::capture()?;
     inherited_sigchld.normalize_for_wait()?;
 
-    // SAFETY: underwrap-exec is single-threaded here. Both branches restrict
-    // post-fork work to owned-fd syscalls and the existing exec path.
+    // SAFETY: underwrap-exec is single-threaded here, so fork does not duplicate
+    // another thread's potentially locked userspace state. The child either execs
+    // underwrap-ns or terminates via `_exit`, avoiding duplicated parent destructors;
+    // the parent retains ownership of and later reaps the child.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         let error = std::io::Error::last_os_error();
@@ -520,9 +530,15 @@ fn exec_via_ns(
 }
 
 fn drop_privilege() -> Result<()> {
+    // SAFETY: getuid takes no arguments and returns the caller's real UID before
+    // any credential transition.
     let ruid = unsafe { libc::getuid() };
+    // SAFETY: getgid takes no arguments and returns the caller's real GID before
+    // any credential transition.
     let rgid = unsafe { libc::getgid() };
 
+    // SAFETY: a null groups pointer is valid when the trusted count is zero;
+    // success clears supplementary groups and only EPERM is tolerated below.
     let ret = unsafe { libc::setgroups(0, std::ptr::null()) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
@@ -533,6 +549,8 @@ fn drop_privilege() -> Result<()> {
 
     // Permanently drop any elevated group identity, including the saved set-GID,
     // so the wrapper cannot later regain the setgid-derived identity.
+    // SAFETY: `rgid` was captured from the real caller identity; all three
+    // process GID slots are deliberately set and the return is checked.
     let ret = unsafe { libc::setresgid(rgid, rgid, rgid) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
@@ -541,6 +559,8 @@ fn drop_privilege() -> Result<()> {
 
     // Permanently drop any elevated user identity, including the saved set-UID,
     // so there is no regain path through saved credentials.
+    // SAFETY: `ruid` was captured from the real caller identity; all three
+    // process UID slots are deliberately set and the return is checked.
     let ret = unsafe { libc::setresuid(ruid, ruid, ruid) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();

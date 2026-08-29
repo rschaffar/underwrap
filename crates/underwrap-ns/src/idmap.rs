@@ -120,25 +120,31 @@ pub(crate) fn create_idmap_userns(
     // `ready`: child -> parent ("I have unshared"); `release`: parent -> child.
     let mut ready = [0i32; 2];
     let mut release = [0i32; 2];
+    // SAFETY: `ready` is aligned writable storage for two descriptors; success
+    // initializes two new raw fds whose branch ownership is tracked below.
     if unsafe { libc::pipe(ready.as_mut_ptr()) } != 0 {
         return Err(format!("pipe failed: {}", std::io::Error::last_os_error()));
     }
+    // SAFETY: `release` provides the same two-fd initialized storage; on failure
+    // the caller exits and the already-created `ready` descriptors close then.
     if unsafe { libc::pipe(release.as_mut_ptr()) } != 0 {
         return Err(format!("pipe failed: {}", std::io::Error::last_os_error()));
     }
 
-    // SAFETY: underwrap-ns is single-threaded here, so a fork with only
-    // async-signal-safe libc calls in the child is sound.
+    // SAFETY: underwrap-ns is single-threaded here. The parent follows the
+    // normal ownership path, while the bounded helper branch ends with `_exit`.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(format!("fork failed: {}", std::io::Error::last_os_error()));
     }
     if pid == 0 {
-        // SAFETY: async-signal-safe path only. The parent is non-dumpable before
-        // handoff authentication. This helper is forked before fd 3 is read or
-        // Checkout obtains secret bytes; close both capability-bearing handoff
-        // descriptors before making only the secret-free helper dumpable so the
-        // parent may write its user-namespace maps.
+        // SAFETY: this single-threaded post-fork branch uses only libc syscalls
+        // and `_exit`. Its raw pipe endpoints are initialized and branch-owned;
+        // the one-byte arrays are live, aligned buffers for exactly one byte.
+        // The parent is non-dumpable before handoff authentication. This helper
+        // is forked before fd 3 is read or Checkout obtains secret bytes; it
+        // closes both capability-bearing handoff descriptors before trusted
+        // prctl/unshare operations make only the secret-free helper dumpable.
         unsafe {
             libc::close(ready[0]);
             libc::close(release[1]);
@@ -155,12 +161,17 @@ pub(crate) fn create_idmap_userns(
         }
     }
 
+    // SAFETY: after fork the parent exclusively owns these unused raw endpoints;
+    // neither numeric descriptor is used again after this one close attempt.
     unsafe {
         libc::close(ready[1]);
         libc::close(release[0]);
     }
     // Release the child + reap it, then return the result, regardless of outcome.
     let finish = |result: Result<OwnedFd, String>| -> Result<OwnedFd, String> {
+        // SAFETY: the parent exclusively owns these remaining raw endpoints and
+        // `pid` names its direct helper child. `st` is aligned writable storage;
+        // cleanup return values are not interpreted or used to initialize data.
         unsafe {
             libc::close(release[1]);
             let mut st = 0;
@@ -171,6 +182,8 @@ pub(crate) fn create_idmap_userns(
     };
 
     let mut buf = [0u8; 1];
+    // SAFETY: the parent owns the live read endpoint and `buf` is initialized,
+    // aligned writable storage for the requested single byte; `n` bounds use.
     let n = unsafe { libc::read(ready[0], buf.as_mut_ptr() as *mut libc::c_void, 1) };
     if n != 1 || buf[0] != 1 {
         return finish(Err(
@@ -290,7 +303,8 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
         0
     };
     let flags = libc::OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | recursive_flag;
-    // SAFETY: open_tree(AT_FDCWD, path, flags) returns a detached-mount fd or -1.
+    // SAFETY: `c_dir` is a live NUL-terminated path and the remaining arguments
+    // are trusted Linux open_tree constants; success returns one fresh owned fd.
     let tree_fd = unsafe {
         libc::syscall(
             libc::SYS_open_tree,
@@ -324,8 +338,8 @@ fn idmap_dir(dir: &Path, userns_fd: libc::c_int) -> Result<(), String> {
         }
     }
 
-    // SAFETY: move_mount attaches the detached tree (with its idmapped submounts)
-    // over `dir`.
+    // SAFETY: `tree` owns a live detached-mount fd; `empty` and `c_dir` are live
+    // NUL-terminated strings, and the trusted flags select their documented use.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_move_mount,
@@ -354,7 +368,8 @@ fn is_idmappable(abs_path: &Path, userns_fd: libc::c_int) -> bool {
     };
     let empty = CString::new("").unwrap();
     let flags = libc::OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC;
-    // SAFETY: open_tree of an existing path; returns a detached-mount fd or -1.
+    // SAFETY: `c_path` is a live NUL-terminated path and the remaining arguments
+    // are trusted open_tree constants; success returns one fresh owned fd.
     let fd = unsafe {
         libc::syscall(
             libc::SYS_open_tree,
@@ -379,7 +394,8 @@ fn detach_submount(abs_path: &Path) -> bool {
     let Ok(c_path) = CString::new(abs_path.as_os_str().as_encoded_bytes()) else {
         return false;
     };
-    // SAFETY: umount2 of an existing path with a valid flag.
+    // SAFETY: `c_path` is a live NUL-terminated absolute path and MNT_DETACH is
+    // the trusted unmount mode; the boolean uses only the syscall return.
     unsafe { libc::umount2(c_path.as_ptr(), libc::MNT_DETACH) == 0 }
 }
 
@@ -393,7 +409,9 @@ fn set_mount_idmap(
     at_flags: libc::c_int,
     attr: &libc::mount_attr,
 ) -> Result<(), i32> {
-    // SAFETY: mount_setattr on the detached tree fd with a valid mount_attr.
+    // SAFETY: `tree_fd` is a borrowed live detached-mount fd; `path` comes from
+    // a caller-held CString, and `attr` is initialized, aligned, and live for
+    // exactly the advertised size. `at_flags` is assembled from trusted flags.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_mount_setattr,

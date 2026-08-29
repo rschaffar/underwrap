@@ -63,8 +63,11 @@ impl LivenessWriter {
 /// the reader endpoint itself.
 pub(crate) fn adopt_outer_liveness() -> Result<LivenessReader, String> {
     let fd = WRAPPER_PARENT_LIVENESS_FD;
-    // SAFETY: fstat writes only the supplied structure and does not consume fd.
+    // SAFETY: all-zero is a valid initialized `stat` value and supplies aligned,
+    // writable output storage whose fields are used only after fstat succeeds.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `stat` remains live and exclusively writable for its full size;
+    // fstat borrows the fixed descriptor without consuming its ownership.
     if unsafe { libc::fstat(fd, &mut stat) } != 0 {
         return Err(format!(
             "validating parent liveness fd {fd}: {}",
@@ -89,8 +92,10 @@ pub(crate) fn adopt_outer_liveness() -> Result<LivenessReader, String> {
             "parent liveness fd {fd} has invalid status flags {status:#x}"
         ));
     }
-    // SAFETY: query then set flags on the validated descriptor.
+    // SAFETY: F_GETFD queries the validated live descriptor without changing ownership.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    // SAFETY: when the query succeeded, F_SETFD updates only descriptor flags on
+    // the same live fd; the trusted CLOEXEC bit and syscall return are checked.
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } != 0 {
         return Err(format!(
             "setting CLOEXEC on parent liveness fd {fd}: {}",
@@ -169,16 +174,22 @@ pub(crate) struct SigchldState {
 
 impl SigchldState {
     pub(crate) fn capture() -> Result<Self, String> {
-        // SAFETY: zero initializes output storage for the two query syscalls.
+        // SAFETY: all-zero is a valid initialized `sigaction` and supplies
+        // aligned writable storage for the complete kernel query output.
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: a null new-action requests a query; `action` is live writable
+        // output for the full structure and is used only after success.
         if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut action) } != 0 {
             return Err(format!(
                 "querying SIGCHLD disposition: {}",
                 std::io::Error::last_os_error()
             ));
         }
-        // SAFETY: zero initializes complete mask output storage.
+        // SAFETY: all-zero is a valid initialized sigset and supplies aligned
+        // writable storage for the complete kernel mask query output.
         let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        // SAFETY: a null input set requests a query; `mask` remains live and
+        // exclusively writable for its full size until the checked return.
         if unsafe { libc::sigprocmask(libc::SIG_SETMASK, std::ptr::null(), &mut mask) } != 0 {
             return Err(format!(
                 "querying signal mask: {}",
@@ -189,10 +200,14 @@ impl SigchldState {
     }
 
     pub(crate) fn normalize_for_wait(&self) -> Result<(), String> {
-        // SAFETY: zero plus empty mask fully describes a default disposition.
+        // SAFETY: all-zero is a valid initialized sigaction; the handler and
+        // mask are explicitly completed below before installation.
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = libc::SIG_DFL;
+        // SAFETY: `sa_mask` is aligned writable storage within live `action`.
         if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0
+            // SAFETY: `action` now has a default handler and initialized empty
+            // mask; sigaction borrows the complete live structure for SIGCHLD.
             || unsafe { libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) } != 0
         {
             return Err(format!(
@@ -204,9 +219,11 @@ impl SigchldState {
     }
 
     pub(crate) fn restore(&self) -> Result<(), String> {
-        // SAFETY: these exact structures were returned by the kernel before the
-        // fork and remain valid copied values in the child.
+        // SAFETY: `action` was completely returned by the kernel before fork and
+        // remains an initialized, aligned copied value borrowed for restoration.
         if unsafe { libc::sigaction(libc::SIGCHLD, &self.action, std::ptr::null_mut()) } != 0
+            // SAFETY: `mask` is the complete initialized kernel-returned thread
+            // mask; SIG_SETMASK borrows it and no old-mask output is requested.
             || unsafe { libc::sigprocmask(libc::SIG_SETMASK, &self.mask, std::ptr::null_mut()) }
                 != 0
         {
@@ -220,9 +237,13 @@ impl SigchldState {
 }
 
 fn set_signal_blocked(signal: libc::c_int, blocked: bool) -> Result<(), String> {
-    // SAFETY: zero initializes storage before the sigset operations.
+    // SAFETY: all-zero is a valid initialized sigset value; it remains aligned
+    // writable storage for the following sigset operations.
     let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `set` is live, aligned, and exclusively borrowed for initialization.
     if unsafe { libc::sigemptyset(&mut set) } != 0
+        // SAFETY: `set` remains initialized and writable; `signal` is a trusted
+        // libc constant or validated direct-child signal number.
         || unsafe { libc::sigaddset(&mut set, signal) } != 0
     {
         return Err(format!(
@@ -235,6 +256,8 @@ fn set_signal_blocked(signal: libc::c_int, blocked: bool) -> Result<(), String> 
     } else {
         libc::SIG_UNBLOCK
     };
+    // SAFETY: `set` is a complete initialized live mask, `how` is one of two
+    // trusted operations, and no old-mask output pointer is requested.
     if unsafe { libc::sigprocmask(how, &set, std::ptr::null_mut()) } != 0 {
         return Err(format!(
             "changing signal mask: {}",
@@ -246,10 +269,14 @@ fn set_signal_blocked(signal: libc::c_int, blocked: bool) -> Result<(), String> 
 
 pub(crate) fn propagate_signal(signal: libc::c_int) -> ! {
     if signal != libc::SIGKILL && signal != libc::SIGSTOP {
-        // SAFETY: a zeroed sigaction with empty mask and SIG_DFL is complete.
+        // SAFETY: all-zero is a valid initialized sigaction; handler and mask are
+        // completed below before the structure is installed.
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = libc::SIG_DFL;
+        // SAFETY: `sa_mask` is aligned writable storage within live `action`.
         if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0
+            // SAFETY: `action` is now complete; `signal` came from a validated
+            // direct-child status and excludes the two unchangeable signals.
             || unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) } != 0
         {
             eprintln!(
@@ -263,7 +290,8 @@ pub(crate) fn propagate_signal(signal: libc::c_int) -> ! {
         eprintln!("underwrap-ns: unblocking signal {signal}: {error}");
         std::process::exit(1);
     }
-    // SAFETY: signal came from a validated direct-child wait frame.
+    // SAFETY: `signal` came from a validated direct-child wait frame and has
+    // been reset/unblocked as applicable; raise takes only this scalar value.
     if unsafe { libc::raise(signal) } != 0 {
         eprintln!(
             "underwrap-ns: raising signal {signal}: {}",

@@ -68,7 +68,11 @@ fn resolve_daemon_identity(instance: &str) -> Result<DaemonIdentity, String> {
         ));
     }
     Ok(DaemonIdentity {
+        // SAFETY: `pwd` is non-null and its static NSS storage has not been
+        // replaced; copy the initialized UID field before any later lookup.
         uid: unsafe { (*pwd).pw_uid },
+        // SAFETY: the same checked pointer remains valid while the initialized
+        // GID field is copied immediately in this single-threaded startup phase.
         gid: unsafe { (*pwd).pw_gid },
         account,
     })
@@ -103,6 +107,8 @@ fn socket_i32_option(fd: i32, option: i32, name: &str) -> Result<i32, String> {
 }
 
 fn peer_credentials(fd: i32) -> Result<libc::ucred, String> {
+    // SAFETY: all-zero is a valid initialized `ucred` value and provides aligned,
+    // writable output storage; exact kernel output length is checked before use.
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: `cred` and `len` point to writable objects of the advertised

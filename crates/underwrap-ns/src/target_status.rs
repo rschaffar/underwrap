@@ -134,8 +134,11 @@ impl TargetStatusReader {
     /// out-of-namespace writer fails with EAGAIN rather than hanging.
     pub(crate) fn read_after_clean_relay(self) -> Result<TargetStatus, String> {
         let fd = self.0.as_raw_fd();
-        // SAFETY: fcntl only reads/updates status flags on this owned descriptor.
+        // SAFETY: F_GETFL queries status flags on this live owned descriptor
+        // without changing its ownership.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        // SAFETY: after a successful query, F_SETFL updates only status flags on
+        // the same live fd; the trusted O_NONBLOCK bit and return are checked.
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } != 0 {
             return Err(format!(
                 "setting target-status reader nonblocking: {}",

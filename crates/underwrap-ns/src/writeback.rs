@@ -207,6 +207,8 @@ fn signal_usage(fd: i32, resource_id: &str) -> Result<(), String> {
 }
 
 fn open_stream(fd: i32, resource_id: &str) -> Result<UnixStream, String> {
+    // SAFETY: `fd` is the live authenticated resource-channel endpoint; dup
+    // borrows it and returns either an error or one fresh owned descriptor.
     let dup_fd = unsafe { libc::dup(fd) };
     if dup_fd < 0 {
         return Err(format!(
@@ -214,5 +216,7 @@ fn open_stream(fd: i32, resource_id: &str) -> Result<UnixStream, String> {
             std::io::Error::last_os_error()
         ));
     }
+    // SAFETY: successful dup returned this nonnegative descriptor with unique
+    // ownership, transferred exactly once into UnixStream RAII.
     Ok(unsafe { UnixStream::from_raw_fd(dup_fd) })
 }
