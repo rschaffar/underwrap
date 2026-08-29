@@ -352,6 +352,7 @@ fn read_frame_sync_bounded<T: WireDecode>(
 // ---------------------------------------------------------------------------
 
 /// Write a length-prefixed binary frame to a tokio async stream.
+#[cfg(feature = "full")]
 pub async fn write_frame_async(
     stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
     msg: &impl WireEncode,
@@ -360,6 +361,7 @@ pub async fn write_frame_async(
 }
 
 /// Write a frame for the authenticated wrapper-resource channel only.
+#[cfg(feature = "full")]
 pub async fn write_wrapper_resource_frame_async(
     stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
     msg: &impl WireEncode,
@@ -367,6 +369,7 @@ pub async fn write_wrapper_resource_frame_async(
     write_frame_async_bounded(stream, msg, MAX_WRAPPER_RESOURCE_FRAME_SIZE).await
 }
 
+#[cfg(feature = "full")]
 async fn write_frame_async_bounded(
     stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
     msg: &impl WireEncode,
@@ -387,6 +390,7 @@ async fn write_frame_async_bounded(
 }
 
 /// Read a length-prefixed binary frame from a tokio async stream.
+#[cfg(feature = "full")]
 pub async fn read_frame_async<T: WireDecode>(
     stream: &mut (impl tokio::io::AsyncReadExt + Unpin),
 ) -> Result<T> {
@@ -394,12 +398,14 @@ pub async fn read_frame_async<T: WireDecode>(
 }
 
 /// Read a frame for the authenticated wrapper-resource channel only.
+#[cfg(feature = "full")]
 pub async fn read_wrapper_resource_frame_async<T: WireDecode>(
     stream: &mut (impl tokio::io::AsyncReadExt + Unpin),
 ) -> Result<T> {
     read_frame_async_bounded(stream, MAX_WRAPPER_RESOURCE_FRAME_SIZE).await
 }
 
+#[cfg(feature = "full")]
 async fn read_frame_async_bounded<T: WireDecode>(
     stream: &mut (impl tokio::io::AsyncReadExt + Unpin),
     max: usize,

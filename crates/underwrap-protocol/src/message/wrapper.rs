@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
 use super::errors::ErrorCode;
-use crate::config::AccessMode;
+use crate::access::AccessMode;
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 use crate::variant::WrapperVariant;
 

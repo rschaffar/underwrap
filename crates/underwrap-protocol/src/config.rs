@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub use crate::access::AccessMode;
+
 // A wrapper projects exactly one backend resource. The resource may opt
 // into any combination of the three projection slots (`env`, `files`,
 // `libsecret`); at least one must be enabled. The backend pair table is
@@ -435,15 +437,6 @@ pub struct FilesUse {
     /// through one writeback path regardless of which mount the target
     /// touched. Must contain at least one entry.
     pub paths: Vec<String>,
-}
-
-/// Local capability derived from backend policy for a projected mutable slot.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AccessMode {
-    #[serde(rename = "read-only")]
-    ReadOnly,
-    #[serde(rename = "read-write")]
-    ReadWrite,
 }
 
 #[cfg(test)]

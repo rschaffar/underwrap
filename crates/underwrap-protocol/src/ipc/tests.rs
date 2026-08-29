@@ -70,6 +70,7 @@ fn roundtrip_sync() {
     assert_eq!(msg, decoded);
 }
 
+#[cfg(feature = "full")]
 #[tokio::test]
 async fn roundtrip_async() {
     let msg = TestPayload {
@@ -99,6 +100,7 @@ fn generic_sync_bound_is_inclusive_and_rejects_oversize_before_write() {
     assert!(error.to_string().contains("frame too large"));
 }
 
+#[cfg(feature = "full")]
 #[tokio::test]
 async fn generic_async_bound_is_inclusive_and_rejects_declared_oversize() {
     let mut wire = Vec::new();
@@ -180,6 +182,7 @@ fn wrapper_resource_sync_round_trips_exact_max_request_and_response() {
     );
 }
 
+#[cfg(feature = "full")]
 #[tokio::test]
 async fn wrapper_resource_async_round_trips_exact_max_request_and_response() {
     use crate::message::{WrapperResourceRequest, WrapperResourceResponse};
@@ -252,6 +255,7 @@ fn wrapper_resource_sync_rejects_oversized_inner_blobs_before_body_read() {
     }
 }
 
+#[cfg(feature = "full")]
 #[tokio::test]
 async fn wrapper_resource_async_rejects_oversized_inner_blobs_before_body_read() {
     use crate::message::{WrapperResourceRequest, WrapperResourceResponse};
@@ -283,6 +287,7 @@ async fn wrapper_resource_async_rejects_oversized_inner_blobs_before_body_read()
     assert!(!error.to_string().contains("truncated payload"));
 }
 
+#[cfg(feature = "full")]
 #[tokio::test]
 async fn wrapper_resource_async_frame_rejects_declared_over_limit_before_body_read() {
     let declared = (MAX_WRAPPER_RESOURCE_FRAME_SIZE + 1) as u32;
@@ -306,6 +311,7 @@ fn wrapper_resource_sync_rejects_declared_over_limit_and_truncated_frames() {
     assert!(read_wrapper_resource_frame_sync::<u8>(&mut Cursor::new(truncated_body)).is_err());
 }
 
+#[cfg(feature = "full")]
 #[tokio::test]
 async fn wrapper_resource_async_rejects_truncated_prefix_and_body() {
     let mut prefix = tokio::io::BufReader::new(&[0u8; 3][..]);

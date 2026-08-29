@@ -54,6 +54,46 @@ cargo fmt -- --check
 cargo clippy --all-targets --workspace -- -D warnings
 ```
 
+### Protocol profile isolation
+
+The protocol's default test command exercises the unchanged `full` profile:
+
+```bash
+cargo test -p underwrap-protocol
+```
+
+The namespace wrapper selects the explicit `local-abi` profile, which can be checked independently with:
+
+```bash
+cargo check --locked -p underwrap-protocol --no-default-features --features local-abi
+cargo test --locked -p underwrap-protocol --no-default-features --features local-abi
+cargo clippy --locked -p underwrap-protocol --no-default-features --features local-abi -- -D warnings
+cargo test -p underwrap-ns
+```
+
+Use a fresh target directory when module-compilation evidence must be independent of prior artifacts:
+
+```bash
+target_dir="$(mktemp -d)"
+CARGO_TARGET_DIR="$target_dir" cargo check --locked -p underwrap-ns
+rg -l 'src/(config|control|entities|policy|service|scm_rights)(/|\.rs)' \
+  "$target_dir"/debug/deps/underwrap_protocol-*.d
+rm -rf "$target_dir"
+```
+
+The `rg` command must print no dep-info path because the isolated protocol compilation includes only `access`, `exec`, `ipc`, `libsecret_publication`, `message`, `resource`, `resource_blob`, `target_env`, and `variant`.
+Inspect the isolated package feature and normal/build dependency trees with:
+
+```bash
+cargo tree --locked -p underwrap-ns -e features --depth 2
+cargo tree --locked -p underwrap-ns -e normal,build --depth 2
+```
+
+The feature tree must show `local-abi` without protocol `default` or `full`.
+The normal/build tree must contain no protocol-owned Tokio, Utoipa, Serde YAML, or libc edge, while retaining `underwrap-ns`'s direct libc dependency.
+These commands establish isolated package compile and review coupling only.
+They do not establish a reduced runtime trusted computing base or workspace-wide feature isolation because Cargo can unify features when a build contains a full-profile consumer.
+
 ## Deterministic repository checks
 
 Flake package, check, and development-shell outputs support exactly

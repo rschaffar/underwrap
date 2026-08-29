@@ -22,7 +22,7 @@ fn bundle(access_paths: Vec<String>) -> ExecBundle {
         resource: ExecResourceBinding {
             resource_id: "res_x_y".to_string(),
             resource_name: "x/y".to_string(),
-            access: underwrap_protocol::config::AccessMode::ReadOnly,
+            access: underwrap_protocol::access::AccessMode::ReadOnly,
             env_projection: false,
             libsecret: false,
             files_target_paths: Vec::new(),

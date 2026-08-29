@@ -27,7 +27,8 @@ pub fn resource_blob_key(resource_id: &str) -> String {
 }
 
 /// The three logical slots inside a resource blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "full", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ResourceSlot {
     Env,
@@ -64,7 +65,8 @@ impl std::str::FromStr for ResourceSlot {
 /// Subset of [`ResourceSlot`] that the flat-KV admin surface emits.
 /// The `libsecret` slot is structurally a tree and is addressed by
 /// its own admin endpoints, so it never appears in flat-entry listings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "full", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum KvSecretSlot {
     Env,

@@ -445,7 +445,7 @@ The module is part of the security architecture, not packaging convenience.
 ## Crate layout
 
 ```text
-underwrap-protocol        config, IPC, runtime/admin DTOs, policy, resources
+underwrap-protocol        canonical domain/local ABI; full config, policy, service, and schema profile
 underwrap-backend-store   persistent storage implementations
 underwrap-secretsd-store  in-memory Secret Service data model
 underwrapd                local broker and runtime HTTPS client
@@ -458,6 +458,17 @@ underwrap-backend         runtime/admin HTTPS service and embedded SPA
 integration-tests         real daemon/backend integration harness
 web                       admin SPA
 ```
+
+### Protocol profiles
+
+`underwrap-protocol` defaults to its `full` feature profile for every consumer except `underwrap-ns`.
+The `full` profile adds configuration, control, entities, policy, service, SCM_RIGHTS, asynchronous IPC, and Utoipa schema support to the always-compiled access, execution, synchronous IPC, publication, message, resource, resource-blob, target-environment, and variant modules.
+The explicit `local-abi` profile adds no dependencies or modules and lets `underwrap-ns` select only that always-compiled surface with protocol default features disabled.
+An isolated `underwrap-ns` package build therefore excludes the protocol-owned Tokio, Utoipa, and libc edges, while `underwrap-ns` retains its own direct libc dependency.
+Serde YAML is a protocol test dependency because only full-profile configuration tests parse YAML.
+This profile boundary narrows the source and normal dependency graph compiled and reviewed for an isolated namespace-wrapper package build.
+It does not establish a smaller runtime trusted computing base, linked binary, attack surface, or vulnerability set.
+Cargo may unify `underwrap-protocol` features when a workspace build includes another consumer of the default `full` profile, so workspace-wide builds are not isolation evidence for `underwrap-ns`.
 
 ## Further reading
 

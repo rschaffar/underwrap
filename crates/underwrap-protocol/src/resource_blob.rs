@@ -58,6 +58,7 @@ pub enum ResourceContentReference {
     },
 }
 
+#[cfg(feature = "full")]
 impl utoipa::PartialSchema for ResourceContentReference {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
         use utoipa::openapi::schema::{Discriminator, Object, OneOf, Schema, Type};
@@ -93,6 +94,7 @@ impl utoipa::PartialSchema for ResourceContentReference {
     }
 }
 
+#[cfg(feature = "full")]
 impl utoipa::ToSchema for ResourceContentReference {}
 
 /// Inclusive maximum for the complete JCS-canonical resource blob.

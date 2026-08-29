@@ -1,4 +1,4 @@
-use crate::config::AccessMode;
+use crate::access::AccessMode;
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 use anyhow::{Result, anyhow};
 use base64::Engine;

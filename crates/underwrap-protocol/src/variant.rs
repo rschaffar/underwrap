@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc::{WireDecode, WireEncode, WireReader};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "full", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum WrapperVariant {
     /// Run the wrapper's configured target binary.

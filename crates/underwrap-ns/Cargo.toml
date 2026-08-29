@@ -10,7 +10,7 @@ name = "underwrap-ns"
 path = "src/main.rs"
 
 [dependencies]
-underwrap-protocol = { workspace = true }
+underwrap-protocol = { path = "../underwrap-protocol", default-features = false, features = ["local-abi"] }
 libc = { workspace = true }
 
 [dev-dependencies]

@@ -9,17 +9,22 @@ license.workspace = true
 name = "underwrap_protocol"
 path = "src/lib.rs"
 
+[features]
+default = ["full"]
+full = ["dep:libc", "dep:tokio", "dep:utoipa"]
+local-abi = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_jcs = { workspace = true }
-serde_yaml = { workspace = true }
 anyhow = { workspace = true }
-libc = { workspace = true }
-tokio = { workspace = true }
+libc = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 zeroize = { workspace = true }
-utoipa = { workspace = true }
+utoipa = { workspace = true, optional = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+serde_yaml = { workspace = true }
 tokio = { workspace = true }

@@ -32,7 +32,7 @@ fn wrapper_response_readok_roundtrip() {
         env_projection: true,
         resource_id: "res_abc".to_string(),
         resource_name: "github/token".to_string(),
-        access: crate::config::AccessMode::ReadWrite,
+        access: crate::access::AccessMode::ReadWrite,
         libsecret: false,
         files_target_paths: vec![],
         target: std::path::PathBuf::from("/run/current-system/sw/bin/gh"),

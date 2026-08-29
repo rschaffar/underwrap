@@ -1,6 +1,6 @@
 use super::*;
 use std::collections::HashMap;
-use underwrap_protocol::config::AccessMode;
+use underwrap_protocol::access::AccessMode;
 use underwrap_protocol::exec::ExecResourceBinding;
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource_blob::ResourceBlob;
