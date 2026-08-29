@@ -200,7 +200,7 @@ Validation commands:
   - Controller check: exact approved scope, no dependency or wrapper-chain change, no weakened boundary, no secret-bearing diagnostics, no generated artifact, and no unrelated diff.
   - F-031 is resolved; F-030 evidence remains intact, and F-032 through F-058 remain open.
 
-### Current iteration — F-032 unsafe invariant rationale
+### Completed iteration — F-032 unsafe invariant rationale
 
 The report's lexical inventory of 148 production unsafe blocks and 20 `SAFETY` markers is obsolete after the privileged lifecycle work completed for F-006 through F-031.
 
@@ -506,9 +506,23 @@ Validation commands:
   - The full VM tail is therefore unavailable as non-regression evidence rather than a product regression; on 2026-08-27 the user explicitly accepted the bounded exact-tree VM evidence and required the harness failure to remain a separate durable obligation.
   - Controller check: exact four-file allowlist and staged checksum `cb6920ef425b67ae290db94b4854a14662b026f33e282424723c5a9526da0740`; no dependency, shared abstraction, configured group, daemon account, socket path/mode/owner, peer-auth, startup registration, retry, fallback identity, protocol, target, backend, wrapper-chain, later-finding, or secret-diagnostic change.
   - The daemon static-NSS defect is resolved and affects no other F-id. The current production inventory is 212 unsafe expressions across 26 files with 212 `SAFETY:` markers; those lexical counts remain discovery evidence only.
-- [ ] Correct every rejected or overstated rationale from the partitioned review, resume the semantic per-site pass over every remaining in-scope unsafe expression, and add adequate adjacent rationale without further executable behavior changes.
-- [ ] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
-- [ ] Record F-032 completion and every cross-finding effect before promoting F-033.
+- [x] Correct every rejected or overstated rationale from the partitioned review, resume the semantic per-site pass over every remaining in-scope unsafe expression, and add adequate adjacent rationale without further executable behavior changes.
+  - Comment commit `98245426056065d5db3da66b3fe3e41414973c2c` (`docs: explain unsafe invariants`) records operation-specific rationale for every current production unsafe expression.
+  - Four fresh semantic partitions reviewed all 212 expressions across 26 files: backend/debug/keygen/daemon, both entry-stage files, target-identity/idmap paths, and the remaining namespace/protocol/Secret Service lifecycle paths all passed.
+  - Accepted corrections remove the false post-fork syscall-only and generic async-signal-safety claims, prove `dup2` source/destination separation, describe fsid rollback as unverified best effort, and state exact NSS static-storage, fd-ownership, pointer, initialization, alignment, lifetime, syscall, return, and privilege preconditions.
+  - A separate correction worker confirmed every accepted wording correction, and the four fresh final reviews required no further correction.
+  - Existing non-SAFETY startup/test prose observations remain outside this comment-only finding and resolve no later F-id.
+- [x] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
+  - Final-tree validation passed the supported bounded non-integration workspace suite, 105 integration-runner tests, workspace Clippy with warnings denied, rustfmt, Nix workspace tests, and all-system evaluation.
+  - The user-accepted bounded VM evidence and separately owned unchanged-HEAD raw large-blob equality failure remain recorded above without a complete-VM-pass claim.
+  - Controller inspection proves the final staged diff changes only non-doc comments in the 21-file approved subset, with no executable or doc-comment line and checksum `f9d4abf194ea5c3be1da3b8213e3b89aa9b3182be1d08ba9239198865b2db31f`.
+  - A fresh independent source/security acceptance review passed the complete `cd899e0..9824542` range at a clean tree, confirming every actual unsafe-precondition defect is corrected and no dependency, protocol, binary-chain, security-boundary, later-finding, generated-artifact, secret-diagnostic, or unrelated executable change remains.
+  - Initial evidence review correctly withheld closure until this plan recorded semantic disposition, exact final review, comments-only controller evidence, validation provenance, and cross-effects; fresh re-review passed the completed record on 2026-08-27.
+- [x] Record F-032 completion and every cross-finding effect before promoting F-033.
+  - Ordered functional units are cleanup `509b6aa`, SCM_RIGHTS `b39b3b2`, libsecret ownership `316ef4c`, keygen NSS `1691aa5`, daemon NSS `ce4c906`, and final rationale `9824542`; each scope and evidence commit appears in sequence above.
+  - F-032 is resolved with semantic rationale at all 212 current production unsafe expressions; lexical parity is discovery evidence and does not claim formal proof or replace executable tests.
+  - Explicitly approved O-008 is resolved; no remaining F-id is resolved, narrowed, or expanded by F-032, and F-033 remains the next medium finding.
+  - The accepted VM raw large-blob equality-harness obligation remains separately owned by the unchecked task below and does not alter product behavior or F-032 closure.
 - [ ] Resolve or explicitly close the large raw-blob VM equality-harness obligation before final program completion; it is non-blocking for F-032 under the user's bounded-evidence decision and has no implementation authority yet.
 
 ### Remaining medium queue
