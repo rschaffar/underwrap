@@ -636,7 +636,7 @@ Validation commands and evidence:
   - Fresh final evidence/process re-review passed this completed record on 2026-08-27.
   - F-034 is the next medium finding.
 
-### Current iteration — F-034 offline operator recovery documentation
+### Completed iteration — F-034 offline operator recovery documentation
 
 F-034 remains valid at current HEAD `66de836ca3a41a7b551f56ebf2b4ad762b093185` with narrower implementation evidence than the historical report.
 
@@ -694,8 +694,19 @@ Validation commands and evidence:
   - Repository-wide bounded definition/reachability discovery found no high-confidence private deletion independent of F-034 and the remaining findings.
   - Normative-procedure consolidation, links, and CLI-help correction are the fix; broader documentation cleanup remains F-051 or its eventual current owner.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved documentation correction may begin.
-- [ ] Write and independently review the normative recovery procedure, links, and accurate CLI help without changing executable behavior.
-- [ ] Validate, run controller scope/security/diff checks, commit coherently, and record F-034 completion and cross-finding effects before promoting F-035.
+- [x] Write and independently review the normative recovery procedure, links, and accurate CLI help without changing executable behavior.
+  - Fix commit `5a666f6155e29eb56fc41f63a93fff793c02efa6` (`docs: explain offline operator recovery`) makes `docs/backend.md` the sole complete procedure, adds concise Admin UI and remote-deployment links, and corrects the single-state-file CLI help claim.
+  - The procedure requires the active config, backend service identity, stopped listener and all registry writers, one stdin password line, distinct normalized username, no overwrite/reset, unchanged sentinel, ordinary login/account repair, verification, and safe optional recovery-user deletion.
+  - It accurately distinguishes transient plaintext process memory from persisted Argon2id hash and rejects argv/environment/config/history exposure, sentinel/registry deletion, and manual hash edits.
+  - Fresh operations and security/scope reviews passed the exact four-file implementation after a separate fix-worker corrected one-sentence-per-line CLI prose.
+- [x] Validate, run controller scope/security/diff checks, commit coherently, and record F-034 completion and cross-finding effects before promoting F-035.
+  - Direct validation passed 41 focused backend library tests, 3 backend-binary tests, rustfmt, rendered help/content/link assertions, and backend all-target Clippy with warnings denied using exact Nix web artifact `/nix/store/xb0jgmn7ylhdfh78bjw5jgwbc42prrks-underwrap-web-dist-0.1.0` through `UNDERWRAP_WEB_DIST`.
+  - Rendered recover-user help hash is `a39a1343187ebd3341536c46aac9bea34b2572d4019cae4464bec4c649aa081d` and contains the configured per-user/non-overwrite/stdin/sentinel contract without append or single-state-file wording.
+  - Controller check: exact four-file allowlist and staged checksum `ce005e13c105e460ad3bfabdb8b2b7f93df8928560e60fbec98bc7f73ccfe446`; no executable, authentication, session, API/SPA, bootstrap, registry, password-policy, log, dependency, protocol, OpenAPI, Nix, generated, secret-value, later-finding, or unrelated change.
+  - Final clean-tree review passed implementation and scope, then correctly withheld closure until this plan recorded exact Nix web-artifact provenance; fresh evidence re-review is required below.
+  - F-034 is resolved; F-035 and F-051 remain unchanged, no other F-id is affected, and no live recovery drill is claimed from static/source/test evidence.
+  - Fresh evidence re-review passed the corrected artifact provenance and completed record on 2026-08-27.
+  - F-035 is the next medium finding.
 
 ### Remaining medium queue
 
