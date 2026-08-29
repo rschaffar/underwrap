@@ -525,7 +525,7 @@ Validation commands:
   - The accepted VM raw large-blob equality-harness obligation remains separately owned by the unchecked task below and does not alter product behavior or F-032 closure.
 - [ ] Resolve or explicitly close the large raw-blob VM equality-harness obligation before final program completion; it is non-blocking for F-032 under the user's bounded-evidence decision and has no implementation authority yet.
 
-### Current iteration — F-033 privileged namespace dependency profile
+### Completed iteration — F-033 privileged namespace dependency profile
 
 The report's dependency-direction finding remains directly reproducible at current HEAD `1818c387817b970934a0486f1a253f04b79bb0a8`.
 
@@ -615,9 +615,26 @@ Validation commands and evidence:
   - Feature declarations, optional-dependency changes, Serde YAML reclassification, `AccessMode` extraction, cfg gates, import/test updates, dependency evidence, and docs are the F-033 fix rather than cleanup.
   - Dead ABI/config fields remain F-043; crate splits, broad module moves, test deletion, Nix changes, dependencies, generated surfaces, later findings, renames, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved feature-boundary fix may begin.
-- [ ] Implement the approved full/local-ABI split with one writer and prove the isolated namespace package excludes every forbidden module and dependency while preserving default-full behavior.
-- [ ] Complete fresh independent implementation review, separate correction passes where accepted, validation, controller scope/security/diff checks, coherent local commits, and plan evidence.
-- [ ] Record F-033 completion and every cross-finding effect before promoting F-034.
+- [x] Implement the approved full/local-ABI split with one writer and prove the isolated namespace package excludes every forbidden module and dependency while preserving default-full behavior.
+  - Fix commit `1e99300b099f5897e8d5a0b49e89c558d7ccf417` (`refactor: isolate namespace protocol profile`) adds default `full` and explicit `local-abi` profiles, moves the identical `AccessMode` type to the always-compiled domain with a full-profile config re-export, and selects only local ABI from `underwrap-ns`.
+  - Fresh-target dep-info excludes `config`, `control`, `entities`, `policy`, `service`, and `scm_rights`; its hash is `6187a08c6b68a21e31f5da2a05abc78496d3d1d63ee84190fa319c6531c724c5`.
+  - The feature tree shows protocol `local-abi` without `default`/`full`, and the normal tree contains only `anyhow`, base64, serde, JSON/JCS, and zeroize under protocol while preserving `underwrap-ns`'s direct libc.
+  - Final isolation evidence hashes are log `e5738c2c1a940d3c9e7f03e7cd4ab1fbd893457fa8925a48d1869e3e85ae289c`, feature tree `7f6d0c0a886cf328f1e58ed477da7dc65c8a9a98fb6322095bd6a72c6202a0fa`, package tree `496ef07a34e9879be4b5d0c218ce3d6e7a538657d202afff5bd786dad057e519`, and reverse-libc tree `1c0ca7d583f30b91c629506af8ee0095ea82f3bf695de46a21322a9cfe2c2d93`.
+  - Every other direct protocol consumer retains the unchanged default full profile, and default protocol tests retain config, service, async IPC, SCM_RIGHTS, and schema evidence.
+- [x] Complete fresh independent implementation review, separate correction passes where accepted, validation, controller scope/security/diff checks, coherent local commits, and plan evidence.
+  - Fresh source/manifest and evidence/docs reviews passed the complete working diff without a correction worker.
+  - A final constrained staged consult could not inspect Git's cached index and correctly withheld a result; a fresh clean-tree reviewer then inspected the exact commit and parent, independently matched all 18 paths and checksum, traced every consumer, and returned PASS.
+  - Direct validation passed 59 local-profile and 115 default-full protocol tests, 122 namespace tests, 14 entry-stage tests, 68 daemon-library plus 2 daemon-binary tests, all bounded non-integration workspace tests, 105 integration-runner tests, local/full workspace Clippy with warnings denied, and rustfmt.
+  - The first unbounded namespace runs saw the existing descriptor-number reuse assertion in one and then two helper-endpoint tests; each exact test and complete four-thread suite passed.
+  - The first integration run saw one real-HTTPS TLS close-notify transient in the admin-reference matrix; its exact test and the unchanged full 105-test runner passed.
+  - Nix validation passed the isolated `underwrap-ns` package, workspace tests, all-system evaluation, and the complete NixOS VM with `ALL TESTS PASSED`.
+  - Controller check: exact 18-file allowlist and staged checksum `e8449088606d523102fef3a94af96696067146a72e070551b5a6436ab3dff5cb`; no Cargo lock/root manifest, new dependency, dependency version, wire/serde/schema/OpenAPI/config, fd, namespace, privilege, target, backend, daemon, Nix, binary-chain, generated, secret-diagnostic, later-finding, or unrelated change.
+- [x] Record F-033 completion and every cross-finding effect before promoting F-034.
+  - F-033 is resolved for isolated namespace-package compile/review coupling; combined workspace feature unification remains explicitly outside the claim.
+  - No runtime-TCB, linked-binary, attack-surface, exploitability, or vulnerability reduction is claimed.
+  - F-035, F-043, F-057, every other remaining finding, and the separately owned VM equality-harness obligation remain unresolved and unchanged.
+  - Fresh final evidence/process re-review passed this completed record on 2026-08-27.
+  - F-034 is the next medium finding.
 
 ### Remaining medium queue
 
