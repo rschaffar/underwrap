@@ -369,6 +369,57 @@ Keygen NSS validation commands:
 - `nix build .#checks.x86_64-linux.vm-test`, including deployed exact identity ownership/mode and successful wrapper use
 - `nix flake check --all-systems --no-build`
 
+Approved daemon reentrant NSS correction after the fourth mandated stop:
+
+- Final rationale review rejected `underwrapd::startup::resolve_group_gid`'s claim that daemon-startup ordering makes `getgrnam` static storage race-free.
+- `#[tokio::main]` creates the multithreaded runtime before `server::run` resolves the configured instance group, so unrelated same-process NSS activity can replace the storage before the safe wrapper copies `gr_gid`.
+- Independent review confirmed potential undefined behavior and traced the sole production path as `server::run` → `resolve_instance_gid` → `resolve_group_gid`.
+- On 2026-08-27 the user selected **Fix locally in F-032**, approving a private caller-owned `getgrnam_r` correction without shared protocol code, a dependency, or a wrapper-chain change.
+- Replace `getgrnam` and its static result with caller-owned `libc::group`, result-pointer storage, and backing bytes that remain live through exact result-pointer validation and the `gr_gid` copy.
+- Treat `_SC_GETGR_R_SIZE_MAX` only as a hint, use a 16-KiB fallback for unavailable, zero, or distinct negative values, reject unrepresentable or greater-than-1-MiB values, and allocate with checked fallible reservation.
+- Keep every requested buffer length and fallible reservation at or below exactly 1 MiB.
+- Grow only on `ERANGE` by checked doubling capped at exactly 1 MiB, and propagate `ERANGE` at the maximum, arithmetic or allocation failure, `EINTR`, and every other operational error without binding the wrapper socket.
+- Preserve an embedded-NUL error and exact ordinary not-found semantics, require return code zero plus a non-null result exactly equal to the caller-provided output pointer, and perform no initialized `libc::group` read before both conditions hold.
+- Copy only initialized `gr_gid` before caller-owned storage is dropped.
+- Make `resolve_group_gid` private because its sole production consumer is `resolve_instance_gid`, while retaining sibling-test access.
+- Add deterministic injected evidence for unavailable, zero, distinct-negative, unrepresentable, and oversized hints; exact doubling; cap-to-1-MiB; success at the maximum; and `ERANGE` at the maximum with no further lookup.
+- Add deterministic checked-arithmetic, distinct initial/growth reservation-failure, `EINTR`/other non-`ERANGE` without retry or growth, embedded-NUL-before-allocation, null-result, exact-pointer success with copied `gr_gid`, and foreign-pointer-without-dereference evidence.
+- Add real known and generated-missing group lookups.
+- Exercise `server::run` with otherwise valid configuration, a unique socket path, and a generated-missing group; require the lookup error and prove the wrapper socket was never created.
+- Document the reentrant instance-group resolution mechanism and test evidence without claiming that unit tests prove NSS-provider or scheduler behavior.
+
+Daemon NSS security boundary:
+
+- Protected asset: the configured instance-group identity that gates the `0660` wrapper socket and therefore entry into the daemon's wrapper authorization flow.
+- Attacker or failure source: unrelated same-process NSS activity or an NSS provider response interacting with shared static storage, oversized records, malformed result pointers, or operational failure.
+- Boundary direction: root-owned daemon configuration → libc/NSS group lookup → copied expected GID → socket ownership verification and peer effective-GID authorization.
+- Invariant: every FFI output and backing buffer is caller-owned for the complete dereference lifetime, only exact initialized success yields a GID, and every lookup failure aborts before socket binding without a weaker authorization fallback.
+
+Daemon NSS allowlist:
+
+- `crates/underwrapd/src/startup.rs`
+- `crates/underwrapd/src/startup/tests.rs`
+- `docs/security.md`
+- `docs/testing.md`
+- this plan for evidence
+
+Daemon NSS non-goals:
+
+- no configured group name, daemon account, socket path/mode/owner, effective-GID authorization, peer-auth posture, startup registration, retry, fallback identity, dependency, shared NSS abstraction, protocol, target, backend, or wrapper-chain redesign;
+- no change to keygen, private single-threaded privileged-binary NSS lookups, later findings, or unrelated startup documentation claims.
+
+Daemon NSS validation commands:
+
+- `cargo test -p underwrapd startup`
+- `cargo test -p underwrapd`
+- `cargo test --workspace --exclude integration-tests` with the exact Nix `web-build` artifact
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets --workspace -- -D warnings`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- `nix flake check --all-systems --no-build`
+- `nix build .#checks.x86_64-linux.vm-test`, including wrapper-socket GID, effective-GID peer acceptance/rejection, and successful deployed wrapper use
+
 Expected source allowlist:
 
 - `crates/underwrap-backend/src/{cli.rs,main.rs}`
@@ -441,6 +492,10 @@ Validation commands:
   - One integration run saw two fixture-state authorization/reference failures; the unchanged full runner passed all 105 tests on rerun. This is classified as the existing real-process fixture isolation transient, unrelated to keygen NSS resolution.
   - Controller check: exact four-file allowlist and staged checksum `1d9fdb704ad3839769bf0b31f007b54cd4e1dc233d8410068b3a705898bbe4b6`; no dependency, CLI shape, output path, owner precedence, credential format/content/mode, generation, persistence, stdout, daemon/backend, protocol, wrapper-chain, later-finding, or secret-diagnostic change.
   - The public-safe NSS defect is resolved and affects no other F-id. The current production inventory remains 211 unsafe expressions across 26 files; the in-progress comment draft has 205 `SAFETY:` markers, and final semantic correction/review remains open.
+- [x] Stop the next final rationale review when it found the daemon's non-reentrant group lookup defect; do not retain the false startup-order rationale. Evidence: partitioned review and focused independent call-path confirmation on 2026-08-27.
+- [x] Obtain the required user decision for the fourth adjacent executable correction. Evidence: on 2026-08-27 the user selected **Fix locally in F-032** and then explicitly resumed the work.
+- [x] Obtain fresh independent approval of the exact daemon NSS scope, boundary, allowlist, non-goals, and validation above before implementation. Evidence: initial review required an exact hint/growth/maximum/allocation/error/pointer matrix, a strict 1-MiB request bound, no initialized read before exact success, and a real `server::run` no-socket witness; the plan incorporated every correction and fresh re-review passed on 2026-08-27; no commands were run.
+- [ ] Implement and independently review the daemon NSS correction, run its validation, commit it as a separate fix unit, and update the unsafe inventory.
 - [ ] Correct every rejected or overstated rationale from the partitioned review, resume the semantic per-site pass over every remaining in-scope unsafe expression, and add adequate adjacent rationale without further executable behavior changes.
 - [ ] Complete fresh independent implementation review, separate correction passes where accepted, all validation, controller scope/security/diff checks, and ordered local commits.
 - [ ] Record F-032 completion and every cross-finding effect before promoting F-033.
