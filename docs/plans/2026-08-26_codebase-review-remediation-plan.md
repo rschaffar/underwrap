@@ -818,6 +818,16 @@ Non-goals:
 - no visual snapshot baseline, automated contrast calculation, general accessibility/WCAG certification, screen-reader claim, browser matrix beyond the configured Playwright browser, tablet coverage under F-053, F-037 routing work, later finding, Opportunity, or unresolved item;
 - no dependency, package-lock, generated API/schema, committed `web/dist`, Rust, Nix, privileged-chain, or security-boundary change.
 
+Approved cleanup 1 — prune unreachable private primitive exports:
+
+- In `web/src/components/ui/dialog.tsx`, delete the definition/export of unconsumed `DialogTrigger` and `DialogClose`, and remove only the exports of internally retained `DialogPortal` and `DialogOverlay`.
+- In `web/src/components/ui/sheet.tsx`, delete the definition/export of unconsumed `SheetClose`.
+- Preserve `Dialog`, `DialogContent`, every internally used portal/overlay component, and every sheet export with a live consumer.
+- Repository-wide symbol/import/dynamic-module search finds no external consumer; `underwrap-web` is private with no package entry point, and Nix ships only the compiled static SPA.
+- This independently reversible cleanup removes three dead aliases and five misleading private exports before the same files receive focus styling; it changes no rendered element, class, interaction, test, route, artifact, or F-id.
+- Cleanup allowlist: `web/src/components/ui/dialog.tsx` and `web/src/components/ui/sheet.tsx` only.
+- Cleanup validation: focused ConfirmDialog/AppShell tests, full `npm test`, `npm run build`, exact symbol absence/retained-use checks, generated-artifact cleanup, and `git diff --check`.
+
 Validation commands and evidence:
 
 - `cd web && npm test -- src/components/confirm-dialog.test.tsx src/components/app-shell.test.tsx`
@@ -832,7 +842,12 @@ Validation commands and evidence:
 
 - [x] Revalidate F-036 against both close-control sources, shared control styling, theme tokens, Tailwind forced-colors output, current component/browser tests, and historical report/handover. Evidence: direct CodeGraph/source/test/build-CSS inspection on 2026-08-27; both controls still suppress regular focus and no current test covers their indicator.
 - [x] Obtain fresh independent approval of the exact shared classes, two component tests, two desktop-project browser scenarios, accessibility impact, allowlist, non-goals, and validation before cleanup discovery. Evidence: initial reviews required exact computed-style baselines, proof-layer separation, real theme/keyboard flows, forced-colors refocus, built-CSS precision, browser prerequisites, and constrained claims; a follow-up caught that `mobile-375` uses WebKit, so the plan moved the 375×812 sheet scenario into desktop-1280 Chromium. Fresh final re-review passed on 2026-08-27; no commands were run.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before focus correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before focus correction.
+  - Finding-local discovery accepted the exact five-symbol private-export cleanup above; independent reachability/value review returned ACCEPT with no dynamic or package consumer.
+  - Repository-wide bounded discovery found no other high-confidence private production deletion independent of remaining findings.
+  - Focus classes, component/browser tests, built-CSS evidence, and testing documentation are the fix; broader primitive refactors, test deletion, global styling, later findings, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted after cleanup 1.
+- [ ] Implement, independently review, validate, and commit cleanup 1 before the focus correction.
 - [ ] Implement and independently review the two close-control styles and focused component/browser evidence without changing interaction behavior.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-036 completion/cross-effects before promoting F-037.
 
