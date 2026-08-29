@@ -774,10 +774,71 @@ Validation commands and evidence:
   - Fresh final evidence/process re-review passed this completed record on 2026-08-27.
   - F-036 is the next medium finding.
 
+### Current iteration — F-036 close-control keyboard focus
+
+F-036 remains directly reproducible at current HEAD `b23638d9c596d7e1e9f1dc49e0ca22613ebac2ff`.
+
+The shared dialog and sheet close buttons still use `focus:outline-hidden` without a visible regular-color replacement, while shared buttons, inputs, selects, and textareas use `focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-(--color-accent)/40`.
+
+Tailwind's compiled `outline-hidden` utility emits a two-pixel transparent outline inside `@media (forced-colors: active)`, preserving a system-adjusted outline when ordinary box-shadow rings are suppressed.
+
+Security boundary: none.
+
+Accessibility impact:
+
+- Affected user: a keyboard operator locating the active close button in every admin dialog or mobile navigation drawer.
+- Boundary direction: keyboard focus modality → Radix close control → theme/forced-colors CSS focus indicator.
+- Preserved behavior: focus order, focus trapping/restoration, auto-focus, Escape, pointer interaction, close callbacks, dialog/sheet structure, themes, routing, and backend requests remain unchanged; only the visible focus styling and its regression evidence change.
+
+Exact scope:
+
+- Replace `focus:outline-hidden` on each `DialogPrimitive.Close` rendered by `dialog.tsx` and `sheet.tsx` with the exact shared `focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-(--color-accent)/40` treatment.
+- Extend the existing ConfirmDialog component test to select the dialog close button by exact accessible name `Close`, preserve its close interaction assertion, require the exact three shared focus-visible classes, and require absence of superseded `focus:outline-hidden`.
+- Extend the existing AppShell drawer test with the same static class/name and preserved close-interaction assertions for the sheet close button.
+- Keep jsdom evidence limited to rendered semantics and class tokens; it does not prove browser keyboard focus, theme rendering, or forced-colors behavior.
+- Add one desktop Playwright spec that logs in and uses keyboard input to open the real **Create store** dialog, confirms its `Name` field is auto-focused, and uses `Shift+Tab` to focus the exact `Close` button without clicking or calling `focus()`.
+- In the application's actual dark and light states controlled by the `<html>` `dark` class/theme toggle, require the desktop close button to have focus, match `:focus-visible`, change from an unfocused `box-shadow: none` baseline to a non-`none` computed box shadow, and make no contrast claim.
+- Activate Playwright forced-colors emulation, re-enter the same keyboard focus path, and require `:focus-visible`, computed outline style other than `none`, and computed outline width of at least two pixels without requiring a box-shadow ring or claiming contrast.
+- In the same desktop-1280 Chromium spec, add a second scenario that sets the page viewport to 375×812, opens the responsive **Open navigation** sheet by keyboard, reaches its exact `Close` button through keyboard navigation without click/direct focus, and applies the same regular-color box-shadow and forced-colors outline assertions.
+- Record only the observed two-control, configured Chromium project, desktop/375-pixel responsive layouts, application-theme, and forced-colors evidence in `docs/testing.md` without claiming general WCAG conformance, contrast, screen-reader behavior, mobile-browser support, cross-browser support, or application-wide focus coverage.
+
+Expected source/test/documentation allowlist:
+
+- `web/src/components/ui/dialog.tsx`
+- `web/src/components/ui/sheet.tsx`
+- `web/src/components/confirm-dialog.test.tsx`
+- `web/src/components/app-shell.test.tsx`
+- new `web/e2e/focus-indicators.spec.ts`
+- `docs/testing.md`
+- this plan for evidence
+
+Non-goals:
+
+- no global focus utility, Tailwind/theme token, accent color, shared button/input/select/textarea, dialog/sheet primitive, focus-trap/order/restoration, auto-focus, animation, size, placement, opacity, icon, accessible name, close behavior, routing, backend, API, or data-flow change;
+- no visual snapshot baseline, automated contrast calculation, general accessibility/WCAG certification, screen-reader claim, browser matrix beyond the configured Playwright browser, tablet coverage under F-053, F-037 routing work, later finding, Opportunity, or unresolved item;
+- no dependency, package-lock, generated API/schema, committed `web/dist`, Rust, Nix, privileged-chain, or security-boundary change.
+
+Validation commands and evidence:
+
+- `cd web && npm test -- src/components/confirm-dialog.test.tsx src/components/app-shell.test.tsx`
+- `cd web && npm test`
+- `cd web && npm run build`
+- build `underwrap-backend` with the exact Nix `web-build` artifact through `UNDERWRAP_WEB_DIST`, then run `cd web && npm run build` before direct Playwright commands unless `UNDERWRAP_BACKENDD_BINARY` supplies the exact backend binary
+- inside `nix develop`, run `npx playwright test e2e/focus-indicators.spec.ts --project=desktop-1280`
+- inside `nix develop`, run the complete `npm run test:e2e`
+- inspect built CSS once for the shared focus-visible ring utilities and forced-colors `outline-hidden` rule; source/component assertions prove both close controls apply them
+- remove generated `web/dist` and confirm no generated schema, Playwright output, trace, screenshot, or report remains
+- `git diff --check`
+
+- [x] Revalidate F-036 against both close-control sources, shared control styling, theme tokens, Tailwind forced-colors output, current component/browser tests, and historical report/handover. Evidence: direct CodeGraph/source/test/build-CSS inspection on 2026-08-27; both controls still suppress regular focus and no current test covers their indicator.
+- [x] Obtain fresh independent approval of the exact shared classes, two component tests, two desktop-project browser scenarios, accessibility impact, allowlist, non-goals, and validation before cleanup discovery. Evidence: initial reviews required exact computed-style baselines, proof-layer separation, real theme/keyboard flows, forced-colors refocus, built-CSS precision, browser prerequisites, and constrained claims; a follow-up caught that `mobile-375` uses WebKit, so the plan moved the 375×812 sheet scenario into desktop-1280 Chromium. Fresh final re-review passed on 2026-08-27; no commands were run.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before focus correction.
+- [ ] Implement and independently review the two close-control styles and focused component/browser evidence without changing interaction behavior.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-036 completion/cross-effects before promoting F-037.
+
 ### Remaining medium queue
 
 Promote one row at a time by replacing it with exact iteration tasks after revalidation.
-- [ ] F-036 — restore visible keyboard focus on dialog and drawer close controls.
 - [ ] F-037 — reconcile stale store routes and list-error handling.
 - [ ] Obtain and record the mandatory medium → low transition decision.
 
