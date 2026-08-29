@@ -708,7 +708,7 @@ Validation commands and evidence:
   - Fresh evidence re-review passed the corrected artifact provenance and completed record on 2026-08-27.
   - F-035 is the next medium finding.
 
-### Current iteration — F-035 wrapper resource-name vocabulary
+### Completed iteration — F-035 wrapper resource-name vocabulary
 
 F-035 remains valid but narrowed at current HEAD `0e332f338fc9c09aaf688b07c24dcbd0ceaa71ac`.
 
@@ -761,8 +761,18 @@ Validation commands and evidence:
   - Repository-wide bounded reachability discovery found no high-confidence private production deletion independent of the remaining findings.
   - Comment correction is the fix; tests, generated surfaces, F-043 cleanup, broader vocabulary work, renames, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved terminology correction may begin.
-- [ ] Correct and independently review the three comments without changing executable behavior.
-- [ ] Validate, run controller scope/diff checks, commit coherently, and record F-035 completion/cross-effects before promoting F-036.
+- [x] Correct and independently review the three comments without changing executable behavior.
+  - Fix commit `5f9e6d6cac91685d0e22d8be4bb4b02d7be121d5` (`docs: distinguish resource names from ids`) corrects the Nix option description, `WrapperDef.resource` Rustdoc, and `LOCAL_WRAPPER_RESOURCES` fixture comment.
+  - The initial writer changed the already accurate `LOCAL_RESOURCE_IDS` comment instead of the stale wrapper map; a separate fix-worker restored it verbatim and corrected the intended context.
+  - Fresh review then rejected hyphenated `resource-name`/`stable-id` wording; a separate fix-worker applied the canonical **resource name**/**resource id** terms, and fresh re-review passed.
+  - No executable identifier, value, field, serde/config key, DTO, API, schema, generated artifact, or legitimate stable-id comment changed.
+- [x] Validate, run controller scope/diff checks, commit coherently, and record F-035 completion/cross-effects before promoting F-036.
+  - Direct validation passed 20 protocol configuration tests, Python AST parsing without bytecode, exact positive/negative terminology checks, rustfmt, all-system Nix evaluation, and diff checks.
+  - Controller check: exact three-file allowlist and staged checksum `c9b3ca05230a9b192453bfeae6aaa1f488199e81bf0268f0b300127138b66331`; only documentation/Rustdoc/Python comments changed and generated-id references remain present.
+  - Fresh clean-tree review independently reproduced the exact commit/parent, three contexts, data flow, checksum, no-behavior scope, and returned PASS.
+  - F-035 is resolved; already correct published configuration wording remains unchanged, F-043 and F-051 remain separate, and no other F-id is affected.
+  - Fresh final evidence/process re-review passed this completed record on 2026-08-27.
+  - F-036 is the next medium finding.
 
 ### Remaining medium queue
 
