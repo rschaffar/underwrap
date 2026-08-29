@@ -277,6 +277,10 @@ immediately afterward.
 Password change, password reset, and user deletion invalidate that user's
 existing sessions on their next request.
 
+Total operator login loss cannot be repaired in the Admin UI because every Users operation requires an authenticated operator.
+
+Follow the normative backend-host [Offline operator recovery](backend.md#offline-operator-recovery) procedure instead.
+
 ## Authentication and browser security
 
 The backend uses:

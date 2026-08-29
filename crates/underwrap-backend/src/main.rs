@@ -45,15 +45,12 @@ enum AdminCommand {
         #[arg(long)]
         username: String,
     },
-    /// Offline recovery: append (or refuse-on-conflict) a user
-    /// directly to the backend-managed user-state file. Use when
-    /// nobody can log in to the running daemon. This subcommand
-    /// intentionally does NOT touch the bootstrap-completed sentinel:
-    /// it remains distinct from first-operator provisioning.
+    /// Offline recovery: add a non-overwriting per-user record to the configured backend-managed user registry.
+    /// Use when nobody can log in to the running daemon.
+    /// This subcommand intentionally does NOT touch the bootstrap-completed sentinel: it remains distinct from first-operator provisioning.
     ///
     /// Requires physical/file-system access to the backend state dir.
-    /// The password is read from stdin to keep it out of the process
-    /// argv (which would otherwise leak to `/proc/<pid>/cmdline`).
+    /// The password is read from stdin to keep it out of the process argv (which would otherwise leak to `/proc/<pid>/cmdline`).
     RecoverUser {
         /// Username to add. Will be normalised (trimmed + lowercased).
         #[arg(long)]

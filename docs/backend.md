@@ -15,6 +15,7 @@ Operators manage the backend through the admin UI served directly by
 
 - [Architecture](#architecture)
 - [Backend configuration](#backend-configuration)
+- [Offline operator recovery](#offline-operator-recovery)
 - [Runtime API](#runtime-api)
 - [Admin API](#admin-api)
 - [Policy model](#policy-model)
@@ -158,6 +159,41 @@ automatic retry, reconciliation, or repair. Store creation also creates its
 backing data directory—and an encrypted canary for an encrypted store—before the
 store-registry commit; a failed registry save can leave those pre-registry side
 effects for trusted-host cleanup.
+
+## Offline operator recovery
+
+Use this procedure only for total login loss, when no operator can authenticate through the ordinary HTTPS login flow.
+
+`recover-user` is an offline backend-host operation, not a network API or browser recovery path.
+
+1. Identify the active backend configuration path and the Unix service identity used by the deployed backend.
+2. Stop the backend service so its HTTPS listener is down, and stop every other process that can write the configured user registry, including other offline administrative commands.
+3. Choose a distinct new username after accounting for normalization, which trims surrounding whitespace and lowercases the name.
+4. As the same backend service identity, run the following command with the active configuration and with exactly one password line connected to stdin from a trusted prompt or password-manager pipe:
+
+   ```text
+   underwrap-backend --config <active-config-path> admin recover-user --username <distinct-new-name>
+   ```
+
+5. Require the command to report success before restarting the backend service.
+6. Restart the backend, sign in through the ordinary login page as the recovery user, and use **Users** to create, rename, or reset the intended operator account as needed.
+7. Sign out and verify that another repaired or newly created operator account can sign in successfully.
+8. Optionally delete the recovery user through **Users** only after another working operator account has been verified.
+
+Never place the password value in argv, environment variables, configuration, shell history, logs, or this procedure.
+
+The plaintext password exists transiently in recovery process memory, and the Argon2id hash is the only password representation persisted in the new per-user record.
+
+The command loads the configured registry and refuses an existing normalized username rather than resetting or overwriting that account.
+
+The command neither reads nor changes the bootstrap sentinel, so recovery does not reopen first-use bootstrap.
+
+> [!WARNING]
+> Do not delete the bootstrap sentinel or the user registry as a recovery shortcut.
+>
+> Do not generate, replace, or edit password hashes manually.
+>
+> These shortcuts can destroy registry integrity or first-use state instead of restoring controlled operator access.
 
 ## Runtime API
 

@@ -156,6 +156,12 @@ ordinary login page, then:
 A runtime client instance must select an existing store, so store creation comes
 before client enrollment.
 
+## Recover total operator login loss
+
+Perform total-login-loss recovery on the backend host under the deployed backend service identity and active configuration, not from a frontend host or browser.
+
+Use the deployment service manager to stop the HTTPS listener and every other user-registry writer, then follow the normative [Offline operator recovery](backend.md#offline-operator-recovery) procedure before restarting the service.
+
 ## Frontend host
 
 Configure the NixOS module with the remote URL and, for this private-CA
