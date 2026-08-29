@@ -636,10 +636,66 @@ Validation commands and evidence:
   - Fresh final evidence/process re-review passed this completed record on 2026-08-27.
   - F-034 is the next medium finding.
 
+### Current iteration — F-034 offline operator recovery documentation
+
+F-034 remains valid at current HEAD `66de836ca3a41a7b551f56ebf2b4ad762b093185` with narrower implementation evidence than the historical report.
+
+`underwrap-backend --config <path> admin recover-user --username <name>` already reads one password line from stdin, normalizes the username, refuses an existing username, hashes the password, and atomically writes one new per-user record under the configured `users_dir` without receiving or changing the bootstrap sentinel.
+
+The CLI help incorrectly says it appends directly to one user-state file, while `docs/admin-ui.md` and `docs/remote-backend.md` still omit the recovery flow entirely.
+
+Security boundary:
+
+- Protected assets: confidentiality of the recovery password, integrity of the operator registry, and every backend asset reachable through recovered admin authority.
+- Failure source: a trusted backend-host operator responding to total login loss with manual hash/state edits, bootstrap-sentinel deletion, concurrent recovery, wrong file ownership, or password exposure through argv/environment/history.
+- Boundary direction: trusted host-only stdin plus the backend service identity → config-selected service-owned user registry → one new operator record → ordinary HTTPS login and authenticated admin repair.
+- Preserved invariant: no network or browser recovery route exists; the backend and every other user-registry writer stay stopped, the existing collection is loaded without overwrite, an existing normalized username is refused, and the bootstrap sentinel remains unchanged. The password enters the command through stdin, exists transiently in process memory, is never placed in argv/environment/logs, and only its Argon2id hash persists.
+
+Exact scope:
+
+- Make `docs/backend.md` the normative offline-recovery owner with the complete stopped-service, service-identity, stdin, non-overwrite, unchanged-sentinel, restart/login/repair, and temporary-user cleanup sequence.
+- Add concise links and deployment-specific context from `docs/admin-ui.md` and `docs/remote-backend.md` rather than duplicating a competing procedure.
+- Correct only the `recover-user` CLI help wording in `crates/underwrap-backend/src/main.rs` from a single appended state file to a new non-overwriting per-user record in the configured user registry.
+- Preserve the existing command, username normalization, password acceptance, Argon2id hashing, random user id, atomic save, configured paths, log fields, bootstrap behavior, and error semantics.
+- State that the command must run as the same backend service identity while the service/listener and every other user-registry writer are stopped.
+- State that operators pass the password as one stdin line from a trusted prompt or password-manager pipe and never place it in argv, environment variables, configuration, or shell history.
+- State that recovery adds a distinct user and cannot overwrite or reset an existing username; after ordinary login, use the authenticated Users flow to repair the intended account before optionally deleting the recovery user while another working operator remains.
+- Warn against deleting the bootstrap sentinel, deleting the user registry, or manually editing Argon2 hashes as a recovery shortcut.
+
+Expected source/documentation allowlist (exactly four implementation/documentation files):
+
+- `crates/underwrap-backend/src/main.rs`
+- `docs/backend.md`
+- `docs/admin-ui.md`
+- `docs/remote-backend.md`
+
+This plan changes separately only to record scope and evidence.
+
+Non-goals:
+
+- no recovery HTTP/API/SPA route, unauthenticated browser form, network principal, bootstrap reopening, existing-user overwrite/password reset, last-user-guard bypass, role model, session behavior, rate-limit behavior, password policy, interactive terminal masking, registry lock, or concurrent online recovery;
+- no service-manager/container implementation, service account/path default, packaging, NixOS module/service, storage schema, CLI argument, logging, authentication code, dependency, protocol, OpenAPI, generated, backend runtime, frontend, or wrapper-chain change;
+- no manual hash generation/editing, sentinel deletion, user-registry deletion, password example/value, secret-bearing command line, later finding, Opportunity, or unresolved item.
+
+Validation commands and evidence:
+
+- `cargo test -p underwrap-backend cli`
+- `cargo test -p underwrap-backend --bin underwrap-backend`
+- render `underwrap-backend admin recover-user --help` and require stdin, non-overwrite, configured per-user registry, and unchanged-sentinel wording without a state-file append claim
+- direct documentation review that the normative procedure and both links resolve, require the service identity and complete writer quiescence, and contain no password value, unsafe argv/environment handling, unsafe manual edit, or online-concurrency suggestion
+- `cargo fmt -- --check`
+- backend all-target Clippy with warnings denied and the exact Nix `web-build` artifact
+- `git diff --check`
+
+- [x] Revalidate F-034 against the current CLI, user-registry persistence, tests, admin/remote/backend docs, and historical report/handover. Evidence: direct source and documentation trace at clean HEAD on 2026-08-27; the command exists and the documentation gap plus inaccurate single-file help wording remain.
+- [x] Obtain fresh independent approval of the exact normative owner, procedure, boundary, allowlist, non-goals, and static validation before cleanup discovery. Evidence: initial reviews required an exact four-file implementation/docs allowlist, transient plaintext-memory accuracy, complete writer quiescence, and separation of CLI-help from service-identity validation; the plan incorporated every correction and fresh re-review passed on 2026-08-27; no commands were run.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before documentation correction.
+- [ ] Write and independently review the normative recovery procedure, links, and accurate CLI help without changing executable behavior.
+- [ ] Validate, run controller scope/security/diff checks, commit coherently, and record F-034 completion and cross-finding effects before promoting F-035.
+
 ### Remaining medium queue
 
 Promote one row at a time by replacing it with exact iteration tasks after revalidation.
-- [ ] F-034 — document offline administrator lockout recovery.
 - [ ] F-035 — correct resource-name versus resource-id vocabulary.
 - [ ] F-036 — restore visible keyboard focus on dialog and drawer close controls.
 - [ ] F-037 — reconcile stale store routes and list-error handling.
