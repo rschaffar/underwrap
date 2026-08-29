@@ -689,7 +689,11 @@ Validation commands and evidence:
 
 - [x] Revalidate F-034 against the current CLI, user-registry persistence, tests, admin/remote/backend docs, and historical report/handover. Evidence: direct source and documentation trace at clean HEAD on 2026-08-27; the command exists and the documentation gap plus inaccurate single-file help wording remain.
 - [x] Obtain fresh independent approval of the exact normative owner, procedure, boundary, allowlist, non-goals, and static validation before cleanup discovery. Evidence: initial reviews required an exact four-file implementation/docs allowlist, transient plaintext-memory accuracy, complete writer quiescence, and separation of CLI-help from service-identity validation; the plan incorporated every correction and fresh re-review passed on 2026-08-27; no commands were run.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before documentation correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before documentation correction.
+  - Finding-local discovery found no independent deletion: the recover-user helper, parser case, distinct-user/non-overwrite tests, service-identity guidance, and current documentation context are live behavior or acceptance evidence.
+  - Repository-wide bounded definition/reachability discovery found no high-confidence private deletion independent of F-034 and the remaining findings.
+  - Normative-procedure consolidation, links, and CLI-help correction are the fix; broader documentation cleanup remains F-051 or its eventual current owner.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved documentation correction may begin.
 - [ ] Write and independently review the normative recovery procedure, links, and accurate CLI help without changing executable behavior.
 - [ ] Validate, run controller scope/security/diff checks, commit coherently, and record F-034 completion and cross-finding effects before promoting F-035.
 
