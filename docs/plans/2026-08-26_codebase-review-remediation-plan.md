@@ -756,7 +756,11 @@ Validation commands and evidence:
 
 - [x] Revalidate F-035 through the current option/config docs, runtime DTO and backend name-resolution flow, generated-id model, VM fixture use, and historical report/handover. Evidence: direct CodeGraph/source/documentation trace and focused repository terminology search on 2026-08-27; exactly three stale comments remain and published configuration wording is already correct.
 - [x] Obtain fresh independent approval of the exact three-comment scope, authorization boundary, legitimate-id exclusions, allowlist, non-goals, and static validation before cleanup discovery. Evidence: security review passed; scope review found one incorrect `WrapperConfig` symbol name, the plan corrected it to `WrapperDef.resource`, and fresh re-review passed on 2026-08-27; no commands were run.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before terminology correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before terminology correction.
+  - Finding-local discovery found no independent deletion: all three comments attach to live configuration or fixture logic, and renaming fields/variables would add churn or change excluded contracts.
+  - Repository-wide bounded reachability discovery found no high-confidence private production deletion independent of the remaining findings.
+  - Comment correction is the fix; tests, generated surfaces, F-043 cleanup, broader vocabulary work, renames, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved terminology correction may begin.
 - [ ] Correct and independently review the three comments without changing executable behavior.
 - [ ] Validate, run controller scope/diff checks, commit coherently, and record F-035 completion/cross-effects before promoting F-036.
 
