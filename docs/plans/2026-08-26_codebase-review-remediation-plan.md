@@ -525,10 +525,98 @@ Validation commands:
   - The accepted VM raw large-blob equality-harness obligation remains separately owned by the unchecked task below and does not alter product behavior or F-032 closure.
 - [ ] Resolve or explicitly close the large raw-blob VM equality-harness obligation before final program completion; it is non-blocking for F-032 under the user's bounded-evidence decision and has no implementation authority yet.
 
+### Current iteration — F-033 privileged namespace dependency profile
+
+The report's dependency-direction finding remains directly reproducible at current HEAD `1818c387817b970934a0486f1a253f04b79bb0a8`.
+
+An isolated locked `cargo check -p underwrap-ns` compiles protocol `config`, `control`, `entities`, `policy`, `service`, and `scm_rights` modules even though the namespace wrapper does not use them.
+
+The same isolated `cargo tree -p underwrap-ns -e normal --depth 2` reaches protocol-owned Tokio, Utoipa, Serde YAML, and libc in addition to the canonical serde/JCS/blob/local-ABI dependencies and `underwrap-ns`'s own direct libc.
+
+The fresh-target artifacts captured from clean HEAD have dep-info hash `83604055c6799c602bd495fe5662b43882986c5b008746593473eec12bb94dbf`, package-tree hash `5d73ca97a96cc4459a89a1bf62cba5549aac87ce21d7020d211b9b48a6c5371e`, and successful check-log hash `26b86e3d4fc0ac7987a53f1bae6bcfff71de4ce77ecf858360ac6a47d5c02da1`; the controller recalculated all three after drafting this scope.
+
+This establishes compile and review coupling, not linked-code inclusion, runtime-TCB expansion, exploitability, or a dependency vulnerability.
+
+Security boundary:
+
+- Protected asset: the reviewable and rebuild-isolated source/dependency surface of the world-executable privileged namespace wrapper.
+- Failure source: unrelated configuration, backend policy/admin, OpenAPI/schema, async transport, or SCM_RIGHTS maintenance entering the privileged crate's compile graph.
+- Boundary direction: `underwrap-ns` manifest feature selection → compiled `underwrap-protocol` modules and normal dependencies → privileged namespace-wrapper package.
+- Preserved invariant: the namespace wrapper consumes only canonical resource-domain and local ABI/codec code, while every wire value, serialization shape, fd number, privilege transition, namespace operation, target behavior, and default full protocol consumer remains unchanged.
+
+Exact scope:
+
+- Add two protocol profiles: default `full` and explicit `local-abi`; the local profile consists of always-compiled canonical/local modules, while `full` additionally enables configuration, control/entities/policy/service, async IPC, SCM_RIGHTS, and schema code.
+- Make protocol-owned Tokio, Utoipa, and libc optional and enabled only by `full`.
+- Move Serde YAML from protocol normal dependencies to dev dependencies because only protocol configuration tests use it.
+- Move `AccessMode` into one always-compiled `access` module, update local internal/test imports, and re-export it from the full-only `config` module so existing full consumers retain the same path and type.
+- Gate `config`, `control`, `entities`, `policy`, `service`, and `scm_rights` modules behind `full`.
+- Gate async IPC functions/tests and Utoipa derives/manual schema implementations in always-compiled modules behind `full`.
+- Select `underwrap-protocol` from `underwrap-ns` by direct workspace-relative path with default features disabled and only `local-abi` enabled; leave every other protocol consumer on the unchanged default full profile.
+- Keep canonical serde, JSON/JCS, `anyhow`, base64, and zeroization dependencies in the local profile because the namespace wrapper directly consumes their local ABI and canonical resource-blob behavior.
+- Document the isolated package feature boundary and exact dependency/source-module checks without claiming workspace-wide Cargo feature isolation, because a combined workspace graph may unify features from full consumers.
+
+Expected source/test allowlist:
+
+- `crates/underwrap-protocol/Cargo.toml`
+- `crates/underwrap-protocol/src/lib.rs`
+- new `crates/underwrap-protocol/src/access.rs`
+- `crates/underwrap-protocol/src/config.rs`
+- `crates/underwrap-protocol/src/exec.rs`
+- `crates/underwrap-protocol/src/ipc.rs`
+- `crates/underwrap-protocol/src/ipc/tests.rs`
+- `crates/underwrap-protocol/src/message/common.rs`
+- `crates/underwrap-protocol/src/message/wrapper.rs`
+- `crates/underwrap-protocol/src/message/tests.rs`
+- `crates/underwrap-protocol/src/resource.rs`
+- `crates/underwrap-protocol/src/resource_blob.rs`
+- `crates/underwrap-protocol/src/variant.rs`
+- `crates/underwrap-ns/Cargo.toml`
+- `crates/underwrap-ns/src/env/tests.rs`
+- `crates/underwrap-ns/src/main/tests.rs`
+- `docs/architecture.md`
+- `docs/testing.md`
+- this plan for evidence
+
+Non-goals:
+
+- no crate split, new dependency, dependency-version update, workspace-wide protocol-feature narrowing, default full-profile change for any non-namespace consumer, or Cargo resolver/support-contract change;
+- no wire, serde/JCS, schema, OpenAPI, configuration grammar, resource model, fd, IPC framing, namespace, privilege, target, helper, writeback, backend, daemon, binary-chain, NixOS module, or deployed behavior change;
+- no removal of dead ABI/config fields under F-043, terminology work under F-035, Rust support work under F-057, later finding, Opportunity, or unresolved item;
+- no claim that excluding dead compile dependencies reduces the runtime TCB, linked binary, attack surface, or known vulnerability exposure;
+- no weakening of the separately owned VM raw large-blob equality assertions merely to obtain a green validation run.
+
+Validation commands and evidence:
+
+- fresh-target `cargo check --locked -p underwrap-ns`, then inspect protocol dep-info and require absence of `config`, `control`, `entities`, `policy`, `service`, and `scm_rights` source paths
+- `cargo tree --locked -p underwrap-ns -e features --depth 2`, requiring `local-abi` without protocol `default` or `full`
+- `cargo tree --locked -p underwrap-ns -e normal,build --depth 2`, requiring no Tokio, Utoipa, or Serde YAML and no libc edge from `underwrap-protocol`; `underwrap-ns` retains its direct libc
+- `cargo check --locked -p underwrap-protocol --no-default-features --features local-abi`
+- `cargo test --locked -p underwrap-protocol --no-default-features --features local-abi`
+- `cargo clippy --locked -p underwrap-protocol --no-default-features --features local-abi -- -D warnings`
+- `cargo test -p underwrap-protocol`
+- `cargo test -p underwrap-ns`
+- `cargo test -p underwrap-exec`
+- `cargo test -p underwrapd`
+- `cargo test --workspace --exclude integration-tests -- --test-threads=4` with the exact Nix `web-build` artifact
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets --workspace -- -D warnings` with the exact Nix `web-build` artifact
+- `nix build .#packages.x86_64-linux.underwrap-ns`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- `nix flake check --all-systems --no-build`
+- `nix build .#checks.x86_64-linux.vm-test`; this F-033 boundary requires a complete pass, and reproduction of the separately owned raw large-blob equality failure leaves VM non-regression evidence unavailable and requires a fresh explicit decision rather than attribution as a pass
+
+- [x] Revalidate F-033 against the current isolated package graph and replace the report's stale versions with exact current source/dependency evidence. Evidence: direct locked fresh-target check, dep-info inspection, Cargo tree, manifest/source trace, historical report/handover constraints, and two focused independent design/evidence consultations on 2026-08-27.
+- [x] Obtain fresh independent approval of the exact F-033 profile design, security boundary, allowlist, non-goals, isolation evidence, and validation before cleanup discovery. Evidence: architecture review passed; evidence review required fresh-target/clean-tree precision, local-profile tests and Clippy, and a mandatory complete VM or fresh decision; the plan incorporated every correction, the controller recalculated all hashes, and fresh final re-review passed on 2026-08-27; no review commands were run.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process each accepted cleanup before the feature-boundary fix.
+- [ ] Implement the approved full/local-ABI split with one writer and prove the isolated namespace package excludes every forbidden module and dependency while preserving default-full behavior.
+- [ ] Complete fresh independent implementation review, separate correction passes where accepted, validation, controller scope/security/diff checks, coherent local commits, and plan evidence.
+- [ ] Record F-033 completion and every cross-finding effect before promoting F-034.
+
 ### Remaining medium queue
 
 Promote one row at a time by replacing it with exact iteration tasks after revalidation.
-- [ ] F-033 — reduce privileged namespace dependency breadth.
 - [ ] F-034 — document offline administrator lockout recovery.
 - [ ] F-035 — correct resource-name versus resource-id vocabulary.
 - [ ] F-036 — restore visible keyboard focus on dialog and drawer close controls.
