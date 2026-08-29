@@ -448,9 +448,8 @@ def find_pair(pairs, wrapper, resource):
     return None
 
 
-# Wrapper -> resource id mapping for the local instance. Each test
-# wrapper has a single declared resource; the grant key includes the
-# resource so the daemon can distinguish per-resource policy.
+# Wrapper → operator-facing resource name mapping for the local instance.
+# `grant_local_unlocked` resolves the name through `LOCAL_RESOURCE_IDS` before constructing the stable resource id permission tuple.
 LOCAL_WRAPPER_RESOURCES = {
     "test-echo": "test/token",
     "test-echo2": "test/other",

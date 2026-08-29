@@ -374,12 +374,11 @@ let
       resource = lib.mkOption {
         type = lib.types.str;
         description = ''
-          Backend resource id this wrapper projects into the target. Each
-          wrapper projects exactly one resource; opt into the projection
-          slots with <option>env</option>, <option>files</option>, and
-          <option>libsecret</option>. Backend policy, not NixOS config,
-          decides whether projected mutable slots are read-only or
-          read-write for a particular invocation.
+          Operator-facing backend resource name this wrapper projects into the target.
+          The backend resolves this name to the stable generated resource id.
+          Each wrapper projects exactly one resource.
+          Opt into the projection slots with <option>env</option>, <option>files</option>, and <option>libsecret</option>.
+          Backend policy, not NixOS config, decides whether projected mutable slots are read-only or read-write for a particular invocation.
         '';
         example = "github/token";
       };

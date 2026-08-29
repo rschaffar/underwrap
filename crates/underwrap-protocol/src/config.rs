@@ -391,11 +391,11 @@ pub struct WrapperDef {
     /// Absolute path to the target binary to exec for `variant = Real`.
     pub target: PathBuf,
 
-    /// Backend resource id this wrapper projects into the target. Each
-    /// wrapper projects exactly one resource; the resource itself
-    /// always has all three backend slots (`env`, `files`, `libsecret`)
-    /// available, and the wrapper opts into the subset it needs via the
-    /// flags below.
+    /// Operator-facing backend resource name this wrapper projects into the target.
+    /// The backend resolves this name to the stable generated resource id.
+    /// Each wrapper projects exactly one resource.
+    /// The resource always has all three backend slots (`env`, `files`, `libsecret`) available.
+    /// The wrapper opts into the subset it needs via the flags below.
     pub resource: String,
 
     /// Project `<resource>/env/*` into the target environment.
