@@ -325,6 +325,30 @@ pin persist as the visibility commit; they do not claim parent-directory fsync,
 power-loss durability, rollback, secure erasure, or a frontend/backend
 transaction.
 
+### Sensitive persistence claim evidence
+
+Use these focused checks when reviewing the scoped persistence claim and its separate credential, authentication-record, and configuration controls:
+
+```bash
+cargo test -p underwrap-keygen
+cargo test -p underwrapd startup::tests::credential_permissions
+cargo test -p underwrap-backend users
+nix build .#checks.x86_64-linux.frontend-security-assertions-eval
+nix build .#checks.x86_64-linux.examples-nixos-eval
+nix flake check --all-systems --no-build
+```
+
+The keygen suite covers daemon-account, existing-owner, and invoking-identity precedence together with mode-`0400`, file-sync, atomic-persist, and stdout-after-commit behavior.
+It does not establish parent-directory fsync, power-loss durability, secure erasure, backend enrollment transactionality, or live daemon reload.
+The daemon credential-permission filter covers a missing file, an accepted mode-`0400` file under mode `0700`, rejection of mode `0640`, and rejection of a mode-`0755` parent.
+Direct source inspection additionally shows the file-owner check and that parent ownership and mode are checked only when parent metadata lookup succeeds; the focused tests do not exercise a wrong owner or failed parent metadata lookup.
+The backend `users` filter covers Argon2 record validation, persisted user mutations, API omission, and `Debug` redaction.
+Static inspection of `users.rs` and `storage/json_dir_store.rs` shows restrictive Unix `NamedTempFile` creation, file sync, and atomic rename, but neither the tests nor the application establish a final record mode, users-directory mode, parent-directory fsync, encryption at rest, or secure erasure.
+Static inspection of `tls.rs`, encrypted-store lifecycle code, and the NixOS module establishes current code shape for TLS-key loading, master-key handling, retained workspaces, generated configuration, and declared service paths only.
+The two Nix builds prove that the unchanged production module and examples evaluate through their pinned check definitions, while the all-systems no-build command proves output evaluation for supported systems.
+Nix evaluation does not prove deployed ownership, mode, umask, runtime file contents, CA-key custody, secure deletion, memory erasure, or target behavior.
+The normative claim and control inventory remains in [Security](security.md#1-underwrap-managed-durable-brokered-resource-material-uses-backend-storage).
+
 Protocol tests pin the sole config field `client_identity_file`; keygen tests
 pin the sole explicit CLI flag `--client-identity-out`. Daemon startup and
 backend-client tests cover one-file admission, URL-before-file-I/O ordering,

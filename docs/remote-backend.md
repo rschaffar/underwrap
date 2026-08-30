@@ -1,7 +1,6 @@
 # Deploying the backend
 
-A central deployment separates persistent secret storage from the NixOS hosts
-that execute wrappers:
+A central deployment separates durable brokered-resource storage from the NixOS hosts that execute wrappers:
 
 - **backend host** — runs `underwrap-backend`, stores resources and policy, and
   serves the admin UI;
@@ -62,8 +61,12 @@ step certificate create \
   --not-after 8760h --insecure --no-password
 ```
 
-Protect `ca.key` as a CA private key; it does not need to remain on the backend
-host after issuing the server certificate.
+Protect `ca.key` as a CA private key, and remove it from the backend host after issuance when the deployment does not require it there.
+
+`server.key` and any retained CA signing key are operator-managed persistent authentication material outside resources and `StorageBackend`.
+The backend reads the configured server key into rustls but does not install, rotate, atomically replace, or validate its ownership or mode.
+The backend does not use or manage the CA signing key.
+The operator owns key placement, filesystem ownership and mode, restrictive umask, rotation, service sandboxing, and CA-key custody.
 
 Install:
 
@@ -117,8 +120,9 @@ admin:
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Run the process as a dedicated account that can read the TLS key and owns the
-registry/data directories. A service unit should apply at least:
+Run the process as a dedicated account that can read the TLS key and owns the registry/data directories.
+These deployment controls supply TLS-key and state-path permissions that the application does not enforce.
+A service unit should apply at least:
 
 - `NoNewPrivileges=true`;
 - `PrivateTmp=true`;

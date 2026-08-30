@@ -252,7 +252,7 @@ tickets/                     retained historical review and work records
 - `crates/underwrap-ns/src/idmap.rs` — explicit caller-directory access
 - `crates/underwrap-ns/src/writeback.rs` — canonical change detection and
   finalize dispatch
-- `crates/underwrap-secretsd/src/main.rs` — one-shot init and tmpfs state model
+- `crates/underwrap-secretsd/src/main.rs` — one-shot canonical initialization, in-memory state, and private generation publication
 - `crates/underwrapd/src/peer_auth.rs` — effective-GID peer authentication
 - `crates/underwrapd/src/wrapper_flow/` — wrapper request flow
 - `crates/underwrapd/src/wrapper_resource_channel.rs` — scoped resource channel
@@ -306,12 +306,14 @@ test.
 
 ### Secret persistence and transport
 
-- Persist secret material only through the backend's `StorageBackend`.
-  Namespace-private tmpfs staging for files/libsecret is the documented
-  ephemeral exception; do not add disk caches, sidecar databases, or ordinary
-  temp files on the frontend.
-- Never put secret material in argv, between-stage environment variables, shell
-  command lines, or logs. The stage handoff uses fd 3.
+- Persist underwrap-managed durable brokered resource material only through the backend's selected `StorageBackend`.
+  Retained encrypted rotation `backup/` and `stage/` sibling workspaces remain outside the active store path and APIs until trusted-host cleanup.
+  Keep frontend resource material in process memory, except for files staged on invocation-private `noswap` tmpfs, and do not add disk caches, sidecar databases, local databases, ordinary temporary files, or alternate durable frontend paths.
+  Keep libsecret resource state in process memory; the namespace-private libsecret bus tmpfs carries only runtime socket and helper artifacts without a `noswap` claim.
+- Treat runtime identities, backend and CA keys, authentication records, and trusted configuration as separately controlled sensitive domains rather than exceptions to the brokered-resource rule.
+- Never place brokered values or other secrets in `envSet`, because it is materialized in Nix-generated configuration; use resource slots instead.
+- Never put secret material in argv, between-stage environment variables, shell command lines, or logs.
+  The stage handoff uses fd 3.
 - Zeroize secret buffers after use where practical.
 - Keep the runtime API at wrapper/resource vocabulary. A runtime client must
   never be able to name `control/*` or a storage key.

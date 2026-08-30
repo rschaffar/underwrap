@@ -1,14 +1,13 @@
 # Architecture
 
-underwrap separates persistent secret authority from local process execution.
-The backend owns resources and policy; the NixOS frontend turns one authorized
-resource into a short-lived target process.
+underwrap separates backend authority for durable brokered resource material from local process execution.
+The backend owns resources and policy, while the NixOS frontend turns one authorized resource into a short-lived target process.
 
 ## Components
 
 | Component | Responsibility |
 | --- | --- |
-| `underwrap-backend` | HTTPS runtime API, admin API, embedded SPA, policy, resources, and persistent storage |
+| `underwrap-backend` | HTTPS runtime API, admin API, embedded SPA, policy, resources, and durable brokered-resource storage |
 | `underwrapd` | Per-instance local broker; authenticates wrapper peers and relays the three runtime API calls |
 | `underwrap-exec` | Setgid entry stage; requests an invocation, drops the instance-group identity, and hands execution state to `underwrap-ns` |
 | `underwrap-ns` | Namespace supervisor; authenticates the fixed daemon channel, checks out the resource, switches target identity, projects slots, executes the target, and finalizes usage/writeback |
@@ -164,17 +163,12 @@ permit, but they do not establish the remote outcome. Registration auto-create,
 invocation-open `last_used_at`, or finalize writeback may already have occurred.
 The daemon does not retry, roll back, or provide exactly-once delivery.
 
-One scoped wrapper-resource channel still processes Checkout and its terminal
-Checkin or UsageSignal sequentially. Independent channels and registration/open/
-finalize calls may complete out of order. This adds neither write ordering nor a
-transaction: the backend remains the policy and persistence authority, with the
-existing whole-value last-writer-wins limitations.
+One scoped wrapper-resource channel still processes Checkout and its terminal Checkin or UsageSignal sequentially.
+Independent channels and registration, open, and finalize calls may complete out of order.
+This adds neither write ordering nor a transaction: the backend remains the policy and brokered-resource persistence authority, with the existing whole-value last-writer-wins limitations.
 
-The concurrency limit prevents an unbounded local pending queue; it does not
-make the daemon available when 32 calls are stalled or the backend path is down.
-HTTPS-only transport, mTLS identity, CA selection, hostname verification,
-base-path handling, disabled idle pooling, and backend policy/persistence
-semantics are unchanged.
+The concurrency limit prevents an unbounded local pending queue, but it does not make the daemon available when 32 calls are stalled or the backend path is down.
+HTTPS-only transport, mTLS identity, CA selection, hostname verification, base-path handling, disabled idle pooling, and backend policy and brokered-resource persistence semantics are unchanged.
 
 ## Local wrapper gate
 
@@ -405,13 +399,10 @@ Stores use either:
 - `EncryptedBackend` — ChaCha20-Poly1305 with an operator-held 32-byte key kept
   only in backend process memory.
 
-Encrypted stores start locked after a backend restart. An operator supplies the
-key through the admin UI/API; a canary verifies it before the backend installs
-the unlocked store. Key rotation stages and verifies a complete fresh
-generation, activates it, and retains every displaced ciphertext generation in
-a unique backend-host sibling workspace. Startup does not select or reconcile
-those workspaces; trusted offline recovery and selective cleanup follow the
-[backend procedure](backend.md#retained-rotation-generations).
+Encrypted stores start locked after a backend restart.
+An operator supplies the key through the admin UI/API, and a canary verifies it before the backend installs the unlocked store.
+Key rotation stages and verifies a complete fresh generation, activates it, and retains displaced ciphertext in backend-host sibling workspaces outside the active store path and APIs.
+Startup does not select or reconcile those workspaces, and trusted offline recovery and selective cleanup follow the [backend procedure](backend.md#retained-rotation-generations).
 
 ## NixOS module responsibilities
 
@@ -446,7 +437,7 @@ The module is part of the security architecture, not packaging convenience.
 
 ```text
 underwrap-protocol        canonical domain/local ABI; full config, policy, service, and schema profile
-underwrap-backend-store   persistent storage implementations
+underwrap-backend-store   brokered-resource storage implementations
 underwrap-secretsd-store  in-memory Secret Service data model
 underwrapd                local broker and runtime HTTPS client
 underwrap-exec            setgid entry stage

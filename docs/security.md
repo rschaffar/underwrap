@@ -84,11 +84,26 @@ underwrap protects:
 - resource values in env, files, and libsecret slots;
 - the runtime client's mTLS private key;
 - encrypted-store master keys while held by the backend;
-- private projection mounts, the private D-Bus endpoint, and authenticated
-  resource-channel descriptors.
+- private projection mounts, the private D-Bus endpoint, and authenticated resource-channel descriptors.
 
-Resource names, wrapper names, process metadata, mountpoint names, and policy
-deny reasons are not secrets.
+Separately managed sensitive assets are:
+
+- the backend server's TLS private key;
+- CA signing keys for certificates trusted by the deployment;
+- admin password-verifier records;
+- the integrity of trusted frontend and backend configuration.
+
+The compromise directions are explicit:
+
+- reading a current plaintext resource discloses its brokered values;
+- reading active or retained encrypted ciphertext together with the corresponding generation key discloses current or stale brokered resource values;
+- reading a runtime client identity permits client impersonation;
+- reading the backend server key permits server impersonation;
+- reading a CA signing key permits unauthorized issuance of trusted certificates;
+- reading an admin password verifier permits offline guessing and can lead to admin compromise;
+- writing trusted configuration without authorization permits wrapper, target, or backend behavior manipulation.
+
+Resource names, wrapper names, process metadata, mountpoint names, and policy deny reasons are not secrets.
 
 ### Untrusted caller
 
@@ -147,21 +162,29 @@ underwrap does not protect against:
 
 ## Design invariants
 
-### 1. The backend is the only persistent secret store
+### 1. Underwrap-managed durable brokered resource material uses backend storage
 
-All durable secret material is written through `underwrap-backend`'s
-`StorageBackend`. The frontend daemon caches one opaque canonical resource blob
-in memory for the lifetime of a resource channel.
+Active resource values are written through `underwrap-backend`'s selected `StorageBackend`.
+The frontend daemon caches one opaque canonical resource blob in memory for the lifetime of a resource channel.
 
-The documented ephemeral exception is namespace-private tmpfs used to stage
-files and to host the private libsecret bus socket/helper logs during one
-invocation. Libsecret state remains in secretsd and host-supervisor memory. The
-frontend must not add:
+Encrypted rotation can retain `backup/` and `stage/` sibling workspaces outside the active canonical `StorageBackend` path and APIs.
+These workspaces contain ciphertext that remains decryptable with the corresponding generation key, including stale resource values from an earlier generation.
+Underwrap retains them indefinitely, and resource deletion, store deletion, restart, later rotation, and API operations do not remove them.
+A trusted backend-host operator owns selective recovery and cleanup.
 
-- ordinary temporary files containing secrets;
+The frontend retains brokered resource material in process memory, except for files bytes staged on namespace-private `noswap` tmpfs during one invocation.
+Libsecret resource state remains in process memory.
+The namespace-private libsecret bus tmpfs carries only runtime socket and helper artifacts without a `noswap` claim.
+The frontend must not add:
+
+- ordinary temporary files containing brokered resource values;
 - JSON sidecars or local databases;
 - disk caches;
-- alternate persistence paths that bypass backend policy.
+- alternate durable frontend paths that bypass backend policy.
+
+Runtime identities, backend and CA keys, authentication records, trusted configuration, and operator-custodied keys are separately controlled sensitive domains rather than exceptions to this brokered-resource invariant.
+Nix-generated frontend configuration is trusted integrity state rather than confidential storage.
+A configured target is a trusted recipient that can print, persist, or transmit its projection independently of underwrap writeback policy.
 
 ### 2. The kernel gates entry; the daemon validates selection
 
@@ -673,12 +696,10 @@ The backend stores its SHA-256 fingerprint.
 
 #### Runtime client identity installation
 
-The private frontend identity is one PEM containing the certificate chain
-followed by its matching private key. The daemon config names it only through
-`backend.client_identity_file`; on NixOS its path is
-`/var/lib/underwrap-<instance>/client-<instance>.identity.pem`. Keygen resolves
-that path from `--instance-config`, or accepts the sole explicit output flag
-`--client-identity-out`.
+The private frontend identity is one PEM containing the certificate chain followed by its matching private key.
+The daemon config names it only through `backend.client_identity_file`; on NixOS its fixed path is `/var/lib/underwrap-<instance>/client-<instance>.identity.pem`.
+The normal NixOS deployment places that file in a mode-`0700` per-instance state directory owned by the config-derived daemon account and gives the daemon read-only service access to the directory.
+Keygen resolves that path from `--instance-config`, or accepts the sole explicit output flag `--client-identity-out`.
 
 Before key generation, config-derived daemon ownership is resolved with reentrant `getpwnam_r` and `getgrnam_r` calls whose output structures and backing buffers remain caller-owned through the UID/GID copy.
 The `_SC_GETPW_R_SIZE_MAX` and `_SC_GETGR_R_SIZE_MAX` values are hints: unavailable, zero, or negative values use a 16-KiB buffer, while an unrepresentable or greater-than-1-MiB value aborts.
@@ -726,11 +747,26 @@ verification applies in either mode. This server trust selection is separate
 from the client-certificate fingerprint that defines runtime identity, and the
 URL rule does not change either mechanism.
 
-The checked value is the endpoint the daemon dials. Direct backend rustls and
-Layer-4 TLS passthrough preserve the mTLS peer certificate. An HTTPS Layer-7
-proxy address is syntactically admitted, but ordinary TLS termination followed
-by HTTP does not preserve the backend's peer-certificate principal. No trusted
-forwarded-certificate or proxy-identity mechanism is implied.
+The checked value is the endpoint the daemon dials.
+Direct backend rustls and Layer-4 TLS passthrough preserve the mTLS peer certificate.
+An HTTPS Layer-7 proxy address is syntactically admitted, but ordinary TLS termination followed by HTTP does not preserve the backend's peer-certificate principal.
+No trusted forwarded-certificate or proxy-identity mechanism is implied.
+
+### Backend server and CA key custody
+
+The configured `https.tls.key_file` and any CA signing key are operator-managed persistent authentication material outside resources and `StorageBackend`.
+The backend reads the configured server key into rustls, but it does not install, rotate, atomically replace, or validate the ownership or mode of that file.
+The backend does not use or manage the CA signing key.
+Backend-host service identity, filesystem ownership and mode, a restrictive umask, service sandboxing, and CA-key custody or removal are deployment controls.
+Reading the server key permits backend impersonation, while reading a CA signing key permits unauthorized certificate issuance within that CA's trust domain.
+
+### Trusted configuration is integrity state
+
+Nix-generated frontend configuration is not confidential and can be readable outside the daemon.
+The daemon service's read-only configuration access protects integrity rather than confidentiality.
+`envSet` accepts only fixed non-secret values because it is materialized in that generated configuration, and brokered values belong in resource slots.
+Backend YAML contains paths and settings, including the TLS-key path, rather than TLS key bytes or encrypted-store master keys.
+An unauthorized trusted-configuration write can manipulate target or backend behavior, while configuration read access is not covered by a secrecy claim.
 
 Each daemon uses one shared direct async reqwest client for register,
 invocation-open, and invocation-finalize calls; there is no global FIFO request
@@ -772,11 +808,9 @@ The NixOS service runs `underwrapd` as its per-instance user and group with:
 The daemon needs cross-user `/proc/<pid>/status` access for effective-GID peer
 authentication, so hiding other users' process entries would break its gate.
 
-At startup, the daemon rejects a present runtime credential when:
-
-- its file is owned by another UID;
-- its mode is wider than `0600`;
-- its parent directory is owned by another UID or wider than `0700`.
+At startup, the daemon rejects a present runtime credential whose file is owned by another UID or whose mode is wider than `0600`.
+When parent metadata lookup succeeds, it also rejects a parent directory owned by another UID or wider than `0700`.
+Failure to obtain parent metadata skips that parent check.
 
 A missing identity file is allowed so enrollment can happen after service
 startup; each wrapper request retries backend initialization until a client is
@@ -797,15 +831,20 @@ reads the password from stdin, serializes independent processes with a stable
 advisory lock, commits the user before the bootstrap sentinel, and never rolls
 back a valid user when sentinel persistence fails.
 
-The admin API and SPA share the backend HTTPS listener. Authentication uses:
+The admin API and SPA share the backend HTTPS listener.
+Authentication uses:
 
 - Argon2id password hashes;
-- opaque `__Host-underwrap-session` cookies backed by an in-memory
-  `tower-sessions` store;
+- opaque `__Host-underwrap-session` cookies backed by an in-memory `tower-sessions` store;
 - synchronizer-token CSRF with a bound cookie and `X-CSRF-Token` header;
 - optional `allowed_origins` checks for state-changing requests;
-- per-username login rate limiting and a dummy-hash verification path for
-  unknown usernames.
+- per-username login rate limiting and a dummy-hash verification path for unknown usernames.
+
+Argon2id password-verifier records persist under `users_dir` outside `StorageBackend` and permit offline guessing if copied.
+Admin API responses omit the verifier field, and `Debug` output redacts it.
+Record replacement uses `NamedTempFile`'s restrictive Unix temporary-file creation, file sync, and atomic rename.
+The application does not chmod or verify the final record mode, does not enforce the `users_dir` mode, and relies on deployment ownership, mode, and umask.
+It does not fsync the parent directory, encrypt verifier records at rest, or guarantee secure erasure.
 
 Sessions do not survive backend restart. Password changes and user deletion
 invalidate that user's sessions through `axum-login`'s session auth-hash check.
@@ -844,36 +883,27 @@ service account.
 
 `EncryptedBackend` uses ChaCha20-Poly1305 with a 32-byte master key:
 
-- the key is generated in memory when the store is created;
-- the create response displays it once;
+- the key is generated in backend memory when the store is created or rotated;
+- the create or rotate response displays the generated key once;
 - no key file is written by underwrap;
 - a reserved encrypted canary verifies later unlock attempts;
 - an encrypted store starts locked after every backend restart;
-- lock drops the in-memory backend and zeroizes the master key when its final
-  reference is released;
-- rotation re-encrypts and verifies a complete generation under a fresh key,
-  displaces the live directory into a unique mode-`0700` backend-host recovery
-  workspace, and promotes the staged generation with individually atomic
-  renames;
-- every displaced complete ciphertext generation remains unmodified while it is
-  retained as a recovery artifact and is never automatically overwritten or
-  deleted by rotation, restart, later rotation, response success, or browser
-  acknowledgement;
-- a failed post-swap rollback either restores the old canonical generation or
-  locks the store with `rotation_recovery_required` while preserving every
-  potentially useful directory;
-- unlock and post-promotion reopen require the canonical directory to exist and
-  never create an empty replacement after an interrupted swap.
+- lock drops the in-memory backend and zeroizes `MasterKey` when its final reference is released;
+- rotation re-encrypts and verifies a complete generation under a fresh key, displaces the live directory into a unique mode-`0700` backend-host recovery workspace, and promotes the staged generation with individually atomic renames;
+- every displaced complete ciphertext generation remains unmodified while it is retained as a recovery artifact and is never automatically overwritten or deleted by rotation, restart, later rotation, response success, browser acknowledgement, resource deletion, or store deletion;
+- a failed post-swap rollback either restores the old canonical generation or locks the store with `rotation_recovery_required` while preserving every potentially useful `backup/` or `stage/` directory;
+- unlock and post-promotion reopen require the canonical directory to exist and never create an empty replacement after an interrupted swap.
 
-The protected availability boundary runs from ciphertext-generation commit to
-the one-time replacement-key response and external custody. The backend cannot
-observe delivery or custody. Retaining every old-key-decryptable snapshot keeps
-an externally held key useful after response loss; the confidentiality cost is
-unbounded disk use and prolonged old-key access to stale ciphertext until
-trusted host cleanup. Recovery paths are backend-host-only siblings and are not
-exposed through admin or runtime APIs. The exact non-overwriting recovery,
-verification, and selective-cleanup procedure is normative in
-[Backend](backend.md#retained-rotation-generations).
+The operator establishes external custody for each displayed key, such as in an external password manager or vault.
+The backend cannot observe response delivery or external custody.
+Underwrap provides no TPM, HSM, or external-vault custody guarantee.
+Compromise of current unlocked-backend process memory can recover the installed key.
+`MasterKey` final-drop zeroization does not comprehensively erase request, response, serialization, browser, clipboard, or other memory copies.
+The protected availability boundary runs from ciphertext-generation commit to the one-time replacement-key response and external custody.
+Each retained snapshot remains decryptable by its corresponding generation key, keeping an externally held generation key useful after response loss.
+The confidentiality and storage costs are prolonged generation-key access to stale ciphertext until trusted-host cleanup and unbounded disk use.
+Recovery paths are backend-host-only siblings outside the active canonical path and are not exposed through admin or runtime APIs.
+The exact non-overwriting recovery, verification, and selective-cleanup procedure is normative in [Backend](backend.md#retained-rotation-generations).
 
 The rotation mutex excludes another rotation only. Ordinary reads and writes
 are not coordinated with the copy or multi-rename swap and can fail or be lost,
@@ -913,10 +943,6 @@ callers re-read both active key and catalog state before serialized
 reconciliation; the error does not prove whether an attempted effect became
 visible and the backend does not reconstruct a blob after a later catalog-save
 failure.
-
-The operator must keep displayed keys in an external password manager or vault.
-Memory compromise of the running backend can recover an unlocked key; TPM/HSM
-custody is out of scope.
 
 ## Permission model
 

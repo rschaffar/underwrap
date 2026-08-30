@@ -127,11 +127,13 @@ the posture weakens the claim. See
 
 ### Central resource and policy
 
-Persistent secret material stays in the backend's `StorageBackend`. The target
-host sees the projection in memory. Files bytes are staged on namespace-private
-tmpfs for one invocation; libsecret state stays in secretsd/host memory while a
-private tmpfs carries only its filesystem bus socket and helper logs. The
-hardened posture permits only the swap cases described above.
+Active underwrap-managed durable brokered resource material stays in the backend's selected `StorageBackend`.
+The target host sees the projection in process memory.
+Files bytes use namespace-private `noswap` tmpfs for one invocation.
+Libsecret resource state remains in process memory, while its namespace-private bus tmpfs carries only runtime socket and helper artifacts without a `noswap` claim.
+Independently managed credentials and trusted configuration are separate domains described in [Security](security.md#design-invariants).
+The configured target can still print, persist, or transmit its projection, including when backend writeback is read-only.
+The hardened posture permits only the swap cases described above.
 
 The backend can revoke a permission without reconfiguring the frontend host.
 
@@ -161,7 +163,8 @@ Use absolute Nix store paths for the helper and all downstream tools. Avoid bare
 lookups for `gh`, `git`, `ssh`, `jq`, `curl`, shells, pagers, editors, and
 browsers.
 
-If a target requires `PATH`, set a fixed trusted `envSet.PATH`.
+If a target requires `PATH`, set a fixed non-secret trusted `envSet.PATH`.
+Never put a brokered value or other secret in `envSet`, because Nix materializes it in generated daemon configuration.
 
 ### Validate every caller-controlled value
 

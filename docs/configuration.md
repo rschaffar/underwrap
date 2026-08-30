@@ -5,9 +5,9 @@ underwrap has two configuration surfaces:
 1. the NixOS frontend module (`services.underwrap`);
 2. the YAML file read by `underwrap-backend`.
 
-The NixOS module generates `underwrapd`'s internal YAML and all privileged
-frontend state. Operators should configure the module rather than hand-writing
-daemon config on NixOS.
+The NixOS module generates `underwrapd`'s internal YAML and all privileged frontend state.
+The generated configuration is trusted integrity state, not confidential storage, and read-only service access protects it from modification rather than disclosure.
+Operators should configure the module rather than hand-writing daemon config on NixOS.
 
 ## NixOS frontend module
 
@@ -98,7 +98,7 @@ The module assigns each instance:
 The generated daemon configuration uses canonical absolute paths for `socket`, `ns_binary`, `debug_tool_target`, `target_runtime_dir_base`, and `backend.client_identity_file`.
 The module also requires canonical absolute paths for each wrapper `target`, optional `backend.ca_file`, and forced `env_set` home/base-XDG value.
 `underwrapd` applies the same lexical checks to every listed runtime field, including hand-written daemon configuration, without requiring the path to exist.
-Backend URLs, resource names, arbitrary `envSet` values, and `envSet.PATH` retain their separate existing contracts.
+Backend URLs, resource names, non-path `envSet` values, and `envSet.PATH` retain their separate lexical contracts.
 
 ### Runtime client credential
 
@@ -149,7 +149,10 @@ wrappers.gh = {
 | `libsecret` | bool | `false` | Project the libsecret slot through a private Secret Service |
 | `accessPaths` | list of strings | `[]` | Caller-owned directories exposed through one-pair idmapped bind mounts; entries are canonical absolute paths, exact `~`, or canonical `~/relative` paths |
 | `envPassthrough` | list of strings | `[]` | Additional caller environment names beyond the built-in passthrough set |
-| `envSet` | attribute set of strings | `{}` | Fixed trusted target environment values |
+| `envSet` | attribute set of strings | `{}` | Fixed trusted non-secret target environment values |
+
+`envSet` is materialized in Nix-generated daemon configuration and must not contain brokered values or other secrets.
+Put brokered values in resource slots instead.
 
 Every wrapper must enable at least one of `env`, `files`, or `libsecret`.
 
@@ -267,8 +270,13 @@ admin:
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Registry paths have defaults and missing directories are treated as empty. In a
-real deployment, set explicit paths and ownership through the service manager.
+Registry paths have defaults and missing directories are treated as empty.
+In a real deployment, set explicit paths and ownership through the service manager.
+
+`https.tls.key_file` names operator-managed persistent authentication material outside resources and `StorageBackend`.
+The backend YAML contains paths and settings, not TLS private-key bytes, CA signing-key bytes, or encrypted-store master keys.
+The backend reads the configured TLS key but does not install, rotate, atomically replace, or validate its ownership or mode.
+The operator and service manager own the TLS-key and any CA-signing-key custody, ownership, mode, umask, and rotation controls.
 
 `https` is required for a running service. Adding `admin` mounts the admin API
 and embedded SPA on the same listener. `stores_data_root` enables store creation
