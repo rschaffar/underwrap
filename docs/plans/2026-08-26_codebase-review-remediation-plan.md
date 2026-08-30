@@ -1418,10 +1418,117 @@ A VM run is not required because the final allowlist changes no Nix/Rust executa
   - F-041 is resolved without weakening a boundary. F-040 remains resolved with synchronized agent guidance; F-008, F-012, and F-034 remain resolved; F-042, F-050, F-051, and every other finding/Opportunity/unresolved item remain unchanged. F-042 is next.
   - Final closure review initially misclassified plan-only commits `0ab2e01`, `b92ca09`, and `bdbc2f5` as product drafts. Exact Git evidence showed each changed only this plan and that `3f2da79` owns all seven product/guidance paths plus both uncommitted correction passes; fresh re-review then passed chronology, exact 172/114 stat/checksum, plan-only status, closure, and F-042 promotion.
 
+### Current iteration — F-042 daemon resource-blob parser boundary
+
+F-042 remains directly reproducible at clean HEAD `4f469ae77a15e0f6cad6b4fd6302df3afc2f055d` with stale historical wording after F-009 and F-038.
+
+`docs/security.md` still calls the daemon's cached resource blob opaque canonical bytes.
+`underwrapd::wrapper_flow::read` actually deserializes the complete secret-bearing `ResourceBlob` before caching the original decoded bytes.
+
+After F-009, env values are not copied into `ReadOk` or fd 3.
+The daemon conditionally inspects only env names, but typed deserialization still materializes env, files, and libsecret maps, metadata, and secret values in temporary daemon memory.
+
+Consequence: security review and zeroization/copy inventories omit one parser/allocation site, while files/libsecret semantic opacity is confused with byte-level opacity.
+No current authorization bypass is alleged because the backend is trusted and remains policy authority.
+
+Security boundary:
+
+- Protected asset: confidentiality and availability/integrity of brokered resource values while a daemon opens and retains one authorized resource.
+- Failure source: malformed or unexpected trusted-backend output, storage/backend bugs, parser/dependency defects, or a maintenance change to schema/decoding/copy/cache behavior.
+  A local caller can trigger an authorized open but cannot directly choose backend blob bytes.
+- Boundary direction: authenticated backend HTTP JSON/base64 → ordinary response `String` → decoded resource-byte `Vec` → complete typed secret-bearing `ResourceBlob` parse → conditional env-name validation → original decoded bytes cached for authenticated fd-20 Checkout.
+- Change direction: documentation and mandatory review scope become accurate.
+  No parser, authorization, transport, memory-lifetime, or confidentiality mechanism changes.
+
+Exact behavior to document:
+
+- For successful responses, reqwest first buffers the complete response body in ordinary non-zeroizing storage and then Serde allocates the owned open-response DTO strings, including `blob_b64`.
+  Neither layer has a daemon application-level response-body cap, and the existing admitted-call deadline covers buffering plus deserialization.
+  Non-success responses are likewise read through uncapped `response.text()`, but that path does not parse a resource blob.
+- `read.rs` standard-base64-decodes `blob_b64` into `blob_bytes` before the decoded complete-resource size check.
+- A successful `ResourceBlob::from_canonical_bytes` call first enforces the inclusive 2,097,152-byte decoded resource limit.
+  Serde then parses the complete typed JSON, including per-entry `SecretBytes` base64 decoding and F-038 safe-integer checks during traversal for every present collection/item timestamp.
+  Only after the complete typed parse does the method require `schema_version == 1`.
+- Typed parsing materializes owned keys/metadata and decoded secret-bearing `SecretBytes` for every env, files, and libsecret entry even when the wrapper projects no env slot.
+  The temporary parsed `SecretBytes` vectors zeroize on drop.
+- When env projection is enabled, the daemon additionally validates every env name against the reserved/hardening grammar.
+  When env projection is disabled, it does not validate env names.
+- Unknown fields are ignored by the outer open-response DTO, `ResourceBlob`, and nested structs.
+  Known duplicate struct fields reject through derived Serde visitors, while duplicate keys in map-valued JSON objects are not independently rejected and later entries replace earlier ones.
+  Missing sections with `serde(default)` become empty.
+- The daemon does not independently establish exact JCS byte canonicality.
+  Accepted noncanonical forms, ignored fields, defaulted omissions, and duplicate map keys remain in the original cached bytes even though the typed parse observes a normalized representation.
+  The normal trusted backend reparses storage and JCS-reserializes before open, but that is not a daemon-side canonicality guarantee.
+- The daemon does not validate files traversal/routing/overlap/projectability.
+  Beyond the `2^53 - 1` bound on all four timestamp fields, it does not validate libsecret temporal relationships, future-time plausibility, identifier/path shapes, alias references, or publication composition.
+  Daemon open enforces only the inclusive 2-MiB complete-resource limit and does not enforce the independent inclusive 1-MiB canonical libsecret publication-body limit.
+  Namespace code later canonicalizes the embedded section, and secretsd enforces the publication limit while constructing each generation frame.
+  A section can therefore pass daemon parsing but fail generation-zero publication and readiness when its canonical publication body exceeds 1 MiB.
+  Those format/semantic authorities remain at the backend, namespace planning, secretsd publication, and host-validation boundaries already documented.
+- The temporary typed `ResourceBlob` is dropped after validation.
+  The original decoded `blob_bytes` moves into `ChannelContext.cached_blob` and remains an ordinary non-zeroizing `Vec<u8>` for the scoped channel lifetime.
+- Checkout first copies `cached_blob` into `CheckoutOk.blob`, and wire encoding copies it again into the complete payload vector.
+  The receiver bounds the outer frame at the resource limit plus six envelope bytes before frame allocation, then checks the inner 2-MiB length before copying the inner blob into the decoded response.
+  On the sender, `cached_blob.to_vec()` occurs before wire encoding rechecks the already trusted/capped cache length.
+  None of these ordinary vectors are zeroizing.
+- Outer HTTP/Serde/base64 strings/buffers, the decoded cache, Checkout/frame vectors, receiver buffers, metadata allocations, allocator remnants, dependency-internal allocations, and OS/socket copies do not gain a comprehensive zeroization claim.
+- The daemon serves the cached decoded bytes verbatim and the backend-supplied writable hint on Checkout.
+  At Checkin, the backend rechecks policy and writability, base64 decoding, decoded size, typed/schema/timestamp parsing, exact JCS bytes, and env immutability.
+  It does not add files routing/projectability or strict libsecret publication semantics at finalize.
+
+Exact documentation/guidance scope:
+
+- In `docs/security.md`, correct both current opaque-blob claims and make the parser/copy/cache boundary normative without duplicating full schema definitions.
+- In `docs/architecture.md`, update the open-invocation flow to include backend-response decode, complete typed parse, conditional env-name validation, typed-value drop, and original-byte channel cache.
+- In `docs/testing.md`, record protocol parser vectors, valid daemon/integration evidence, static parser/copy review commands, and the absence of a dedicated malformed backend-open daemon matrix or fuzz harness/execution evidence.
+- In `AGENTS.md`, add `wrapper_flow/read.rs` as the secret-bearing backend-response parser/cache site and require security review when resource schema, open-response decoding, env validation, logging, cloning, cache lifetime, Checkout copies, or buffer ownership changes.
+
+Fix allowlist — four product/guidance files:
+
+- `AGENTS.md`
+- `docs/security.md`
+- `docs/architecture.md`
+- `docs/testing.md`
+
+The active plan changes separately for workflow evidence only.
+
+Expected cross-effects:
+
+- F-009 remains resolved: the 2-MiB decoded-resource size-before-parse boundary remains and env values remain absent from `ReadOk`/fd 3.
+- F-038 remains resolved: unsafe timestamps already reject during this daemon parse and are now documented as such.
+- U-009 is narrowed but remains unresolved because `SecretBytes` zeroization does not cover HTTP/base64 strings, cached bytes, Checkout/frame buffers, metadata, allocator remnants, or dependency copies.
+- F-043's no-op scope/helper fields, F-054's log-hygiene evidence, and every other finding/Opportunity/unresolved item remain unchanged.
+
+Non-goals:
+
+- no HTTP response cap, base64 preflight, parser/canonicality/schema/default/unknown-field behavior, exact-JCS comparison, env-name rule, files/libsecret semantic validation, error mapping, logging, cache representation, Checkout copy, buffer type/lifetime, or zeroization change;
+- no daemon malformed-response unit matrix, property test, fuzzer/fuzz target/corpus/execution, dependency, protocol/resource schema, backend/runtime API, namespace, secretsd, fd/wire, policy/writeback, Nix/VM, security-boundary, or deployed behavior change;
+- no F-043 code cleanup, F-049 error-chain response work, F-052 comment/vocabulary correction, F-054 log-hygiene expansion, U-009 resolution, historical record edit, broad docs cleanup, later finding, Opportunity, or unresolved-item implementation.
+
+Validation commands and evidence:
+
+- `cargo test -p underwrap-protocol resource_blob::tests`
+- `cargo test -p underwrapd`
+- `./crates/integration-tests/run`
+- direct call-path inventory from `BackendClient::open_request` through `open_invocation`, `ResourceBlob::from_canonical_bytes`, `SecretBytes`, `ChannelContext.cached_blob`, and Checkout frame encoding
+- static search for daemon-open malformed-response tests and `cargo-fuzz`, libFuzzer, proptest, quickcheck, fuzz directories/corpora, with absence recorded rather than converted into coverage
+- targeted search proving the two daemon opaque-byte claims are removed while storage-key/session-cookie/file-string uses of “opaque” remain untouched
+- direct Markdown link/anchor, present-tense, and one-sentence-per-line review across all four fix files
+- exact diff/scope/secret check with no Rust/Nix/dependency/generated change
+- `git diff --check`
+
+A VM run is not required because the final allowlist changes no parser, wire contract, NixOS/module, service, identity, namespace, capability, privileged chain, target-visible behavior, or deployment state.
+A fresh VM would repeat a valid flow and would not prove malformed daemon-open handling, fuzz completeness, or copy/zeroization exhaustiveness.
+
+- [x] Revalidate F-042 against current daemon open/read/channel code, ResourceBlob/SecretBytes behavior, F-009/F-038 effects, tests/fuzz inventory, current docs, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection plus two focused design/evidence reviews on 2026-08-30; the complete typed parser/copy/cache site persists, historical env-value extraction is stale, and no dedicated malformed-open or fuzz evidence exists.
+- [x] Obtain fresh independent approval of the exact parser/copy/validation/nonvalidation inventory, security boundary, four-file wording, evidence limits, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: evidence-scope review passed; technical review required exact HTTP buffering, parse order, unknown/default/duplicate handling, libsecret temporal qualification, Checkout/frame copies and caps, finalize checks, and the later independent 1-MiB publication limit/readiness consequence. The plan incorporated every correction and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before parser-boundary documentation.
+- [ ] Implement and independently review the parser/copy/cache documentation and mandatory review guidance without changing parser behavior or overstating malformed/fuzz evidence.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-042 completion/cross-effects before promoting F-043.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-042 — document the daemon's resource-blob parsing accurately.
 - [ ] F-043 — remove no-op scope and duplicated helper fields.
 - [ ] F-044 — preserve forced XDG environment precedence.
 - [ ] F-045 — reject malformed or dangling Secret Service aliases.
