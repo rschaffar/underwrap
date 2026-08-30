@@ -1940,7 +1940,12 @@ Direct production-handler tests with scripted publication outcomes cover the cha
 
 - [x] Revalidate F-045 against current SetAlias parsing, store alias mutation, strict host validation, F-012 candidate commit/zeroization, tests/docs, F-008/F-039/F-046/U-004 effects, and historical report/handover. Evidence: direct CodeGraph/source/test inspection on 2026-08-30; malformed/dangling candidates no longer poison accepted state, but unexpected non-root paths can still persist unintended removal and early `InvalidArgs` coverage is absent.
 - [x] Obtain fresh independent approval of early validation order, exact path/segment/existence rules, error class, valid/invalid matrix, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: implementation/security review passed. Evidence review required separation of directly validated strings from representable typed object paths, fresh secret-bearing zero-publication fixtures, exact 128-byte alias and collection-target ACK cases, explicit docs evidence, and precise malformed-before-lock versus dangling-under-lock ordering. The plan incorporated every correction and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before SetAlias correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before SetAlias correction.
+  - Finding-local review found SetAlias parsing, validator sharing, and all current publication/isolation tests live; no independent net deletion exists.
+  - Shared segment extraction, early validation, handler matrices, and docs are the F-045 fix.
+  - Repository-wide bounded discovery found no high-confidence private dead production deletion independent of current or later findings.
+  - F-046 property typing, broad Secret Service refactors, tests/docs deletion, dependencies, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved SetAlias correction may begin.
 - [ ] Implement and independently review early SetAlias validation and complete no-publication/valid-publication evidence without changing F-008/F-012.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-045 completion/cross-effects before promoting F-046.
 
