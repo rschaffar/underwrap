@@ -2503,10 +2503,110 @@ Focused real admin/runtime handler/fault tests and one configured-Chromium real-
   - F-049 is resolved for admin internal errors and the explicitly authorized runtime consistency extension. F-015, F-042, and F-048 remain resolved. F-054 remains unresolved and now owns coverage of the new internal-failure events/source field; every other finding, Opportunity, and unresolved item remains unchanged. F-050 is next.
   - Final closure review passed runtime authority/source audit, no-cleanup disposition, separate correction review, logging boundary, exact inventories/messages, all validation/provenance/artifact evidence, corrected Nix-attempt classification, no-VM rationale, bounded cross-effects, and F-050 promotion with no remaining gap.
 
+### Current iteration — F-050 Playwright master-key custody fidelity
+
+F-050 remains directly reproducible at clean HEAD `b36e9dd3bd4253514bef71f5b4ce69c76ae429a4`.
+
+The Playwright backend fixture still creates and exposes `keysDir`, sends ignored `admin.keys_dir` YAML, and claims encrypted-store keys are written there.
+The encrypted-store browser flow also says the backend chooses a key-file location even though creation returns the generated key once and the backend writes no key file.
+
+Consequence: repository-owned browser evidence teaches a false master-key persistence model, while the suite stays green only because current backend config deserialization ignores the unknown fixture field.
+
+Security boundary:
+
+- Protected asset/claim: operator custody expectations for encrypted-store master keys.
+- Observer: developers and reviewers treating the browser fixture/spec as product evidence.
+- Boundary direction: fixture configuration and test commentary → claimed backend key persistence; the correction aligns evidence with the actual one-time response and memory-only key model.
+- Runtime confidentiality/integrity does not change because current code never reads this ignored field or writes the claimed key file.
+
+Exact scope:
+
+- Remove the `BackendInstance.keysDir` property and its false documentation from `web/e2e/backend.ts`.
+- Remove the per-test keys-directory creation, `admin.keys_dir` YAML line, and returned `keysDir` value.
+- Preserve the fixture temp root, TLS key file, plain default store, `stores_data_root`, registry paths, backend process lifecycle, and every current browser flow.
+- In `web/e2e/stores.spec.ts`, replace the stale “backend chooses where to put” key-file comment with the actual contract: encrypted creation returns the generated master key once instead of accepting or persisting an operator-selected key-file path.
+- Rename the encrypted-store scenario exactly to `creating an encrypted store returns its key once without retaining it in checked browser locations`; remove every broad “no traces” claim.
+- Preserve its exact localStorage, sessionStorage, script-visible `document.cookie`, and current-URL assertions, and state that it does not inspect HttpOnly cookies, IndexedDB, Cache Storage, history, network/cache data, process/browser memory, backend-host state, or transient Playwright failure artifacts.
+- Record in `docs/testing.md` that the fixture supplies no master-key directory/field, the real backend returns encrypted-store keys once, the backend unit test scans its test root for `.key` files, and browser observations cover only the four checked locations above.
+- Add static acceptance evidence requiring zero exact `keysDir`, `keys_dir`, literal ``<keys_dir>/<store>.key``, and normalized stale phrase `backend chooses where to put it` matches under `web/e2e`.
+- Positive static checks must retain unrelated TLS fixture markers `keyPath`, `writeFileSync(keyPath, pems.private)`, and YAML `key_file`.
+
+Expected source/test/documentation allowlist:
+
+- `web/e2e/backend.ts`
+- `web/e2e/stores.spec.ts`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-050 removes the historical false Playwright key-file model and its unknown YAML field only.
+- Backend config still does not deny every unknown field; adding `deny_unknown_fields` or changing deployment compatibility is separate and not inferred from this fixture cleanup.
+- F-003/F-041 key custody and retained-generation documentation remain resolved and unchanged; F-051 documentation posture, F-053 tablet evidence, F-054 log hygiene, F-058 tool refresh, and every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no backend/config Serde strictness, NixOS option, CLI/API/OpenAPI, encrypted backend, key generation/return/unlock/rotation, key memory/zeroization, ciphertext retention, browser key-reveal implementation, runtime behavior, storage path, TLS key fixture, or security-boundary behavior change;
+- no new backend-host key-file absence probe, process-memory claim, delivery/custody proof, secure-erasure claim, screenshot/trace redesign, browser storage mechanism, or existing key-value inspection expansion; the existing backend unit scan remains the source/unit-backed no-`.key` evidence;
+- no Playwright fixture architecture/config/project, dependency/lockfile, generated API/schema, Rust/Nix/VM/privileged-chain, later finding, Opportunity, or unrelated refactor;
+- no cross-browser, mobile-browser, tablet, all-storage, backend-host filesystem, key receipt/saving/verification, or production deployment claim from the existing browser scenario.
+
+Validation commands and evidence:
+
+- run the exact sequence below from the repository root; it registers cleanup before any generated SPA output or fresh target is created, records submitted HEAD/diff identity, and uses one checksummed binary for both browser runs:
+
+```bash
+set -euo pipefail
+target_dir=""
+cleanup_f050() {
+  if [ -n "$target_dir" ]; then rm -rf "$target_dir"; fi
+  rm -rf result web/test-results web/playwright-report web/coverage
+  rm -f web/src/api/schema.ts
+  if [ -d web/dist ]; then
+    find web/dist -mindepth 1 ! -name .gitkeep -delete
+    rmdir web/dist 2>/dev/null || true
+  fi
+}
+trap cleanup_f050 EXIT
+submitted_head=$(git rev-parse HEAD)
+submitted_diff_sha256=$(git diff --cached | sha256sum | cut -d' ' -f1)
+cd web
+npm test
+npm run build
+cd ..
+system=$(nix eval --impure --raw --expr builtins.currentSystem)
+web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build")
+UNDERWRAP_WEB_DIST="$web_dist" cargo test -p underwrap-backend \
+  create_encrypted_store_generates_key_in_memory_and_returns_it_once
+target_dir=$(mktemp -d /tmp/underwrap-f050-target.XXXXXX)
+CARGO_TARGET_DIR="$target_dir" UNDERWRAP_WEB_DIST="$web_dist" \
+  cargo build --locked -p underwrap-backend
+backend_bin=$(realpath "$target_dir/debug/underwrap-backend")
+backend_sha256=$(sha256sum "$backend_bin" | cut -d' ' -f1)
+printf 'submitted_head=%s\nsubmitted_diff_sha256=%s\nweb_dist=%s\nbackend_bin=%s\nbackend_sha256=%s\n' \
+  "$submitted_head" "$submitted_diff_sha256" "$web_dist" "$backend_bin" "$backend_sha256"
+env UNDERWRAP_BACKENDD_BINARY="$backend_bin" \
+  nix develop --command bash -lc \
+  'cd web && npx playwright test e2e/stores.spec.ts --project=desktop-1280'
+env UNDERWRAP_BACKENDD_BINARY="$backend_bin" \
+  nix develop --command bash -lc 'cd web && npm run test:e2e'
+```
+
+- static zero-exact-stale-identifier/literal/phrase, retained TLS-marker, exact scenario-assertion, allowlist, and docs-limit checks
+- `git diff --check`
+
+A VM run is not required because no backend/config parser, NixOS/module, identity, namespace, capability, privileged chain, key lifecycle implementation, or deployment behavior changes.
+The changed real-backend Playwright fixture and focused/full browser runs directly exercise the corrected evidence surface; static checks distinguish removed master-key state from retained TLS key material.
+
+- [x] Revalidate F-050 against the current fixture interface/config construction, backend config schema, encrypted-store implementation, stores browser scenario, key-custody docs, and historical report/handover. Evidence: direct CodeGraph/source/search inspection on 2026-08-30; all stale fixture state/field/comments persist, have no consumer, and backend config ignores the unknown nested field while encrypted creation returns the key once.
+- [x] Obtain fresh independent approval of exact removals/comment corrections, browser-evidence wording, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews passed the implementation boundary but required removal of every broad “no traces” claim, exact checked-location exclusions, exact stale/TLS markers, source/unit-backed no-`.key` evidence, and a literal trap/provenance/fresh-binary sequence. The plan incorporated every correction; final implementation and evidence dispositions passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before the fixture correction.
+- [ ] Implement and independently review the fixture/spec/testing-doc correction without changing runtime key behavior.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-050 completion/cross-effects before promoting F-051.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-050 — remove stale master-key configuration from Playwright fixtures.
 - [ ] F-051 — remove stale workflow and temporal wording from published docs.
 - [ ] F-052 — correct audit and writeback comments and vocabulary.
 - [ ] F-053 — add real tablet Playwright coverage or remove the unsupported project claim.
