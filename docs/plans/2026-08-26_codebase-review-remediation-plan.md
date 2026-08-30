@@ -1522,7 +1522,12 @@ A fresh VM would repeat a valid flow and would not prove malformed daemon-open h
 
 - [x] Revalidate F-042 against current daemon open/read/channel code, ResourceBlob/SecretBytes behavior, F-009/F-038 effects, tests/fuzz inventory, current docs, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection plus two focused design/evidence reviews on 2026-08-30; the complete typed parser/copy/cache site persists, historical env-value extraction is stale, and no dedicated malformed-open or fuzz evidence exists.
 - [x] Obtain fresh independent approval of the exact parser/copy/validation/nonvalidation inventory, security boundary, four-file wording, evidence limits, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: evidence-scope review passed; technical review required exact HTTP buffering, parse order, unknown/default/duplicate handling, libsecret temporal qualification, Checkout/frame copies and caps, finalize checks, and the later independent 1-MiB publication limit/readiness consequence. The plan incorporated every correction and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before parser-boundary documentation.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before parser-boundary documentation.
+  - Finding-local review found parser/cache/channel code and current protocol/integration evidence live; no independent net deletion exists.
+  - Opaque-claim removal, parser/copy inventory, links, AGENTS guidance, and evidence-limit wording are the F-042 fix.
+  - Repository-wide bounded discovery found no high-confidence dead production deletion independent of current or later findings.
+  - `_scope`, duplicated helper fields, and unread config fields remain F-043; zeroization, logging, fuzz/tests, broad docs, formatting, and cosmetic churn remain rejected or separately owned.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved parser-boundary documentation may begin.
 - [ ] Implement and independently review the parser/copy/cache documentation and mandatory review guidance without changing parser behavior or overstating malformed/fuzz evidence.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-042 completion/cross-effects before promoting F-043.
 
