@@ -2606,6 +2606,10 @@ The changed real-backend Playwright fixture and focused/full browser runs direct
   - Repository-wide discovery proposed deleting `DirectoryProjectionPlan::is_empty`, but review found its production caller. The revised two-site branch removal is rejected as below-value privileged mount-path churn requiring VM evidence and unrelated to the focused fixture correction; the live method/branch remain unchanged.
   - Formatting, dependencies, fixture architecture, TLS/master-key behavior, broad refactors, F-051+, and cosmetic churn are rejected.
   - Process cleanup 1 and cleanup 2 as separate reviewed, validated commits before the F-050 correction.
+  - Cleanup 1 commit: `5d6510ee762be02097def7509739e8b9f2329e02` (`test: remove false non-admin store scenario`); exact one-file 14-deletion diff, SHA-256 `db95e346459e30fba634afe3eb40d7c5e36db6c96c534c0fab3488aace9dbb31`.
+  - Fresh actual-diff review passed the exact misleading tail-test deletion, distinct-evidence absence, syntax, and separation from F-050/F-051/F-053.
+  - Production build passed with only the existing chunk advisory (`abf79f81b87fa434d0deba3880905be649eb8803aed9959986b587fbff343a5f`); focused list and run found exactly four remaining Stores scenarios and passed all four (`7439e93dff3a754aa7a187c8c7c524c3a2e8e870f9a9597b9057c7fbac3ae4f7`); the complete configured suite passed 37 tests (`e3bb0d2ddedd3db3c2ba06151dcece8376c01caf640400b41b1389efba1b547b`).
+  - Controller checks passed exact tail-test scope, retained full create/edit/delete evidence, no fixture/F-050/product/config/project change, `git diff --check`, generated/browser artifact cleanup, checksum, and clean post-commit tree.
 - [ ] Implement and independently review the fixture/spec/testing-doc correction without changing runtime key behavior.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-050 completion/cross-effects before promoting F-051.
 
