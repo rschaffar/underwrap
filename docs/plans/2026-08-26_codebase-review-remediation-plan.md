@@ -1840,7 +1840,7 @@ The affected shared lexical rule and pure environment planner are exercised dire
   - F-044 is resolved. F-006, F-031, and F-042 remain resolved; F-054 and every other finding/Opportunity/unresolved item remain unchanged. F-045 is next.
   - Final closure review passed ordered history, both stats/checksums, forced-name semantics, recovery correction, validation and prerequisite/transient classifications, controller checks, no-VM rationale, cross-effects, and F-045 promotion. The controller then independently recomputed both commit stats/hashes, every retained log hash, plan-only status, and `git diff --check`.
 
-### Current iteration — F-045 early SetAlias graph validation
+### Completed iteration — F-045 early SetAlias graph validation
 
 F-045 remains valid but narrowed at clean HEAD `986b5e47065371246759c0292c11f3525bec65b0`.
 
@@ -1946,8 +1946,20 @@ Direct production-handler tests with scripted publication outcomes cover the cha
   - Repository-wide bounded discovery found no high-confidence private dead production deletion independent of current or later findings.
   - F-046 property typing, broad Secret Service refactors, tests/docs deletion, dependencies, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved SetAlias correction may begin.
-- [ ] Implement and independently review early SetAlias validation and complete no-publication/valid-publication evidence without changing F-008/F-012.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-045 completion/cross-effects before promoting F-046.
+- [x] Implement and independently review early SetAlias validation and complete no-publication/valid-publication evidence without changing F-008/F-012.
+  - Fix commit: `a00a7e109958949a3fd96a4d177921a9b769147a` (`fix: validate SetAlias before publication`).
+  - One private segment validator now serves CreateCollection names plus SetAlias alias/target segments. SetAlias validates alias first, accepts only root clear or one exact collection segment, acquires the write lock, checks target existence in that same store, and only then enters the unchanged candidate/publication/ACK path.
+  - Malformed or dangling requests return fixed value-free `InvalidArgs`; unexpected non-root paths can no longer become alias removal. Root clear, missing-alias clear, same-target set, common and 128-byte boundaries, host REJECT, wrong-generation, and reject-then-ACK behavior remain covered.
+  - Fresh production review passed. Evidence review required representable typed path cases, secret-bearing fresh no-publication fixtures, both 128-byte ACK boundaries, direct-vs-handler documentation, and exact malformed-before-lock versus dangling-under-lock wording. After those scope corrections, both actual-diff reviews found no source/docs defect; final evidence review passed with no gap.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-045 completion/cross-effects before promoting F-046.
+  - Exact staged diff: four approved paths, 292 insertions and 57 deletions, SHA-256 `b3add160b76e93e93dcac2c5900d61bfa6d88079ea9ead5e9fc1ea41aac00f1a`.
+  - Focused/full validation passed 19 service-handler and 51 full secretsd tests, 23 secretsd-store tests, 24 protocol resource-blob tests, and 15 namespace publication tests (log SHA-256 `9d88c111abba1da39c59c7c2c8e64be26483493d859ca3e0a7521ccae36e3976`).
+  - The packaged integration runner passed all 106 tests (`a6f535316ade1fda0bafb0efc30abc04a998959dfa0260c788a7ac14348e82e0`). Bounded workspace tests passed with exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (`7276b38e2e6e64c8ccb432fd12d82a355bfbf851572d511ed74b33d89f124e86`; prerequisite `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`), workspace denied-warning Clippy and rustfmt passed (`d7dae192715495fa89ccbe279af3efb9792c1dae1768228e369035e68a1df673`), and Nix workspace-test passed (`ab036032ada141c165f6f33c5ad8e448afb45cde72a9ec9d51406cd10cebe7c6`).
+  - Static validation proved alias→path→lock→existence→candidate ordering and documentation targets (`83111748b980be5ec89ea3fa0ebddb30d5de76db14b36606d92d2c2b229b3057`).
+  - The implementation worker's first Nix compile found a test map-type mismatch and its first Clippy command omitted the required SPA bundle. Both were corrected before controller validation; all final focused, workspace, Clippy, integration, and Nix checks passed. These are corrected implementation/prerequisite attempts, not accepted product evidence.
+  - Controller checks passed exact four-path scope, fixed/value-free error messages, representable path construction, fresh secret-bearing zero-publication fixtures, no CreateCollection optional-alias/store-API/F-046 change, no Nix/dependency/generated/secret artifact, `git diff --check`, checksum, removal of `result`, and clean post-commit tree.
+  - F-045 is resolved. F-008, F-012, and F-039 remain resolved; U-004 is narrowed but remains unresolved; F-046 and every other finding/Opportunity/unresolved item remain unchanged. F-046 is next.
+  - Final closure review passed commit identity, exact scope/stat/checksum, validation ledger, corrected-attempt classifications, historical alignment, no-VM rationale, and F-046 promotion. The controller then independently reconfirmed plan-only status, commit stat/hash, all seven retained log hashes, and `git diff --check`.
 
 ### Remaining low queue
 
