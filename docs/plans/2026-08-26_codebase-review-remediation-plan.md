@@ -1178,7 +1178,7 @@ A VM run is not required because no VM-required boundary changes: NixOS module, 
   - F-012 and F-038 remain resolved; U-004 is narrowed but remains unresolved for the rest of Secret Service draft conformance; F-040, F-045, F-046, and every other finding/Opportunity/unresolved item remain unchanged. F-040 is next.
   - Final closure review found no semantic correction, requested controller-only Git/hash verification, and then passed after exact plan-only status, seven-path 413/96 stat, patch checksum, all six retained log hashes, and `git diff --check` were reconfirmed. F-040 promotion is approved.
 
-### Current iteration — F-040 secretsd-store ownership Rustdoc
+### Completed iteration — F-040 secretsd-store ownership Rustdoc
 
 F-040 remains valid with an obsolete historical remedy at clean HEAD `de7a8c14b9a0f484a7898b95bfbb1495a2d544ab`.
 
@@ -1270,8 +1270,19 @@ A VM run is not required because no NixOS, packaging, identity, namespace, capab
   - Bounded workspace tests passed with exact web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (workspace log SHA-256 `d8ddb1e2bf5cd8f5599e6685e37f260438dc730b71de507f2a6e4ecaede2c3fe`; prerequisite log SHA-256 `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`); the integration runner passed 105 tests (`0f4520dac6480e342fef9cedb4c78746189b3f02ef70f0b57a467db73a0df886`), workspace Clippy passed (`6a924049ad5ae3bc7a66ad12699f624f351beb32a3f26de876294cc2042635e2`), and Nix workspace-test passed (`3581062811b6935948adc748ce2b14938d10b524a4ab9e908506d74e71f1a32c`).
   - Initial post-implementation review confirmed semantics but withheld on unavailable diff/log evidence; after controller exact scope/stat/hash and full validation, fresh re-review passed with no gap.
   - Controller checks passed exact symbol/dependency/cargo-tree absence, production section-conversion replacement coverage, no package-description/doc/secret/security/later change, lock scope, `git diff --check`, checksum, artifacts, and clean post-commit tree. Unknown external downstream use remains explicitly accepted under greenfield posture.
-- [ ] Implement and independently review the resulting-tree ownership Rustdoc/package/testing evidence without changing secret-state behavior or adjacent claims.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-040 completion/cross-effects before promoting F-041.
+- [x] Implement and independently review the resulting-tree ownership Rustdoc/package/testing evidence without changing secret-state behavior or adjacent claims.
+  - Fix commit: `393c3a3ee108b198a7b509b5e1a602273b61d94d` (`docs: correct secretsd-store ownership`).
+  - Package metadata and crate Rustdoc now identify one in-memory state model containing raw secret bytes and in-process time/randomness operations, explicitly disclaim crate-level file/socket/canonicalization/publication/ACK/backend/persistence I/O and memory-erasure guarantees, and assign lifecycle/transport/persistence/erasure policy plus store↔section publication integration to callers.
+  - `docs/testing.md` records strict package Rustdoc and static dependency/call-path commands only, links the normative architecture/security owners, and disclaims any proof that callers, configured targets, or later persistence domains cannot retain/disclose data.
+  - Initial implementation review required replacing the inaccurate claim that raw bytes remain for the whole store lifetime; a separate correction worker stated raw-byte representation with no crate erasure guarantee. Fresh post-correction and final post-validation reviews passed the exact three paths, ownership chain, nonclaims, and F-041/F-042 exclusions with no gap.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-040 completion/cross-effects before promoting F-041.
+  - Exact fix diff: three approved paths, 31 insertions and 12 deletions, SHA-256 `3a6d3a16613d7b0d8c699b0eacd23248228d704abef231e849464af500db018b`.
+  - Focused validation passed 23 package tests, six section-conversion tests, strict denied-warning package Rustdoc, focused denied-warning Clippy, rustfmt, dependency tree, and ownership call-path inventories (log SHA-256 `11c6afaac83565f1faab4440827b85d7e56431009b6e7cab8fa9436e2c18d1c9`).
+  - Bounded workspace tests passed with exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (workspace log SHA-256 `dac197ed0dd59686e3b0675cce385df9c6e65df0919c53eadf297b1092cb3302`; prerequisite log SHA-256 `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`); integration passed 105 tests (`d79d5014f79e1d622988e6a714402ad35d15280560540536795ebab30daed45d`), workspace Clippy passed (`704b10129edcca4163fd389b9ce8fef2c848be0e7ea1c09c7675d6e0b1c75631`), and Nix workspace-test passed (`9cf5b3a8bf57c00ef6477c253a417eeb36eddf5f3f38aa80b005d4f7f89b6151`).
+  - Controller checks passed exact package-description-only manifest change, no lock/store/source behavior change, obsolete tmpfs/socket-only/JSON-envelope wording absence, no secret value or F-041/F-042 claim, package/docs scope, `git diff --check`, checksum, artifacts, and clean post-commit tree.
+  - F-040 is resolved on the resulting tree: no generic JSON helper remains, and the crate/package documentation describes current ownership without restoring the superseded tmpfs path.
+  - F-008 and F-012 remain resolved; F-041, F-042, F-045, every other finding, Opportunity, and unresolved item remain unchanged. F-041 is next.
+  - Final closure review passed the ordered cleanup/fix, ownership wording, external-use caveat, validation, nonclaims, cross-effects, no-VM rationale, and F-041 promotion. The controller then independently reconfirmed plan-only status, both commit stats/patch checksums, all twelve retained log hashes, and `git diff --check`.
 
 ### Remaining low queue
 
