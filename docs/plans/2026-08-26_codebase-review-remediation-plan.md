@@ -1284,7 +1284,7 @@ A VM run is not required because no NixOS, packaging, identity, namespace, capab
   - F-008 and F-012 remain resolved; F-041, F-042, F-045, every other finding, Opportunity, and unresolved item remain unchanged. F-041 is next.
   - Final closure review passed the ordered cleanup/fix, ownership wording, external-use caveat, validation, nonclaims, cross-effects, no-VM rationale, and F-041 promotion. The controller then independently reconfirmed plan-only status, both commit stats/patch checksums, all twelve retained log hashes, and `git diff --check`.
 
-### Current iteration — F-041 scoped sensitive-persistence claims
+### Completed iteration — F-041 scoped sensitive-persistence claims
 
 F-041 remains directly reproducible at clean HEAD `b7bc5c0adcb04320d70851ed0a720cbe08edefa5`.
 
@@ -1403,8 +1403,20 @@ A VM run is not required because the final allowlist changes no Nix/Rust executa
   - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
   - Broad documentation consolidation, removal of credential/control details, F-042/F-050/F-051 edits, tests/evidence deletion, dependencies, executable changes, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved claim correction may begin.
-- [ ] Implement and independently review the scoped persistence claims without changing any control or absorbing F-042/F-050/F-051.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-041 completion/cross-effects before promoting F-042.
+- [x] Implement and independently review the scoped persistence claims without changing any control or absorbing F-042/F-050/F-051.
+  - Fix commit: `3f2da79bf9f438e20df08ef50334c3dae8946ed2` (`docs: scope brokered resource persistence`).
+  - The normative invariant now covers only underwrap-managed durable brokered resource material. Active resource values use `StorageBackend`; retained encrypted workspaces, runtime identities, server/CA keys, password verifiers, trusted configuration, encrypted master-key custody, and target-controlled persistence each have a separately evidenced domain and nonclaim.
+  - Task docs now use brokered-resource vocabulary, identify TLS/CA custody and non-enforcement, prohibit secrets in Nix-materialized `envSet`, and preserve the trusted-target persistence limitation. `AGENTS.md` mirrors the engineering rule and synchronizes F-040's secretsd entry to one-shot canonical initialization, in-memory state, and private generation publication.
+  - The implementation worker exhausted its runtime after completing the seven-file draft. Initial security/scope reviews found an incorrect `noswap` claim for libsecret bus tmpfs, incomplete threat directions, and imprecise secretsd wording. A separate correction worker fixed them; a second review required the encrypted ciphertext+generation-key direction and one heading anchor, and a second correction pass fixed both. Final content and evidence re-reviews passed with no gap.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-041 completion/cross-effects before promoting F-042.
+  - Exact diff: seven approved product/guidance files, 172 insertions and 114 deletions, SHA-256 `918ee6517f9500a315a74f356030c21d87d7d45e9a29810845755d9823e9b42f`.
+  - Focused controls passed 27 keygen tests, four daemon credential-permission tests, and 28 backend user tests with exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (focused log SHA-256 `656735059ea90cda6161185c009d590750adf6a499487a1febb4de8e0a8eee26`; prerequisite log SHA-256 `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`).
+  - `frontend-security-assertions-eval` and `examples-nixos-eval` each completed with explicit PASS markers (SHA-256 `d67255cc0d73a4c265c1b123753837a4530cbfecb877a8b1567615ac7546e633` and `4eeaed70a5c09da580bc1594d17259cbd61a67567e73d5b66b261ec0fa5d4e69`); all-system flake evaluation passed (`99c9b8ff69df467630a42b55c953c9cac6bd6480ee03bc7a0023df06de8274d3`).
+  - Local Markdown targets/anchors passed across all seven files (`1de4649bfb111bd963497b38d0281250d4938ab8b9c757c1881e136893637599`); exact scope/no-Nix-code diff and obvious one-sentence-per-line scans passed (`d6093d79b5d22517a7104824e3953d4eb8ffaca2b0bffeb813158254c681d531`).
+  - Controller checks passed the complete claim/source matrix, files-only `noswap` precision, corresponding-generation key wording, sensitive-asset/direction coverage, product-wide broad-claim removal, no secret value, no Nix/Rust/SPA/dependency/generated change, F-042 opaque line and F-050/F-051 scope preservation, `git diff --check`, checksum, artifacts, and clean post-commit tree.
+  - Nix evaluation is classified only as unchanged module/example evaluation evidence; deployed owner/mode/umask behavior remains supported by existing source, focused tests, and prior VM evidence rather than a fresh VM claim.
+  - F-041 is resolved without weakening a boundary. F-040 remains resolved with synchronized agent guidance; F-008, F-012, and F-034 remain resolved; F-042, F-050, F-051, and every other finding/Opportunity/unresolved item remain unchanged. F-042 is next.
+  - Final closure review initially misclassified plan-only commits `0ab2e01`, `b92ca09`, and `bdbc2f5` as product drafts. Exact Git evidence showed each changed only this plan and that `3f2da79` owns all seven product/guidance paths plus both uncommitted correction passes; fresh re-review then passed chronology, exact 172/114 stat/checksum, plan-only status, closure, and F-042 promotion.
 
 ### Remaining low queue
 
