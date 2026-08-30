@@ -2632,10 +2632,74 @@ The changed real-backend Playwright fixture and focused/full browser runs direct
   - F-050 is resolved. Backend unknown-field strictness remains separate and unchanged; F-003/F-041 remain resolved; F-051, F-053, F-054, F-058, every other finding, Opportunity, and unresolved item remain unchanged. F-051 is next.
   - Final closure review passed cleanup/fix order, separate review/correction, exact fixture/spec semantics, bounded claims, validation/provenance/artifact evidence, no-VM rationale, cross-effects, and F-051 promotion with no remaining gap.
 
+### Current iteration — F-051 present-state published documentation
+
+F-051 remains valid but narrowed at clean HEAD `3a7a51c00eaea05789080fe92b581f91ee00d41c`.
+
+The agent-agnostic workflow migration already replaced the historical dead skill path and stale ticket-board ownership with valid `.agents/skills`, plan, archive, ADR, implementation-note, research, roadmap, and immutable-history navigation in `docs/index.md`.
+Those current internal-record links are intentional and must remain.
+
+Seven published product qualifiers across six guides still frame present behavior as temporary release state: three built-in environment explanations use “in this release,” the wrapper checklist also says “current wrapper environment model,” security calls the behavior a “first-release limitation,” backend storage coordination says it “does not currently” provide higher-level coordination, and remote-backend proxy guidance says “This release adds no” support.
+
+Consequence: readers can mistake current first-release behavior and limitations for a superseded or provisional alternative instead of the product contract they must evaluate now.
+
+Security boundary: none; this changes no mechanism, claim strength, threat model, configuration, or behavior.
+
+Exact scope:
+
+- In `docs/agent-facing-wrappers.md`, write the separate sentence `It cannot be reduced per wrapper.` and retain the caller-controlled surface inventory and helper-review instruction.
+- In `docs/configuration.md`, write `It is fixed for all wrappers.`; retain exact add-only `envPassthrough` and trusted `envSet.PATH` guidance.
+- In `docs/security.md`, write `Treat this as a limitation when assessing a narrow helper.`; retain the DAC/namespace and reachable path/socket qualification.
+- In `docs/backend.md`, write `The backend provides no transaction, version, compare-and-swap primitive, or per-resource mutation lock above that storage operation.`
+- In `docs/wrapper-author-checklist.md`, write `envPassthrough adds names; it cannot remove built-ins per wrapper.` and `The wrapper environment does not provide that guarantee.`; retain the exact environment inventory, DAC/path steering, and stronger-claim warning.
+- In `docs/remote-backend.md`, write `underwrap supports no trusted proxy header, forwarded client certificate, or proxy service identity.`; retain direct rustls, HTTPS frontend, Layer-4 passthrough, peer-certificate authority, and no-plaintext-workaround guidance.
+- Preserve every current `docs/index.md` internal project-record and compatibility-symlink entry, including plan/history navigation and the canonical `.agents/skills` paths.
+- Do not edit historical report/handover/ticket records, active plan history, ADRs, implementation notes, research, roadmaps, README maturity, or the valid statement that security documentation describes a pre-release design rather than a formal proof/audit.
+
+Expected source/test/documentation allowlist:
+
+- `docs/agent-facing-wrappers.md`
+- `docs/configuration.md`
+- `docs/security.md`
+- `docs/backend.md`
+- `docs/wrapper-author-checklist.md`
+- `docs/remote-backend.md`
+- this plan for scope and evidence
+
+The implementation diff is exactly the six product documents above; the active plan changes separately only for scope and evidence.
+
+Expected cross-effects:
+
+- Closing F-051 resolves the seven remaining exact release-temporal/current-state qualifiers across six product documents while preserving the already-corrected workflow/path/history navigation.
+- F-041/F-042 documentation claims remain resolved; F-052 audit/writeback vocabulary, README/project maturity, internal project-memory taxonomy, every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no deletion or relocation of valid plan/archive/ADR/implementation-note/research/roadmap/testing/history/skill navigation; no rewrite of immutable tickets, report, handover, Git history, compatibility symlinks, AGENTS workflow, or project-memory taxonomy;
+- no behavior, Nix option/config, environment passthrough membership, per-wrapper subtraction feature, storage coordination/transaction/CAS/lock, security claim, limitation, threat boundary, API/OpenAPI, code/comment/Rustdoc, test, example, or README maturity change;
+- no broad search-and-replace of operational sequencing words such as later/current published state, no removal of future-direction labels from roadmaps, no F-052+, Opportunity, or unrelated editorial rewrite;
+- no dependency, generated artifact, Rust/web/Nix/VM/privileged-chain change.
+
+Validation commands and evidence:
+
+- normalized-whitespace static absence of `in this release`, `first-release limitation`, `does not currently provide`, `this release adds no`, and `current wrapper environment model` across published product documents, so line wrapping cannot evade the check
+- exact positive assertions for all seven present-state replacement sentences and every preserved `docs/index.md` project-record/skill/history/symlink entry
+- resolve every relative Markdown link in the six changed files and every preserved relative target in the `docs/index.md` internal-record section
+- one-sentence-per-line checks for every newly written sentence
+- exact six-path allowlist, `git diff --check`, and clean artifact/status checks
+
+No Rust, SPA, integration, Nix, or VM run is required because this is a seven-sentence published-documentation correction with no code, configuration, example, generated contract, or deployment change.
+Static exact-text and link-resolution evidence directly covers the changed boundary.
+
+- [x] Revalidate F-051 against the historical report/handover, current four exact temporal phrases, `docs/index.md` workflow/history migration, canonical skill/symlink layout, documentation rules, and adjacent findings. Evidence: direct source/link/search inspection on 2026-08-30; historical dead paths/workflow ownership are already corrected, valid plan/history navigation must remain, and exactly seven qualifiers across six product documents still need present-state wording.
+- [x] Obtain fresh independent approval of exact seven sentences, preserved navigation/history, allowlist, non-goals, cross-effects, validation, and no-test rationale before cleanup discovery. Evidence: initial reviews found two additional documents and three qualifiers, required normalized-whitespace search, exact replacements, complete exclusions, and explicit separation of the six-product-document implementation diff from plan evidence. The plan incorporated every correction; final scope/evidence review passed on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before the documentation correction.
+- [ ] Implement and independently review the seven present-state sentences without changing claims or internal-record navigation.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-051 completion/cross-effects before promoting F-052.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-051 — remove stale workflow and temporal wording from published docs.
 - [ ] F-052 — correct audit and writeback comments and vocabulary.
 - [ ] F-053 — add real tablet Playwright coverage or remove the unsupported project claim.
 - [ ] F-054 — strengthen encoded and full-blob log-hygiene evidence.
