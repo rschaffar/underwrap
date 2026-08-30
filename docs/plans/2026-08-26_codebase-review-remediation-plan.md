@@ -945,7 +945,12 @@ Validation commands and evidence:
 
 - [x] Revalidate F-037 against the current hook, both page branches/detail-query gates, equal-admin documentation, unit/browser coverage, router/query configuration, and historical report/handover. Evidence: direct CodeGraph/source/test/history inspection at clean HEAD on 2026-08-30; stale ids and inaccurate list-failure/empty diagnoses persist, and existing tests cover only valid/normal page flows.
 - [x] Obtain fresh independent approval of the synchronous validated-selection and transient-dialog reset design, popstate/URL/no-op semantics, equal-admin copy, exact test matrix, allowlist, non-goals, cross-effects, and validation before cleanup discovery. Evidence: initial reviews required synchronous suppression/reset of old-store dialogs, explicit no-op replacement evidence, per-page selected-store-removal coverage, phase-scoped exact browser requests, real-backend default fidelity, complete URL/history assertions, cross-effect ownership, and an exact Nix prerequisite command. The plan incorporated every correction; fresh implementation-scope and test/evidence re-reviews passed on 2026-08-30 with implementation/runtime evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before selector/error correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before selector/error correction.
+  - Finding-local review found the requested-id state, both selectors, every Secrets and Wrapper-permissions transient state, policy viewer, query hooks, and render branches live; no independent net deletion exists.
+  - Hook restructuring/comments, page-branch consolidation, transient-state reset, tests, browser instrumentation, and documentation are the F-037 fix rather than cleanup.
+  - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
+  - Broad page extraction, test/doc deletion, routing refactors, generated files, formatting, dependency work, later findings, and cosmetic churn are rejected.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved selector/error correction may begin.
 - [ ] Implement and independently review the hook, two page branches, unit/browser evidence, and testing documentation without changing authorization or valid-store behavior.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-037 completion/cross-effects before the mandatory medium → low decision.
 
