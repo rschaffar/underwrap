@@ -2178,6 +2178,11 @@ The real-backend browser scenario directly observes the changed guidance and one
   - Finding-local review found no other accepted deletion or simplification; existing bootstrap/created-user password tests retain distinct state coverage, and the approved copy/OpenAPI/browser/doc changes remain the F-047 fix.
   - Repository-wide bounded discovery produced only cleanup 2 before its deadline; no second candidate was finalized. Generated code, docs/test deletion, dependencies, formatting, broad refactors, later findings, and cosmetic churn are rejected.
   - Process cleanup 1 and cleanup 2 as separate reviewed, validated, reversible commits before the F-047 correction.
+  - Cleanup 1 commit: `43747402bb7ea8aca344eb0f9de71cf0ba19ad21` (`refactor: avoid redundant password hash clone`); exact one-file diff, one insertion and two deletions, SHA-256 `31dca6c87c9496bd35b9c013661975b096ed42cab947ba04182f774f1e593ad1`.
+  - Fresh actual-diff review passed exact borrow/move and persistence/audit/refresh/error ordering with no correction.
+  - Full backend validation passed 259 library, 3 binary, and 5 OpenAPI tests; rustfmt, denied-warning all-target backend Clippy, and backend build passed using exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (prerequisite `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`; Rust log `f40324844e8f0ff61a08a9b00b8061d7b68e00213c5e7043150823c9a85c7805`).
+  - The first focused browser attempt stopped before backend startup because local debug-mode SPA assets were absent; after the documented production build passed with only the existing chunk advisory (`0f33d8ecc7544420da79b4643c41c76dc1b8e0cd919171da16dbc8f4d33c87e9`), both existing profile scenarios passed (`f314d883cf5639875247a6b10af7fb786fe98506921c5e54b7576c0bd9f07d72`).
+  - Controller checks passed exact one-hunk scope, absence of the redundant binding, no control-flow/copy-value/F-047-fix change, `git diff --check`, generated-artifact cleanup, checksum, and clean post-commit tree.
 - [ ] Implement and independently review corrected guidance, two-context browser evidence, and bounded documentation without changing session behavior.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-047 completion/cross-effects before promoting F-048.
 
