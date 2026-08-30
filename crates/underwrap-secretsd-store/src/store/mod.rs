@@ -2,7 +2,6 @@ mod aliases;
 mod collections;
 mod helpers;
 mod items;
-mod json;
 mod model;
 mod search;
 

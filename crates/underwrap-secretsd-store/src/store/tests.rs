@@ -67,49 +67,6 @@ fn new_default_has_default_collection() {
 }
 
 #[test]
-fn json_roundtrip_empty() {
-    let store = SecretStore::new_default();
-    let json = store.to_json().unwrap();
-    let restored = SecretStore::from_json(&json).unwrap();
-    assert_eq!(store, restored);
-}
-
-#[test]
-fn json_roundtrip_with_items() {
-    let mut store = SecretStore::new_default();
-    let mut attrs = HashMap::new();
-    attrs.insert("service".to_string(), "gh".to_string());
-    attrs.insert("account".to_string(), "github.com".to_string());
-
-    let (id, replaced) = store
-        .create_item(
-            "default",
-            "GitHub Token",
-            &attrs,
-            b"ghp_secret123",
-            "text/plain",
-            false,
-        )
-        .unwrap();
-    assert!(!replaced);
-
-    let json = store.to_json().unwrap();
-    let restored = SecretStore::from_json(&json).unwrap();
-    assert_eq!(
-        restored.get_secret("default", &id),
-        Some(b"ghp_secret123".as_slice())
-    );
-    assert_eq!(restored.get_label("default", &id), Some("GitHub Token"));
-    assert_eq!(
-        restored
-            .get_attributes("default", &id)
-            .unwrap()
-            .get("service"),
-        Some(&"gh".to_string())
-    );
-}
-
-#[test]
 fn create_collection_id_is_the_name() {
     let mut store = SecretStore::new_default();
     let id = store.create_collection("gogcli", Some("mine"));
@@ -443,29 +400,6 @@ fn collection_label_operations() {
     assert!(store.set_collection_label("default", "Renamed"));
     assert_eq!(store.get_collection_label("default"), Some("Renamed"));
     assert!(!store.set_collection_label("nonexistent", "X"));
-}
-
-#[test]
-fn binary_secret_roundtrip() {
-    let mut store = SecretStore::new_default();
-    let binary_secret: Vec<u8> = (0..=255).collect();
-    let (id, _) = store
-        .create_item(
-            "default",
-            "Binary",
-            &HashMap::new(),
-            &binary_secret,
-            "application/octet-stream",
-            false,
-        )
-        .unwrap();
-
-    let json = store.to_json().unwrap();
-    let restored = SecretStore::from_json(&json).unwrap();
-    assert_eq!(
-        restored.get_secret("default", &id).unwrap(),
-        binary_secret.as_slice()
-    );
 }
 
 #[test]

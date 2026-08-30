@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
 /// A complete Secret Service state: collections, items, aliases.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SecretStore {
     /// Map of collection ID → collection.
     pub collections: HashMap<String, Collection>,
@@ -12,7 +10,7 @@ pub struct SecretStore {
 }
 
 /// A Secret Service collection containing items.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Collection {
     pub label: String,
     pub items: HashMap<String, Item>,
@@ -21,13 +19,11 @@ pub struct Collection {
 }
 
 /// A Secret Service item: secret value + metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Item {
-    /// The secret value (raw bytes, base64-encoded in JSON for safety).
-    #[serde(with = "super::helpers::base64_bytes")]
+    /// The secret value as raw bytes.
     pub secret: Vec<u8>,
     /// MIME content type of the secret.
-    #[serde(default = "super::helpers::default_content_type")]
     pub content_type: String,
     /// Search attributes (key-value pairs).
     pub attributes: HashMap<String, String>,
