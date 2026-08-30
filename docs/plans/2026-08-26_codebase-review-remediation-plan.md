@@ -1961,10 +1961,114 @@ Direct production-handler tests with scripted publication outcomes cover the cha
   - F-045 is resolved. F-008, F-012, and F-039 remain resolved; U-004 is narrowed but remains unresolved; F-046 and every other finding/Opportunity/unresolved item remain unchanged. F-046 is next.
   - Final closure review passed commit identity, exact scope/stat/checksum, validation ledger, corrected-attempt classifications, historical alignment, no-VM rationale, and F-046 promotion. The controller then independently reconfirmed plan-only status, commit stat/hash, all seven retained log hashes, and `git diff --check`.
 
+### Current iteration — F-046 typed CreateItem properties
+
+F-046 remains directly reproducible at clean HEAD `88daeb19574103add2b6a59aa94c29b27598c8e1`.
+
+`Collection.CreateItem` currently treats an absent Label/Attributes property and a present property whose D-Bus variant fails downcast as the same empty default.
+A wrong-typed Attributes value can therefore become `{}` and, with `replace=true`, match and replace the first item because empty search attributes match every item.
+
+Consequence: malformed target D-Bus input can change replacement selection and publish canonical but unintended empty metadata instead of receiving a client-input error.
+
+Security boundary:
+
+- Protected asset: integrity and deterministic replacement behavior of the accepted canonical Secret Service item graph.
+- Attacker: the configured target's D-Bus input, treated as untrusted for robustness and storage integrity.
+- Boundary direction: `Collection.CreateItem(a{sv} properties, Secret, replace)` → optional property type validation → store lock → candidate replacement/create → publication → exact ACK → accepted live store/object registration.
+- Change direction: absent optional properties retain their defaults, but present wrong-typed properties return fixed value-free `InvalidArgs` before lock/candidate/publication/registration.
+  F-012 remains defense in depth through ACK-gated candidate handling; F-045 remains resolved and unchanged as an analogous early-validation fix, not a CreateItem defense.
+  No D-Bus signature or authorization boundary changes.
+
+Exact implementation scope:
+
+- Add two narrow private parsers in `dbus_service/collection.rs`: one for optional Item.Label and one for optional Item.Attributes.
+- Preserve absent Label as `String::new()` and absent Attributes as `HashMap::new()`.
+- For a present Label, require the outer `Value::value_signature()` to equal exact D-Bus string type `s` before downcasting.
+  Return `InvalidArgs("org.freedesktop.Secret.Item.Label must have D-Bus type s")` for any other type, including a nested variant `v` containing a string.
+- For present Attributes, require the outer `Value::value_signature()` to equal exact dictionary type `a{ss}` before dictionary downcast/conversion.
+  Return `InvalidArgs("org.freedesktop.Secret.Item.Attributes must have D-Bus type a{ss}")` for a non-dictionary, nested variant containing `a{ss}`, `a{us}`, `a{su}`, `a{sv}` even when variant payloads are strings, or any other incompatible signature/content.
+- Do not use downcast or successful `HashMap::try_from` alone as the type check because zvariant may unwrap one outer variant and variant-wrapped dictionary values.
+- Parse Label first, then Attributes, before secret metadata tracing, store lock acquisition, candidate clone, old-secret zeroization, random id generation, publication, or object registration.
+  Label has deterministic first-error precedence when both are malformed.
+- Preserve unknown-property ignore behavior and add accepted ACK evidence for an unrelated property alongside valid/absent known properties.
+- After successful parsing, retain the existing write-lock, subset attribute matching, absent-Attributes vacuous matching, old candidate secret zeroization, create/replace timestamps, path derivation, publication/ACK commit, and post-commit best-effort new-interface registration.
+- Preserve replacement path/id reuse and do not change exact/subset/empty matching semantics under U-004.
+
+Exact malformed test scope:
+
+- Build direct parser vectors for absent, valid empty, and valid nonempty Label/Attributes.
+- Reject present Label scalar/container types plus a nested variant containing a valid string.
+- Reject Attributes as a non-dictionary, a nested variant containing valid `a{ss}`, and exact incompatible dictionary signatures `a{us}`, `a{su}`, and `a{sv}` containing string values.
+- Run four representative malformed property rows under both `replace=false` and `replace=true`: wrong Label with valid Attributes, valid Label with non-dict Attributes, valid Label with `a{sv}` string payloads, and both wrong with Label-first precedence.
+  Include at least one nested-variant handler row in each replacement mode.
+- Give every handler row a fresh secret-bearing accepted store and request secret with distinct synthetic sentinels, an empty publication script, and an `ObjectServerHarness`.
+- For `replace=true`, pre-register the matching existing item and prove its path/interface and complete store remain unchanged.
+- For all rows require exact `InvalidArgs`, complete store equality, `script.finish().is_empty()`, and diagnostic absence of property contents, attributes, and both secret sentinels.
+  Treat no-publication/no-registration as aggregate evidence from the exact prevalidation error, unchanged state/known interface, and static source order; do not claim the empty script inventories attempted writes or that the object harness enumerates unknown random paths.
+- Add a malformed-property row against a missing collection to prove parsing error precedence before store lookup.
+- Retain static source-order evidence for pre-lock, pre-random-id, pre-publication, and pre-registration validation.
+
+Exact accepted/default test scope:
+
+- Both properties absent with `replace=false`: ACK one publication, register one path, and persist empty label/attributes.
+- Label absent with valid nonempty Attributes: persist empty label and exact attributes.
+- Attributes absent with valid Label: persist exact label and empty attributes.
+- Valid nonempty matching Attributes with `replace=true`: use an existing strict attribute superset, ACK once, preserve item count/id/path registration, retain the existing superset attributes, and update only the existing replacement fields such as label, secret, and content type.
+- Valid nonmatching Attributes with `replace=true`: ACK one publication, keep the old item/path/interface and metadata unchanged, increment item count, register the new path, and persist the exact requested attributes only on the new item.
+- Explicitly preserve current absent-Attributes replacement behavior by matching one existing item with nonempty attributes, retaining those attributes, reusing its id/path with unchanged item count, and proving vacuous subset matching rather than equality of empty maps.
+- For every accepted row, compare published and accepted state and verify the operation-specific label/attributes/secret/content-type and registration outcomes above.
+- Retain existing valid new/replace ACK and F-012 REJECT tests.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-secretsd/src/dbus_service/collection.rs`
+- `crates/underwrap-secretsd/src/dbus_service/collection/tests.rs`
+- `docs/secretsd-security.md` — state absent defaults, exact `s`/`a{ss}` admission, Label-first precedence, and pre-lock/candidate/publication/registration `InvalidArgs`
+- `docs/testing.md` — enumerate the two-mode malformed matrix and state that typed handler calls test post-decoding zvariant values rather than D-Bus wire/frame/transport behavior
+
+The active plan changes separately for workflow evidence only.
+
+Expected cross-effects:
+
+- F-012 remains resolved; malformed input creates no candidate, while valid requests retain exact ACK-gated commit and zeroization behavior.
+- F-039 remains resolved; no timestamp rule changes.
+- F-045 remains resolved as an analogous early-validation fix; it does not defend CreateItem property typing and alias behavior remains unchanged.
+- U-004 is narrowed for these variants but remains unresolved for sessions, broader errors, exact matching semantics, D-Bus wire behavior, signals, and multiple clients.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no property-required rule, absent-default change, unknown-property rejection, duplicate property/attribute-key handling, D-Bus signature/interface/path, wire decoder, transport/frame, prompt, session, object-server architecture, registration-error behavior, item-id generation, exact attribute matching, or broader Secret Service conformance change;
+- no store-model API, F-039 timestamps, F-045 alias validation, candidate/ACK/zeroization/publication framing, backend writeback/resource format, migration/repair, dependency, Nix/VM, privileged chain, or security-boundary weakening;
+- no D-Bus wire harness, malformed-frame claim, F-052 vocabulary, F-054 log-evidence expansion, historical edit, broad refactor, later finding, Opportunity, or unresolved-item implementation.
+
+Validation commands and evidence:
+
+- focused property-parser, malformed no-publication/no-registration, and accepted/default/replacement tests
+- `cargo test -p underwrap-secretsd dbus_service::collection::tests`
+- `cargo test -p underwrap-secretsd`
+- `cargo test -p underwrap-secretsd-store`
+- `cargo test -p underwrap-protocol resource_blob::tests`
+- `cargo test -p underwrap-ns publication::tests`
+- `./crates/integration-tests/run`
+- build exact Nix `web-build`, then run bounded non-integration workspace tests and workspace denied-warning Clippy
+- `cargo fmt -- --check`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- exact static order/signature inventory and direct docs/link/one-sentence/scope/secret checks
+- `git diff --check`
+
+A VM run is not required because no NixOS/module, identity, namespace, capability, privileged chain, D-Bus signature, registration mechanism, or valid target-visible behavior changes.
+Typed production-handler tests cover the malformed-value boundary directly, and unchanged downstream integration/Nix workspace checks cover valid behavior.
+
+- [x] Revalidate F-046 against current CreateItem property parsing, zvariant dictionary signatures/conversion, store replacement semantics, F-012 candidate/zeroization, tests/docs, F-039/F-045/U-004 effects, and historical report/handover. Evidence: direct source/vendor/test inspection plus two focused design/evidence reviews on 2026-08-30; absent and malformed variants are still conflated and no wrong-type matrix exists.
+- [x] Obtain fresh independent approval of absent/wrong-type semantics, exact signature and error rules, precedence/order, malformed/accepted matrices, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews required outer signature checks before zvariant downcast, nested-variant and unknown-property evidence, explicit `a{sv}` two-mode rows, aggregate rather than direct no-publication/registration claims, exact subset/nonmatch/vacuous replacement expectations, and F-012-only defense wording. The plan incorporated every correction and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before CreateItem correction.
+- [ ] Implement and independently review exact property typing and complete no-publication/registration/replacement evidence without changing valid matching behavior.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-046 completion/cross-effects before promoting F-047.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-046 — reject wrong-typed `CreateItem` properties.
 - [ ] F-047 — correct profile session-revocation guidance.
 - [ ] F-048 — consume expected confirmation mutation rejections.
 - [ ] F-049 — redact internal backend error chains from responses.
