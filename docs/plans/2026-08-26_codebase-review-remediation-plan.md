@@ -976,7 +976,7 @@ Validation commands and evidence:
 
 - [x] Obtain and record the mandatory medium → low transition decision. Evidence: after F-031 through F-037 and their closure records were complete at clean HEAD `7f5ae2472e69332a0d6a64cc378936e53f19d4c6`, the focused `ask_user` prompt presented **Approve transition**, **Pause here**, and **Request changes** with comment entry enabled. On 2026-08-30 the user selected **Approve transition** with no comment. F-038 is next; every D-174 stop condition and per-finding gate remains controlling.
 
-### Current iteration — F-038 JCS-safe resource timestamps
+### Completed iteration — F-038 JCS-safe resource timestamps
 
 F-038 remains valid but narrowed at clean HEAD `5afb8f4583bacd5aefba411f0d54336f361d9984`.
 
@@ -1063,8 +1063,22 @@ Validation commands and evidence:
   - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
   - Broad test repartition, test/doc deletion, generated files, dependencies, later findings, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved timestamp enforcement may begin.
-- [ ] Implement and independently review the adapter, annotations, focused tests, and documentation without changing valid canonical bytes or temporal semantics.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-038 completion/cross-effects before promoting F-039.
+- [x] Implement and independently review the adapter, annotations, focused tests, and documentation without changing valid canonical bytes or temporal semantics.
+  - Fix commit: `3d984ce17877fcac7a4a9bc2132d6ee8d910ee6a` (`fix: enforce JCS-safe resource timestamps`).
+  - One private predicate/message and Serde adapter now reject above-limit values on encode/decode; exactly four annotations cover `Collection.created`, `Collection.modified`, `Item.created`, and `Item.modified`, while direct publication semantic validation retains the same guard and all identifier/reference checks.
+  - The old maximum-only and strict timestamp tests moved into the new focused module. Its independently authored JSON vectors exercise the exact 32 outcomes, direct semantic fallback, strict publication, no temporal-order rule, value-free errors, and mixed-defect ordering; unrelated resource/publication tests remain in place at 568 lines and the focused module is 368 lines.
+  - Initial source/evidence reviews found that direct semantic maximum acceptance exercised only both `created` fields. A separate correction worker added all-four maximum acceptance while preserving a distinct created-greater-than-modified case and the four independent rejection loop. Fresh post-correction review passed the exact five paths, and final staged review passed source, tests, docs, cross-effects, and retained validation evidence with no gap.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-038 completion/cross-effects before promoting F-039.
+  - Exact staged diff: five approved paths, 430 insertions and 77 deletions, SHA-256 `558f759fa268262fdeea798c98be9ab3f6ab4e2757613c98f9f07f874527ae76`.
+  - Protocol validation passed 5 focused timestamp tests, 118 full-profile tests, 62 local-ABI tests, and full/local denied-warning Clippy (aggregate log SHA-256 `5f045bbd7f3e0f80366bbb5e0d081e67652ca01a47b9b08911cef1cb7df7345`).
+  - Dependent crates passed 55 backend-store, 24 secretsd-store, 39 secretsd, and 122 namespace tests (log SHA-256 `9100306d7ff006966ead125d5048d9cf000834b2a52575a8f548c28665309d8b`).
+  - Bounded non-integration workspace tests passed with exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (workspace log SHA-256 `d808be2dcc768fc51f90f8378f7b7312600832fed52cf201c45f70d6122e4306`; prerequisite log SHA-256 `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`).
+  - The integration runner passed all 105 tests (log SHA-256 `cf9585afd6201915f7e0a1baa6f0c69cdb774ad3ed49b152b4873c608e020831`); rustfmt and full workspace denied-warning Clippy passed (log SHA-256 `55730fd0a6f3564d01c072043ced86bc25b8c397ebd5d54da6bf725b0c3726ed`).
+  - The first Nix workspace-test build correctly failed before compilation because Git-flake source filtering omitted the then-untracked new timestamp module declared by `tests.rs` (failure log SHA-256 `ef40fd0644593700e501ec6cff1761e1e1f6ba327b0e3fcd92780494ceac128e`). After exact five-path staging, the same check included the module and passed (log SHA-256 `50239b219b2b6b40b2395cdd0e94bfbe5ac158df9757e955b21ae06769cb3f01`); final review classified the first result as source-inclusion provenance, not an implementation/test failure.
+  - Controller checks passed exact five-path scope, four-field/annotation inventory, direct semantic guard, no publication-rule movement, value-free diagnostic, both test files below 600 lines, mixed precedence, no Cargo/dependency/schema/OpenAPI/generated/security/later-finding change, `git diff --check`, staged checksum, and clean post-commit tree.
+  - F-038 is resolved for every Serde and canonical-container encode/decode path. Valid canonical bytes and all ordinary timestamps are unchanged; above-limit v1 state is intentionally unreadable/unwritable under the already documented greenfield contract.
+  - F-008 and F-009 remain resolved and unchanged at their boundaries; F-039 remains unresolved; F-042 is narrowed because daemon parsing gains this rejection while its inaccurate opaque-blob documentation remains; every other finding/Opportunity/unresolved item is unchanged. F-039 is next.
+  - Final closure review found no semantic/evidence correction, requested controller-only Git/hash verification, and then passed after exact plan-only status, five-path 430/77 stat, patch checksum, all retained log hashes, and `git diff --check` were mechanically reconfirmed. F-039 promotion is approved under the unchanged protocol.
 
 ### Remaining low queue
 
