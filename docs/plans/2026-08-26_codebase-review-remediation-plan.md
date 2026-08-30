@@ -1284,10 +1284,126 @@ A VM run is not required because no NixOS, packaging, identity, namespace, capab
   - F-008 and F-012 remain resolved; F-041, F-042, F-045, every other finding, Opportunity, and unresolved item remain unchanged. F-041 is next.
   - Final closure review passed the ordered cleanup/fix, ownership wording, external-use caveat, validation, nonclaims, cross-effects, no-VM rationale, and F-041 promotion. The controller then independently reconfirmed plan-only status, both commit stats/patch checksums, all twelve retained log hashes, and `git diff --check`.
 
+### Current iteration — F-041 scoped sensitive-persistence claims
+
+F-041 remains directly reproducible at clean HEAD `b7bc5c0adcb04320d70851ed0a720cbe08edefa5`.
+
+`docs/security.md` says the backend is the only persistent secret store and all durable secret material passes through `StorageBackend`; `AGENTS.md` repeats the universal rule, and task-oriented docs repeat broad “persistent secret material/storage” wording.
+
+The implementation intentionally persists sensitive non-resource state elsewhere:
+
+- one frontend runtime client instance identity PEM containing its mTLS private key;
+- the operator-provisioned backend HTTPS server private key;
+- per-user Argon2id password-verifier records;
+- trusted frontend/backend configuration and paths, including fixed `envSet` values generated into Nix daemon configuration.
+
+Encrypted-store master keys are generated and held in backend memory, displayed once, and never written by underwrap; external operator custody is separate.
+A configured target is trusted with its projection and may persist or disclose it outside underwrap's writeback path.
+
+Consequence: the universal wording hides distinct credential/configuration boundaries and can cause maintainers to remove legitimate credential installation or overstate what backend writeback policy controls.
+
+Security boundary:
+
+- Protected assets: brokered resource values, the frontend runtime mTLS private identity, backend TLS private key, CA signing key, admin password verifiers, and trusted configuration integrity.
+- Attackers: a local non-root reader of credential/resource files, an offline reader of copied records/ciphertext, or an unauthorized writer to trusted configuration; host root, backend host root, and the backend remain trusted by the project threat model.
+- Plaintext resource direction: current plaintext material read → current brokered-resource disclosure.
+- Encrypted resource direction: active or retained ciphertext plus its corresponding generation key → current or stale brokered-resource disclosure.
+- Runtime identity direction: frontend identity read → runtime-client impersonation.
+- Backend TLS direction: server-key read → backend/server impersonation; CA signing-key read → unauthorized issuance of certificates trusted by its consumers.
+- Password direction: verifier-record read → offline guessing → possible admin credential compromise.
+- Configuration direction: trusted-config write → target/backend behavior manipulation; trusted-config read → disclosure only, with Nix-generated frontend configuration explicitly non-confidential.
+- Configured target: trusted recipient and excluded persistence destination, not an attacker in this invariant.
+- Change direction: documentation narrows which asset the `StorageBackend` invariant protects and enumerates existing controls/nonclaims.
+  No filesystem permission, authentication, persistence, or authorization mechanism weakens.
+
+Exact scope:
+
+- Rename security invariant 1 around **underwrap-managed durable persistence of brokered resource material**.
+  State that active resource values use the backend's selected `StorageBackend`.
+- Describe retained encrypted `backup/` and `stage/` generations as ciphertext produced by encrypted backend storage but retained in sibling recovery workspaces outside the active canonical `StorageBackend` path and APIs.
+  State that retention is indefinite, decryptable with the corresponding generation key, unaffected by resource/store deletion, and owned by trusted-host cleanup.
+- Keep frontend broker retention limited to process memory plus invocation-private `noswap` tmpfs for file staging and private libsecret runtime artifacts.
+  Continue prohibiting ordinary temp files, sidecars, local databases, disk caches, or alternate durable frontend paths for brokered resource values.
+- Explicitly state that this scoped invariant is not a guarantee about independently managed credentials/authentication records, trusted configuration, operator-custodied keys, or persistence/disclosure by the configured target.
+- Enumerate the normal NixOS runtime-identity controls exactly: a fixed path under a mode-`0700` per-instance state directory, config-derived daemon ownership, mode-`0400` synced same-directory atomic replacement, and read-only daemon service access.
+  Preserve keygen's owner precedence outside that normal case: configured daemon account, existing identity owner, then invoking identity.
+  State that daemon startup rejects a present identity with wrong owner or file mode wider than `0600`, and checks parent owner/mode `0700` or tighter only when parent metadata lookup succeeds.
+  Retain the no-parent-fsync, no-secure-erasure, no-install/enrollment transaction, no-stdout-delivery transaction, and no-live-reload limits.
+- Enumerate the backend HTTPS private key and any CA signing key as operator-managed credential files outside `StorageBackend`.
+  State that the backend reads its configured server key into rustls but does not install, rotate, atomically replace, or validate its ownership/mode.
+  Treat backend-host service identity, filesystem ownership/mode, restrictive umask, sandboxing, and CA-key removal/custody as deployment/operator controls.
+- Enumerate admin password hashes as sensitive offline-verifier records under `users_dir`, outside `StorageBackend`.
+  State that records use Argon2id, are omitted from API responses, redact hashes from `Debug`, and use `NamedTempFile` restrictive Unix temporary-file creation plus file sync and atomic rename.
+  State that the application neither chmods/verifies the final record mode nor enforces the directory mode; deployment ownership/mode/umask remain controlling.
+  Retain the no-parent-fsync, no encryption-at-rest, and no secure-erasure claims.
+- Clarify that Nix-generated frontend configuration is trusted integrity state, not a confidential secret store.
+  State that generated Nix configuration can be readable outside the daemon and read-only service access protects integrity rather than confidentiality.
+  `envSet` values must be non-secret fixed values; operators put brokered values in resource slots instead.
+  Backend YAML contains paths/settings, including a TLS-key path, rather than TLS key bytes or encrypted-store master keys.
+- State the encrypted-store master-key contract exactly: generation in backend memory, one-time create/rotate response, no underwrap-written key file, and `MasterKey` zeroization on final drop.
+  State that unlocked-backend memory compromise can recover the installed key and that request/response/browser/clipboard copies are outside comprehensive erasure.
+  Do not claim response delivery, external custody, TPM/HSM, or external-vault guarantees.
+- Preserve the target limitation: backend read-only/writeback policy does not prevent a trusted target from printing, storing, or transmitting its projection elsewhere.
+- Apply concise lexical scoping to `docs/architecture.md`, `docs/agent-facing-wrappers.md`, and `docs/remote-backend.md` without duplicating the normative security inventory.
+- In `docs/remote-backend.md` and `docs/configuration.md`, identify `https.tls.key_file` and CA signing keys as operator-managed persistent authentication material outside resources/`StorageBackend`.
+  Do not invent an application-enforced mode.
+- In `docs/configuration.md`, warn that `envSet` enters Nix-generated configuration and is not secret-bearing input.
+- In `AGENTS.md`, scope the engineering rule to brokered resource material, preserve the frontend cache prohibition, enumerate separate credential/auth/config domains, and prohibit secrets in `envSet`.
+  Synchronize the `underwrap-secretsd` key-file description from a tmpfs state model to one-shot canonical init plus in-memory publication, recording that F-040-adjacent guidance cross-effect explicitly.
+- Record only static claim/control evidence in `docs/testing.md`, including the existing keygen/daemon/user/Nix witnesses and the limits of Nix evaluation.
+  Do not duplicate normative security prose.
+
+Fix allowlist — seven product/guidance files:
+
+- `AGENTS.md`
+- `docs/security.md`
+- `docs/architecture.md`
+- `docs/agent-facing-wrappers.md`
+- `docs/remote-backend.md`
+- `docs/configuration.md`
+- `docs/testing.md`
+
+The active plan changes separately for workflow evidence only.
+
+Expected cross-effects:
+
+- F-041 resolves universal persistence-claim precision; implementation controls remain unchanged.
+- F-040 remains resolved, and its current mechanism owner is synchronized by correcting the stale `AGENTS.md` key-file description.
+- F-008, F-012, F-034, and the resource-persistence rules remain resolved and unchanged.
+- F-042's daemon opaque-blob parsing claim, F-050's stale Playwright key fixture, F-051's unrelated stale/temporal prose, and every other finding/Opportunity/unresolved item remain unchanged.
+
+Non-goals:
+
+- no resource persistence, encrypted rotation generation, master-key custody, credential generation/install/reload, TLS loading, user-record persistence, password hashing, Nix configuration generation, env projection, target/writeback behavior, permission mode, or authorization change;
+- no new/chosen exact backend TLS-key or users-directory mode, backend service module, automatic chmod/chown, key rotation, secret manager, TPM/HSM, encrypted auth registry, session persistence, external-vault integration, or secure-erasure/power-loss guarantee;
+- no claim that public certificates/fingerprints are secret, that configuration read-only access supplies confidentiality, that targets cannot persist data, or that backend read-only permission creates a behavioral sandbox/read-only mount;
+- no F-042 daemon parser wording, F-050 Playwright fixture, F-051 broad documentation cleanup, historical record edit, Nix/Rust/SPA executable change, dependency/generated artifact, VM change, security-boundary weakening, later finding, Opportunity, or unresolved-item implementation.
+
+Validation commands and evidence:
+
+- direct claim/source matrix covering `StorageBackend`, encrypted generations, runtime identity path/install/admission/service access, backend TLS loading, user hash persistence/redaction/API omission, Nix config materialization, envSet, master-key handling, and target limitations
+- `cargo test -p underwrap-keygen`
+- `cargo test -p underwrapd startup::tests::credential_permissions`
+- `cargo test -p underwrap-backend users`
+- `nix build .#checks.x86_64-linux.frontend-security-assertions-eval`
+- `nix build .#checks.x86_64-linux.examples-nixos-eval`
+- `nix flake check --all-systems --no-build`
+- direct Markdown link/anchor and present-tense, one-sentence-per-line review across all seven fix files
+- repository-wide search for unscoped “only persistent secret store”, “persistent secret material/storage”, and secret-bearing `envSet` guidance
+- exact diff/scope check proving only documentation, guidance, and Nix-option references are described, with no Nix module source change
+- `git diff --check`
+
+A VM run is not required because the final allowlist changes no Nix/Rust executable behavior, module options, service settings, filesystem modes, identities, namespaces, capabilities, privileged chain, or runtime protocol. Existing source/unit/VM evidence is cited as prior control evidence; fresh Nix evaluation proves only that unchanged module/examples still evaluate, not deployed ownership/mode enforcement.
+
+- [x] Revalidate F-041 against current universal claims, backend resource/policy storage, retained encrypted generations, runtime/backend TLS keys, user records, configuration/envSet, master-key custody, target behavior, keygen/daemon/Nix controls, tests, and historical report/handover. Evidence: direct CodeGraph/source/docs/test inspection and two focused design/evidence reviews on 2026-08-30; the broad claim persists and the separate sensitive domains/limits above are current.
+- [x] Obtain fresh independent approval of the scoped invariant, complete asset/control/nonclaim inventory, threat-boundary wording, task-document edits, allowlist, non-goals, cross-effects, static validation, and no-VM rationale before cleanup discovery. Evidence: initial security/evidence reviews required per-asset read/write directions, conditional runtime-identity ownership/parent checks, exact password-record mode limits, complete master-key and retained-generation handling, CA-key custody, explicit F-040 guidance synchronization, seven-file/plan separation, and one-sentence prose. After correcting plaintext versus generation-key ciphertext disclosure and CA/server-key outcomes, fresh final re-review passed on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before claim correction.
+- [ ] Implement and independently review the scoped persistence claims without changing any control or absorbing F-042/F-050/F-051.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-041 completion/cross-effects before promoting F-042.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-041 — scope persistent-secret-store claims to brokered resources.
 - [ ] F-042 — document the daemon's resource-blob parsing accurately.
 - [ ] F-043 — remove no-op scope and duplicated helper fields.
 - [ ] F-044 — preserve forced XDG environment precedence.
