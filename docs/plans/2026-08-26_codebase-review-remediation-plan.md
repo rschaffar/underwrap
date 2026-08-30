@@ -1418,7 +1418,7 @@ A VM run is not required because the final allowlist changes no Nix/Rust executa
   - F-041 is resolved without weakening a boundary. F-040 remains resolved with synchronized agent guidance; F-008, F-012, and F-034 remain resolved; F-042, F-050, F-051, and every other finding/Opportunity/unresolved item remain unchanged. F-042 is next.
   - Final closure review initially misclassified plan-only commits `0ab2e01`, `b92ca09`, and `bdbc2f5` as product drafts. Exact Git evidence showed each changed only this plan and that `3f2da79` owns all seven product/guidance paths plus both uncommitted correction passes; fresh re-review then passed chronology, exact 172/114 stat/checksum, plan-only status, closure, and F-042 promotion.
 
-### Current iteration — F-042 daemon resource-blob parser boundary
+### Completed iteration — F-042 daemon resource-blob parser boundary
 
 F-042 remains directly reproducible at clean HEAD `4f469ae77a15e0f6cad6b4fd6302df3afc2f055d` with stale historical wording after F-009 and F-038.
 
@@ -1528,8 +1528,20 @@ A fresh VM would repeat a valid flow and would not prove malformed daemon-open h
   - Repository-wide bounded discovery found no high-confidence dead production deletion independent of current or later findings.
   - `_scope`, duplicated helper fields, and unread config fields remain F-043; zeroization, logging, fuzz/tests, broad docs, formatting, and cosmetic churn remain rejected or separately owned.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved parser-boundary documentation may begin.
-- [ ] Implement and independently review the parser/copy/cache documentation and mandatory review guidance without changing parser behavior or overstating malformed/fuzz evidence.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-042 completion/cross-effects before promoting F-043.
+- [x] Implement and independently review the parser/copy/cache documentation and mandatory review guidance without changing parser behavior or overstating malformed/fuzz evidence.
+  - Fix commit: `aedc3750bee8170add7281ee76decd1a8bdd3452` (`docs: document daemon resource parsing`).
+  - Security and architecture docs now define the complete backend-open HTTP/base64 buffering, decoded-size and typed parse order, unknown/default/duplicate behavior, conditional env-name validation, canonicality and files/libsecret nonvalidation, 2-MiB versus later 1-MiB publication boundary, typed/cache overlap, Checkout/frame/receiver copies, zeroization limits, and exact finalize checks.
+  - `AGENTS.md` makes schema/decode/env/log/clone/cache/copy/buffer changes security-sensitive and names HTTP decode, daemon parser/cache, channel, fd-20 codec, namespace receiver, backend finalize, and secretsd/host publication validation review surfaces.
+  - `docs/testing.md` records valid protocol/daemon/integration evidence and explicitly states that no dedicated malformed backend-open daemon matrix, fuzz harness/target/corpus, or recorded fuzz execution exists.
+  - Initial implementation reviews required exact typed/cache lifetime ordering and the complete named AGENTS review chain. A separate correction worker fixed both; fresh post-correction review passed. Final evidence review passed the exact four-file unit with no gap.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-042 completion/cross-effects before promoting F-043.
+  - Exact diff: four approved documentation/guidance files, 93 insertions and 14 deletions, SHA-256 `26cd9b9f5b8d32df134311cfe1157223b679a6e452d4c83f2ac3978792a180e8`.
+  - Focused validation passed 24 protocol resource-blob tests and 70 daemon tests (log SHA-256 `477b5984d388e8ebee5ea95fe0c5b7452ea4f0d58370f059d4e696776cda5e79`); the integration runner passed all 105 tests (`ae4c5f7bfc56ddd54a6d794ee8aac7257d8a91fca3ef3c39ea1a753a9d73a7f1`).
+  - Static call/copy inventory and absence of dedicated fuzz/property-test surfaces or fuzz directories/corpora passed (log SHA-256 `7205bc62af9b4cc85a46e1d8de16187a77ac536ca7c88262a0cb5502a0e30100`); local links/anchors and obvious one-sentence-per-line scan passed (`9fa1e8064084a67dffeeb851bb63cd59edf077678c8f627426289afbf542cc5a`).
+  - The first prose-check script mistook numbered-list prefixes `4.`/`5.` for sentence endings and stopped after all executable validation had passed. The corrected checker excluded Markdown ordered-list markers and passed without a content change; final review classified the first result as a tooling false positive.
+  - Controller checks passed exact four-file scope, both opaque daemon claims removed, storage/cookie/id/file uses of “opaque” retained, complete parser/copy/cap inventory, no secret value, `_scope` preserved for F-043, no Rust/Nix/dependency/generated/F-054 change, `git diff --check`, checksum, artifacts, and clean post-commit tree.
+  - F-042 is resolved without changing parser behavior. F-009 and F-038 remain resolved; U-009 is narrowed but remains unresolved for comprehensive copy/erasure evidence; F-043, F-054, and every other finding/Opportunity/unresolved item remain unchanged. F-043 is next.
+  - Final closure review passed commit/scope, technical claims, historical alignment, review corrections, validation, tooling classification, no-VM rationale, and F-043 promotion. The controller then independently reconfirmed plan-only status, the exact 93/14 commit stat and patch checksum, all four retained log hashes, and `git diff --check`.
 
 ### Remaining low queue
 
