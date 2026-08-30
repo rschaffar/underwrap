@@ -1543,10 +1543,133 @@ A fresh VM would repeat a valid flow and would not prove malformed daemon-open h
   - F-042 is resolved without changing parser behavior. F-009 and F-038 remain resolved; U-009 is narrowed but remains unresolved for comprehensive copy/erasure evidence; F-043, F-054, and every other finding/Opportunity/unresolved item remain unchanged. F-043 is next.
   - Final closure review passed commit/scope, technical claims, historical alignment, review corrections, validation, tooling classification, no-VM rationale, and F-043 promotion. The controller then independently reconfirmed plan-only status, the exact 93/14 commit stat and patch checksum, all four retained log hashes, and `git diff --check`.
 
+### Current iteration — F-043 remove inert local authority surfaces
+
+F-043 remains directly reproducible at clean HEAD `b1fc1ade186ccf40d95249860283971c0486ae79`.
+
+Three independent dead surfaces imply authority or behavior that does not exist:
+
+- caller-controlled `UNDERWRAP_SCOPE` becomes `WrapperRequest::Read.scope`, crosses the private local wire, and is discarded before backend policy or even production audit use;
+- full `DaemonConfig.ns_binary` is generated and validated but unread by `underwrapd`, while the root-generated `/etc/underwrap/instances/<instance>.yaml` sidecar independently selects the capability-bearing namespace helper for `underwrap-exec`;
+- six legacy audit helper functions have no production caller and survive only through helper-specific tests or no caller at all.
+
+Consequence: the private ABI, full daemon configuration, and audit API imply nonexistent correlation, helper-selection, approval/store, or secretsd authority and create drift against the actual first-release boundaries.
+
+Security boundary:
+
+- Protected assets: brokered resources, backend policy decisions, and root-controlled selection of the capability-bearing `underwrap-ns` stage.
+- Attacker: the untrusted local caller controlling environment, wrapper request bytes, wrapper selector, and invocation variant.
+- Scope direction: caller `UNDERWRAP_SCOPE` → local request field → discarded value with no policy/audit effect.
+- Helper direction: root-generated instance sidecar `ns_binary` → `underwrap-exec` absolute-path/existence checks → `Command::new` for the namespace stage.
+  The full daemon config and daemon response carry no namespace-helper authority.
+- Change direction: dead input/config/API is removed and the trusted sidecar boundary becomes singular.
+  No authorization, target selection, fd, privilege, or binary-chain mechanism weakens.
+
+Exact scope — remove caller scope:
+
+- Remove `scope` from `WrapperRequest::Read`, its wire encoding/decoding, constructors, destructuring, and daemon call signatures.
+- Remove the `UNDERWRAP_SCOPE` environment read and stage-1 Rustdoc mention.
+- Remove `scope` from live `read_granted` and `read_denied` audit signatures/events.
+  Production currently always emits it as `None`, so no backend decision or successful correlation behavior is removed.
+- Pin the exact Real request bytes for `gh-authorized` as `00 0000000d 67682d617574686f72697a6564 00` (request discriminant, string length/body, variant).
+  Append the former `Some("session-42")` encoding `01 0000000a 73657373696f6e2d3432` and require exact `trailing bytes in payload` rejection rather than adding a compatibility parser.
+- State that old/new mixed `underwrap-exec` and `underwrapd` binaries are intentionally wire-incompatible and must be deployed together, as they already are through one package/module generation.
+
+Exact scope — make the sidecar the sole namespace-helper authority:
+
+- Remove `DaemonConfig.ns_binary`, its misleading comment, validation entry, typed constructors, YAML fixtures, and path-negative test.
+- Remove only `runtimeConfig.ns_binary` from `nix/modules/underwrap.nix`.
+  Retain `instanceSidecar.ns_binary`, `nsBinaryPath`, the generated sidecar file, `underwrap-exec` sidecar parsing/default/absolute/existence checks, and `Command::new(ns_binary)` unchanged.
+- Remove `ns_binary` from `examples/daemon-config.yaml` and from the full generated-daemon path inventory in `docs/configuration.md`.
+  Describe `/etc/underwrap/instances/<instance>.yaml` as the root-generated strict entry-stage helper authority.
+- Keep current top-level `DaemonConfig` unknown-field behavior unchanged.
+  A stale hand-written `ns_binary` key may be ignored after typed-field removal, but it grants no authority and no compatibility branch reads it.
+- Remove the obsolete key from integration and standalone VM daemon fixtures.
+- Extend the VM's generated-config assertions to parse both JSON-compatible YAML files and require the full daemon config to omit `ns_binary` while the sidecar has exactly `socket`, `ns_binary`, `dbus_daemon_binary`, and `secretsd_binary` with the fixed helper path.
+  Existing deployed wrapper success remains the end-to-end helper-selection evidence.
+- In `docs/architecture.md`, state that stage 1 loads its helper paths from the root-generated sidecar and that the daemon request carries only wrapper selector plus variant.
+
+Exact scope — remove unreachable audit helpers:
+
+- Delete `secret_stored`, `store_denied`, `approved`, `secretsd_read`, `secretsd_write`, and `secretsd_delete`.
+- Preserve `read_granted`, `read_denied`, `auth_denied`, `resource_checkout`, `resource_checkin`, `resource_usage_signal`, and `wrapper_write_denied` with current event names and non-scope fields.
+- Rewrite audit tests to exercise every live helper, preserve identifier-only/secret-value hygiene evidence, and assert no `scope` field.
+- Keep current `secret`/`store_denied` vocabulary and writeback comments for F-052 rather than renaming event fields in this finding.
+
+Expected implementation/test/documentation allowlist — 23 files:
+
+- `crates/underwrap-protocol/src/message/wrapper.rs`
+- `crates/underwrap-protocol/src/message/tests.rs`
+- `crates/underwrap-protocol/src/config.rs`
+- `crates/underwrap-protocol/src/config/tests.rs`
+- `crates/underwrap-exec/src/main.rs`
+- `crates/underwrapd/src/wrapper_flow/mod.rs`
+- `crates/underwrapd/src/wrapper_flow/read.rs`
+- `crates/underwrapd/src/audit.rs`
+- `crates/underwrapd/src/audit/tests.rs`
+- `crates/underwrapd/src/lib/tests.rs`
+- `crates/underwrapd/src/main/tests.rs`
+- `crates/underwrapd/src/test_support.rs`
+- `crates/integration-tests/src/harness/mod.rs`
+- `crates/integration-tests/src/tests/mod.rs`
+- `crates/integration-tests/src/tests/daemon.rs`
+- `crates/integration-tests/src/tests/store_read.rs`
+- `crates/integration-tests/src/tests/wrapper_writeback.rs`
+- `nix/modules/underwrap.nix`
+- `nix/tests/test.py`
+- `examples/daemon-config.yaml`
+- `docs/configuration.md`
+- `docs/architecture.md`
+- `docs/testing.md`
+
+The active plan changes separately for workflow evidence only.
+
+Expected cross-effects:
+
+- F-031 remains resolved with the full daemon grammar narrowed by removal of `ns_binary` and the fixed root-generated sidecar retaining namespace-helper authority.
+- F-033 remains resolved; the local wrapper request ABI becomes smaller without changing protocol feature profiles.
+- O-010 is narrowed by legacy-helper removal but remains separately unresolved because F-052 owns remaining audit vocabulary/comments.
+- F-042 parser/cache behavior, F-052 vocabulary, F-054 log-hygiene evidence, and every other finding/Opportunity/unresolved item remain unchanged.
+
+Non-goals:
+
+- no approval/session/correlation scope feature, replacement field, logging of caller scope, backend HTTP scope, permission/policy mode, audit redesign/vocabulary rename, event retention stub, or compatibility parser/branch;
+- no top-level `DaemonConfig` unknown-field denial, keygen partial-config parse, sidecar schema/path/default, namespace-helper path, `underwrap-exec → underwrap-ns` binary chain, daemon-chosen target, fd 3/fd 20/fd 21, ExecBundle, target identity, capability, or privilege change;
+- no dependency, Cargo/OpenAPI/resource schema, backend behavior, SPA, unrelated Nix option/service, F-044 environment change, F-052 audit wording, F-054 evidence expansion, historical record edit, later finding, Opportunity, or unresolved-item implementation.
+
+Validation commands and evidence:
+
+- exact static negative inventory for `UNDERWRAP_SCOPE`, request/audit scope fields, `_scope`, `scope.as_deref`, six dead helpers, and full-daemon `ns_binary` constructors/fixtures/docs
+- exact positive inventory for `instanceSidecar.ns_binary`, underwrap-exec sidecar parse/absolute/existence/exec path, and all seven live audit helpers/callers
+- exact protocol request-byte and legacy trailing-field rejection tests
+- `cargo test --locked -p underwrap-protocol`
+- `cargo test --locked -p underwrap-protocol --no-default-features --features local-abi`
+- `cargo clippy --locked -p underwrap-protocol --no-default-features --features local-abi -- -D warnings`
+- `cargo test -p underwrap-exec`
+- `cargo test -p underwrapd`
+- `cargo test -p underwrap-keygen`
+- `./crates/integration-tests/run`
+- build exact Nix `web-build`, then run bounded non-integration workspace tests and workspace denied-warning Clippy
+- `cargo fmt -- --check`
+- `nix build .#checks.x86_64-linux.frontend-security-assertions-eval`
+- `nix build .#checks.x86_64-linux.examples-nixos-eval`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- `nix flake check --all-systems --no-build`
+- `nix build .#checks.x86_64-linux.vm-test`, requiring complete `ALL TESTS PASSED` and exact generated daemon/sidecar authority assertions
+- direct source/docs review that the wire/config removals add no compatibility branch, no dead audit helper survives, F-052 vocabulary is unchanged, and no secret enters logs/docs
+- `git diff --check`
+
+The VM is mandatory because the NixOS module's generated daemon/sidecar split and the deployed `underwrap-exec → underwrap-ns` helper authority are directly in scope.
+
+- [x] Revalidate F-043 against current request scope flow, audit output/helpers, daemon versus sidecar namespace-helper paths, config/tests/examples/docs/Nix/VM fixtures, keygen parsing, F-031/F-033/F-052 effects, O-010, and historical report/handover. Evidence: direct CodeGraph/source/test/doc search plus two focused design/evidence reviews on 2026-08-30; all three inert surfaces persist and exact current consumers are enumerated above.
+- [x] Obtain fresh independent approval of all three removals, sidecar authority, private wire/config/audit effects, 23-file allowlist, non-goals, cross-effects, validation, and mandatory VM before cleanup discovery. Evidence: implementation/security review passed the complete scope; evidence review required exact wire/trailing vectors and standalone F-033 local-ABI test/Clippy preservation. The plan incorporated those additions, an interrupted delta review found no blocker, and a bounded final disposition passed on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before F-043 removals.
+- [ ] Implement and independently review the exact dead-surface removals and authority evidence without changing the wrapper chain or adjacent findings.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-043 completion/cross-effects before promoting F-044.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-043 — remove no-op scope and duplicated helper fields.
 - [ ] F-044 — preserve forced XDG environment precedence.
 - [ ] F-045 — reject malformed or dangling Secret Service aliases.
 - [ ] F-046 — reject wrong-typed `CreateItem` properties.
