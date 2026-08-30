@@ -2204,7 +2204,7 @@ The real-backend browser scenario directly observes the changed guidance and one
   - F-047 is resolved and closes the historical V-009 two-context gap for the one observed configured-Chromium self-service flow. F-021 remains resolved; F-048, F-049, F-050, F-053, F-058, every other finding, Opportunity, and unresolved item remain unchanged. F-048 is next.
   - Final closure review required and then passed explicit provenance that both browser runs used the same absolute freshly built changed-tree backend binary; it passed ordered cleanups, separate corrections, fix semantics, validation, no-VM rationale, bounded cross-effects, and F-048 promotion with no remaining gap.
 
-### Current iteration — F-048 consumed confirmation-mutation failures
+### Completed iteration — F-048 consumed confirmation-mutation failures
 
 F-048 remains directly reproducible at clean HEAD `024aba99d036687f17215dec971a9ce4f6f3a943`.
 
@@ -2306,8 +2306,24 @@ Focused Vitest checks exercise the shared outcome contract, configured Chromium 
   - Fresh actual-diff review passed exact key order, parallel start, fail-fast rejection, close-after-both-success semantics, import/format, and separation from the still-unfixed rejection path.
   - Focused delete-resource validation passed 2 tests (`e40c46077885621919f2c6f5c183f31a8e5f35c44fa86a67922ef8182f8c30be`); the complete SPA suite passed 148 tests (`40038192d7f8dbd05c893d4c934cd9c0893e80892aa0901f3ed9a17ef359858a`); and the production build passed with only the existing chunk advisory (`eb28c9a37c7f5bbf9905fa4cb6d5af9a07d1406805fce6fa386ce45766bfa99a`).
   - Controller checks passed exact one-file helper reuse, both exact keys, unchanged result/close/F-048 behavior, `git diff --check`, generated-artifact cleanup, checksum, and clean post-commit tree. Cleanup is complete; the F-048 fix may begin.
-- [ ] Implement and independently review the settled outcome, all four guards, unit/browser/static evidence, and testing documentation without suppressing unrelated errors.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-048 completion/cross-effects before promoting F-049.
+- [x] Implement and independently review the settled outcome, all four guards, unit/browser/static evidence, and testing documentation without suppressing unrelated errors.
+  - Fix commit: `39059a57fcbb67cd1bed8b76f2a3d3c6255f3514` (`fix: consume confirmation request failures`).
+  - The hook captures only raw configured request throw/rejection into a private error-bearing outcome, schedules the unchanged inline mapping without success effects, and returns a value-free public error outcome; successful requests preserve invalidation then callback ordering.
+  - Invalidation and configured success-callback failures still reject `confirm` through TanStack `onError`; no catch was added to `ConfirmDialog` or any production global rejection boundary.
+  - Store deletion and key rotation guard the public error outcome before reading results. Resource and pair deletion catch only their direct `mutateAsync` await before all blocker, invalidation, close, and success processing.
+  - Unit matrices cover success/order, rejected and synchronous request failure, retry, literal discarded outcome, retained post-request rejection, rotation/resource/pair rejection, pair soft refusal/success, and exact production occurrence inventory. The browser scenario observes one exact synthetic DELETE failure through the real fixture with inline recovery and empty unsuppressed diagnostics.
+  - Initial implementation/evidence review required occurrence counts rather than file-presence counts and a semantic browser alert assertion; a separate correction worker fixed both. Fresh post-correction review found no source/test/doc correction, and both post-validation reviews passed the complete behavior and evidence.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-048 completion/cross-effects before promoting F-049.
+  - Exact committed diff: eleven approved paths, 703 insertions and 15 deletions, SHA-256 `a4478a8a39eb1f6c846d159524ceb9f31ec42e70183b663807c917ab6c47f451`.
+  - Focused hook/dialog/store/resource/pair validation passed 31 tests (`b7f5d92ccc57d407e07351b2e51f8a84ba7134de17841405f5cb7ba3698961a1`), including the executable count/path inventory; the complete SPA suite passed 162 tests (`afb8ea7fc58e892f3a11a67d610dfdcc83c8f67bb2428e238d410b3d7f6abd4c`).
+  - The production build passed with only the existing chunk advisory (`fb36418a4dea8bdee32ebcfa169b4f9fbe45cb4cad4f4e9780ba3b86e16684b2`).
+  - Exact Nix web artifact `/nix/store/pyyr4371klhjza33isx6zl9969hnd6dj-underwrap-web-dist-0.1.0` and fresh target `/tmp/underwrap-f048-target.xvHFqQ` produced absolute changed-tree backend `/tmp/underwrap-f048-target.xvHFqQ/debug/underwrap-backend` (`f12a8f672f81791a47e49b56dda592b7db0a1f4dd01058caa50248c7ae28ab60`; backend build `a3c561f8935eaafbb25b02bb2c88496f3e9095025fc96705f6d497e023fe2abd`). Exact `UNDERWRAP_BACKENDD_BINARY` used that same binary for both browser runs, and the target was removed afterward.
+  - Focused configured-Chromium confirmation validation passed its one scenario (`b0921eea3e6ea2d3a384c1d11ec340d54a7305255c9259ac38fd74c8a7f1c844`); the complete configured Playwright suite passed all 37 desktop/mobile scenarios (`7acd5a299fe6afe7dcd5e4a8447dc3aaedc72e34c59f07227781b4ed876fcb77`).
+  - Static validation passed the raw-request/post-success boundary, all four result guards/catches, exact browser interception/unsuppressed collectors, and documentation limits (`3f6d146bb3a414614ac13873995aee2e3a1eed084fffa38d11c8c476575c34ab`).
+  - The implementation worker completed the scoped draft and focused tests but timed out before final reporting. The controller's first production build then found two test-only TypeScript errors—a possibly absent invalidation filter and a mock returning `Array.push`'s number; a separate correction worker fixed only those expressions, and the final focused/full/build/browser checks above all passed.
+  - Controller checks passed exact eleven-path scope, exact ten-hook/eleven-dialog/three-`mutateAsync` occurrence inventory, two outcome guards/two narrow catches, no generic/global suppression or F-049 work, one-sentence bounded docs, `git diff --check`, generated/temporary/browser artifact cleanup, checksum, and clean post-commit tree.
+  - F-048 is resolved for the complete current confirmation-mutation inventory. F-037 remains resolved; F-049, F-054, key-custody/soft-refusal behavior, every other finding, Opportunity, and unresolved item remain unchanged. F-049 is next.
+  - Final closure review passed cleanup/fix order, separate corrections, request-versus-callback rejection semantics, exact inventory, result behavior, validation/provenance/artifact evidence, corrected-attempt classification, no-VM rationale, bounded cross-effects, and F-049 promotion with no remaining gap.
 
 ### Remaining low queue
 
