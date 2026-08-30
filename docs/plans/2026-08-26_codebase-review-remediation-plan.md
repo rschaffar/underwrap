@@ -1155,7 +1155,12 @@ A VM run is not required because no VM-required boundary changes: NixOS module, 
 
 - [x] Revalidate F-039 against current store/item handlers, candidate/ACK and zeroization behavior, property getters, tests, documentation, F-012/F-038 effects, U-004, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection and two bounded design/evidence consultations on 2026-08-30; all three setters still omit the containing collection, while create/replace/delete already update it.
 - [x] Obtain fresh independent approval of the private-helper/narrow-setter design, zeroization and missing-item preservation, same-sample semantics, test/property matrix, docs owner, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: design review passed; evidence review required all-three `Collection.Modified` getter coverage, an exact focused command, qualification of arbitrary versus generated timestamps, and an accurate no-VM rationale that acknowledges deployed semantic change. The plan incorporated every correction and fresh re-review passed on 2026-08-30 with execution evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before timestamp propagation.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before timestamp propagation.
+  - Finding-local review found all item getters/setters, direct SetSecret mutation/zeroization, collection getter, tests, and candidate publication paths live; no independent net deletion exists.
+  - Private helper extraction, narrow SetSecret store method, duplicate manual-clock removal, test consolidation/additions, and docs are the F-039 fix rather than cleanup.
+  - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
+  - Broad store/D-Bus refactors, tests/docs deletion, dependencies, generated files, later findings, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved timestamp propagation may begin.
 - [ ] Implement and independently review the shared setter path, accepted/rejected handler evidence, property observation, and documentation without changing F-012 or missing-item behavior.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-039 completion/cross-effects before promoting F-040.
 
