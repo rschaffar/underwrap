@@ -1701,10 +1701,113 @@ The VM is mandatory because the NixOS module's generated daemon/sidecar split an
   - F-043 is resolved. F-031 remains resolved with its daemon path inventory narrowed and root-generated sidecar authority retained; F-033 remains resolved with the smaller local ABI; O-010 is narrowed but remains separate; F-042, F-052, F-054, and every other finding/Opportunity/unresolved item remain unchanged. F-044 is next.
   - Final closure review passed ordered history, both stats/checksums, cleanup equivalence, wire/config/audit semantics, review/controller chronology, complete validation including VM, cross-effects, and F-044 promotion. The controller then independently recomputed both commit hashes/stats, every retained log hash, plan-only status, and `git diff --check`.
 
+### Current iteration — F-044 forced target-environment precedence
+
+F-044 remains directly reproducible at clean HEAD `8ddd2851dea29d7db2f322523b1f8d337bd61250`.
+
+The shared target-environment authority defines `HOME`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` as forced names.
+`validate_env_name` reserves `HOME` but not the five XDG names.
+
+`build_target_env` correctly forces/defaults those paths, allows trusted wrapper `envSet` to override `HOME` and four base XDG directories, and never lets config override `XDG_RUNTIME_DIR`.
+It then validates and inserts projected resource env entries last, so a resource XDG entry currently replaces the trusted path.
+
+Consequence: trusted but contradictory operator data or directly injected malformed state can redirect target configuration/cache/state/runtime discovery away from the documented target identity and wrapper configuration.
+
+Security boundary:
+
+- Protected asset: deterministic target home, configuration, data, cache, state, and runtime-directory selection.
+- Failure source: trusted operator resource data or malformed directly injected/backend state.
+  The local caller cannot administer resource values and gains no new privilege through this correction.
+- Boundary direction: backend resource env map → shared env-name validation → pure target-environment composition → configured target process.
+- Change direction: exact forced-name collisions fail closed before insertion and before target/projection effects.
+  Ordinary env/resource precedence and every identity/authorization mechanism remain unchanged.
+
+Exact production scope:
+
+- Make `underwrap_protocol::resource::is_reserved_env_name` consult `target_env::is_forced_target_env_name` as the one Rust authority for all six exact names.
+  Remove the now-redundant literal `HOME` from the older reserved-name match and retain `PATH`, `USER`, `LOGNAME`, `SHELL`, `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK`, `LD_*`, and `UNDERWRAP_*` behavior unchanged.
+- Do not modify production `underwrap-ns::env::build_target_env` ordering.
+  Its existing `validate_env_name` call occurs before UTF-8 decode and insertion, so the shared change makes projected forced-name entries fail before they can override trusted values.
+- Do not skip or silently discard a projected forced-name entry.
+  An env-enabled wrapper fails closed with the existing identifier-only reserved-name diagnostic.
+- Preserve the ordinary valid-input precedence `resource env > envSet > passthrough` for non-forced names.
+- Preserve conditional projection behavior.
+  A forced-name entry in the resource does not block a files/libsecret-only wrapper whose `env_projection` is false because daemon and namespace env validation remain conditional.
+- Add no migration or compatibility path for previously injected malformed state.
+  Shared per-key admin read/write/delete/rename validation rejects the invalid key or destination, while deleting/recreating the containing resource remains the cleanup path in this greenfield design.
+
+Exact test scope:
+
+- In protocol tests, iterate all six forced names through both `validate_env_name` and `validate_secret_key(ResourceSlot::Env, ...)`, require the existing value-free reserved-name error, and accept an exact `${name}_APP` near miss for each.
+- In namespace env tests, inject each forced name through `ResourceBlob.env` with projection enabled and require fail-closed pure-planning rejection before value decode/insertion with no secret value in the diagnostic.
+  Pair each with accepted `${name}_APP` entries.
+- Keep/prove trusted forced values: configured `HOME` plus four base XDG overrides, dedicated `XDG_RUNTIME_DIR`, and ambient forced-name suppression.
+- Add an ordinary non-forced collision proving resource env still overrides `envSet`.
+- Add `env_projection = false` evidence proving a forced-name resource entry is ignored while trusted forced values remain.
+- In backend admin tests, matrix all six names through env write and rename-destination handlers.
+  Require HTTP 400 `invalid_request`, the value-free shared reason, complete `ResourceBlob` equality after every rejection, no material in the response, and valid near-miss write/rename recovery.
+- In real backend/daemon integration, use authenticated admin requests to reject all six names without changing the canonical blob.
+  Directly inject each otherwise canonical invalid blob, require an env-enabled daemon read to return `ErrorCode::Internal` with identifier-only/no-value text, and perform a bounded SCM_RIGHTS receive attempt that observes EOF/no descriptor rather than inferring channel absence.
+  Replace each invalid blob with a near-miss blob and prove the same daemon/backend recovers to `ReadOk`.
+  Add a files-only/env-disabled wrapper case proving the conditional F-042 parser behavior remains.
+  Do not claim runtime-open has zero backend effects because pair usage metadata may still change.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-protocol/src/resource.rs`
+- `crates/underwrap-protocol/src/resource/tests.rs`
+- `crates/underwrap-ns/src/env/tests.rs`
+- `crates/underwrap-backend/src/admin_api/secrets/tests.rs`
+- `crates/integration-tests/src/tests/store_read.rs`
+- `docs/security.md`
+- `docs/configuration.md`
+- `docs/testing.md`
+
+The active plan changes separately for workflow evidence only.
+
+Expected cross-effects:
+
+- F-006 remains resolved because namespace rejection remains in pure environment planning before projection effects.
+- F-031 remains resolved; shared forced-name authority is reused rather than duplicated.
+- F-042 remains resolved with its conditional env-name parser behavior unchanged except for the expanded exact reserved set.
+- F-054 remains unchanged; new diagnostics/assertions contain identifiers and reasons but no values.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no reordering of ordinary passthrough/envSet/resource precedence, silent skip, env value transformation, target identity/path derivation, envSet override list, XDG default, runtime-directory provisioning, path grammar, clock, locale/proxy/passthrough behavior, or non-forced reserved-name change;
+- no resource schema/OpenAPI/SPA/Nix option/module, backend storage format, automatic migration/repair, privileged chain, namespace/mount, fd, capability, target UID, policy/writeback, authorization, dependency, or generated artifact change;
+- no F-045 alias validation, F-050 fixture, F-052 audit wording, F-054 log-evidence expansion, historical record edit, broad environment refactor, later finding, Opportunity, or unresolved-item implementation.
+
+Validation commands and evidence:
+
+- `cargo test -p underwrap-protocol resource::tests`
+- `cargo test --locked -p underwrap-protocol --no-default-features --features local-abi`
+- `cargo test -p underwrap-ns env::tests`
+- `cargo test -p underwrap-backend admin_api::secrets::tests`
+- `./crates/integration-tests/run tests::store_read::forced_target_env_names_fail_closed_and_recover -- --exact`, then the unchanged complete runner
+- full protocol, namespace, backend, and daemon tests
+- `cargo clippy --locked -p underwrap-protocol --no-default-features --features local-abi -- -D warnings`
+- build exact Nix `web-build`, then run bounded non-integration workspace tests and workspace denied-warning Clippy
+- `cargo fmt -- --check`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- exact positive/negative inventory proving all six shared forced names reject, near misses and ordinary precedence remain, and no duplicate six-name list was introduced
+- direct boundary review across daemon HTTP/open parser, channel/cache, fd-20 codec/receiver, namespace env builder, backend admin validation, and diagnostics
+- direct docs/link/one-sentence/scope/secret checks
+- `git diff --check`
+
+A VM run is not required because no NixOS module, deployed identity, namespace/mount setup, capability, privileged chain, fd topology, or wrapper-service configuration changes.
+The affected shared lexical rule and pure environment planner are exercised directly, while real backend/daemon integration covers authenticated ingress, malformed-state rejection, and recovery.
+
+- [x] Revalidate F-044 against current shared forced-name policy, resource validation, environment composition order, daemon conditional parse, backend admin ingress, tests/docs, F-006/F-031/F-042/F-054 effects, and historical report/handover. Evidence: direct CodeGraph/source/test inspection plus two focused design/evidence reviews on 2026-08-30; all five XDG names remain admissible resource env keys and no collision regression exists.
+- [x] Obtain fresh independent approval of the one-line shared production change, fail-closed precedence/legacy behavior, exact test matrix, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: implementation/security review passed. Evidence review required direct bounded no-SCM_RIGHTS observation, an exact focused integration command, and isolated local-ABI denied-warning Clippy; the plan incorporated all three and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before forced-name enforcement.
+- [ ] Implement and independently review the shared forced-name rejection and complete unit/integration evidence without changing ordinary precedence.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-044 completion/cross-effects before promoting F-045.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-044 — preserve forced XDG environment precedence.
 - [ ] F-045 — reject malformed or dangling Secret Service aliases.
 - [ ] F-046 — reject wrong-typed `CreateItem` properties.
 - [ ] F-047 — correct profile session-revocation guidance.
