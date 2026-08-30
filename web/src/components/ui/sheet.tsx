@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 
 const Sheet = DialogPrimitive.Root;
 const SheetTrigger = DialogPrimitive.Trigger;
-const SheetClose = DialogPrimitive.Close;
 const SheetPortal = DialogPrimitive.Portal;
 
 const SheetOverlay = React.forwardRef<
@@ -107,7 +106,6 @@ SheetDescription.displayName = DialogPrimitive.Description.displayName;
 export {
   Sheet,
   SheetTrigger,
-  SheetClose,
   SheetContent,
   SheetHeader,
   SheetTitle,
