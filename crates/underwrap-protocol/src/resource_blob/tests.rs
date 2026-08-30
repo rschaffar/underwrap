@@ -1,5 +1,7 @@
 use super::*;
 
+mod timestamps;
+
 fn blob_with_exact_canonical_len(len: usize) -> ResourceBlob {
     let mut blob = ResourceBlob::empty();
     let base = blob.to_canonical_bytes().unwrap().len();
@@ -314,47 +316,6 @@ fn unicode_strings_round_trip_byte_stable() {
     assert_eq!(first, second);
 }
 
-/// Timestamps near the ES6 safe-integer ceiling (2^53 − 1) round
-/// trip cleanly. Anything above that would be silently converted
-/// to floating point by JCS and fail to deserialize back into
-/// `u64` — but no realistic Unix-seconds timestamp comes anywhere
-/// near 2^53, which is ~285M years past the epoch.
-#[test]
-fn large_safe_u64_round_trips() {
-    // 2^53 - 1, the largest integer ES6 represents exactly.
-    let big: u64 = (1u64 << 53) - 1;
-    let mut blob = ResourceBlob::empty();
-    let mut items = BTreeMap::new();
-    items.insert(
-        "huge".into(),
-        Item {
-            label: "huge".into(),
-            content_type: "text/plain".into(),
-            created: big - 1,
-            modified: big,
-            attributes: BTreeMap::new(),
-            secret: SecretBytes::from("s"),
-        },
-    );
-    let mut cols = BTreeMap::new();
-    cols.insert(
-        "default".into(),
-        Collection {
-            label: "d".into(),
-            created: big - 2,
-            modified: big - 1,
-            items,
-        },
-    );
-    blob.libsecret.collections = cols;
-
-    let first = blob.to_canonical_bytes().unwrap();
-    let decoded = ResourceBlob::from_canonical_bytes(&first).unwrap();
-    assert_eq!(decoded, blob);
-    let second = decoded.to_canonical_bytes().unwrap();
-    assert_eq!(first, second);
-}
-
 #[test]
 fn unknown_schema_version_rejected() {
     let blob = ResourceBlob {
@@ -598,24 +559,6 @@ fn libsecret_strict_publication_accepts_exact_cap_minus_one_and_cap_bodies() {
             section
         );
     }
-}
-
-#[test]
-fn libsecret_strict_publication_enforces_safe_timestamp_without_temporal_rules() {
-    let max = (1_u64 << 53) - 1;
-    let mut section = strict_publication_fixture();
-    let collection = section.collections.get_mut("default").unwrap();
-    collection.created = max;
-    collection.modified = 0;
-    let item = collection.items.values_mut().next().unwrap();
-    item.created = max;
-    item.modified = 0;
-    let bytes = section.to_canonical_bytes().unwrap();
-    LibsecretSection::from_strict_publication_bytes(&bytes).unwrap();
-
-    section.collections.get_mut("default").unwrap().created = max + 1;
-    let bytes = section.to_canonical_bytes().unwrap();
-    assert!(LibsecretSection::from_strict_publication_bytes(&bytes).is_err());
 }
 
 #[test]

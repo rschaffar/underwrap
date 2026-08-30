@@ -246,6 +246,11 @@ Workspace tests cover:
   backpressure;
 - real daemon/backend integration flows.
 
+Protocol resource-blob timestamp tests exercise exactly 32 boundary outcomes: four fields (`Collection.created`, `Collection.modified`, `Item.created`, and `Item.modified`) × two containers (`ResourceBlob` and `LibsecretSection`) × typed maximum encode success, independently formatted raw maximum decode success, typed maximum-plus-one encode rejection, and independently formatted raw maximum-plus-one decode rejection.
+Direct semantic-validation and strict-publication tests retain the same value-free error message, accept the inclusive maximum without temporal-order rules, and reject each field independently above the maximum.
+Mixed-defect tests pin complete-resource size before parsing, publication-body size before parsing, timestamp decoding before schema, canonical, or publication-semantic checks, and timestamp encoding before a post-serialization resource-size check.
+This evidence establishes the four-field protocol encode/decode boundary and validation order only; it does not establish timestamp generation, clock correctness, future-time policy, or collection/item modification propagation.
+
 The handler tests enforce the production ordering: retain the write lock, clone
 the accepted store once, mutate the candidate, canonicalize and publish it,
 observe the exact matching ACK, and only then commit. Preparation, publication,

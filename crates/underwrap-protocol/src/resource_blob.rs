@@ -11,12 +11,9 @@
 //!   order is key-sorted.
 //! - No floating point numbers anywhere.
 //! - No `serde(untagged)` enums.
-//! - All `u64` fields are restricted to the ES6 safe-integer range
-//!   (≤ 2⁵³ − 1). JCS encodes numbers per ECMAScript and will emit
-//!   any value above that as a floating-point literal, which then
-//!   fails to deserialize back into `u64`. Every `u64` in this schema
-//!   is a unix-seconds timestamp, well below the limit for ~285M years
-//!   past the epoch.
+//! - The four libsecret `u64` Unix-second timestamp fields are restricted
+//!   to the ES6 safe-integer range (≤ 2⁵³ − 1). Encoding and decoding
+//!   explicitly reject values above that inclusive maximum.
 //!
 //! Together with `serde_jcs::to_vec`, this guarantees that two blobs
 //! with the same logical content serialize to byte-identical output.
@@ -31,6 +28,47 @@ use serde::{Deserialize, Serialize};
 use crate::message::SecretBytes;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+const MAX_LIBSECRET_TIMESTAMP: u64 = (1_u64 << 53) - 1;
+const LIBSECRET_TIMESTAMP_ERROR: &str = "libsecret timestamp exceeds 2^53 - 1";
+
+fn is_safe_libsecret_timestamp(value: u64) -> bool {
+    value <= MAX_LIBSECRET_TIMESTAMP
+}
+
+fn validate_libsecret_timestamp(value: u64) -> Result<()> {
+    if !is_safe_libsecret_timestamp(value) {
+        return Err(anyhow!(LIBSECRET_TIMESTAMP_ERROR));
+    }
+    Ok(())
+}
+
+mod libsecret_timestamp {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _, ser::Error as _};
+
+    use super::{LIBSECRET_TIMESTAMP_ERROR, is_safe_libsecret_timestamp};
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = u64::deserialize(deserializer)?;
+        if !is_safe_libsecret_timestamp(value) {
+            return Err(D::Error::custom(LIBSECRET_TIMESTAMP_ERROR));
+        }
+        Ok(value)
+    }
+
+    pub(super) fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if !is_safe_libsecret_timestamp(*value) {
+            return Err(S::Error::custom(LIBSECRET_TIMESTAMP_ERROR));
+        }
+        serializer.serialize_u64(*value)
+    }
+}
 
 /// Identifier-only reference to one stored entry in a resource blob.
 ///
@@ -198,7 +236,6 @@ impl LibsecretSection {
     }
 
     pub fn validate_publication_semantics(&self) -> Result<()> {
-        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
         fn segment(kind: &str, value: &str) -> Result<()> {
             if value.is_empty()
                 || value.len() > 128
@@ -210,17 +247,10 @@ impl LibsecretSection {
             }
             Ok(())
         }
-        fn timestamp(value: u64) -> Result<()> {
-            if value > MAX_SAFE_INTEGER {
-                return Err(anyhow!("libsecret timestamp exceeds 2^53 - 1"));
-            }
-            Ok(())
-        }
-
         for (collection_id, collection) in &self.collections {
             segment("collection id", collection_id)?;
-            timestamp(collection.created)?;
-            timestamp(collection.modified)?;
+            validate_libsecret_timestamp(collection.created)?;
+            validate_libsecret_timestamp(collection.modified)?;
             for (item_id, item) in &collection.items {
                 if item_id.len() != 32
                     || !item_id
@@ -229,8 +259,8 @@ impl LibsecretSection {
                 {
                     return Err(anyhow!("invalid item id"));
                 }
-                timestamp(item.created)?;
-                timestamp(item.modified)?;
+                validate_libsecret_timestamp(item.created)?;
+                validate_libsecret_timestamp(item.modified)?;
             }
         }
         for (alias, target) in &self.aliases {
@@ -247,7 +277,9 @@ impl LibsecretSection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
     pub label: String,
+    #[serde(with = "libsecret_timestamp")]
     pub created: u64,
+    #[serde(with = "libsecret_timestamp")]
     pub modified: u64,
     #[serde(default)]
     pub items: BTreeMap<String, Item>,
@@ -257,7 +289,9 @@ pub struct Collection {
 pub struct Item {
     pub label: String,
     pub content_type: String,
+    #[serde(with = "libsecret_timestamp")]
     pub created: u64,
+    #[serde(with = "libsecret_timestamp")]
     pub modified: u64,
     #[serde(default)]
     pub attributes: BTreeMap<String, String>,

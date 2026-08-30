@@ -838,6 +838,9 @@ three slots inline:
 }
 ```
 
+`Collection.created`, `Collection.modified`, `Item.created`, and `Item.modified` are unsigned Unix-second values accepted from zero through `9,007,199,254,740,991` (`2^53 - 1`) inclusive.
+Encoding and decoding reject any of those four fields above that maximum before the resource can enter canonical storage or transport.
+
 `BTreeMap` keeps key order deterministic; combined with `serde_jcs`, the
 canonical bytes are byte-identical for any two logically equal blobs. At the
 end of a wrapper run, `underwrap-ns` canonicalizes the composed resource and
