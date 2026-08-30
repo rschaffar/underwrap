@@ -1322,7 +1322,8 @@ Exact scope:
   State that active resource values use the backend's selected `StorageBackend`.
 - Describe retained encrypted `backup/` and `stage/` generations as ciphertext produced by encrypted backend storage but retained in sibling recovery workspaces outside the active canonical `StorageBackend` path and APIs.
   State that retention is indefinite, decryptable with the corresponding generation key, unaffected by resource/store deletion, and owned by trusted-host cleanup.
-- Keep frontend broker retention limited to process memory plus invocation-private `noswap` tmpfs for file staging and private libsecret runtime artifacts.
+- Keep frontend brokered resource state in process memory, except for files bytes staged on invocation-private `noswap` tmpfs.
+  Describe libsecret state as in-memory and its namespace-private bus tmpfs as runtime socket/helper artifacts without a `noswap` claim.
   Continue prohibiting ordinary temp files, sidecars, local databases, disk caches, or alternate durable frontend paths for brokered resource values.
 - Explicitly state that this scoped invariant is not a guarantee about independently managed credentials/authentication records, trusted configuration, operator-custodied keys, or persistence/disclosure by the configured target.
 - Enumerate the normal NixOS runtime-identity controls exactly: a fixed path under a mode-`0700` per-instance state directory, config-derived daemon ownership, mode-`0400` synced same-directory atomic replacement, and read-only daemon service access.
@@ -1349,7 +1350,7 @@ Exact scope:
   Do not invent an application-enforced mode.
 - In `docs/configuration.md`, warn that `envSet` enters Nix-generated configuration and is not secret-bearing input.
 - In `AGENTS.md`, scope the engineering rule to brokered resource material, preserve the frontend cache prohibition, enumerate separate credential/auth/config domains, and prohibit secrets in `envSet`.
-  Synchronize the `underwrap-secretsd` key-file description from a tmpfs state model to one-shot canonical init plus in-memory publication, recording that F-040-adjacent guidance cross-effect explicitly.
+  Synchronize the `underwrap-secretsd` key-file description from a tmpfs state model to one-shot canonical initialization, in-memory state, and private generation publication, recording that F-040-adjacent guidance cross-effect explicitly.
 - Record only static claim/control evidence in `docs/testing.md`, including the existing keygen/daemon/user/Nix witnesses and the limits of Nix evaluation.
   Do not duplicate normative security prose.
 
