@@ -2632,7 +2632,7 @@ The changed real-backend Playwright fixture and focused/full browser runs direct
   - F-050 is resolved. Backend unknown-field strictness remains separate and unchanged; F-003/F-041 remain resolved; F-051, F-053, F-054, F-058, every other finding, Opportunity, and unresolved item remain unchanged. F-051 is next.
   - Final closure review passed cleanup/fix order, separate review/correction, exact fixture/spec semantics, bounded claims, validation/provenance/artifact evidence, no-VM rationale, cross-effects, and F-051 promotion with no remaining gap.
 
-### Current iteration — F-051 present-state published documentation
+### Completed iteration — F-051 present-state published documentation
 
 F-051 remains valid but narrowed at clean HEAD `3a7a51c00eaea05789080fe92b581f91ee00d41c`.
 
@@ -2697,8 +2697,18 @@ Static exact-text and link-resolution evidence directly covers the changed bound
   - Finding-local review found each surrounding qualification/action distinct; further reduction would weaken claims, delete valid navigation/history, become broad editorial work, or overlap the exact fix/F-052+.
   - Repository-wide bounded discovery found no high-confidence private dead production definition before its deadline; sampled Rust/Nix definitions were live and TypeScript unused-symbol gates remain enabled.
   - Formatting, navigation/history deletion, broad consolidation, dependencies, later findings, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; the F-051 correction may begin.
-- [ ] Implement and independently review the seven present-state sentences without changing claims or internal-record navigation.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-051 completion/cross-effects before promoting F-052.
+- [x] Implement and independently review the seven present-state sentences without changing claims or internal-record navigation.
+  - Fix commit: `37418712a31dd69d67a1e92b4daa325d41b07c41` (`docs: state product behavior directly`).
+  - Six guides now state the fixed built-in passthrough, add-only wrapper environment, backend coordination limits, and unsupported proxy identity directly, without release-temporal framing.
+  - `docs/index.md` remains byte-unchanged with valid plan/archive/ADR/implementation-note/research/roadmap/testing, canonical skill, immutable-history, ticket-status, and compatibility-symlink navigation.
+  - The initial implementation worker completed three files before its deadline; a continuation worker completed the other three. Actual-diff review then required the wrapper-environment guarantee as an exact standalone sentence, and a separate correction worker changed only that passage. Fresh review passed all seven sentences and six-file scope with no remaining correction.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-051 completion/cross-effects before promoting F-052.
+  - Exact committed diff: six approved product-document paths, 22 insertions and 23 deletions, SHA-256 `48b5722c0e68c66546d348732edfa0ae2e09d44a0ca737f003c7dc87dc4c89de`.
+  - Normalized-whitespace validation found none of the five stale qualifier classes in published top-level product docs and found each of the seven exact standalone replacement sentences once.
+  - Every relative link and anchor in the six changed guides and `docs/index.md` resolved; all preserved project-record/skill/history entries and exact `CLAUDE.md`, `.claude/skills`, and `.pi/skills` symlink targets passed (`e25e2c975f22595b28cb56990e7574d4000b14f78c5f90d0515bc86eebc34fde`).
+  - Controller checks passed exact six-path scope, one-sentence replacement layout, valid maturity/operation-sequence exclusions, byte-unchanged internal navigation, no behavior/security/F-052 change, `git diff --check`, artifact absence, checksum, and clean post-commit tree.
+  - F-051 is resolved. F-041/F-042 remain resolved; internal project-memory navigation and README/security maturity wording remain valid; F-052 and every other finding, Opportunity, and unresolved item remain unchanged. F-052 is next.
+  - Final closure review passed cleanup disposition, implementation/correction chronology, seven-sentence/six-guide semantics, static/link/symlink evidence, no-test rationale, preserved navigation/maturity, cross-effects, and F-052 promotion with no remaining gap.
 
 ### Remaining low queue
 
