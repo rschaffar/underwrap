@@ -56,7 +56,7 @@ test("admin can create, edit, and delete a dynamic store", async ({
   await expect(page.getByRole("row", { name: /\bscratch\b/ })).toHaveCount(0);
 });
 
-test("creating an encrypted store reveals the master key once and leaves no traces in storage", async ({
+test("creating an encrypted store returns its key once without retaining it in checked browser locations", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -70,8 +70,8 @@ test("creating an encrypted store reveals the master key once and leaves no trac
   await createDlg
     .getByLabel(/backend/i)
     .selectOption("encrypted");
-  // The free-form key file path field is gone — the backend chooses
-  // where to put it.
+  // Encrypted creation returns the generated master key once instead of
+  // accepting or persisting an operator-selected key-file path.
   await expect(createDlg.getByLabel(/key file/i)).toBeHidden();
   await createDlg.getByRole("button", { name: /^create$/i }).click();
 
@@ -92,8 +92,11 @@ test("creating an encrypted store reveals the master key once and leaves no trac
   await expect(reveal).toBeHidden();
   await expect(page.getByRole("row", { name: /\bvault\b/ })).toBeVisible();
 
-  // Storage must be clean: no localStorage / sessionStorage entry,
-  // no cookie, and the URL must not carry the key value.
+  // Check only localStorage, sessionStorage, script-visible document.cookie,
+  // and the current URL for the returned key value.
+  // This does not inspect HttpOnly cookies, IndexedDB, Cache Storage, history,
+  // network/cache data, process/browser memory, backend-host state, or transient
+  // Playwright failure artifacts.
   const storageSnapshot = await page.evaluate(() => ({
     local: Object.entries(localStorage),
     session: Object.entries(sessionStorage),
@@ -103,7 +106,7 @@ test("creating an encrypted store reveals the master key once and leaves no trac
   const serialised = JSON.stringify(storageSnapshot);
   expect(
     serialised,
-    "key value must not appear in storage, cookies, or the URL after the reveal flow",
+    "key value must not appear in localStorage, sessionStorage, script-visible document.cookie, or the current URL after the reveal flow",
   ).not.toContain(keyValue);
 });
 

@@ -70,9 +70,6 @@ export interface BackendInstance {
   tmpDir: string;
   /** Absolute path of the pre-seeded default plain store directory. */
   storeDir: string;
-  /** Absolute path of the configured `keys_dir`. Encrypted-store key
-   *  files are generated here, one per store. */
-  keysDir: string;
   /** Tear down: SIGTERM the process, wait for exit, remove the temp dir. */
   cleanup: () => Promise<void>;
 }
@@ -156,12 +153,6 @@ export async function startBackend(
   const dataRootsDir = join(tmpDir, "data-root");
   mkdirSync(dataRootsDir);
 
-  // Per-test master-key directory for encrypted dynamic stores.
-  // The backend generates one file per store at
-  // `<keys_dir>/<store>.key` with mode 0600.
-  const keysDir = join(tmpDir, "keys");
-  mkdirSync(keysDir);
-
   const configYaml = [
     `stores_dir: ${JSON.stringify(storesDir)}`,
     `clients_dir: ${JSON.stringify(join(tmpDir, "clients"))}`,
@@ -177,7 +168,6 @@ export async function startBackend(
     `    - "${baseUrl}"`,
     `    - "https://127.0.0.1:${port}"`,
     `  stores_data_root: ${JSON.stringify(dataRootsDir)}`,
-    `  keys_dir: ${JSON.stringify(keysDir)}`,
     "",
   ].join("\n");
   const configPath = join(tmpDir, "backend.yaml");
@@ -251,7 +241,6 @@ export async function startBackend(
     baseUrl,
     tmpDir,
     storeDir,
-    keysDir,
     cleanup,
   };
 }

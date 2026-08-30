@@ -622,6 +622,11 @@ It requires the exact inline error, retained dialog, restored Delete button, and
 This scenario does not exercise a real backend DELETE rejection or establish application-wide, cross-browser, mobile-browser, or every-promise diagnostic cleanliness.
 
 Playwright exercises protected routing, authentication, CSRF, stores, secrets, permissions, client instances, and user workflows.
+The real-backend encrypted-store creation scenario observes the generated master key returned once, while its fixture supplies no master-key directory or configuration field.
+The corresponding backend unit test recursively scans its temporary test root for `.key` files after encrypted-store creation.
+The browser assertion checks only `localStorage`, `sessionStorage`, script-visible `document.cookie`, and the current URL for the returned key value.
+It does not inspect HttpOnly cookies, IndexedDB, Cache Storage, history, network or cache data, process or browser memory, backend-host state, or transient Playwright failure artifacts.
+Because Playwright retains traces and screenshots on failure, those transient artifacts may contain rendered key material until removed.
 Authentication coverage includes hard-navigation sign-out with a freshly primed CSRF token, backend session destruction, stale-cookie rejection, and a failed first logout that remains visible and authenticated until a successful retry.
 The first Profile scenario authenticates one operator in two independent browser contexts against one real backend.
 After self-service password change in one context, exact `whoami` responses observe that the submitting session remains authenticated in this run and that the other pre-change session is unauthenticated on its first post-change admin-API request, followed by a `/profile` redirect to login.
