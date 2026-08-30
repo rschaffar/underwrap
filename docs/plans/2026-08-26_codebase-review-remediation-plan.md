@@ -1178,10 +1178,84 @@ A VM run is not required because no VM-required boundary changes: NixOS module, 
   - F-012 and F-038 remain resolved; U-004 is narrowed but remains unresolved for the rest of Secret Service draft conformance; F-040, F-045, F-046, and every other finding/Opportunity/unresolved item remain unchanged. F-040 is next.
   - Final closure review found no semantic correction, requested controller-only Git/hash verification, and then passed after exact plan-only status, seven-path 413/96 stat, patch checksum, all six retained log hashes, and `git diff --check` were reconfirmed. F-040 promotion is approved.
 
+### Current iteration — F-040 secretsd-store ownership Rustdoc
+
+F-040 remains valid with an obsolete historical remedy at clean HEAD `de7a8c14b9a0f484a7898b95bfbb1495a2d544ab`.
+
+`underwrap-secretsd-store` crate Rustdoc still says its complete state is a JSON envelope sent only over an authenticated daemon socketpair and never written locally. The crate actually owns only the mutable in-memory `SecretStore` model and in-process operations; collection/item creation samples OS time and item ids use OS randomness, so the model is not mathematically pure.
+
+Production `underwrap-secretsd` initializes that model by converting the canonical `LibsecretSection` received through the one-shot PID-2 init pipe. It converts each candidate back to a canonical section, publishes it through the private secretsd→host publication socket, and commits candidate memory only after exact ACK. Host/backend persistence is outside this crate.
+
+The public, non-test-gated `from_json`, `to_json`, and `to_json_pretty` envelope helpers have no current in-repository production callers: `from_json`/`to_json` are referenced only by three sibling tests and the pretty helper has no in-repository caller. Static repository search does not establish absence of external downstream use, but this greenfield workspace has no published compatibility surface. F-008 removed the historical target-writable tmpfs state pathname, so F-040 must not restore the report's old “canonical tmpfs flow” recommendation.
+
+Consequence: maintainers are currently told the wrong component ownership, transport, serialization, and persistence invariants for secret-bearing state.
+
+Security boundary: none. This iteration changes documentation and may separately remove serialization surface with no current in-repository production callers; F-008/F-012 transport, validation, ACK, zeroization, and persistence boundaries remain unchanged.
+
+Current ownership flow:
+
+- `underwrap-secretsd-store`: in-memory collections/items/aliases and in-process model operations; no file, socket, publication, canonical-resource, or backend I/O.
+- `underwrap-secretsd`: one-shot canonical-section initialization, store↔section conversion, candidate canonicalization/publication, exact-ACK commit, and in-process zeroization policy.
+- host `underwrap-ns`: private publication receiver, validation/retention/ACK, final resource composition, and Checkin dispatch through `underwrapd`.
+- `underwrapd`: scoped resource-channel forwarding of runtime finalize.
+- backend: canonical complete-resource persistence through `StorageBackend`.
+
+Exact documentation-fix scope on the current tree:
+
+- Rewrite `crates/underwrap-secretsd-store/src/lib.rs` crate Rustdoc to describe only the in-memory state model and its ownership boundary, while accurately identifying the separate `underwrap-secretsd` conversion/publication integration without claiming this crate performs I/O, persistence, canonicalization, ACK handling, or zeroization.
+- Correct the crate package description in `Cargo.toml` so it no longer presents JSON-envelope serialization as the crate's defining production role.
+- State that the in-memory model contains raw secret bytes and that external callers own lifecycle, transport, persistence, and memory-erasure policy; do not quote or add secret values.
+- Update `store/json.rs` method Rustdoc, if the independently reviewed cleanup leaves those methods present, to call them public generic serialization helpers with no current in-repository production callers. State that returned/accepted JSON strings are secret-bearing, base64 is encoding rather than protection, and callers own their lifetime/erasure. Do not label them safe debug output or describe a daemon channel/local state path.
+- Record only static call-path and package-Rustdoc validation evidence in `docs/testing.md`; keep mechanism ownership normative in crate Rustdoc plus `docs/architecture.md` and `docs/secretsd-security.md` rather than duplicating the full flow.
+
+Expected documentation-fix allowlist on the current tree:
+
+- `crates/underwrap-secretsd-store/Cargo.toml`
+- `crates/underwrap-secretsd-store/src/lib.rs`
+- `crates/underwrap-secretsd-store/src/store/json.rs` if retained after cleanup
+- `docs/testing.md`
+- this plan for evidence
+
+If cleanup independently accepts removal of the public JSON surface, that separate cleanup alone must own `store/json.rs`, its `store/mod.rs` declaration, the three helper-only JSON tests, resulting manifest dependency removals, and any Serde/base64 model/helper code proven to have no remaining consumer. The later documentation fix must then remove `store/json.rs` from its allowlist and retain package-description correction in the fix rather than folding documentation claims into cleanup.
+
+Expected cross-effects:
+
+- F-008 and F-012 remain resolved; no pathname, publication, ACK, candidate, zeroization, or persistence behavior changes.
+- F-041's broader persistent-secret-store claim and F-042's daemon opaque-blob parsing claim remain unresolved and unchanged.
+- F-045, every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no target-writable tmpfs state path, daemon socket-only flow, new JSON/canonical format, serialization/persistence/transport behavior, file/socket/backend I/O, candidate/ACK/zeroization, resource format/size, or Secret Service behavior change;
+- no product claim that frontend memory, target behavior, retained backend generations, or external configured targets cannot persist or disclose their own secret;
+- no F-041 persistent-store-claim rewrite, F-042 daemon parser documentation, F-045 alias handling, public architecture/security procedure duplication, later finding, Opportunity, or unresolved-item implementation;
+- no dependency addition, generated artifact, NixOS/module, VM, privileged chain, security boundary, broad documentation rewrite, historical record edit, test deletion, or code removal in the documentation fix; only a separately scoped, independently accepted cleanup may remove the helper surface and tests/dependencies that exist solely for it.
+
+Validation commands and evidence:
+
+- direct source/call-path search for every `SecretStore` JSON helper and each actual store↔section/init/publication/persistence owner
+- `cargo test -p underwrap-secretsd-store`
+- `cargo test -p underwrap-secretsd section_store`
+- `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps -p underwrap-secretsd-store`
+- `cargo clippy --all-targets -p underwrap-secretsd-store -p underwrap-secretsd -- -D warnings`
+- `cargo fmt -- --check`
+- build the exact Nix `web-build` artifact through `UNDERWRAP_WEB_DIST`, then run bounded non-integration workspace tests and workspace denied-warning Clippy
+- `./crates/integration-tests/run`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- direct scope/docs inspection that no obsolete tmpfs/socket-only flow, local persistence claim, secret value, F-041/F-042 wording, dependency/generated artifact, or unrelated behavior change enters the unit
+- `git diff --check`
+
+A VM run is not required because no NixOS, packaging, identity, namespace, capability, privileged-chain, process-topology, target-visible protocol, or deployment behavior changes; package Rustdoc, direct call-path evidence, crate/workspace tests, and the integration runner cover this maintenance boundary.
+
+- [x] Revalidate F-040 against current crate/module docs, JSON-helper reachability, one-shot initialization, section conversion, publication/ACK, host/backend persistence, F-008 effects, current public documentation, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection on 2026-08-30; the false crate invariant persists, all JSON helper callers are test-only or absent, and the historical tmpfs remedy is superseded.
+- [x] Obtain fresh independent approval of the ownership wording, conditional JSON-helper treatment, docs owners, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews required in-process rather than pure wording, public/no-current-production reachability precision, a secret-bearing JSON/base64 caveat if retained, the `underwrapd` finalize hop, evidence-only testing docs, package-description correction, and explicit cleanup-versus-fix ownership. After those corrections and removal of the unsupported word “unreachable,” fresh re-review passed on 2026-08-30 with external downstream use explicitly unknown.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before the Rustdoc correction, then revise the fix allowlist to the resulting tree.
+- [ ] Implement and independently review the current ownership Rustdoc/testing evidence without changing secret-state behavior or adjacent claims.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-040 completion/cross-effects before promoting F-041.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-040 — correct the `underwrap-secretsd-store` persistence Rustdoc.
 - [ ] F-041 — scope persistent-secret-store claims to brokered resources.
 - [ ] F-042 — document the daemon's resource-blob parsing accurately.
 - [ ] F-043 — remove no-op scope and duplicated helper fields.
