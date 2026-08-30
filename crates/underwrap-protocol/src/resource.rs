@@ -55,13 +55,6 @@ impl ResourceSlot {
     }
 }
 
-impl std::str::FromStr for ResourceSlot {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s).ok_or(())
-    }
-}
-
 /// Subset of [`ResourceSlot`] that the flat-KV admin surface emits.
 /// The `libsecret` slot is structurally a tree and is addressed by
 /// its own admin endpoints, so it never appears in flat-entry listings.
