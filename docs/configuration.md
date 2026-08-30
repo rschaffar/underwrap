@@ -203,16 +203,21 @@ built-ins. `PATH` is not a built-in and should be set through a trusted
 
 Forced paths are:
 
-- `HOME` — the original caller's passwd home path unless `envSet.HOME` supplies
-  another canonical absolute path;
+- `HOME` — the original caller's passwd home path unless `envSet.HOME` supplies another canonical absolute path;
 - `XDG_RUNTIME_DIR` — the dedicated target UID's provisioned runtime directory;
-- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` —
-  derived from effective `HOME` unless explicitly set to canonical absolute values.
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` — derived from effective `HOME` unless explicitly set to canonical absolute values.
 
-The dedicated target UID does not automatically gain access to the caller's
-home merely because `HOME` names it. Use `accessPaths` for caller-owned state
-the target needs. Files projection mount targets remain anchored to the
-caller's passwd home path even when `envSet.HOME` points elsewhere.
+Resource env entries cannot use any of these six exact names.
+The admin API rejects a per-key write, delete, or rename destination using a forced name with HTTP 400 `invalid_request`.
+An env-enabled wrapper fails closed if directly injected resource state contains a forced name, while a wrapper with env projection disabled ignores that env entry.
+For ordinary admissible names, resource env values retain precedence over `envSet` and passthrough values.
+F-011 content blockers prevent normal deletion of a resource containing such an entry, and no admin repair or migration operation is available.
+This outside-contract state requires a quiesced backend and trusted backend-host restoration or replacement of the affected resource from known-good state, or an affected-store rebuild from known-good inputs.
+No automated recovery procedure is provided.
+
+The dedicated target UID does not automatically gain access to the caller's home merely because `HOME` names it.
+Use `accessPaths` for caller-owned state the target needs.
+Files projection mount targets remain anchored to the caller's passwd home path even when `envSet.HOME` points elsewhere.
 
 ### Files projection and access paths
 

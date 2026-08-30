@@ -1,4 +1,41 @@
 use super::*;
+use base64::Engine;
+use std::time::Duration;
+use underwrap_protocol::target_env::FORCED_TARGET_ENV_NAMES;
+
+const RESERVED_ENV_REASON: &str = "environment variable name is reserved by underwrap hardening";
+const RUNTIME_VALUE_MARKER: &str = "synthetic-runtime-value-marker";
+
+fn assert_env_read_rejected_without_channel(socket_path: &Path, name: &str) {
+    let mut control = StdUnixStream::connect(socket_path).unwrap();
+    control
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_frame_sync(
+        &mut control,
+        &WrapperRequest::Read {
+            wrapper_name: "env-wrapper".to_string(),
+            variant: underwrap_protocol::variant::WrapperVariant::Real,
+        },
+    )
+    .unwrap();
+
+    let response: WrapperResponse = read_frame_sync(&mut control).unwrap();
+    match response {
+        WrapperResponse::Error {
+            code: ErrorCode::Internal,
+            message,
+        } => {
+            assert!(message.contains(name), "{name}: {message}");
+            assert!(message.contains(RESERVED_ENV_REASON), "{name}: {message}");
+            assert!(!message.contains(RUNTIME_VALUE_MARKER), "{name}: {message}");
+        }
+        other => panic!("expected Internal error for {name}, got {other:?}"),
+    }
+
+    let error = scm_rights::recv_fd(control.as_fd()).unwrap_err();
+    assert_eq!(error.to_string(), "recvmsg: connection closed", "{name}");
+}
 
 #[tokio::test]
 async fn store_then_read_secret() {
@@ -198,6 +235,202 @@ async fn secret_with_special_chars() {
 
     let (_, blob, _) = checkout_resource(daemon.instance_socket.clone(), "gh-authorized").await;
     assert_eq!(expect_single_env_bytes(blob), special.as_bytes());
+
+    daemon.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn forced_target_env_names_fail_closed_and_recover() {
+    let resource = "forced-env-resource";
+    let mut wrappers = HashMap::new();
+    wrappers.insert(
+        "env-wrapper".to_string(),
+        wrapper("/usr/bin/true", resource, "IGNORED"),
+    );
+    wrappers.insert(
+        "files-only-wrapper".to_string(),
+        files_wrapper("/usr/bin/true", resource, "projected"),
+    );
+    let daemon = TestDaemon::start(wrappers).await.unwrap();
+
+    daemon
+        .store_secret("test", "env-wrapper", resource, "ordinary-resource-value")
+        .await
+        .unwrap();
+    daemon
+        .upsert_permission(
+            "test",
+            &daemon.current_permission("files-only-wrapper", resource),
+        )
+        .await
+        .unwrap();
+    let ordinary = daemon.get_resource_blob("test", resource).unwrap();
+    let ordinary_bytes = ordinary.to_canonical_bytes().unwrap();
+
+    for name in FORCED_TARGET_ENV_NAMES {
+        let response = daemon
+            .admin_request(
+                reqwest::Method::PUT,
+                &format!("/v1/admin/stores/test/secrets/{resource}/env/{name}"),
+            )
+            .json(&underwrap_protocol::service::AdminSecretWriteRequest {
+                material_b64: base64::engine::general_purpose::STANDARD
+                    .encode(b"synthetic-admin-rejected-material"),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "{name}"
+        );
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "code": "invalid_request",
+                "message": RESERVED_ENV_REASON,
+            }),
+            "{name}",
+        );
+        assert!(body.get("material_b64").is_none(), "{name}: {body}");
+        assert!(!body.to_string().contains("synthetic-admin"), "{name}");
+        assert_eq!(
+            daemon
+                .get_resource_blob("test", resource)
+                .unwrap()
+                .to_canonical_bytes()
+                .unwrap(),
+            ordinary_bytes,
+            "{name}",
+        );
+    }
+
+    for name in FORCED_TARGET_ENV_NAMES {
+        let mut rejected_value = RUNTIME_VALUE_MARKER.as_bytes().to_vec();
+        rejected_value.push(0xff);
+        let mut invalid = ordinary.clone();
+        invalid.env.insert(
+            (*name).to_string(),
+            underwrap_protocol::message::SecretBytes::from(rejected_value),
+        );
+        daemon
+            .put_resource_blob("test", resource, &invalid)
+            .unwrap();
+        let invalid_bytes = invalid.to_canonical_bytes().unwrap();
+
+        let response = daemon
+            .admin_request(
+                reqwest::Method::DELETE,
+                &format!("/v1/admin/stores/test/secrets/{resource}/env/{name}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "{name}"
+        );
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "code": "invalid_request",
+                "message": RESERVED_ENV_REASON,
+            }),
+            "{name}",
+        );
+        assert!(!body.to_string().contains(RUNTIME_VALUE_MARKER), "{name}");
+        assert_eq!(
+            daemon
+                .get_resource_blob("test", resource)
+                .unwrap()
+                .to_canonical_bytes()
+                .unwrap(),
+            invalid_bytes,
+            "{name}",
+        );
+
+        let blocked = daemon.delete_resource("test", resource).await.unwrap();
+        assert!(!blocked.ok, "{name}: invalid content must block deletion");
+        let blockers = blocked.blocked_by.expect("content blockers present");
+        assert!(blockers.content_entry_count >= 1, "{name}");
+        assert!(
+            blockers.sample_content.iter().any(|entry| matches!(
+                entry,
+                underwrap_protocol::resource_blob::ResourceContentReference::Env {
+                    name: blocked_name,
+                } if blocked_name == name
+            )),
+            "{name}: malformed env entry absent from {blockers:?}",
+        );
+        assert_eq!(
+            daemon
+                .get_resource_blob("test", resource)
+                .unwrap()
+                .to_canonical_bytes()
+                .unwrap(),
+            invalid_bytes,
+            "{name}",
+        );
+
+        let socket = daemon.instance_socket.clone();
+        let rejected_name = (*name).to_string();
+        tokio::task::spawn_blocking(move || {
+            assert_env_read_rejected_without_channel(&socket, &rejected_name)
+        })
+        .await
+        .unwrap();
+
+        let (response, files_blob, _) =
+            checkout_resource(daemon.instance_socket.clone(), "files-only-wrapper").await;
+        assert!(matches!(
+            response,
+            WrapperResponse::ReadOk {
+                env_projection: false,
+                ..
+            }
+        ));
+        assert_eq!(files_blob, invalid, "{name}");
+
+        let near_miss = format!("{name}_APP");
+        let mut recovered = ordinary.clone();
+        recovered.env.insert(
+            near_miss,
+            underwrap_protocol::message::SecretBytes::from("accepted-near-miss"),
+        );
+        // Test-only trusted restoration simulation: production admin operations
+        // intentionally cannot repair this outside-contract stored state.
+        daemon
+            .put_resource_blob("test", resource, &recovered)
+            .unwrap();
+        let (response, env_blob, _) =
+            checkout_resource(daemon.instance_socket.clone(), "env-wrapper").await;
+        assert!(matches!(
+            response,
+            WrapperResponse::ReadOk {
+                env_projection: true,
+                ..
+            }
+        ));
+        assert_eq!(env_blob, recovered, "{name}");
+    }
+
+    daemon
+        .put_resource_blob("test", resource, &ordinary)
+        .unwrap();
+    let (response, recovered, _) =
+        checkout_resource(daemon.instance_socket.clone(), "env-wrapper").await;
+    assert!(matches!(
+        response,
+        WrapperResponse::ReadOk {
+            env_projection: true,
+            ..
+        }
+    ));
+    assert_eq!(recovered.to_canonical_bytes().unwrap(), ordinary_bytes);
 
     daemon.stop().await.unwrap();
 }

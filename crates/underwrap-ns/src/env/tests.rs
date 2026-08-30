@@ -206,17 +206,10 @@ fn build_target_env_ignores_forced_names_in_passthrough_and_env_set() {
         resource: sample_binding(),
         access_paths: Vec::new(),
     };
-    let host_env = HashMap::from([
-        ("HOME".to_string(), "/tmp/evil-home".to_string()),
-        (
-            "XDG_RUNTIME_DIR".to_string(),
-            "/tmp/evil-runtime".to_string(),
-        ),
-        (
-            "XDG_CONFIG_HOME".to_string(),
-            "/tmp/evil-config".to_string(),
-        ),
-    ]);
+    let host_env = FORCED_TARGET_ENV_NAMES
+        .iter()
+        .map(|name| ((*name).to_string(), format!("/tmp/hostile-{name}")))
+        .collect();
 
     let target_env = build_target_env(
         &host_env,
@@ -227,16 +220,24 @@ fn build_target_env_ignores_forced_names_in_passthrough_and_env_set() {
     )
     .unwrap();
 
-    assert_eq!(target_env.get("HOME"), Some(&"/home/alice".to_string()));
-    // The env_set XDG_RUNTIME_DIR override is ignored; the resolved value wins.
-    assert_eq!(
-        target_env.get("XDG_RUNTIME_DIR"),
-        Some(&"/run/underwrap-runtime/underwrap-target-abc".to_string())
-    );
-    assert_eq!(
-        target_env.get("XDG_CONFIG_HOME"),
-        Some(&"/home/alice/.config".to_string())
-    );
+    let expected = HashMap::from([
+        ("HOME", "/home/alice"),
+        (
+            "XDG_RUNTIME_DIR",
+            "/run/underwrap-runtime/underwrap-target-abc",
+        ),
+        ("XDG_CONFIG_HOME", "/home/alice/.config"),
+        ("XDG_DATA_HOME", "/home/alice/.local/share"),
+        ("XDG_CACHE_HOME", "/home/alice/.cache"),
+        ("XDG_STATE_HOME", "/home/alice/.local/state"),
+    ]);
+    for name in FORCED_TARGET_ENV_NAMES {
+        assert_eq!(
+            target_env.get(*name).map(String::as_str),
+            expected.get(name).copied(),
+            "{name}",
+        );
+    }
 }
 
 #[test]
@@ -277,6 +278,136 @@ fn build_target_env_rejects_invalid_checkout_names_during_pure_planning() {
     .unwrap_err();
     assert!(err.contains("BAD=NAME"));
     assert!(err.contains("invalid"));
+}
+
+#[test]
+fn build_target_env_rejects_forced_resource_names_before_value_decode() {
+    const VALUE_MARKER: &str = "synthetic-secret-value-marker";
+
+    for name in FORCED_TARGET_ENV_NAMES {
+        let mut bytes = VALUE_MARKER.as_bytes().to_vec();
+        bytes.push(0xff);
+        let mut checkout = ResourceBlob::empty();
+        checkout
+            .env
+            .insert((*name).to_string(), SecretBytes::from(bytes));
+
+        let error = build_target_env(
+            &HashMap::new(),
+            &sample_exec_bundle(),
+            &checkout,
+            std::path::Path::new("/home/alice"),
+            "/run/underwrap-runtime/underwrap-target-abc",
+        )
+        .unwrap_err();
+        assert!(error.contains(name), "{name}: {error}");
+        assert!(
+            error.contains("reserved by underwrap hardening"),
+            "{name}: {error}"
+        );
+        assert!(!error.contains("not valid UTF-8"), "{name}: {error}");
+        assert!(!error.contains(VALUE_MARKER), "{name}: {error}");
+
+        let near_miss = format!("{name}_APP");
+        let mut checkout = ResourceBlob::empty();
+        checkout
+            .env
+            .insert(near_miss.clone(), SecretBytes::from("accepted-near-miss"));
+        let target_env = build_target_env(
+            &HashMap::new(),
+            &sample_exec_bundle(),
+            &checkout,
+            std::path::Path::new("/home/alice"),
+            "/run/underwrap-runtime/underwrap-target-abc",
+        )
+        .unwrap();
+        assert_eq!(
+            target_env.get(&near_miss).map(String::as_str),
+            Some("accepted-near-miss"),
+        );
+    }
+}
+
+#[test]
+fn build_target_env_preserves_ordinary_resource_precedence() {
+    let mut bundle = sample_exec_bundle();
+    bundle
+        .env_set
+        .insert("CUSTOM".to_string(), "trusted-config".to_string());
+    let mut checkout = ResourceBlob::empty();
+    checkout
+        .env
+        .insert("CUSTOM".to_string(), SecretBytes::from("resource-value"));
+
+    let target_env = build_target_env(
+        &HashMap::new(),
+        &bundle,
+        &checkout,
+        std::path::Path::new("/home/alice"),
+        "/run/underwrap-runtime/underwrap-target-abc",
+    )
+    .unwrap();
+
+    assert_eq!(
+        target_env.get("CUSTOM").map(String::as_str),
+        Some("resource-value"),
+    );
+}
+
+#[test]
+fn env_disabled_ignores_forced_resource_names_and_keeps_trusted_values() {
+    let mut bundle = sample_exec_bundle();
+    bundle.resource.env_projection = false;
+    bundle.env_set = HashMap::from([
+        ("HOME".to_string(), "/srv/trusted-home".to_string()),
+        (
+            "XDG_CONFIG_HOME".to_string(),
+            "/srv/trusted-config".to_string(),
+        ),
+        ("XDG_DATA_HOME".to_string(), "/srv/trusted-data".to_string()),
+        (
+            "XDG_CACHE_HOME".to_string(),
+            "/srv/trusted-cache".to_string(),
+        ),
+        (
+            "XDG_STATE_HOME".to_string(),
+            "/srv/trusted-state".to_string(),
+        ),
+    ]);
+    let mut checkout = ResourceBlob::empty();
+    for name in FORCED_TARGET_ENV_NAMES {
+        checkout
+            .env
+            .insert((*name).to_string(), SecretBytes::from(vec![0xff]));
+    }
+
+    let target_env = build_target_env(
+        &HashMap::new(),
+        &bundle,
+        &checkout,
+        std::path::Path::new("/home/alice"),
+        "/run/underwrap-runtime/underwrap-target-abc",
+    )
+    .unwrap();
+
+    let expected = HashMap::from([
+        ("HOME", "/srv/trusted-home"),
+        (
+            "XDG_RUNTIME_DIR",
+            "/run/underwrap-runtime/underwrap-target-abc",
+        ),
+        ("XDG_CONFIG_HOME", "/srv/trusted-config"),
+        ("XDG_DATA_HOME", "/srv/trusted-data"),
+        ("XDG_CACHE_HOME", "/srv/trusted-cache"),
+        ("XDG_STATE_HOME", "/srv/trusted-state"),
+    ]);
+    for name in FORCED_TARGET_ENV_NAMES {
+        assert_eq!(
+            target_env.get(*name).map(String::as_str),
+            expected.get(name).copied(),
+            "{name}",
+        );
+    }
 }
 
 #[test]

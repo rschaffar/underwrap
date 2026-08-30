@@ -238,7 +238,7 @@ Workspace tests cover:
   policy access; ordinary pair create uses the canonical value-free resource
   404; rejection snapshots and operation traces prove no effect while valid,
   disabled-client, missing-child, and idempotent-delete behavior remains intact;
-- target environment, capability, UID, idmap, mount, and writeback helpers;
+- target environment, capability, UID, idmap, mount, and writeback helpers, including all six shared forced home/XDG names, accepted near misses, trusted forced values, hostile passthrough suppression, ordinary resource precedence, and env-disabled conditional behavior;
 - Secret Service data model and production D-Bus handler behavior, including the
   collection/item/alias mutation rejection matrix with structural live-store
   equality, failed-create object-registration absence, ACKed create and
@@ -260,7 +260,17 @@ The current `underwrapd` tests decode valid invocation-open `Deny` responses in 
 The integration runner exercises valid backend `Allow` responses through the real daemon parser, original-byte channel cache, Checkout framing, and receiver on ordinary service-mode reads, a resource above the generic 64-KiB frame limit, exact-2-MiB Checkout and Checkin, writable and read-only finalization, and follow-up Checkout.
 The direct runtime API integration tests additionally pin backend open and finalize behavior, but direct endpoint tests are not daemon parser tests.
 
-There is no dedicated daemon malformed-backend-open matrix for invalid outer JSON, malformed or oversized `blob_b64`, invalid typed resource JSON, unknown/default/duplicate-field behavior, conditional env-name rejection, noncanonical accepted bytes, or the 1-MiB libsecret generation-readiness consequence.
+Protocol and namespace matrices derive all six cases from the shared forced-name authority, while backend handler tests cover value-free PUT and rename-destination rejection, exact blob preservation, and accepted near-miss recovery.
+The focused `forced_target_env_names_fail_closed_and_recover` integration test runs one real backend and daemon with env-enabled and files-only wrappers.
+Authenticated admin PUT requests reject all six shared forced names with structured HTTP 400 responses and byte-identical canonical resource state.
+After direct canonical invalid-state injection, authenticated per-key DELETE requests reject the forced name with the same structured, value-free HTTP 400 `invalid_request`, while normal resource deletion returns `ok: false` with an identifier-only content blocker covering the malformed entry; both paths preserve the blob byte-for-byte.
+The invalid state makes the env-enabled wrapper return an identifier-only `Internal` error, and a bounded raw control connection observes the exact connection-closed result instead of receiving an SCM_RIGHTS descriptor.
+The files-only wrapper accepts the same state conditionally, a direct test-only trusted restoration simulation replaces it with every `${name}_APP` near miss and recovers to `ReadOk`, and an ordinary final Checkout proves full recovery.
+The test does not exercise an admin repair path: none exists, and no automated recovery procedure is claimed for outside-contract stored state.
+These runtime-open and Checkout requests may update pair usage metadata, so the test makes no zero-effect claim for that metadata.
+Protocol, namespace, backend-handler, and real daemon/backend tests cover this lexical boundary directly; no VM witness is used for it.
+
+There is no dedicated daemon malformed-backend-open matrix for invalid outer JSON, malformed or oversized `blob_b64`, invalid typed resource JSON, unknown/default/duplicate-field behavior, noncanonical accepted bytes, or the 1-MiB libsecret generation-readiness consequence.
 The repository has no dedicated cargo-fuzz or libFuzzer harness, fuzz target, corpus, or recorded fuzz execution for this boundary, and it does not use proptest or quickcheck here.
 The valid-flow and protocol vectors therefore do not establish malformed-input or fuzz completeness.
 
@@ -269,6 +279,7 @@ Use these focused tests and static parser/copy inventories when reviewing this b
 ```bash
 cargo test -p underwrap-protocol resource_blob::tests
 cargo test -p underwrapd
+./crates/integration-tests/run tests::store_read::forced_target_env_names_fail_closed_and_recover -- --exact
 ./crates/integration-tests/run
 rg -n 'open_request|open_invocation|blob_b64|blob_bytes|from_canonical_bytes' \
   crates/underwrapd/src/{backend_client.rs,wrapper_flow/read.rs}

@@ -189,14 +189,14 @@ pub fn validate_env_name(name: &str) -> Result<(), &'static str> {
 }
 
 pub fn is_reserved_env_name(name: &str) -> bool {
-    name.starts_with("LD_")
+    crate::target_env::is_forced_target_env_name(name)
+        || name.starts_with("LD_")
         || matches!(
             name,
             "LD_PRELOAD"
                 | "LD_LIBRARY_PATH"
                 | "LD_AUDIT"
                 | "PATH"
-                | "HOME"
                 | "USER"
                 | "LOGNAME"
                 | "SHELL"

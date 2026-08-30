@@ -1,4 +1,7 @@
 use super::*;
+use crate::target_env::FORCED_TARGET_ENV_NAMES;
+
+const RESERVED_ENV_REASON: &str = "environment variable name is reserved by underwrap hardening";
 
 #[test]
 fn resource_blob_key_is_stable() {
@@ -67,4 +70,24 @@ fn env_validation_rejects_dangerous_names() {
     assert!(validate_env_name("UNDERWRAP_SECRETSD").is_err());
     assert!(validate_env_name("1TOKEN").is_err());
     assert!(validate_env_name("BAD-NAME").is_err());
+}
+
+#[test]
+fn every_forced_target_env_name_is_reserved_for_resource_projection() {
+    for name in FORCED_TARGET_ENV_NAMES {
+        assert_eq!(validate_env_name(name), Err(RESERVED_ENV_REASON), "{name}");
+        assert_eq!(
+            validate_secret_key(ResourceSlot::Env, name),
+            Err(RESERVED_ENV_REASON.to_string()),
+            "{name}",
+        );
+
+        let near_miss = format!("{name}_APP");
+        assert_eq!(validate_env_name(&near_miss), Ok(()), "{near_miss}");
+        assert_eq!(
+            validate_secret_key(ResourceSlot::Env, &near_miss),
+            Ok(()),
+            "{near_miss}",
+        );
+    }
 }

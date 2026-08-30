@@ -7,6 +7,10 @@ use hyper::StatusCode;
 use underwrap_backend_store::{StorageBackend, load_resource_blob, save_resource_blob};
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource_blob::ResourceBlob;
+use underwrap_protocol::target_env::FORCED_TARGET_ENV_NAMES;
+
+const RESERVED_ENV_REASON: &str = "environment variable name is reserved by underwrap hardening";
+const REJECTED_MATERIAL_MARKER: &[u8] = b"synthetic-rejected-material-marker";
 
 use super::*;
 use crate::http::responses::ResourceBody;
@@ -63,6 +67,23 @@ fn assert_resource(
         load_resource_blob(unlocked_store(state, store_id).as_ref(), resource_id).unwrap(),
         *expected,
     );
+}
+
+fn write(
+    state: Arc<ListenerState>,
+    store_id: String,
+    resource_id: String,
+    key: &str,
+    material: &[u8],
+) -> (StatusCode, serde_json::Value) {
+    run_handler(handle_admin_secret_write(
+        State(state),
+        Extension(principal()),
+        Path((store_id, resource_id, "env".to_string(), key.to_string())),
+        ResourceBody(underwrap_protocol::service::AdminSecretWriteRequest {
+            material_b64: base64::engine::general_purpose::STANDARD.encode(material),
+        }),
+    ))
 }
 
 fn rename(
@@ -158,6 +179,76 @@ fn admin_secret_same_key_rename_preserves_or_replaces_material() {
         .env
         .insert("PRIMARY_TOKEN".into(), SecretBytes::from("primary-v2"));
     assert_resource(&state, &store_id, &resource_id, &expected);
+}
+
+#[test]
+fn admin_forced_target_env_names_fail_closed_and_near_misses_recover() {
+    let (_tmp, state, store_id, resource_id, mut expected) = mixed_state();
+    let expected_error = serde_json::json!({
+        "code": "invalid_request",
+        "message": RESERVED_ENV_REASON,
+    });
+
+    for name in FORCED_TARGET_ENV_NAMES {
+        let (status, body) = write(
+            state.clone(),
+            store_id.clone(),
+            resource_id.clone(),
+            name,
+            REJECTED_MATERIAL_MARKER,
+        );
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
+        assert_eq!(body, expected_error, "{name}");
+        assert!(body.get("material_b64").is_none(), "{name}: {body}");
+        assert!(!body.to_string().contains("synthetic-rejected"), "{name}");
+        assert_resource(&state, &store_id, &resource_id, &expected);
+
+        let (status, body) = rename(
+            state.clone(),
+            store_id.clone(),
+            resource_id.clone(),
+            "env",
+            "PRIMARY_TOKEN",
+            name,
+            Some(REJECTED_MATERIAL_MARKER),
+        );
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
+        assert_eq!(body, expected_error, "{name}");
+        assert!(body.get("material_b64").is_none(), "{name}: {body}");
+        assert!(!body.to_string().contains("synthetic-rejected"), "{name}");
+        assert_resource(&state, &store_id, &resource_id, &expected);
+
+        let near_miss = format!("{name}_APP");
+        let (status, body) = write(
+            state.clone(),
+            store_id.clone(),
+            resource_id.clone(),
+            &near_miss,
+            b"accepted-near-miss",
+        );
+        assert_eq!(status, StatusCode::OK, "{near_miss}: {body}");
+        expected
+            .env
+            .insert(near_miss.clone(), SecretBytes::from("accepted-near-miss"));
+        assert_resource(&state, &store_id, &resource_id, &expected);
+
+        let renamed = format!("{near_miss}_RENAMED");
+        let (status, body) = rename(
+            state.clone(),
+            store_id.clone(),
+            resource_id.clone(),
+            "env",
+            &near_miss,
+            &renamed,
+            Some(b"accepted-renamed-near-miss"),
+        );
+        assert_eq!(status, StatusCode::OK, "{renamed}: {body}");
+        expected.env.remove(&near_miss);
+        expected
+            .env
+            .insert(renamed, SecretBytes::from("accepted-renamed-near-miss"));
+        assert_resource(&state, &store_id, &resource_id, &expected);
+    }
 }
 
 #[test]

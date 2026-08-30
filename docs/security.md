@@ -502,15 +502,24 @@ not claim to be a complete adversarial target sandbox.
 
 ### Cleared environment
 
-The target starts with `env_clear()`. underwrap then adds:
+The target starts with `env_clear()`.
+underwrap then adds:
 
 1. a built-in passthrough set;
 2. additional names from `envPassthrough`;
 3. fixed trusted values from `envSet`;
 4. env-slot values from the resource.
 
-The NixOS module rejects `LD_*` values, rejects caller passthrough of forced
-home/XDG variables, and prevents a per-wrapper `XDG_RUNTIME_DIR` override.
+Resource env names cannot equal `HOME`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, or `XDG_STATE_HOME`.
+An env-enabled wrapper fails closed on any such stored entry before target-environment value decoding or insertion, rather than silently discarding it or overriding trusted paths.
+For every ordinary admissible name, resource env retains precedence over `envSet` and passthrough values.
+A wrapper with env projection disabled does not interpret the resource env section, so invalid env names do not block its files or libsecret projection.
+The admin flat-secret API rejects per-key writes, deletes, and rename destinations using any forced name.
+The F-011 content blockers also prevent normal deletion of a resource containing such an entry, and the admin surface provides no repair or migration operation for this outside-contract state.
+Recovery requires quiescing the backend and using trusted backend-host access to restore or replace the affected resource with known-good state, or rebuilding the affected store from known-good inputs.
+underwrap does not provide an automated procedure for this recovery.
+
+The NixOS module rejects `LD_*` values, rejects caller passthrough of forced home/XDG variables, and prevents a per-wrapper `XDG_RUNTIME_DIR` override.
 `PATH` is not inherited unless an operator sets a trusted fixed value.
 
 ### Home and runtime paths
@@ -569,7 +578,7 @@ Only after the complete typed parse does it require resource schema version 1.
 
 Unknown fields are ignored by the outer invocation-open response DTO, `ResourceBlob`, and nested resource structs.
 Known duplicate struct fields are rejected by the derived Serde visitors, duplicate keys within map-valued objects are not independently rejected and later entries replace earlier entries, and omitted sections carrying `serde(default)` become empty.
-When env projection is enabled, the daemon additionally validates every parsed env name against the reserved and hardening grammar.
+When env projection is enabled, the daemon additionally validates every parsed env name against the reserved and hardening grammar, including all six forced home/XDG names.
 When env projection is disabled, it does not validate env names, although the complete typed resource is still materialized.
 
 The daemon does not independently compare the input with JCS reserialization and therefore does not prove exact canonical bytes.
