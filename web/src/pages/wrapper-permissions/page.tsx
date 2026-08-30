@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, FileText } from "lucide-react";
 
@@ -90,6 +90,17 @@ export function WrapperPermissionsPage() {
   const [creatingPair, setCreatingPair] = useState(false);
   const [deletingPair, setDeletingPair] =
     useState<WrapperResourcePairRecord | null>(null);
+  const [transientStoreId, setTransientStoreId] = useState(storeId);
+  const transientStateMatchesStore = transientStoreId === storeId;
+
+  useEffect(() => {
+    if (transientStoreId === storeId) return;
+    setEditing(null);
+    setRawOpen(false);
+    setCreatingPair(false);
+    setDeletingPair(null);
+    setTransientStoreId(storeId);
+  }, [storeId, transientStoreId]);
 
   if (!storeId) {
     return (
@@ -99,10 +110,11 @@ export function WrapperPermissionsPage() {
         </h2>
         {stores.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading…</p>
+        ) : stores.error ? (
+          <Alert>{describeApiError(stores.error)}</Alert>
         ) : (
           <Alert variant="warning" className="text-sm">
-            No stores are visible to you. Ask an admin for access to
-            at least one store.
+            No stores are configured. Create one on the Stores page.
           </Alert>
         )}
       </div>
@@ -198,49 +210,56 @@ export function WrapperPermissionsPage() {
         />
       )}
 
-      {editing ? (
-        <EditCellDialog
-          storeId={storeId}
-          clientInstance={editing.clientInstance}
-          clientInstanceDisplayName={
-            displayNameById.get(editing.clientInstance) ?? editing.clientInstance
-          }
-          wrapper={editing.wrapper}
-          resourceId={editing.resource_id}
-          resourceName={
-            resourceNameById.get(editing.resource_id) ?? editing.resource_id
-          }
-          existing={editing.permission}
-          onClose={() => setEditing(null)}
-        />
-      ) : null}
+      {transientStateMatchesStore ? (
+        <>
+          {editing ? (
+            <EditCellDialog
+              storeId={storeId}
+              clientInstance={editing.clientInstance}
+              clientInstanceDisplayName={
+                displayNameById.get(editing.clientInstance) ??
+                editing.clientInstance
+              }
+              wrapper={editing.wrapper}
+              resourceId={editing.resource_id}
+              resourceName={
+                resourceNameById.get(editing.resource_id) ?? editing.resource_id
+              }
+              existing={editing.permission}
+              onClose={() => setEditing(null)}
+            />
+          ) : null}
 
-      {creatingPair ? (
-        <CreatePairDialog
-          storeId={storeId}
-          existingResources={resources}
-          onClose={() => setCreatingPair(false)}
-        />
-      ) : null}
+          {creatingPair ? (
+            <CreatePairDialog
+              storeId={storeId}
+              existingResources={resources}
+              onClose={() => setCreatingPair(false)}
+            />
+          ) : null}
 
-      {deletingPair ? (
-        <DeletePairDialog
-          storeId={storeId}
-          pair={deletingPair}
-          displayNameById={displayNameById}
-          resourceName={
-            resourceNameById.get(deletingPair.resource_id) ?? deletingPair.resource_id
-          }
-          onClose={() => setDeletingPair(null)}
-        />
-      ) : null}
+          {deletingPair ? (
+            <DeletePairDialog
+              storeId={storeId}
+              pair={deletingPair}
+              displayNameById={displayNameById}
+              resourceName={
+                resourceNameById.get(deletingPair.resource_id) ??
+                deletingPair.resource_id
+              }
+              onClose={() => setDeletingPair(null)}
+            />
+          ) : null}
 
-      <PolicyViewerDialog
-        storeId={storeId}
-        open={rawOpen}
-        permissions={permissions}
-        onClose={() => setRawOpen(false)}
-      />
+          <PolicyViewerDialog
+            key={storeId}
+            storeId={storeId}
+            open={rawOpen}
+            permissions={permissions}
+            onClose={() => setRawOpen(false)}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

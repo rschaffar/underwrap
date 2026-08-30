@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 
@@ -84,6 +84,20 @@ export function SecretsPage() {
   const [deleting, setDeleting] = useState<SecretAddress | null>(null);
   const [deletingResource, setDeletingResource] = useState<string | null>(null);
   const [renamingResource, setRenamingResource] = useState<string | null>(null);
+  const [transientStoreId, setTransientStoreId] = useState(storeId);
+  const transientStateMatchesStore = transientStoreId === storeId;
+
+  useEffect(() => {
+    if (transientStoreId === storeId) return;
+    setRevealing(null);
+    setEditing(null);
+    setCreating(null);
+    setCreatingResource(false);
+    setDeleting(null);
+    setDeletingResource(null);
+    setRenamingResource(null);
+    setTransientStoreId(storeId);
+  }, [storeId, transientStoreId]);
 
   if (!storeId) {
     return (
@@ -91,10 +105,11 @@ export function SecretsPage() {
         <h2 className="text-xl font-semibold text-(--color-fg)">Secrets</h2>
         {stores.isLoading ? (
           <p className="text-sm text-(--color-muted)">Loading…</p>
+        ) : stores.error ? (
+          <Alert>{describeApiError(stores.error)}</Alert>
         ) : (
           <Alert variant="warning" className="text-sm">
-            No stores are visible to you. Ask an admin for a grant on
-            at least one store.
+            No stores are configured. Create one on the Stores page.
           </Alert>
         )}
       </div>
@@ -155,7 +170,7 @@ export function SecretsPage() {
         <div className="space-y-2">
           {allResources.map((group) => (
             <ResourceBlock
-              key={group.resource_id}
+              key={JSON.stringify([storeId, group.resource_id])}
               group={group}
               storeId={storeId}
               provenance={resourceProvenance.get(group.resource_id)}
@@ -191,61 +206,67 @@ export function SecretsPage() {
         </div>
       )}
 
-      {revealing ? (
-        <RevealSecretDialog
-          storeId={storeId}
-          address={revealing}
-          onClose={() => setRevealing(null)}
-        />
-      ) : null}
-      {creating ? (
-        <WriteSecretDialog
-          storeId={storeId}
-          mode="create"
-          address={{ ...creating, key: "" }}
-          onClose={() => setCreating(null)}
-        />
-      ) : null}
-      {creatingResource ? (
-        <CreateResourceDialog
-          storeId={storeId}
-          existingResources={resources.map((r) => r.name)}
-          onClose={() => setCreatingResource(false)}
-        />
-      ) : null}
-      {editing ? (
-        <WriteSecretDialog
-          storeId={storeId}
-          mode="edit"
-          address={editing}
-          onClose={() => setEditing(null)}
-        />
-      ) : null}
-      {deleting ? (
-        <DeleteSecretDialog
-          storeId={storeId}
-          address={deleting}
-          onClose={() => setDeleting(null)}
-        />
-      ) : null}
-      {deletingResource ? (
-        <DeleteResourceDialog
-          storeId={storeId}
-          resourceId={deletingResource}
-          resourceName={resourceNameById.get(deletingResource) ?? deletingResource}
-          onClose={() => setDeletingResource(null)}
-        />
-      ) : null}
-      {renamingResource ? (
-        <RenameResourceDialog
-          storeId={storeId}
-          resourceId={renamingResource}
-          currentName={
-            resourceNameById.get(renamingResource) ?? renamingResource
-          }
-          existingNames={resources.map((r) => r.name)}
-          onClose={() => setRenamingResource(null)}
-        />
+      {transientStateMatchesStore ? (
+        <>
+          {revealing ? (
+            <RevealSecretDialog
+              storeId={storeId}
+              address={revealing}
+              onClose={() => setRevealing(null)}
+            />
+          ) : null}
+          {creating ? (
+            <WriteSecretDialog
+              storeId={storeId}
+              mode="create"
+              address={{ ...creating, key: "" }}
+              onClose={() => setCreating(null)}
+            />
+          ) : null}
+          {creatingResource ? (
+            <CreateResourceDialog
+              storeId={storeId}
+              existingResources={resources.map((r) => r.name)}
+              onClose={() => setCreatingResource(false)}
+            />
+          ) : null}
+          {editing ? (
+            <WriteSecretDialog
+              storeId={storeId}
+              mode="edit"
+              address={editing}
+              onClose={() => setEditing(null)}
+            />
+          ) : null}
+          {deleting ? (
+            <DeleteSecretDialog
+              storeId={storeId}
+              address={deleting}
+              onClose={() => setDeleting(null)}
+            />
+          ) : null}
+          {deletingResource ? (
+            <DeleteResourceDialog
+              storeId={storeId}
+              resourceId={deletingResource}
+              resourceName={
+                resourceNameById.get(deletingResource) ?? deletingResource
+              }
+              onClose={() => setDeletingResource(null)}
+            />
+          ) : null}
+          {renamingResource ? (
+            <RenameResourceDialog
+              storeId={storeId}
+              resourceId={renamingResource}
+              currentName={
+                resourceNameById.get(renamingResource) ?? renamingResource
+              }
+              existingNames={resources.map((r) => r.name)}
+              onClose={() => setRenamingResource(null)}
+            />
+          ) : null}
+        </>
       ) : null}
     </div>
   );

@@ -483,6 +483,10 @@ npm test -- src/lib/utf8-base64.test.ts \
 
 ## SPA browser tests
 
+StrictMode hook tests and a shared Secrets/Wrapper-permissions Vitest matrix cover unresolved, stale, removed, valid, failed, and empty store-list states, URL and history preservation, popstate revalidation, detail-query gating, and store-scoped dialog reset.
+The configured `desktop-1280` Chromium project covers stale real-backend selection plus intercepted structured-failure and empty-list responses on both per-store pages with exact detail-request observation.
+This evidence establishes the tested frontend selection and rendering behavior only; it does not change or prove backend authorization, store availability, or browser behavior outside the configured project.
+
 Playwright exercises protected routing, authentication, CSRF, stores, secrets,
 permissions, client instances, and user workflows. Authentication coverage
 includes hard-navigation sign-out with a freshly primed CSRF token, backend
