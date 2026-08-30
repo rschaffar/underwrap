@@ -872,10 +872,85 @@ Validation commands and evidence:
   - F-053 remains fully unresolved because this unit adds no tablet test and changes no Playwright project; F-037 and every other remaining finding are unchanged. F-037 is next.
   - Final closure review first required the U-006 cross-effect above and independent status/hash/stat completion; after correction and controller recomputation, fresh re-review passed the ordered workflow, evidence, bounded claims, cross-effects, and F-037 promotion with no blocker.
 
+### Current iteration — F-037 per-store selection and list states
+
+F-037 remains directly reproducible at clean HEAD `6dfd19b8c138b408aa00fdbcc3d20467952a3e41`.
+
+`useStoreSelector` exposes any non-empty `?store=` value immediately, never reconciles it with a successful store list, and only chooses the first available store when the URL has no value.
+
+Consequently both per-store pages can issue a detail request for a stale/deleted store, render a `<select>` whose value has no option, and remain stranded after the available list changes.
+
+When the initial store-list query fails without data, both pages instead render text about an unavailable per-store grant even though every authenticated operator is a full admin and no per-store operator grants exist.
+
+Security boundary: none; this changes no authentication, authorization, backend policy, resource access, or secret handling.
+
+Operational-correctness flow:
+
+- Authoritative input: the successfully resolved admin store list.
+- Untrusted/stale input: the optional browser URL `store` query value.
+- Boundary direction: URL-requested id + store-list state → validated effective selection → store-specific query and selector/URL state.
+- Preserved behavior: valid URL selection, first-store defaulting, operator selection, unrelated query/hash state, detail-query error handling, store ordering, and all backend authorization remain unchanged.
+
+Exact scope:
+
+- Keep a URL-requested store id in hook state, but return no effective `storeId` while the store list is unresolved or unavailable so no store-specific query can run before validation.
+- On every successful list value, derive the effective id synchronously: preserve a requested id that exists, otherwise choose the first item, or return `null` for an empty list.
+- Reconcile hook state and the URL after derivation: replace a missing/stale/deleted id with the effective first id, delete `store` after a successful empty list, preserve unrelated query parameters and the hash, preserve `window.history.state`, avoid no-op replacements, and create no history entry.
+- Keep `setStoreId` immediate for valid selector choices and preserve all other URL state.
+- Listen for same-mounted-page `popstate` changes, reread the requested URL id, and pass it through the same validation/canonicalization path; do not intercept navigation or write from the listener itself.
+- On every effective-store change, synchronously suppress every open store-scoped dialog before it can receive the fallback store id, then reset the page's reveal/edit/create/delete/raw-view transient state; never combine an old resource, pair, wrapper, or secret address with the new store.
+- In each page's no-effective-selection branch, render store-list loading first, then `describeApiError(stores.error)`, then an accurate successful-empty warning that no stores are configured and the operator must create one on the Stores page.
+- Remove every grant/access/visibility diagnosis from those successful-empty branches; all authenticated operators retain the documented equal authority.
+- Keep store-specific loading/error/content/empty states unchanged after a valid effective selection.
+- Add deterministic StrictMode hook tests for unresolved stale input, successful fallback, selected-store removal, successful empty-list URL clearing, valid selection/setter behavior, URL/hash/exact-history-state preservation, no new history entry, popstate revalidation, exactly one required canonicalization, and zero `replaceState` calls for an already canonical render or already-effective setter choice.
+- Add one cross-page Vitest file that applies the same matrix to Secrets and Wrapper permissions: a pending list never triggers a stale detail request; resolution selects only the valid first store and corrects selector/URL; a list error preserves the requested URL and renders the network/API error without grant/content-empty text or a detail request; and a successful empty list removes only `store`, renders accurate create-store guidance, and triggers no detail request.
+- For each page, start from a valid secondary selection with an open create dialog, remove that store from the resolved query data, and prove the dialog is synchronously closed/reset, selector and URL fall back to the first valid store, no post-removal request names the deleted id, and the fallback detail query alone runs.
+- Add one configured desktop-1280 Chromium spec with three data-driven scenarios across both pages, with request observations reset after login and scoped to exact detail endpoints: a real backend stale URL falls back to real fixture store `default`, renders successful default content, makes at least one default detail request and no stale detail request while preserving unrelated URL state; an intercepted structured store-list failure preserves the requested `store` plus unrelated URL state and renders its error before any detail/empty diagnosis or detail request; and an intercepted successful empty list removes only `store`, preserves unrelated URL state, and renders create-store guidance without a detail request.
+- Record this bounded hook/page/browser evidence in `docs/testing.md`.
+
+Expected source/test/documentation allowlist:
+
+- `web/src/hooks/use-store-selector.ts`
+- new `web/src/hooks/use-store-selector.test.tsx`
+- `web/src/pages/secrets/page.tsx`
+- `web/src/pages/wrapper-permissions/page.tsx`
+- new `web/src/pages/store-selection.test.tsx`
+- new `web/e2e/store-selection.spec.ts`
+- `docs/testing.md`
+- this plan for evidence
+
+Expected cross-effects:
+
+- Closing F-037 closes only the historical V-006/V-009 stale/deleted-id and store-list-state coverage gap for these two pages.
+- O-015 mobile entity cards, F-049 backend response redaction, F-050 Playwright fixture cleanup, F-053 tablet discovery, F-058 tool refresh, authentication/authorization, every security boundary, and every other finding/Opportunity/unresolved item remain unchanged.
+
+Non-goals:
+
+- no backend/API/OpenAPI/schema, store CRUD/order/id grammar, authentication/session, operator/user role, per-store grant, runtime-client permission, resource/secret, or security-boundary change;
+- no TanStack route definition/search-schema, query-client retry/cache policy, global error mapping, store-specific error/empty content, URL push/new history entry, fallback toast/banner, store-name copy into the URL, dialog mutation semantics, or router redesign;
+- no mobile entity cards or O-015, responsive layout, Playwright project/configuration, mobile/tablet/F-053 coverage, accessibility/theme work, later finding, Opportunity, or unresolved-item implementation;
+- no dependency, lockfile, generated API/schema, committed `web/dist`, Rust, Nix, privileged-chain, backend-binary, or VM change.
+
+Validation commands and evidence:
+
+- `cd web && npm test -- src/hooks/use-store-selector.test.tsx src/pages/store-selection.test.tsx`
+- `cd web && npm test`
+- `cd web && npm run build`
+- `system=$(nix eval --impure --raw --expr builtins.currentSystem); web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build"); UNDERWRAP_WEB_DIST="$web_dist" cargo build -p underwrap-backend`, then use `target/debug/underwrap-backend` and retain local `web/dist` only while running browser tests
+- inside `nix develop`, run `npx playwright test e2e/store-selection.spec.ts --project=desktop-1280`
+- inside `nix develop`, run the complete `npm run test:e2e`
+- inspect focused browser request evidence for zero stale/failed/empty store-detail requests and exact URL preservation/canonicalization
+- remove generated `web/dist`, schema, Playwright output, trace, screenshot, report, and coverage artifacts
+- `git diff --check`
+
+- [x] Revalidate F-037 against the current hook, both page branches/detail-query gates, equal-admin documentation, unit/browser coverage, router/query configuration, and historical report/handover. Evidence: direct CodeGraph/source/test/history inspection at clean HEAD on 2026-08-30; stale ids and inaccurate list-failure/empty diagnoses persist, and existing tests cover only valid/normal page flows.
+- [x] Obtain fresh independent approval of the synchronous validated-selection and transient-dialog reset design, popstate/URL/no-op semantics, equal-admin copy, exact test matrix, allowlist, non-goals, cross-effects, and validation before cleanup discovery. Evidence: initial reviews required synchronous suppression/reset of old-store dialogs, explicit no-op replacement evidence, per-page selected-store-removal coverage, phase-scoped exact browser requests, real-backend default fidelity, complete URL/history assertions, cross-effect ownership, and an exact Nix prerequisite command. The plan incorporated every correction; fresh implementation-scope and test/evidence re-reviews passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before selector/error correction.
+- [ ] Implement and independently review the hook, two page branches, unit/browser evidence, and testing documentation without changing authorization or valid-store behavior.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-037 completion/cross-effects before the mandatory medium → low decision.
+
 ### Remaining medium queue
 
-Promote one row at a time by replacing it with exact iteration tasks after revalidation.
-- [ ] F-037 — reconcile stale store routes and list-error handling.
 - [ ] Obtain and record the mandatory medium → low transition decision.
 
 ### Remaining low queue
