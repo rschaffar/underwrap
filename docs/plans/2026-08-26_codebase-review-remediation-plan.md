@@ -1080,10 +1080,88 @@ Validation commands and evidence:
   - F-008 and F-009 remain resolved and unchanged at their boundaries; F-039 remains unresolved; F-042 is narrowed because daemon parsing gains this rejection while its inaccurate opaque-blob documentation remains; every other finding/Opportunity/unresolved item is unchanged. F-039 is next.
   - Final closure review found no semantic/evidence correction, requested controller-only Git/hash verification, and then passed after exact plan-only status, five-path 430/77 stat, patch checksum, all retained log hashes, and `git diff --check` were mechanically reconfirmed. F-039 promotion is approved under the unchanged protocol.
 
+### Current iteration — F-039 containing-collection modification timestamps
+
+F-039 remains directly reproducible at clean HEAD `336e038e38cab12655e7a0d516b3a1ba28d9475f`.
+
+`SecretStore::set_attributes`, `SecretStore::set_label`, and the `Item.SetSecret` handler update `Item.modified` but leave the containing `Collection.modified` stale, while item create, replace, and delete already stamp the collection.
+
+Consequence: the Secret Service `Collection.Modified` property cannot consistently represent accepted item secret/attribute/label mutations. Its Unix-second granularity still permits two mutations in one second to retain the same numeric value; the contract is one sampled assignment, not strict monotonic increase.
+
+Security boundary: none. Target D-Bus input remains untrusted for robustness and storage integrity, but F-012 already isolates every mutation in a candidate and commits only after exact ACK; this iteration corrects standards-visible metadata within that existing fail-closed boundary.
+
+Mutation flow:
+
+- Input: one existing item secret/content-type, attributes, or label mutation.
+- Boundary direction: D-Bus item handler → one candidate-store item setter → item plus containing-collection timestamp assignment → canonical publication → exact ACK → accepted live store and `Item.Modified`/`Collection.Modified` getters.
+- Preserved behavior: secret zeroization, candidate clone/publish/ACK commit, rejection/transport no-effect, missing-item no-op-success behavior, setter return types, item/collection `created`, arbitrary labels/content types/attributes/secret bytes, and create/replace/delete semantics remain unchanged.
+
+Exact scope:
+
+- Add one private `SecretStore` item-update helper in `store/items.rs` that resolves an existing collection and item, returns `false` with no clock read or state change when either is missing, runs one infallible field mutation, samples `now_secs()` exactly once, and assigns that same value to both `Item.modified` and `Collection.modified`.
+- Route `set_attributes` and `set_label` through the helper.
+- Reintroduce one narrow public `set_secret(collection, id, secret, content_type) -> bool`, justified by its new production caller, and route it through the same private helper; add no zeroization dependency to `underwrap-secretsd-store`.
+- In `Item.SetSecret`, preserve the current candidate's old-secret zeroization before replacement, then call the narrow store setter instead of duplicating field and clock logic. Continue ignoring the boolean result so stale/missing item-interface behavior does not change in this finding.
+- Do not clamp or manufacture timestamps; normal `now_secs()` remains far below F-038's canonical maximum, and any future out-of-range candidate remains rejected by canonical publication.
+- Extend store tests for all three setters: backdate item/collection `modified` to distinct safe baselines, mutate one field set, require the requested value change, exact item/collection timestamp equality above the baseline, unchanged `created` and unrelated data, and false/no-state-change behavior for missing collection/item.
+- Extend D-Bus item tests with accepted ACK cases for secret, attributes, and label. For each, require exact item/collection timestamp equality above a backdated baseline in both the published generation and committed live store, equality of accepted and published metadata, unchanged `created`/unrelated fields, the requested value change, and `Item.Modified` returning the accepted value.
+- Strengthen all three existing REJECT tests to require that the published candidate stamps both timestamps equally while the accepted live store remains byte-for-byte unchanged; retain one EOF/shared transport failure as representative F-012 evidence.
+- Add one table-driven collection-interface test covering secret, attributes, and label on fresh backdated stores; for each public store setter, require `Collection.Modified` to return the exact shared item/collection timestamp. Do not add property-change signals or a new D-Bus wire harness.
+- Document the same-sample candidate/ACK behavior and same-second limitation in `docs/secretsd-security.md`, explicitly distinguishing arbitrary loaded timestamps (which retain no imposed relation) from generated successful item mutations (which assign one sample to both modified fields without monotonicity), and record the deterministic backdated setter/ACK/REJECT/property matrix in `docs/testing.md`.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-secretsd-store/src/store/items.rs`
+- `crates/underwrap-secretsd-store/src/store/tests.rs`
+- `crates/underwrap-secretsd/src/dbus_service/item.rs`
+- `crates/underwrap-secretsd/src/dbus_service/item/tests.rs`
+- `crates/underwrap-secretsd/src/dbus_service/collection/tests.rs`
+- `docs/secretsd-security.md`
+- `docs/testing.md`
+- this plan for evidence
+
+Expected cross-effects:
+
+- F-012 remains resolved: rejected, EOF, wrong-response, and publication failures preserve the accepted live store; candidate/displaced secret zeroization and commit-after-ACK remain unchanged.
+- F-038 remains resolved: generated Unix-second timestamps use the same `u64` fields and canonical safe-integer enforcement.
+- U-004 is narrowed but remains unresolved: this closes one collection/item modification-time consistency case, while draft-wide sessions, locking, errors, aliases, variants, signals, and multiple-client behavior remain unestablished.
+- F-040, F-045, F-046, every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no clock injection, timestamp argument/public setter, monotonic counter, strict-increase guarantee, subsecond precision, future-time/created-before-modified validation, clock-source/error, F-038 limit, or timestamp field/type/unit change;
+- no missing/stale item-interface error change, no-op-success change, object-server lifecycle, property-change signal, D-Bus name/path/signature/return/error, item create/replace/delete, collection label/delete, alias, session, locking, or broader Secret Service conformance change;
+- no new dependency or zeroization move into the store crate; no weakening/removal of old-secret, rejected-candidate, or displaced-live-secret zeroization;
+- no candidate/publisher framing/ACK/REJECT/commit behavior, host validation, resource format/size, backend/writeback, namespace/privileged chain, VM, security boundary, later finding, Opportunity, or unresolved-item implementation;
+- no broad store API/refactor, public generic mutation closure, model visibility change, test deletion/repartition, generated artifact, formatting-only churn, or F-040 Rustdoc correction.
+
+Validation commands and evidence:
+
+- `cargo test -p underwrap-secretsd-store set_`
+- `cargo test -p underwrap-secretsd dbus_service::item::tests`
+- `cargo test -p underwrap-secretsd dbus_service::collection::tests::item_setters_update_collection_modified_property`
+- `cargo test -p underwrap-secretsd-store`
+- `cargo test -p underwrap-secretsd`
+- `cargo test -p underwrap-protocol resource_blob`
+- build the exact Nix `web-build` artifact through `UNDERWRAP_WEB_DIST`, then run `cargo test --workspace --exclude integration-tests -- --test-threads=4`
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- workspace Clippy with warnings denied and the exact Nix web artifact
+- `nix build .#checks.x86_64-linux.workspace-test`
+- direct source/test inspection that all three setters route through one private helper, each successful update samples one timestamp and assigns it to both objects, missing-item and secret-zeroization behavior remain, no extra clock read or dependency appears, and no secret value enters diagnostics/docs
+- `git diff --check`
+
+A VM run is not required because no VM-required boundary changes: NixOS module, packaging, identities, namespaces, capabilities, privileged chain, process topology, D-Bus signature, object registration, or property signal. Deployed `Collection.Modified` semantics intentionally change, and direct production store, handler publication/commit, item getter, and table-driven collection getter tests exercise that exact behavior.
+
+- [x] Revalidate F-039 against current store/item handlers, candidate/ACK and zeroization behavior, property getters, tests, documentation, F-012/F-038 effects, U-004, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection and two bounded design/evidence consultations on 2026-08-30; all three setters still omit the containing collection, while create/replace/delete already update it.
+- [x] Obtain fresh independent approval of the private-helper/narrow-setter design, zeroization and missing-item preservation, same-sample semantics, test/property matrix, docs owner, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: design review passed; evidence review required all-three `Collection.Modified` getter coverage, an exact focused command, qualification of arbitrary versus generated timestamps, and an accurate no-VM rationale that acknowledges deployed semantic change. The plan incorporated every correction and fresh re-review passed on 2026-08-30 with execution evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before timestamp propagation.
+- [ ] Implement and independently review the shared setter path, accepted/rejected handler evidence, property observation, and documentation without changing F-012 or missing-item behavior.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-039 completion/cross-effects before promoting F-040.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-039 — update `Collection.Modified` for item mutations.
 - [ ] F-040 — correct the `underwrap-secretsd-store` persistence Rustdoc.
 - [ ] F-041 — scope persistent-secret-store claims to brokered resources.
 - [ ] F-042 — document the daemon's resource-blob parsing accurately.
