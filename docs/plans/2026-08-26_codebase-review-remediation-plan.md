@@ -1216,7 +1216,23 @@ Expected documentation-fix allowlist on the current tree:
 - `docs/testing.md`
 - this plan for evidence
 
-If cleanup independently accepts removal of the public JSON surface, that separate cleanup alone must own `store/json.rs`, its `store/mod.rs` declaration, the three helper-only JSON tests, resulting manifest dependency removals, and any Serde/base64 model/helper code proven to have no remaining consumer. The later documentation fix must then remove `store/json.rs` from its allowlist and retain package-description correction in the fix rather than folding documentation claims into cleanup.
+Approved cleanup 1 — remove the unused public JSON serialization surface:
+
+- Delete `SecretStore::{from_json, to_json, to_json_pretty}` and `src/store/json.rs`, and remove `mod json`.
+- Remove `Serialize`/`Deserialize` derives/imports and item Serde attributes from the in-memory model, plus `default_content_type` and `base64_bytes`, because static repository search finds no remaining consumer after helper removal.
+- Remove direct crate dependencies `serde`, `serde_json`, and `base64`; retain `anyhow` and `getrandom`. Refresh only `Cargo.lock`'s `underwrap-secretsd-store` dependency list; package records remain because other workspace crates use them.
+- Remove exactly `json_roundtrip_empty`, `json_roundtrip_with_items`, and `binary_secret_roundtrip`, which exist only for the deleted JSON API.
+- Preserve production evidence in `underwrap-secretsd::section_store` tests: store↔canonical-section round trip, arbitrary/non-UTF-8 secret bytes, metadata, canonical generation/parsing/idempotence, and explicit section-to-store secret preservation.
+- External downstream use of the public methods cannot be disproven by repository search; API removal is accepted under the greenfield/no-published-compatibility posture.
+- Cleanup allowlist: `Cargo.lock`, `crates/underwrap-secretsd-store/Cargo.toml`, and `src/store/{helpers,json,mod,model,tests}.rs` within that crate; no root manifest, flake, `underwrap-secretsd`, documentation, or package-description change.
+- Cleanup validation: refresh then require the lock, exact symbol/dependency/cargo-tree absence, focused/full store and secretsd section-conversion tests, strict package Rustdoc, denied-warning Clippy, rustfmt, bounded workspace tests, integration runner, Nix workspace test, artifact/scope/secret checks, and `git diff --check`.
+
+Resulting documentation-fix allowlist after cleanup 1:
+
+- `crates/underwrap-secretsd-store/Cargo.toml` — package description only
+- `crates/underwrap-secretsd-store/src/lib.rs`
+- `docs/testing.md`
+- this plan for evidence
 
 Expected cross-effects:
 
@@ -1249,8 +1265,13 @@ A VM run is not required because no NixOS, packaging, identity, namespace, capab
 
 - [x] Revalidate F-040 against current crate/module docs, JSON-helper reachability, one-shot initialization, section conversion, publication/ACK, host/backend persistence, F-008 effects, current public documentation, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection on 2026-08-30; the false crate invariant persists, all JSON helper callers are test-only or absent, and the historical tmpfs remedy is superseded.
 - [x] Obtain fresh independent approval of the ownership wording, conditional JSON-helper treatment, docs owners, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews required in-process rather than pure wording, public/no-current-production reachability precision, a secret-bearing JSON/base64 caveat if retained, the `underwrapd` finalize hop, evidence-only testing docs, package-description correction, and explicit cleanup-versus-fix ownership. After those corrections and removal of the unsupported word “unreachable,” fresh re-review passed on 2026-08-30 with external downstream use explicitly unknown.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before the Rustdoc correction, then revise the fix allowlist to the resulting tree.
-- [ ] Implement and independently review the current ownership Rustdoc/testing evidence without changing secret-state behavior or adjacent claims.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before the Rustdoc correction, then revise the fix allowlist to the resulting tree.
+  - Finding-local discovery accepted cleanup 1 exactly as recorded above; two-stage independent review verified repository reachability, production replacement coverage, dependency/lock impact, greenfield API posture, and no protected-boundary change.
+  - Repository-wide bounded discovery found no other high-confidence private production deletion independent of current or later findings.
+  - Crate/package/testing wording is the fix; broad store/section/publication refactors, current production tests, architecture/security duplication, later findings, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted after cleanup 1.
+- [ ] Implement, independently review, validate, and commit cleanup 1 before the Rustdoc correction.
+- [ ] Implement and independently review the resulting-tree ownership Rustdoc/package/testing evidence without changing secret-state behavior or adjacent claims.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-040 completion/cross-effects before promoting F-041.
 
 ### Remaining low queue
