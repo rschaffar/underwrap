@@ -5,6 +5,7 @@ import { Alert } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { deleteResource } from "@/api/client";
 import { describeApiError } from "@/lib/error-message";
+import { invalidateAll } from "@/lib/query";
 
 type DeleteResourceResult = Awaited<ReturnType<typeof deleteResource>>;
 type Blockers = NonNullable<DeleteResourceResult["blocked_by"]>;
@@ -126,11 +127,9 @@ export function DeleteResourceDialog({
       // The secrets and wrapper-permissions pages both surface
       // resources via their aggregate views, so invalidating both
       // view keys keeps either page consistent on next visit.
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["admin", "secrets-view", storeId] }),
-        qc.invalidateQueries({
-          queryKey: ["admin", "wrapper-permissions-view", storeId],
-        }),
+      await invalidateAll(qc, [
+        ["admin", "secrets-view", storeId],
+        ["admin", "wrapper-permissions-view", storeId],
       ]);
       onClose();
     }
