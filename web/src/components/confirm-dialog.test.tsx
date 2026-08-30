@@ -51,5 +51,15 @@ describe("ConfirmDialog", () => {
     expect(props.onConfirm).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: /cancel/i }));
     expect(props.onClose).toHaveBeenCalledTimes(1);
+
+    const closeButton = screen.getByRole("button", { name: "Close" });
+    expect(closeButton).toHaveClass(
+      "focus-visible:outline-hidden",
+      "focus-visible:ring-2",
+      "focus-visible:ring-(--color-accent)/40",
+    );
+    expect(closeButton).not.toHaveClass("focus:outline-hidden");
+    await user.click(closeButton);
+    expect(props.onClose).toHaveBeenCalledTimes(2);
   });
 });

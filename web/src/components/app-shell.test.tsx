@@ -52,7 +52,13 @@ describe("AppShell", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toBeInTheDocument();
     // Closing via the close button should remove the dialog.
-    const closeButton = screen.getByRole("button", { name: /close/i });
+    const closeButton = screen.getByRole("button", { name: "Close" });
+    expect(closeButton).toHaveClass(
+      "focus-visible:outline-hidden",
+      "focus-visible:ring-2",
+      "focus-visible:ring-(--color-accent)/40",
+    );
+    expect(closeButton).not.toHaveClass("focus:outline-hidden");
     await user.click(closeButton);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });

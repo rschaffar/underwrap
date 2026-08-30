@@ -491,6 +491,10 @@ remains visible and authenticated until a successful retry. The resource
 lifecycle flow shows a typed libsecret blocker in the still-open delete dialog,
 clears it, and then observes successful resource removal.
 
+The focused `focus-indicators.spec.ts` run in the configured `desktop-1280` Chromium project observes the shared dialog close control in the desktop Create store flow under the default dark and toggle-driven light themes and the shared sheet close control in the 375×812 responsive layout under the default dark theme.
+It reaches each close control through the real keyboard focus path and observes an unfocused `box-shadow: none` baseline, a focused non-`none` box shadow in regular colors, and a `:focus-visible` outline at least two pixels wide under emulated forced colors.
+This evidence makes no contrast, WCAG conformance, screen-reader, cross-browser, mobile-browser, or application-wide focus-coverage claim.
+
 Run it inside the Nix development shell so Playwright uses the NixOS-compatible
 browser:
 
