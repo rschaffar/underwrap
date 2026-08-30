@@ -1057,7 +1057,12 @@ Validation commands and evidence:
 
 - [x] Revalidate F-038 against the current four fields, both canonical container APIs, strict publication validation, callers, tests, documentation, F-008/F-009 effects, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection and two focused design/evidence reviews on 2026-08-30; publication is already protected, but generic encode/decode remains unrestricted and the maximum-only test still omits above-bound vectors.
 - [x] Obtain fresh independent approval of the four-field Serde design, direct semantic check, precedence, narrow test split/matrix, docs owner, allowlist, non-goals, cross-effects, and validation before cleanup discovery. Evidence: initial reviews approved field-level Serde enforcement but required the explicit 32-outcome matrix, independently authored raw JSON, direct four-field semantic fallback/message evidence, mixed-defect size/schema/canonical/publication precedence, and F-042 narrowing. The plan incorporated every correction; fresh implementation and evidence re-reviews passed on 2026-08-30 with implementation/runtime evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before timestamp enforcement.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before timestamp enforcement.
+  - Finding-local review found all canonical methods, four fields, semantic checks, size/error helpers, and existing boundary/publication tests live; no independent net deletion exists.
+  - Constant/adapter sharing, Rustdoc correction, relocation of the two timestamp tests, new vectors, and backend/testing documentation are the F-038 fix rather than cleanup.
+  - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
+  - Broad test repartition, test/doc deletion, generated files, dependencies, later findings, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved timestamp enforcement may begin.
 - [ ] Implement and independently review the adapter, annotations, focused tests, and documentation without changing valid canonical bytes or temporal semantics.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-038 completion/cross-effects before promoting F-039.
 
