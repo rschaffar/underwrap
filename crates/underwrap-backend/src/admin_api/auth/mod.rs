@@ -237,11 +237,10 @@ pub(crate) async fn handle_admin_password_change(
         AdminError::internal_with_code("internal", "could not hash password")
     })?;
     let id_owned = principal.id.clone();
-    let new_hash_for_closure = new_hash.clone();
     let now = crate::time::now_epoch_secs();
     let result = mutate_collection(&state, |c| {
         c.update(&id_owned, |u| {
-            u.password_hash = new_hash_for_closure.clone();
+            u.password_hash = new_hash.clone();
             u.password_changed_at = now;
         })?;
         Ok((
