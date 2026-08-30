@@ -2062,7 +2062,12 @@ Typed production-handler tests cover the malformed-value boundary directly, and 
 
 - [x] Revalidate F-046 against current CreateItem property parsing, zvariant dictionary signatures/conversion, store replacement semantics, F-012 candidate/zeroization, tests/docs, F-039/F-045/U-004 effects, and historical report/handover. Evidence: direct source/vendor/test inspection plus two focused design/evidence reviews on 2026-08-30; absent and malformed variants are still conflated and no wrong-type matrix exists.
 - [x] Obtain fresh independent approval of absent/wrong-type semantics, exact signature and error rules, precedence/order, malformed/accepted matrices, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews required outer signature checks before zvariant downcast, nested-variant and unknown-property evidence, explicit `a{sv}` two-mode rows, aggregate rather than direct no-publication/registration claims, exact subset/nonmatch/vacuous replacement expectations, and F-012-only defense wording. The plan incorporated every correction and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before CreateItem correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before CreateItem correction.
+  - Finding-local discovery proposed removing the unconditional O(1) `secret_len` local and computing it only inside metadata tracing.
+  - Independent review rejected that one-binding change as below-value, unmeasured cosmetic churn in the imminent F-046 hunk; it does not shorten secret lifetime or materially reduce complexity.
+  - Repository-wide bounded discovery found no other high-confidence private dead production deletion independent of current or later findings.
+  - Property parsers, ordering, tests, and docs are the F-046 fix; F-047 and broad Secret Service work remain separate.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved CreateItem correction may begin.
 - [ ] Implement and independently review exact property typing and complete no-publication/registration/replacement evidence without changing valid matching behavior.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-046 completion/cross-effects before promoting F-047.
 
