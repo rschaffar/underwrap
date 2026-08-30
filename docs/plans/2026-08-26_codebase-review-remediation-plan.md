@@ -1734,7 +1734,9 @@ Exact production scope:
 - Preserve conditional projection behavior.
   A forced-name entry in the resource does not block a files/libsecret-only wrapper whose `env_projection` is false because daemon and namespace env validation remain conditional.
 - Add no migration or compatibility path for previously injected malformed state.
-  Shared per-key admin read/write/delete/rename validation rejects the invalid key or destination, while deleting/recreating the containing resource remains the cleanup path in this greenfield design.
+  Shared per-key admin read/write/delete/rename validation rejects the invalid key or destination, and F-011 content blockers also prevent normal resource deletion while that env entry remains.
+  The normal admin API therefore fails closed rather than repairing this outside-contract state.
+  Recovery requires a quiesced trusted backend-host restoration/replacement of known-good canonical store state or rebuilding the affected store; this finding adds no automated repair procedure.
 
 Exact test scope:
 
@@ -1748,7 +1750,8 @@ Exact test scope:
   Require HTTP 400 `invalid_request`, the value-free shared reason, complete `ResourceBlob` equality after every rejection, no material in the response, and valid near-miss write/rename recovery.
 - In real backend/daemon integration, use authenticated admin requests to reject all six names without changing the canonical blob.
   Directly inject each otherwise canonical invalid blob, require an env-enabled daemon read to return `ErrorCode::Internal` with identifier-only/no-value text, and perform a bounded SCM_RIGHTS receive attempt that observes EOF/no descriptor rather than inferring channel absence.
-  Replace each invalid blob with a near-miss blob and prove the same daemon/backend recovers to `ReadOk`.
+  Require forced-name per-key admin deletion and normal resource deletion to fail closed, proving the malformed state is outside the admin repair surface.
+  Replace each invalid blob through the trusted direct-storage test seam with a near-miss blob and prove the same daemon/backend recovers to `ReadOk`; this simulates host restoration and is not documented as an operator API.
   Add a files-only/env-disabled wrapper case proving the conditional F-042 parser behavior remains.
   Do not claim runtime-open has zero backend effects because pair usage metadata may still change.
 
