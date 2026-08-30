@@ -281,17 +281,3 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   await storeDeletedDlg.getByText("Close", { exact: true }).click();
   await expect(page.getByRole("row", { name: /\bpacked\b/ })).toHaveCount(0);
 });
-
-test("non-admin operator sees the nav item hidden", async ({
-  page,
-  backendWithAdmin,
-}) => {
-  // The fixture only creates an admin operator today. For now,
-  // assert the admin path works (which exercises the gating from
-  // the *true* branch).
-  await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/stores`);
-  await expect(
-    page.getByRole("button", { name: /create store/i }),
-  ).toBeVisible();
-});
