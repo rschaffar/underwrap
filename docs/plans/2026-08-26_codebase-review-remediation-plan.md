@@ -872,7 +872,7 @@ Validation commands and evidence:
   - F-053 remains fully unresolved because this unit adds no tablet test and changes no Playwright project; F-037 and every other remaining finding are unchanged. F-037 is next.
   - Final closure review first required the U-006 cross-effect above and independent status/hash/stat completion; after correction and controller recomputation, fresh re-review passed the ordered workflow, evidence, bounded claims, cross-effects, and F-037 promotion with no blocker.
 
-### Current iteration — F-037 per-store selection and list states
+### Completed iteration — F-037 per-store selection and list states
 
 F-037 remains directly reproducible at clean HEAD `6dfd19b8c138b408aa00fdbcc3d20467952a3e41`.
 
@@ -951,8 +951,24 @@ Validation commands and evidence:
   - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
   - Broad page extraction, test/doc deletion, routing refactors, generated files, formatting, dependency work, later findings, and cosmetic churn are rejected.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved selector/error correction may begin.
-- [ ] Implement and independently review the hook, two page branches, unit/browser evidence, and testing documentation without changing authorization or valid-store behavior.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-037 completion/cross-effects before the mandatory medium → low decision.
+- [x] Implement and independently review the hook, two page branches, unit/browser evidence, and testing documentation without changing authorization or valid-store behavior.
+  - Fix commit: `eb8352c05037f444ca842679d98ff3811f7f0cc1` (`fix: reconcile per-store route selection`).
+  - The hook now distinguishes requested URL state from a synchronously validated effective id, returns `null` until a list resolves, preserves a valid id, otherwise chooses the first current store or clears an empty selection, and never exposes stale ids to detail-query gates.
+  - URL canonicalization preserves exact history state, unrelated query/hash state, and history length; it rejects invalid setter ids, avoids canonical/effective no-op replacements, collapses duplicate parameters, revalidates same-path popstate, and ignores a popstate for a different mounted pathname.
+  - Both pages render loading, actual store-list errors, and successful no-store guidance in that order. Equal-admin authority remains unchanged and no text diagnoses a nonexistent grant/access restriction.
+  - Effective-store changes synchronously gate and then reset every top-level transient. Secrets additionally keys each resource subtree by `(storeId, resource_id)` so cached same-id resource/libsecret state and destructive dialogs cannot rebind; Wrapper permissions also store-keys its persistent raw-policy viewer.
+  - Initial broad implementation reviews exhausted their deadlines; three bounded reviews found invalid-setter and duplicate-popstate gaps, nested same-resource libsecret rebinding, insufficient reset re-arming/destructive-dialog evidence, and cross-navigation browser-request attribution. A separate correction worker fixed every accepted issue. Three fresh focused re-reviews passed hook, page/nested-state, browser, and documentation behavior; the final post-validation review passed the exact seven-path diff with no remaining correction or gap.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-037 completion/cross-effects before the mandatory medium → low decision.
+  - Exact staged diff: seven approved paths, 1,028 insertions and 122 deletions, SHA-256 `bce3425fb0882ed461c38de133c0674dfd2fa9ffa3dac74e0c08fa94e4dc2c84`.
+  - Vitest: 9 StrictMode hook and 9 cross-page selection/state tests passed in the focused 18-test run (log SHA-256 `78bfe460419f4864bfd38fc1db0cba82eecfdd8f1e5a0e888857f1b4416d698c`); the complete 148-test suite passed (log SHA-256 `a3a8a4de4d7ca5b64e86b9d408636983af53adb924dde7d47d487d4498b657a4`).
+  - TypeScript/Vite production build passed with only the existing large-chunk advisory (log SHA-256 `bb41d0167edb6c6490e413227f2fcd3525683949e968684346a2b8caab205886`).
+  - The exact Nix web artifact `/nix/store/fy0zc6mfa7vpz48nas3g7x7qyyfvlvxv-underwrap-web-dist-0.1.0` supplied `UNDERWRAP_WEB_DIST` for the successful `target/debug/underwrap-backend` prerequisite build (log SHA-256 `79550ddef9fa053890cddcfd8edb0f616f3a7dab343e6eadd877391971c1230a`).
+  - Playwright: the focused desktop-1280 Chromium spec passed all 3 stale/error/empty scenarios across both pages (log SHA-256 `b709297ed0fcbd994884a054de3a504021b22a63d80ade50f0723ff159744fda`); the complete configured suite passed 36 tests (log SHA-256 `4ccbfa54eaf644ea31ea3659c43d949ee60fe228b86c0822f89825cb79085e42`).
+  - Controller checks passed exact seven-path scope, synchronous detail gating, removal of grant/access copy, all top-level and nested transient protections, exact endpoint request assertions, no package/lock/router/Playwright-config/API/backend/auth/security/later-finding change, `git diff --check`, generated/schema/artifact absence, staged checksum, and clean post-commit tree.
+  - F-037 is resolved and closes the historical V-006/V-009 stale/deleted-id and store-list-state coverage gap for Secrets and Wrapper permissions only.
+  - O-015, F-049, F-050, F-053, F-058, authentication/authorization, every security boundary, every lower finding, and every other Opportunity/unresolved item remain unchanged.
+  - F-031 through F-037 are now resolved. The program must stop for the focused mandatory medium → low transition decision before F-038; no low-severity implementation is authorized without that decision.
+  - Fresh final closure re-review passed the exact commit/scope/stat/checksum, source semantics, retained logs/counts, bounded cross-effects, completed medium band, checklist state, and D-174 gate interpretation; after this plan-only closure commit, `ask_user` is the only authorized next program action.
 
 ### Remaining medium queue
 
@@ -986,7 +1002,7 @@ After the transition gate, promote one row at a time using the same iteration pr
 
 ## Completion Checklist
 
-- [ ] F-031 through F-037 are resolved or explicitly closed with current evidence.
+- [x] F-031 through F-037 are resolved or explicitly closed with current evidence.
 - [ ] The medium → low transition is explicitly approved and recorded.
 - [ ] F-038 through F-058 are resolved or explicitly closed with current evidence.
 - [ ] Every accepted cleanup and fix has independent review, required validation, controller checks, and an ordered local commit recorded here.
