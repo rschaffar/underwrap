@@ -2503,7 +2503,7 @@ Focused real admin/runtime handler/fault tests and one configured-Chromium real-
   - F-049 is resolved for admin internal errors and the explicitly authorized runtime consistency extension. F-015, F-042, and F-048 remain resolved. F-054 remains unresolved and now owns coverage of the new internal-failure events/source field; every other finding, Opportunity, and unresolved item remains unchanged. F-050 is next.
   - Final closure review passed runtime authority/source audit, no-cleanup disposition, separate correction review, logging boundary, exact inventories/messages, all validation/provenance/artifact evidence, corrected Nix-attempt classification, no-VM rationale, bounded cross-effects, and F-050 promotion with no remaining gap.
 
-### Current iteration — F-050 Playwright master-key custody fidelity
+### Completed iteration — F-050 Playwright master-key custody fidelity
 
 F-050 remains directly reproducible at clean HEAD `b36e9dd3bd4253514bef71f5b4ce69c76ae429a4`.
 
@@ -2615,8 +2615,22 @@ The changed real-backend Playwright fixture and focused/full browser runs direct
   - Production build passed with only the existing chunk advisory (`903225d4b3e1f7bab2152b4006fff6ea57cd9016723814c1d901bfa6560aef21`); focused list/run passed the same four Stores scenarios (`db97bccbccfe85397ce18c6f3c6d50c060b3690c59812f7029173420c94ee407`); the complete configured suite passed 37 tests (`bb73e78c0e1130621ea8e5511ff557094621ec9c723f2721ac87a0940dd61be1`).
   - The first controller absence check used `! rg` under `set -e`, which does not enforce a negative match and also found the valid conceptual `<dataRoot>` prose. The corrected exact `.dataRoot`/object-key search passed; this was an evidence-script correction, not a source/test failure.
   - Controller checks passed exact one-file scope, no property/shape consumer, retained dynamic-store fixture behavior, no keysDir/F-050/config/project change, `git diff --check`, generated/browser artifact cleanup, checksum, and clean post-commit tree. Both accepted cleanups are complete; the F-050 correction may begin.
-- [ ] Implement and independently review the fixture/spec/testing-doc correction without changing runtime key behavior.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-050 completion/cross-effects before promoting F-051.
+- [x] Implement and independently review the fixture/spec/testing-doc correction without changing runtime key behavior.
+  - Fix commit: `c040c39a93696266c3640c5494be5a5f0b97b014` (`test: remove stale master-key fixture state`).
+  - The fixture no longer exposes/creates/returns `keysDir` or sends ignored `admin.keys_dir`; TLS key material and dynamic-store data-root configuration remain exact.
+  - The encrypted-store scenario now states one-time key return and inspects only localStorage, sessionStorage, script-visible `document.cookie`, and current URL, with explicit exclusions for every broader browser/backend/artifact location in scope.
+  - Testing documentation separates real browser observations from the existing backend unit test's recursive `.key`-suffix scan and warns that transient failure artifacts may contain rendered key material until cleanup.
+  - The implementation writer initially invoked Prettier from the wrong directory, then formatted more of the existing files than the fix required. A separate correction worker restored every unrelated table/code-format hunk; fresh actual-diff content and evidence reviews then passed the exact three-file diff with no remaining correction.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-050 completion/cross-effects before promoting F-051.
+  - Exact submitted base: `9629087b4ab897cd292a3ed3f5deed8aab2f89ad`; exact committed diff: three approved paths, 14 insertions and 17 deletions, SHA-256 `c56a483d7bdfef17b258f6d38f177bf7ad3992aece90e0324309bfa8c18ff6cc` (provenance log `852fbc0daad129bdea8e02bb8644220970151c4af6cb7e93b0dfa1906a0a0bf5`).
+  - The complete SPA suite passed 162 tests (`ea77079b067a2a99fbe0732a5c3d1df7bfb7b7c4bb88e0115d4b2acfcae03360`), and the production build passed with only the existing chunk advisory (`ece48f7efcadb05a9ef64007cec8799364c5359d10a3fa5046e1a423d2d7b22d`).
+  - Exact Nix web artifact `/nix/store/6i58lvfr75p3xdn9dwp4kss183q3slk0-underwrap-web-dist-0.1.0` supplied the focused backend encrypted-create/no-`.key` test, which passed (`45c8652cc2181dfb09d3ea7c4adb5506a0dd2d78255edc0e50ac2bf637d45ffd`).
+  - Fresh target `/tmp/underwrap-f050-target.7U26FT` produced absolute backend `/tmp/underwrap-f050-target.7U26FT/debug/underwrap-backend` with SHA-256 `6f41d9d09cc2e580b5fd0b67f22f2316f6ab2040feb7067d5dc7db6dfb0c4591` (`730082fba5b362c3bf5df21643bbb185cd074a1407f4d58fe92b553af9783fa0`). The same exact binary served both browser runs, then the target was removed.
+  - Focused configured-Chromium Stores validation passed all four scenarios with the exact corrected title (`7905222d8470c983e84c1a18803a4f148df9606b92a423bd558be7124def09c7`); the complete configured suite passed 37 desktop/mobile scenarios (`ab194f260e46942d5386c15f272ad5204481c836f3b7534c03bfc7d138fb9f80`).
+  - Static validation passed zero exact stale fixture identifiers/literals/phrase, positive retained TLS/data-root markers, exact four-location browser assertions/exclusions, and testing-doc limits (`29235542b69f7963a8fa0437f47752c543bbe45f632ba1ae396b083f84c6048c`).
+  - Controller checks passed exact three-path scope, no broad no-traces/backend-host claim, no backend/config/key-lifecycle/F-051 change, one-sentence docs, `git diff --check`, target/generated/browser artifact cleanup, checksum, and clean post-commit tree.
+  - F-050 is resolved. Backend unknown-field strictness remains separate and unchanged; F-003/F-041 remain resolved; F-051, F-053, F-054, F-058, every other finding, Opportunity, and unresolved item remain unchanged. F-051 is next.
+  - Final closure review passed cleanup/fix order, separate review/correction, exact fixture/spec semantics, bounded claims, validation/provenance/artifact evidence, no-VM rationale, cross-effects, and F-051 promotion with no remaining gap.
 
 ### Remaining low queue
 
