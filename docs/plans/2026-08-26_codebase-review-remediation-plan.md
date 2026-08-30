@@ -1677,7 +1677,13 @@ The VM is mandatory because the NixOS module's generated daemon/sidecar split an
   - Repository-wide bounded discovery found no other high-confidence private dead production deletion independent of current or later findings.
   - Scope/config/audit removals are the F-043 fix; F-044/F-052/F-054 work, broad refactors, dependencies, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted after cleanup 1.
-- [ ] Implement, independently review, validate, and commit cleanup 1 before F-043 removals.
+- [x] Implement, independently review, validate, and commit cleanup 1 before F-043 removals.
+  - Commit: `03a7060293bd1c65b20cdf5d8614cb7d76ecec65` (`test: reuse dynamic store path helper`).
+  - Exact diff: two approved paths, one insertion and five deletions, SHA-256 `cffc97e2adc955fb29251dc9bcb8022789d7e2bd4355a77e623d10bab7b352e2`; generated dynamic store ids take `store_dir_for`'s identical non-`test` branch.
+  - Fresh actual-diff review passed path equivalence, F-003 evidence preservation, runner invocation, scope, and no F-id effect.
+  - The exact rotation test passed (`67eb59182a2af392b87b1f3c4956cd1a3054c7ce8c61d4c4daf73d05d04303c4`), followed by all 105 integration tests (`14834bc1c56ff964bb49ae322c1175848dd3d9c9de4ebfce1336234d24f7dc4d`).
+  - The first controller Clippy invocation omitted the backend's required web bundle and stopped in its build script after tests had passed (`ed5e3da2e664485194b3f6db7c6ed2e44ec7903aa12e3b51e63d99857fd618ab`). With exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (`33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`), focused denied-warning Clippy and rustfmt passed (`17326ef30736171a652c85bb70a12b4e3182b42862d045dd9738c9182aba6a7c`).
+  - Controller checks passed exact two-file scope, helper absence, path-equivalence source, `git diff --check`, checksum, no artifacts, and clean post-commit tree. The missing-web result is prerequisite provenance, not an implementation/test failure.
 - [ ] Implement and independently review the exact dead-surface removals and authority evidence without changing the wrapper chain or adjacent findings.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-043 completion/cross-effects before promoting F-044.
 
