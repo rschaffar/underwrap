@@ -23,7 +23,7 @@ async fn rotation_response_discard_retains_old_key_generation() {
     let store_id = created.store.id;
     let old_key_hex = created.key_hex.unwrap();
     let old_key = underwrap_backend_store::parse_hex_key(&old_key_hex).unwrap();
-    let canonical = daemon.store_data_dir(&store_id);
+    let canonical = daemon.store_dir_for(&store_id);
 
     let resource = daemon
         .create_resource(&store_id, "response/discard/resource")

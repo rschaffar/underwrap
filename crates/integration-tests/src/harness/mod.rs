@@ -583,10 +583,6 @@ impl TestDaemon {
         &self.service_url
     }
 
-    pub fn store_data_dir(&self, store_id: &str) -> PathBuf {
-        self.stores_data_root.join(store_id)
-    }
-
     pub async fn rotate_store_discard_response(&self, store_id: &str) -> Result<()> {
         let response = self
             .admin_request(
