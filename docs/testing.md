@@ -481,6 +481,15 @@ local-to-tunnel certificate replacement, old-certificate rejection, and
 replacement disable/re-enable behavior. The normal path explicitly restores the
 directory before state assertions; `Drop` provides only a best-effort fallback.
 The daemon/backend stop future is always awaited without an in-test timeout.
+The same matrix pins the exact safe store/client-registry failure messages and proves that each blocked registry path is absent from the authenticated response.
+
+Sibling admin error tests cover direct generic construction, the real result adapter, one audited source-bearing constructor, and source-less static construction.
+They pin exact response envelopes and structured fields, prove generic source-display omission, retain nested alternate-Display chain/path detail only for the audited event, and statically inventory 44 generic paths, thirteen source-bearing migrations, and seventeen remaining source-less calls.
+Sibling runtime tests cover direct and adapted generic construction, and a real wrapper-register handler test injects a storage read failure through `TestStore`.
+Those runtime tests pin the exact generic envelope and type-only event without claiming that injected storage failure is a production filesystem observation.
+A configured desktop Chromium scenario runs the real backend as a required non-root process, removes permission from the fixture's plain-store directory, observes one direct authenticated 500 and exactly two retry-aware UI failures, and pins the safe alert with fixture-path omission.
+Its `finally` block restores and verifies the exact original mode before a post-restoration authenticated 200 check.
+This browser case is deterministic local-filesystem and real-handler evidence, not a claim about production filesystems, other browsers, middleware-generated errors, or every admin route.
 
 The complete frontend security assertion matrix in
 `frontend-security-assertions-eval` uses real `nixpkgs.lib.nixosSystem`

@@ -341,12 +341,33 @@ no store name in any request body. Operators create runtime client
 instances directly in the admin UI by pasting a cert PEM the helper
 produced; the helper does not talk to the backend.
 
+A runtime handler's generic internal failure returns HTTP 500 with code `internal` and exact message `the backend could not complete the request`.
+The corresponding `runtime internal failure` ERROR event records only `response_code`, static `context`, and concrete Rust `error_type`, never the source value's display text.
+
 ## Admin API
 
 The admin API lives on the same HTTPS listener as the runtime API and
 shares the same server certificate. Operator requests authenticate with
 session cookies; state-changing requests must also satisfy the CSRF and
 `allowed_origins` checks.
+
+A generic admin internal failure returns HTTP 500 with code `internal` and exact message `the backend could not complete the request`.
+The audited store and runtime-client registry failures retain their existing codes but use these stable public messages:
+
+| Code | Public message |
+| --- | --- |
+| `list_store_failed` | `could not inspect store contents` |
+| `create_data_dir_failed` | `could not create store data directory` |
+| `open_store_failed` | `could not open store` |
+| `canary_write_failed` | `could not initialize encrypted store` |
+| `write_store_registry_failed` | `could not persist store registry` |
+| `write_client_instances_failed` | `could not persist client instance registry` |
+
+Other source-less code-specific 500 responses retain their static public guidance.
+Every source-bearing admin 500 constructed through these internal-error helpers emits an `admin internal failure` ERROR event with `response_code`, static `context`, and concrete Rust `error_type`.
+Only the audited filesystem, storage-open/list/write, canary, and registry-persistence failures add the source's alternate-Display `error` field, which can contain trusted-host paths and non-secret identifiers.
+Generic failures never format arbitrary source values because malformed stored input can appear in an error's display text.
+The response contains none of these diagnostic fields or source details, and the fields do not provide a per-request correlation identifier.
 
 The OpenAPI 3.1 document at
 `crates/underwrap-backend/openapi.json` is the generated client contract for

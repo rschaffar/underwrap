@@ -137,17 +137,21 @@ pub(crate) async fn handle_admin_store_create(
                 dir: validated_dir.clone(),
             };
             create_data_dir_secure(&validated_dir).map_err(|e| {
-                AdminError::internal_with_code(
+                AdminError::internal_with_source(
                     "create_data_dir_failed",
-                    format!("creating data dir {}: {e:#}", validated_dir.display()),
+                    "could not create store data directory",
+                    "creating plain store data directory",
+                    e,
                 )
             })?;
             let backend: Arc<dyn StorageBackend> = underwrap_backend_store::open(&storage)
                 .map(Arc::from)
                 .map_err(|e| {
-                    AdminError::internal_with_code(
+                    AdminError::internal_with_source(
                         "open_store_failed",
-                        format!("opening store backend after create: {e:#}"),
+                        "could not open store",
+                        "opening plain store after creation",
+                        e,
                     )
                 })?;
             (storage, backend, None)
@@ -160,12 +164,11 @@ pub(crate) async fn handle_admin_store_create(
                 )
             })?;
             create_data_dir_secure(parent).map_err(|e| {
-                AdminError::internal_with_code(
+                AdminError::internal_with_source(
                     "create_data_dir_failed",
-                    format!(
-                        "creating encrypted stores data root {}: {e:#}",
-                        parent.display()
-                    ),
+                    "could not create store data directory",
+                    "creating encrypted stores data root",
+                    e,
                 )
             })?;
             let mut key_bytes = generate_master_key_bytes();
@@ -176,9 +179,11 @@ pub(crate) async fn handle_admin_store_create(
             );
             key_bytes.fill(0);
             let backend = backend_result.map_err(|e| {
-                AdminError::internal_with_code(
+                AdminError::internal_with_source(
                     "open_store_failed",
-                    format!("creating encrypted store backend: {e:#}"),
+                    "could not open store",
+                    "creating encrypted store backend",
+                    e,
                 )
             })?;
             backend
@@ -187,9 +192,11 @@ pub(crate) async fn handle_admin_store_create(
                     underwrap_backend_store::ENCRYPTED_CANARY_PLAINTEXT,
                 )
                 .map_err(|e| {
-                    AdminError::internal_with_code(
+                    AdminError::internal_with_source(
                         "canary_write_failed",
-                        format!("writing unlock canary for new encrypted store: {e:#}"),
+                        "could not initialize encrypted store",
+                        "writing unlock canary for new encrypted store",
+                        e,
                     )
                 })?;
             let backend: Arc<dyn StorageBackend> = Arc::new(backend);
@@ -216,9 +223,11 @@ pub(crate) async fn handle_admin_store_create(
         );
         if let Err(e) = save_store_record(&state.admin().stores_dir, &record) {
             reg.entries.remove(&store_id);
-            return Err(AdminError::internal_with_code(
+            return Err(AdminError::internal_with_source(
                 "write_store_registry_failed",
-                format!("{e:#}"),
+                "could not persist store registry",
+                "persisting created store registry record",
+                e,
             ));
         }
     }
@@ -297,9 +306,11 @@ pub(crate) async fn handle_admin_store_update(
             .ok_or_else(AdminError::store_not_found)?;
         let published = updated.clone();
         if let Err(e) = save_store_record(&state.admin().stores_dir, &updated) {
-            return Err(AdminError::internal_with_code(
+            return Err(AdminError::internal_with_source(
                 "write_store_registry_failed",
-                format!("{e:#}"),
+                "could not persist store registry",
+                "persisting updated store registry record",
+                e,
             ));
         }
         entry.record = published;
@@ -392,9 +403,11 @@ pub(crate) async fn handle_admin_store_delete(
         Some(h) => h
             .list("")
             .map_err(|e| {
-                AdminError::internal_with_code(
+                AdminError::internal_with_source(
                     "list_store_failed",
-                    format!("checking store contents before delete: {e:#}"),
+                    "could not inspect store contents",
+                    "checking store contents before delete",
+                    e,
                 )
             })?
             .iter()
@@ -423,9 +436,11 @@ pub(crate) async fn handle_admin_store_delete(
     {
         let mut reg = state.shared.stores.write().unwrap();
         if let Err(e) = delete_store_record(&state.admin().stores_dir, &name) {
-            return Err(AdminError::internal_with_code(
+            return Err(AdminError::internal_with_source(
                 "write_store_registry_failed",
-                format!("{e:#}"),
+                "could not persist store registry",
+                "deleting store registry record",
+                e,
             ));
         }
         reg.entries.remove(&name);

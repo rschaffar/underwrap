@@ -79,9 +79,11 @@ pub(super) fn admin_store_usage(
     let has_secrets = store
         .list("")
         .map_err(|e| {
-            AdminError::internal_with_code(
+            AdminError::internal_with_source(
                 "list_store_failed",
-                format!("checking store contents for management view: {e:#}"),
+                "could not inspect store contents",
+                "checking store contents for management view",
+                e,
             )
         })?
         .iter()

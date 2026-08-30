@@ -221,9 +221,11 @@ pub(crate) async fn handle_admin_client_instance_create(
         crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &record)
     {
         instances.remove(&id);
-        return Err(AdminError::internal_with_code(
+        return Err(AdminError::internal_with_source(
             "write_client_instances_failed",
-            format!("{e:#}"),
+            "could not persist client instance registry",
+            "persisting created client instance registry record",
+            e,
         ));
     }
     drop(instances);
@@ -327,9 +329,11 @@ pub(crate) async fn handle_admin_client_instance_update(
     if let Err(e) =
         crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &updated)
     {
-        return Err(AdminError::internal_with_code(
+        return Err(AdminError::internal_with_source(
             "write_client_instances_failed",
-            format!("{e:#}"),
+            "could not persist client instance registry",
+            "persisting updated client instance registry record",
+            e,
         ));
     }
     instances.insert(id.clone(), updated.clone());
@@ -388,9 +392,11 @@ pub(crate) async fn handle_admin_client_instance_delete(
         // Roll the in-memory state back so the next request sees the same
         // view as the on-disk file.
         instances.insert(id.clone(), removed);
-        return Err(AdminError::internal_with_code(
+        return Err(AdminError::internal_with_source(
             "write_client_instances_failed",
-            format!("{e:#}"),
+            "could not persist client instance registry",
+            "deleting client instance registry record",
+            e,
         ));
     }
     drop(instances);

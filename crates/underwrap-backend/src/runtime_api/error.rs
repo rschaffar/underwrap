@@ -17,6 +17,8 @@ use axum::response::{IntoResponse, Response};
 
 use underwrap_protocol::service::ServiceErrorResponse;
 
+const INTERNAL_PUBLIC_MESSAGE: &str = "the backend could not complete the request";
+
 #[derive(Debug)]
 pub(crate) struct RuntimeError {
     status: StatusCode,
@@ -56,10 +58,16 @@ impl RuntimeError {
     }
 
     pub(crate) fn internal(context: &'static str, error: impl fmt::Display) -> Self {
+        tracing::error!(
+            response_code = "internal",
+            context,
+            error_type = std::any::type_name_of_val(&error),
+            "runtime internal failure",
+        );
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
-            format!("{context}: {error:#}"),
+            INTERNAL_PUBLIC_MESSAGE,
         )
     }
 }
@@ -85,3 +93,6 @@ impl<T, E: fmt::Display> IntoInternal<T> for Result<T, E> {
         self.map_err(|e| RuntimeError::internal(context, e))
     }
 }
+
+#[cfg(test)]
+mod tests;

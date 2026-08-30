@@ -23,6 +23,8 @@ use axum::response::{IntoResponse, Response};
 
 use underwrap_protocol::service::ServiceErrorResponse;
 
+const INTERNAL_PUBLIC_MESSAGE: &str = "the backend could not complete the request";
+
 /// A handler-emitted error. Carries the HTTP status, the canonical
 /// `code` string the SPA / frontend daemon switch on, and a human
 /// readable message.
@@ -105,21 +107,41 @@ impl AdminError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, code, message)
     }
 
-    /// `500 internal` with a static context string prefixed to the
-    /// error formatted via `{:#}`.
+    /// Log a type-only internal diagnostic and return the generic public 500.
     pub(crate) fn internal(context: &'static str, error: impl fmt::Display) -> Self {
+        tracing::error!(
+            response_code = "internal",
+            context,
+            error_type = std::any::type_name_of_val(&error),
+            "admin internal failure",
+        );
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
-            format!("{context}: {error:#}"),
+            INTERNAL_PUBLIC_MESSAGE,
         )
     }
 
-    /// `500` with a hand-picked code (e.g. `list_store_failed`,
-    /// `write_client_instances_failed`). Used where the wire contract
-    /// surfaces a more specific 500 code than the generic `internal`.
-    pub(crate) fn internal_with_code(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
+    /// Return a source-less 500 with a static code and public message.
+    pub(crate) fn internal_with_code(code: &'static str, public_message: &'static str) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, public_message)
+    }
+
+    /// Log an audited source-bearing diagnostic and return its static public 500.
+    pub(crate) fn internal_with_source(
+        code: &'static str,
+        public_message: &'static str,
+        context: &'static str,
+        error: impl fmt::Display,
+    ) -> Self {
+        tracing::error!(
+            response_code = code,
+            context,
+            error_type = std::any::type_name_of_val(&error),
+            error = %format_args!("{error:#}"),
+            "admin internal failure",
+        );
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, public_message)
     }
 
     pub(crate) fn rotation_recovery_required() -> Self {
@@ -153,3 +175,6 @@ impl IntoResponse for AdminError {
         (self.status, Json(body)).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests;

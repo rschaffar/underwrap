@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::{
-    TestStore, make_runtime_api_fixture, response_body_json, typed_response_body,
+    TestStore, capture_tracing_output, make_runtime_api_fixture, response_body_json,
+    typed_response_body,
 };
 
 // ===== Unit tests for the per-stage helpers =====
@@ -341,6 +342,37 @@ fn runtime_wrapper_register_rejects_duplicates_before_storage_operations() {
         "duplicate_wrapper_resource_pair"
     );
     assert!(store.operation_trace().is_empty());
+}
+
+#[test]
+fn runtime_wrapper_register_internal_failure_is_redacted_and_logged() {
+    let fx = make_runtime_api_fixture();
+    let store = TestStore::new();
+    store.fail_read_for(underwrap_protocol::entities::RESOURCES_DOCUMENT_SECRET_ID);
+    let request = RuntimeWrapperRegisterRequest { wrappers: vec![] };
+
+    let (error, log) = capture_tracing_output(|| {
+        handle_runtime_wrapper_register(&fx.state, &store, &fx.instance_id, &request)
+            .expect_err("forced resources read must fail registration")
+    });
+
+    assert_eq!(
+        response_body_json(error),
+        serde_json::json!({
+            "__status": 500,
+            "code": "internal",
+            "message": "the backend could not complete the request",
+        }),
+    );
+    assert!(log.contains("ERROR runtime internal failure"), "{log}");
+    assert!(log.contains("response_code=\"internal\""), "{log}");
+    assert!(
+        log.contains("context=\"loading resources document\""),
+        "{log}",
+    );
+    assert!(log.contains("error_type=\"anyhow::Error\""), "{log}");
+    assert!(!log.contains("forced read failure"), "{log}");
+    assert!(!log.contains(" error="), "{log}");
 }
 
 #[test]

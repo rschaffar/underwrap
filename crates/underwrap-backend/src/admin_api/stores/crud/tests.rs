@@ -15,6 +15,30 @@ use crate::test_support::{
     create_store_for_test, crud_state, delete_store_for_test, run_handler,
 };
 
+fn assert_registry_failure(
+    body: &serde_json::Value,
+    log: &str,
+    registry_dir: &std::path::Path,
+    context: &str,
+) {
+    assert_eq!(
+        body,
+        &serde_json::json!({
+            "code": "write_store_registry_failed",
+            "message": "could not persist store registry",
+        }),
+    );
+    let registry_path = registry_dir.to_string_lossy();
+    assert!(!body.to_string().contains(registry_path.as_ref()));
+    assert!(log.contains("ERROR admin internal failure"), "{log}");
+    assert!(
+        log.contains("response_code=\"write_store_registry_failed\""),
+        "{log}",
+    );
+    assert!(log.contains(&format!("context=\"{context}\"")), "{log}");
+    assert!(log.contains(registry_path.as_ref()), "{log}");
+}
+
 fn create_store(
     state: Arc<crate::runtime_state::ListenerState>,
     p: &crate::admin_api::csrf::Principal,
@@ -435,7 +459,12 @@ fn f015_store_create_blocked_registry_publishes_no_candidate_and_retries_cleanly
         create_store(state.clone(), &principal, &request)
     });
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert_eq!(body["code"], "write_store_registry_failed");
+    assert_registry_failure(
+        &body,
+        &audit,
+        &state.admin().stores_dir,
+        "persisting created store registry record",
+    );
     assert!(
         !audit.contains("action=store.create"),
         "failed create emitted a success audit: {audit}",
@@ -510,7 +539,12 @@ fn f015_store_update_persists_before_publishing_live_record() {
         ))
     });
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert_eq!(body["code"], "write_store_registry_failed");
+    assert_registry_failure(
+        &body,
+        &audit,
+        &state.admin().stores_dir,
+        "persisting updated store registry record",
+    );
     assert!(
         !audit.contains("action=store.update"),
         "failed update emitted a success audit: {audit}",
@@ -584,7 +618,12 @@ fn f015_store_delete_persists_before_removing_live_entry() {
         delete_store_for_test(state.clone(), &principal, &store_id, false)
     });
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert_eq!(body["code"], "write_store_registry_failed");
+    assert_registry_failure(
+        &body,
+        &audit,
+        &state.admin().stores_dir,
+        "deleting store registry record",
+    );
     assert!(
         !audit.contains("action=store.delete"),
         "failed delete emitted a success audit: {audit}",

@@ -68,6 +68,8 @@ export interface BackendInstance {
   baseUrl: string;
   /** Absolute path of the per-test temp directory (config, certs, store live here). */
   tmpDir: string;
+  /** Absolute path of the pre-seeded default plain store directory. */
+  storeDir: string;
   /** Absolute path of the configured `stores_data_root`. New dynamic
    *  stores land at `<dataRoot>/<store_id>/`. */
   dataRoot: string;
@@ -251,6 +253,7 @@ export async function startBackend(
   return {
     baseUrl,
     tmpDir,
+    storeDir,
     dataRoot: dataRootsDir,
     keysDir,
     cleanup,

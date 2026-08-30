@@ -95,7 +95,12 @@ async fn expect_runtime_rejection(response: reqwest::Response) -> Result<()> {
     Ok(())
 }
 
-async fn expect_registry_error(response: reqwest::Response, expected_code: &str) -> Result<()> {
+async fn expect_registry_error(
+    response: reqwest::Response,
+    expected_code: &str,
+    expected_message: &str,
+    blocked_path: &Path,
+) -> Result<()> {
     ensure!(
         response.status() == StatusCode::INTERNAL_SERVER_ERROR,
         "expected registry failure HTTP 500, got {}",
@@ -116,8 +121,15 @@ async fn expect_registry_error(response: reqwest::Response, expected_code: &str)
         envelope.code
     );
     ensure!(
-        !envelope.message.is_empty(),
-        "registry failure message was empty"
+        envelope.message == expected_message,
+        "unexpected registry failure message: {}",
+        envelope.message
+    );
+    ensure!(
+        !envelope
+            .message
+            .contains(blocked_path.to_string_lossy().as_ref()),
+        "registry failure response exposed the blocked registry path"
     );
     Ok(())
 }
@@ -198,7 +210,13 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
         .json(&store_update)
         .send()
         .await?;
-    expect_registry_error(response, "write_store_registry_failed").await?;
+    expect_registry_error(
+        response,
+        "write_store_registry_failed",
+        "could not persist store registry",
+        &daemon.stores_dir,
+    )
+    .await?;
     blocker.restore()?;
     ensure!(live_store(daemon, "test").await? == store_before_live);
     ensure!(disk_store(daemon, "test")? == store_before_disk);
@@ -232,7 +250,13 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
         .admin_request(Method::DELETE, &delete_path)
         .send()
         .await?;
-    expect_registry_error(response, "write_store_registry_failed").await?;
+    expect_registry_error(
+        response,
+        "write_store_registry_failed",
+        "could not persist store registry",
+        &daemon.stores_dir,
+    )
+    .await?;
     blocker.restore()?;
     ensure!(live_store(daemon, &delete_store.id).await? == delete_before_live);
     ensure!(disk_store(daemon, &delete_store.id)? == delete_before_disk);
@@ -279,7 +303,13 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
         .json(&failed_client_update)
         .send()
         .await?;
-    expect_registry_error(response, "write_client_instances_failed").await?;
+    expect_registry_error(
+        response,
+        "write_client_instances_failed",
+        "could not persist client instance registry",
+        &daemon.clients_dir,
+    )
+    .await?;
     blocker.restore()?;
     ensure!(live_client(daemon, &client_id).await? == client_before_live);
     ensure!(disk_client(daemon, &client_id)? == client_before_disk);

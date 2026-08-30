@@ -20,6 +20,30 @@ use crate::test_support::{
     create_store_for_test, crud_state, delete_store_for_test, run_handler,
 };
 
+fn assert_registry_failure(
+    body: &serde_json::Value,
+    log: &str,
+    registry_dir: &std::path::Path,
+    context: &str,
+) {
+    assert_eq!(
+        body,
+        &serde_json::json!({
+            "code": "write_client_instances_failed",
+            "message": "could not persist client instance registry",
+        }),
+    );
+    let registry_path = registry_dir.to_string_lossy();
+    assert!(!body.to_string().contains(registry_path.as_ref()));
+    assert!(log.contains("ERROR admin internal failure"), "{log}");
+    assert!(
+        log.contains("response_code=\"write_client_instances_failed\""),
+        "{log}",
+    );
+    assert!(log.contains(&format!("context=\"{context}\"")), "{log}");
+    assert!(log.contains(registry_path.as_ref()), "{log}");
+}
+
 fn f015_client_cert_pem(label: &str) -> String {
     let key = rcgen::KeyPair::generate().unwrap();
     let mut params = rcgen::CertificateParams::new(vec![label.to_string()]).unwrap();
@@ -462,7 +486,12 @@ fn f015_client_create_blocked_registry_publishes_no_candidate_and_retries_cleanl
         ))
     });
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert_eq!(body["code"], "write_client_instances_failed");
+    assert_registry_failure(
+        &body,
+        &audit,
+        &state.admin().clients_dir,
+        "persisting created client instance registry record",
+    );
     assert!(
         !audit.contains("action=client-instance.create"),
         "failed create emitted a success audit: {audit}",
@@ -622,7 +651,12 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
         ))
     });
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert_eq!(body["code"], "write_client_instances_failed");
+    assert_registry_failure(
+        &body,
+        &audit,
+        &state.admin().clients_dir,
+        "persisting updated client instance registry record",
+    );
     assert!(
         !audit.contains("action=client-instance.update"),
         "failed update emitted a success audit: {audit}",
@@ -773,7 +807,12 @@ fn f015_client_delete_blocked_registry_preserves_record_and_permission_until_ret
         ))
     });
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert_eq!(body["code"], "write_client_instances_failed");
+    assert_registry_failure(
+        &body,
+        &audit,
+        &state.admin().clients_dir,
+        "deleting client instance registry record",
+    );
     assert!(
         !audit.contains("action=client-instance.delete"),
         "failed delete emitted a success audit: {audit}",

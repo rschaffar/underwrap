@@ -1037,6 +1037,14 @@ The complete evaluation order and wire deny reasons live in
 
 ## Audit and diagnostics
 
+Backend internal errors separate the public response boundary from trusted-host diagnostics.
+Generic admin and runtime failures return HTTP 500/code `internal`/message `the backend could not complete the request` and emit ERROR events named `admin internal failure` or `runtime internal failure`.
+Those generic events carry only `response_code`, static operation `context`, and concrete Rust `error_type`, so an arbitrary source display cannot copy malformed stored strings into the log.
+Thirteen audited admin filesystem, storage, canary, and registry failure sites retain their existing specific response codes and add alternate-Display `error` detail to the admin event while returning only a fixed safe public message.
+That audited detail can contain backend-host paths, identifiers, and I/O or fixed cryptographic diagnostics, but source inspection found no brokered material, resource blobs, credentials, key material, password verifiers, or certificate bodies in those current source classes.
+A changed or new source class does not inherit that approval and must remain type-only until separately audited.
+These fields provide operation/category searchability rather than a unique request correlation identifier, and no claim covers every framework error or all future backend logs.
+
 Structured daemon events cover:
 
 - peer-authentication failures and selected peer-auth path;
