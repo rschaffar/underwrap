@@ -847,7 +847,12 @@ Validation commands and evidence:
   - Repository-wide bounded discovery found no other high-confidence private production deletion independent of remaining findings.
   - Focus classes, component/browser tests, built-CSS evidence, and testing documentation are the fix; broader primitive refactors, test deletion, global styling, later findings, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted after cleanup 1.
-- [ ] Implement, independently review, validate, and commit cleanup 1 before the focus correction.
+- [x] Implement, independently review, validate, and commit cleanup 1 before the focus correction.
+  - Commit: `230c0c91bf201dd02ce03ac367f3537163a71aca` (`chore: prune unused dialog primitive exports`).
+  - Exact staged diff: two approved files, eight deletions, SHA-256 `adb6039a72dcc9bcb3f26b7fe4979cc6e902867a49dc97f774f7ee0d4a3470ab`; it removes only the three unreachable aliases and five exports, retaining internal portal/overlay definitions, live exports, rendered close controls, classes, and interactions.
+  - Validation: focused ConfirmDialog/AppShell suite passed 8 tests (log SHA-256 `f407cfbe6bc1113ebec0ef91de930973ca0b67fc17247daa3d9f8f13b4e34162`); full Vitest passed 130 tests (log SHA-256 `ac957a421eb74285458cded318ce0f4deb04c1e170c17608ab507adfde335eeb`); TypeScript/Vite production build passed with only the existing large-chunk advisory (log SHA-256 `898238094c76dea80a8ed29d9a13b46fb482bfcb94794b58240aa10a18f51fee`).
+  - Review: the first post-implementation review confirmed the source but blocked on unavailable direct diff/test evidence and the ignored generated schema; the controller removed the schema, reran every check, and a fresh reviewer passed exact allowlist, reachability, retained behavior, logs, and artifact absence with no gaps.
+  - Controller checks: exact two-file status/diff, symbol absence/retained internal use, no test/doc/focus/F-id change, `git diff --check`, no `web/dist`, generated schema, Playwright output, coverage, traces, or screenshots, and clean post-commit tree all passed. No security boundary changed.
 - [ ] Implement and independently review the two close-control styles and focused component/browser evidence without changing interaction behavior.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-036 completion/cross-effects before promoting F-037.
 
