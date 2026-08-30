@@ -4,6 +4,8 @@ Status: Active
 
 Execution authority: On 2026-08-27 the user explicitly selected **Transfer and continue**, carrying D-174's standing authority into this plan through F-058 with every stop condition and severity gate intact.
 
+Severity transition: After evidenced completion of F-031 through F-037, on 2026-08-30 the user selected **Approve transition** with no comment in the required focused medium → low prompt. This opens the low band and authorizes F-038 revalidation/scoping next under the unchanged one-finding, cleanup-first, independent-review, validation, and stop-gate protocol; it does not approve a later finding, Opportunity, unresolved item, dependency, architecture/product choice, binary-chain change, or weaker security boundary.
+
 ## Goal
 
 Resolve every remaining accepted finding from F-031 through F-058 in severity order while preserving the review program's security boundaries, cleanup-first discipline, independent review, validation, and durable evidence.
@@ -75,7 +77,7 @@ The required later adaptations are:
 
 Direct executable probes confirmed that the tablet Playwright project still discovers zero tests and that strict denied-warning Rustdoc still fails with invalid HTML, a broken `argv[0]` link, private-module links, and no aggregate gate. Registry comparison also confirms that some F-058 packages are current while Vite, Vitest, and TypeScript remain behind current majors; latest-version numbers alone do not establish compatibility.
 
-No low finding is promoted by this survey. F-038 remains blocked until F-032 through F-037 are complete or explicitly closed and the user approves the medium → low transition with comment entry enabled.
+No low finding was promoted by this survey. F-032 through F-037 were later completed with current evidence, and the user-approved medium → low decision recorded above now permits F-038 revalidation/scoping.
 
 ## Plan
 
@@ -967,12 +969,12 @@ Validation commands and evidence:
   - Controller checks passed exact seven-path scope, synchronous detail gating, removal of grant/access copy, all top-level and nested transient protections, exact endpoint request assertions, no package/lock/router/Playwright-config/API/backend/auth/security/later-finding change, `git diff --check`, generated/schema/artifact absence, staged checksum, and clean post-commit tree.
   - F-037 is resolved and closes the historical V-006/V-009 stale/deleted-id and store-list-state coverage gap for Secrets and Wrapper permissions only.
   - O-015, F-049, F-050, F-053, F-058, authentication/authorization, every security boundary, every lower finding, and every other Opportunity/unresolved item remain unchanged.
-  - F-031 through F-037 are now resolved. The program must stop for the focused mandatory medium → low transition decision before F-038; no low-severity implementation is authorized without that decision.
-  - Fresh final closure re-review passed the exact commit/scope/stat/checksum, source semantics, retained logs/counts, bounded cross-effects, completed medium band, checklist state, and D-174 gate interpretation; after this plan-only closure commit, `ask_user` is the only authorized next program action.
+  - F-031 through F-037 are now resolved. The program stopped for the focused mandatory medium → low transition decision before F-038; no low-severity work was started before that decision.
+  - Fresh final closure re-review passed the exact commit/scope/stat/checksum, source semantics, retained logs/counts, bounded cross-effects, completed medium band, checklist state, and D-174 gate interpretation; after the plan-only closure commit, `ask_user` was the only authorized next program action.
 
-### Remaining medium queue
+### Completed medium → low transition
 
-- [ ] Obtain and record the mandatory medium → low transition decision.
+- [x] Obtain and record the mandatory medium → low transition decision. Evidence: after F-031 through F-037 and their closure records were complete at clean HEAD `7f5ae2472e69332a0d6a64cc378936e53f19d4c6`, the focused `ask_user` prompt presented **Approve transition**, **Pause here**, and **Request changes** with comment entry enabled. On 2026-08-30 the user selected **Approve transition** with no comment. F-038 is next; every D-174 stop condition and per-finding gate remains controlling.
 
 ### Remaining low queue
 
@@ -1003,7 +1005,7 @@ After the transition gate, promote one row at a time using the same iteration pr
 ## Completion Checklist
 
 - [x] F-031 through F-037 are resolved or explicitly closed with current evidence.
-- [ ] The medium → low transition is explicitly approved and recorded.
+- [x] The medium → low transition is explicitly approved and recorded.
 - [ ] F-038 through F-058 are resolved or explicitly closed with current evidence.
 - [ ] Every accepted cleanup and fix has independent review, required validation, controller checks, and an ordered local commit recorded here.
 - [ ] Every cross-finding effect, stop decision, unavailable check, and residual risk has a durable owner.
