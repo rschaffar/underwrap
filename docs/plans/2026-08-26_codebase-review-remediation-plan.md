@@ -1397,7 +1397,11 @@ A VM run is not required because the final allowlist changes no Nix/Rust executa
 
 - [x] Revalidate F-041 against current universal claims, backend resource/policy storage, retained encrypted generations, runtime/backend TLS keys, user records, configuration/envSet, master-key custody, target behavior, keygen/daemon/Nix controls, tests, and historical report/handover. Evidence: direct CodeGraph/source/docs/test inspection and two focused design/evidence reviews on 2026-08-30; the broad claim persists and the separate sensitive domains/limits above are current.
 - [x] Obtain fresh independent approval of the scoped invariant, complete asset/control/nonclaim inventory, threat-boundary wording, task-document edits, allowlist, non-goals, cross-effects, static validation, and no-VM rationale before cleanup discovery. Evidence: initial security/evidence reviews required per-asset read/write directions, conditional runtime-identity ownership/parent checks, exact password-record mode limits, complete master-key and retained-generation handling, CA-key custody, explicit F-040 guidance synchronization, seven-file/plan separation, and one-sentence prose. After correcting plaintext versus generation-key ciphertext disclosure and CA/server-key outcomes, fresh final re-review passed on 2026-08-30 with implementation evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before claim correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before claim correction.
+  - Finding-local review found no independent deletion: repeated broad claims must be lexically scoped in place, while the normative security inventory and task-specific links are required fix evidence.
+  - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
+  - Broad documentation consolidation, removal of credential/control details, F-042/F-050/F-051 edits, tests/evidence deletion, dependencies, executable changes, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved claim correction may begin.
 - [ ] Implement and independently review the scoped persistence claims without changing any control or absorbing F-042/F-050/F-051.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-041 completion/cross-effects before promoting F-042.
 
