@@ -1,7 +1,10 @@
 use super::*;
 use crate::BASE_PATH;
 use crate::publication::Publisher;
-use crate::test_support::{HostResponse, ObjectServerHarness, service_with_script};
+use crate::section_store::section_from_store;
+use crate::test_support::{
+    HostResponse, ObjectServerHarness, ObservedPublication, service_with_script,
+};
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -10,6 +13,9 @@ use std::time::Duration;
 use underwrap_protocol::libsecret_publication::{
     REQUEST_HEADER_LEN, ResponseKind, decode_request_header, encode_response,
 };
+use zbus::zvariant::{Dict, Signature, Type};
+
+mod property_validation;
 
 fn store_with_collection() -> SecretStore {
     let mut store = SecretStore::new_default();
@@ -32,6 +38,52 @@ fn secret(value: &[u8]) -> Secret {
         content_type: "application/octet-stream".to_string(),
     }
 }
+
+fn dict_value(
+    key_signature: Signature<'static>,
+    value_signature: Signature<'static>,
+    entries: Vec<(Value<'static>, Value<'static>)>,
+) -> Value<'static> {
+    let mut dict = Dict::new(key_signature, value_signature);
+    for (key, value) in entries {
+        dict.append(key, value).unwrap();
+    }
+    Value::Dict(dict)
+}
+
+fn string_dict(entries: &[(&str, &str)]) -> Value<'static> {
+    dict_value(
+        <String as Type>::signature(),
+        <String as Type>::signature(),
+        entries
+            .iter()
+            .map(|(key, value)| {
+                (
+                    Value::from((*key).to_string()),
+                    Value::from((*value).to_string()),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn string_variant_dict(entries: &[(&str, &str)]) -> Value<'static> {
+    dict_value(
+        <String as Type>::signature(),
+        <Value<'static> as Type>::signature(),
+        entries
+            .iter()
+            .map(|(key, value)| {
+                (
+                    Value::from((*key).to_string()),
+                    Value::Value(Box::new(Value::from((*value).to_string()))),
+                )
+            })
+            .collect(),
+    )
+}
+
+mod accepted_properties;
 
 #[tokio::test]
 async fn delete_ack_removes_collection_and_publishes_state() {

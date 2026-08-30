@@ -15,6 +15,40 @@ use crate::publication::SharedPublisher;
 
 use super::{ItemInterface, Secret, empty_path, item_path, mutation::mutate_and_publish};
 
+const ITEM_LABEL_PROPERTY: &str = "org.freedesktop.Secret.Item.Label";
+const ITEM_ATTRIBUTES_PROPERTY: &str = "org.freedesktop.Secret.Item.Attributes";
+const ITEM_LABEL_TYPE_ERROR: &str = "org.freedesktop.Secret.Item.Label must have D-Bus type s";
+const ITEM_ATTRIBUTES_TYPE_ERROR: &str =
+    "org.freedesktop.Secret.Item.Attributes must have D-Bus type a{ss}";
+
+fn parse_item_label(properties: &HashMap<String, Value<'_>>) -> fdo::Result<String> {
+    let Some(label) = properties.get(ITEM_LABEL_PROPERTY) else {
+        return Ok(String::new());
+    };
+    if label.value_signature() != "s" {
+        return Err(fdo::Error::InvalidArgs(ITEM_LABEL_TYPE_ERROR.into()));
+    }
+    label
+        .downcast_ref::<String>()
+        .map_err(|_| fdo::Error::InvalidArgs(ITEM_LABEL_TYPE_ERROR.into()))
+}
+
+fn parse_item_attributes(
+    properties: &HashMap<String, Value<'_>>,
+) -> fdo::Result<HashMap<String, String>> {
+    let Some(attributes) = properties.get(ITEM_ATTRIBUTES_PROPERTY) else {
+        return Ok(HashMap::new());
+    };
+    if attributes.value_signature() != "a{ss}" {
+        return Err(fdo::Error::InvalidArgs(ITEM_ATTRIBUTES_TYPE_ERROR.into()));
+    }
+    let dict = attributes
+        .downcast_ref::<zbus::zvariant::Dict>()
+        .map_err(|_| fdo::Error::InvalidArgs(ITEM_ATTRIBUTES_TYPE_ERROR.into()))?;
+    HashMap::<String, String>::try_from(dict)
+        .map_err(|_| fdo::Error::InvalidArgs(ITEM_ATTRIBUTES_TYPE_ERROR.into()))
+}
+
 pub struct CollectionInterface {
     id: String,
     store: Arc<RwLock<SecretStore>>,
@@ -75,18 +109,8 @@ impl CollectionInterface {
         replace: bool,
         #[zbus(object_server)] object_server: &zbus::ObjectServer,
     ) -> fdo::Result<(ObjectPath<'_>, ObjectPath<'_>)> {
-        let label: String = properties
-            .get("org.freedesktop.Secret.Item.Label")
-            .and_then(|l| l.downcast_ref::<String>().ok())
-            .unwrap_or_default();
-
-        let attrs: HashMap<String, String> = properties
-            .get("org.freedesktop.Secret.Item.Attributes")
-            .and_then(|a| {
-                let dict = a.downcast_ref::<zbus::zvariant::Dict>().ok()?;
-                HashMap::<String, String>::try_from(dict).ok()
-            })
-            .unwrap_or_default();
+        let label = parse_item_label(&properties)?;
+        let attrs = parse_item_attributes(&properties)?;
 
         let secret_len = secret.value.len();
         let content_type = secret.content_type.clone();

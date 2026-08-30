@@ -138,7 +138,15 @@ Mutation handlers retain the existing write lock through clone, candidate mutati
 They clone the accepted store exactly once and expose the candidate as live state only after ACK.
 Preparation, canonicalization, rejection, response, EOF, and transport failure discard the candidate and preserve accepted live memory.
 Candidate secret buffers are zeroized when discarded; on commit, secret buffers displaced from the former live store are zeroized, including deletion and replacement values.
-Wrong-typed item properties that become semantically valid empty values are not distinguishable at this boundary.
+
+`Collection.CreateItem` defaults an absent Item.Label to the empty string and absent Item.Attributes to the empty map.
+A present `org.freedesktop.Secret.Item.Label` is admitted only when its outer D-Bus type is exactly `s`, and a present `org.freedesktop.Secret.Item.Attributes` only when its outer type is exactly `a{ss}`.
+A nested variant is not treated as either exact type, and unknown properties remain ignored.
+The handler validates Label first and Attributes second, so Label has deterministic error precedence when both are malformed.
+A wrong Label type returns `InvalidArgs("org.freedesktop.Secret.Item.Label must have D-Bus type s")`.
+A wrong Attributes type returns `InvalidArgs("org.freedesktop.Secret.Item.Attributes must have D-Bus type a{ss}")`.
+Both fixed value-free errors occur before secret metadata tracing, the store lock, candidate or random-id creation, publication, or object registration.
+Valid requests retain subset attribute replacement, including vacuous matching for absent Attributes, and ACK-gated candidate commit semantics.
 
 ## Backend authorization
 

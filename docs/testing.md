@@ -329,6 +329,15 @@ Every invalid handler row uses a fresh secret-bearing sentinel store and an empt
 Valid handler rows cover ordinary, leading-digit, leading-underscore, and 128-byte aliases, a 128-byte existing collection target, root clear, missing-alias clear, and same-target set with exactly one accepted matching publication.
 These tests call the production handler with typed Rust values and do not prove D-Bus wire decoding or transport behavior.
 
+Direct `Collection.CreateItem` parser vectors cover absent, exact empty and nonempty `s` and `a{ss}` values, wrong scalar and container values, nested variants, and explicit `a{us}`, `a{su}`, and string-bearing `a{sv}` dictionaries.
+The production-handler matrix runs wrong Label with valid Attributes, valid Label with a non-dictionary, valid Label with string-bearing `a{sv}`, and both malformed with Label-first precedence under both `replace=false` and `replace=true`, including nested-variant rows in each mode and malformed input against a missing collection.
+Each malformed row uses a fresh secret-bearing accepted store, request sentinel, empty publication script, and object-server harness; it requires exact value-free `InvalidArgs`, complete state equality, no observed publication, retained known replacement registration when `replace=true`, and no diagnostic occurrence of property, attribute, or secret sentinels.
+Each capture emits and observes the non-sensitive `f046_trace_capture_control` event after subscriber installation, so sentinel omission is not inferred from a vacuous tracing sink.
+The malformed matrix also passes with `UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA=1` and one test thread after explicitly initializing and asserting enabled metadata tracing before handler dispatch.
+That aggregate evidence and static source order establish pre-lock, pre-candidate, pre-random-id, pre-publication, and pre-registration handler rejection without claiming that the empty script inventories attempted writes or that the harness enumerates unknown random paths.
+Accepted vectors cover both properties absent, each property independently absent, an ignored unknown property, strict-superset subset replacement, absent-Attributes vacuous replacement, and nonmatching creation with exact published/accepted metadata and registration outcomes.
+These tests invoke the typed production handler with already decoded zvariant values; they establish typed handler behavior but do not exercise or prove D-Bus wire signatures, frame decoding, malformed frames, or transport behavior.
+
 The handler tests enforce the production ordering: retain the write lock, clone the accepted store once, mutate the candidate, canonicalize and publish it, observe the exact matching ACK, and only then commit.
 Preparation, publication, rejection, EOF, response mismatch, and transport failures preserve accepted live memory.
 Tests directly cover the complete-store zeroization helper and handler routes.
