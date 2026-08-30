@@ -1,17 +1,21 @@
-//! In-memory Secret Service state backed by a JSON envelope.
+//! In-memory Secret Service state model for one `underwrap-secretsd` process.
 //!
-//! This crate provides the data model and serialization for the
-//! freedesktop Secret Service state that `underwrap-secretsd` manages.
-//! The entire state (collections, items, attributes, labels, timestamps,
-//! AND secret values) is stored in a single serializable struct.
+//! The model holds collections, items, aliases, timestamps, and raw secret bytes.
+//! Its in-process operations use operating-system time and randomness.
+//! This crate performs no file or socket I/O, canonicalization, publication,
+//! acknowledgement, backend access, or persistence I/O.
 //!
-//! **Invariant**: The JSON envelope contains secret values. It is NEVER
-//! written to a local file. It is only serialized/deserialized over the
-//! daemon channel (authenticated socketpair fd) or in tests.
+//! The production `underwrap-secretsd` converts its one-shot initialized canonical
+//! `LibsecretSection` into this store and converts candidate stores back into
+//! sections for private publication.
+//! It commits a candidate only after an external acknowledgement.
+//! Callers own lifecycle, transport, persistence, and erasure policy.
 //!
-//! The store is intentionally simple: search is O(n) over items in a
-//! collection. This is fine because each wrapper has at most a handful
-//! of libsecret items.
+//! The model represents secret values as raw bytes and provides no memory-erasure
+//! guarantee.
+//!
+//! Search is intentionally O(n) over items in a collection because each wrapper
+//! has at most a handful of libsecret items.
 
 mod store;
 

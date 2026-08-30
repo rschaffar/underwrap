@@ -259,6 +259,21 @@ The three matching REJECT tests require the published candidate's item and colle
 The table-driven `item_setters_update_collection_modified_property` test invokes all three public store setters on fresh backdated stores and requires `Collection.Modified` to return the exact shared item/collection value without a D-Bus wire harness or signal assertion.
 This matrix establishes setter propagation and ACK-gated live-state behavior for these paths only; it does not establish clock correctness, temporal validity of loaded timestamps, monotonicity, subsecond ordering, signal delivery, caller response delivery, or backend durability.
 
+Focused store-boundary evidence uses strict package Rustdoc plus static dependency and production call-path inventories:
+
+```bash
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p underwrap-secretsd-store
+cargo tree --locked -p underwrap-secretsd-store -e normal --depth 1
+rg -n 'SystemTime|getrandom' crates/underwrap-secretsd-store/src
+rg -n 'store_from_section|section_from_store|publish_store|candidate\.commit' \
+  crates/underwrap-secretsd/src/{main.rs,section_store.rs,publication.rs,dbus_service/mutation.rs}
+```
+
+These checks assign collections, items, aliases, timestamps, raw bytes, and in-process time and randomness to `underwrap-secretsd-store`.
+They assign one-shot initialization conversion, candidate conversion, canonicalization, private publication, external acknowledgement, and commit ordering to the production `underwrap-secretsd` caller.
+[Architecture](architecture.md) and the [Secret Service input boundary](secretsd-security.md) are normative for the complete mechanism and security boundary.
+Static ownership evidence does not prove that callers or configured targets cannot persist or disclose data, or that accepted backend generations cannot later be persisted or disclosed.
+
 The handler tests enforce the production ordering: retain the write lock, clone
 the accepted store once, mutate the candidate, canonicalize and publish it,
 observe the exact matching ACK, and only then commit. Preparation, publication,
