@@ -774,7 +774,7 @@ Validation commands and evidence:
   - Fresh final evidence/process re-review passed this completed record on 2026-08-27.
   - F-036 is the next medium finding.
 
-### Current iteration — F-036 close-control keyboard focus
+### Completed iteration — F-036 close-control keyboard focus
 
 F-036 remains directly reproducible at current HEAD `b23638d9c596d7e1e9f1dc49e0ca22613ebac2ff`.
 
@@ -853,8 +853,24 @@ Validation commands and evidence:
   - Validation: focused ConfirmDialog/AppShell suite passed 8 tests (log SHA-256 `f407cfbe6bc1113ebec0ef91de930973ca0b67fc17247daa3d9f8f13b4e34162`); full Vitest passed 130 tests (log SHA-256 `ac957a421eb74285458cded318ce0f4deb04c1e170c17608ab507adfde335eeb`); TypeScript/Vite production build passed with only the existing large-chunk advisory (log SHA-256 `898238094c76dea80a8ed29d9a13b46fb482bfcb94794b58240aa10a18f51fee`).
   - Review: the first post-implementation review confirmed the source but blocked on unavailable direct diff/test evidence and the ignored generated schema; the controller removed the schema, reran every check, and a fresh reviewer passed exact allowlist, reachability, retained behavior, logs, and artifact absence with no gaps.
   - Controller checks: exact two-file status/diff, symbol absence/retained internal use, no test/doc/focus/F-id change, `git diff --check`, no `web/dist`, generated schema, Playwright output, coverage, traces, or screenshots, and clean post-commit tree all passed. No security boundary changed.
-- [ ] Implement and independently review the two close-control styles and focused component/browser evidence without changing interaction behavior.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-036 completion/cross-effects before promoting F-037.
+- [x] Implement and independently review the two close-control styles and focused component/browser evidence without changing interaction behavior.
+  - Fix commit: `6edb6b0eafc4be273bd6e7d4191c9a4bd5c31734` (`fix: restore close-control focus indicators`).
+  - Each close control replaces only `focus:outline-hidden` with the exact shared `focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-(--color-accent)/40` tokens; every other rendered token, primitive, callback, accessible name, focus mechanism, theme, route, and backend flow remains unchanged.
+  - ConfirmDialog and AppShell tests select exact `Close`, require all three tokens and absence of the superseded token, and exercise the existing close callbacks/removal.
+  - The new desktop-1280 Chromium spec reaches both controls without click/direct focus: Create store proves `Name` auto-focus then `Shift+Tab` in actual dark and toggle-driven light themes; the 375×812 scenario reaches the responsive navigation's first link then `Shift+Tab`. Each regular-color path proves an unfocused `box-shadow: none` baseline and a focused `:focus-visible` non-`none` shadow; each forced-colors path reopens/refocuses and proves a non-`none` outline at least two pixels wide.
+  - Fresh implementation review passed the six-path diff and non-vacuous browser proof; a broader evidence review exhausted its deadline without a verdict, then a bounded fresh review passed accessibility scope, Tailwind semantics, documentation claims, Chromium project identity, and non-overlap. Final post-validation re-review passed all source, tests, logs, artifacts, and exclusions with no gaps. No correction worker was required.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-036 completion/cross-effects before promoting F-037.
+  - Exact staged fix diff: six approved paths, 215 insertions and three deletions, SHA-256 `856a4f0c2c3a3e5da0c2ea3d51f1439c04f69f831b898785b31e66cb6059e85e`.
+  - Vitest: focused ConfirmDialog/AppShell passed 8 tests (log SHA-256 `f6ece5a92a989fdd8314c1fbf936ca680248cd0c2fed4407ac9e5e132daad5bb`); the full suite passed 130 tests (log SHA-256 `b336e447e470e8fe3a5dfecd4debd66b43634f5f72e24058e8d57d9200763161`).
+  - Build/browser prerequisites: TypeScript/Vite production build passed with only the existing large-chunk advisory (log SHA-256 `682648d811f5981fc8110b3f0a18d5ec2a2280a9ab177ac83282e368a05833f3`); the exact Nix `web-build` artifact at `/nix/store/ym0f3mz64a7kbaxzy1j5fd3995pdvg6b-underwrap-web-dist-0.1.0` supplied `UNDERWRAP_WEB_DIST` for a successful backend build (log SHA-256 `34dc9cf5f0e61d0d1dfef660a14ce1d6394b51e199285548e86edc38eabdee84`).
+  - Playwright: the focused configured-Chromium run passed both scenarios (log SHA-256 `0ad254188c3b25015f02a3610fb0af621e7c7d88385417e1736f9d2f8db72bd4`); the complete configured suite passed 33 tests, including all desktop and existing mobile-project scenarios (log SHA-256 `a05c6622316bbb406e0c91510e89e6268963c7e4c59bfc967881137ca772ea38`).
+  - Built CSS contains the three shared focus-visible utilities and Tailwind's forced-colors two-pixel transparent-outline rule (log SHA-256 `443fb34646df54a73316d8cb324b030ea0f2a392635d55bebdeb76e48bf085e2`).
+  - Controller checks passed exact six-path scope, exact two one-line production substitutions, keyboard-only close traversal, no direct close focus/click, docs non-claims, `git diff --check`, and absence of generated schema, `web/dist`, Playwright results/report/traces/screenshots, coverage, dependency/config/lock changes, generated API changes, later-finding changes, and security-boundary changes; post-commit tree was clean.
+  - F-036 is resolved for the two shared close controls in the observed configured Chromium desktop and 375×812 responsive flows. No contrast, WCAG, screen-reader, mobile-browser, cross-browser, or application-wide accessibility claim is made.
+  - U-006 is narrowed but remains unresolved: its historical claim that no forced-colors gate exists is no longer current for these two configured-Chromium close-control paths, while axe, contrast, zoom/reflow, visual-regression, app-wide forced-colors, cross-browser, and broader accessibility/visual conformance remain unestablished.
+  - O-016 remains unresolved: observing this one dialog control in actual dark/light states does not establish complete paired theme tokens or decide the product-wide light-theme posture.
+  - F-053 remains fully unresolved because this unit adds no tablet test and changes no Playwright project; F-037 and every other remaining finding are unchanged. F-037 is next.
+  - Final closure review first required the U-006 cross-effect above and independent status/hash/stat completion; after correction and controller recomputation, fresh re-review passed the ordered workflow, evidence, bounded claims, cross-effects, and F-037 promotion with no blocker.
 
 ### Remaining medium queue
 
