@@ -1190,7 +1190,7 @@ The public, non-test-gated `from_json`, `to_json`, and `to_json_pretty` envelope
 
 Consequence: maintainers are currently told the wrong component ownership, transport, serialization, and persistence invariants for secret-bearing state.
 
-Security boundary: none. This iteration changes documentation and may separately remove serialization surface with no current in-repository production callers; F-008/F-012 transport, validation, ACK, zeroization, and persistence boundaries remain unchanged.
+Security boundary: none. Cleanup 1 separately removed serialization surface with no current in-repository production callers; the remaining iteration changes documentation only. F-008/F-012 transport, validation, ACK, zeroization, and persistence boundaries remain unchanged.
 
 Current ownership flow:
 
@@ -1200,19 +1200,18 @@ Current ownership flow:
 - `underwrapd`: scoped resource-channel forwarding of runtime finalize.
 - backend: canonical complete-resource persistence through `StorageBackend`.
 
-Exact documentation-fix scope on the current tree:
+Exact documentation-fix scope on the resulting tree:
 
 - Rewrite `crates/underwrap-secretsd-store/src/lib.rs` crate Rustdoc to describe only the in-memory state model and its ownership boundary, while accurately identifying the separate `underwrap-secretsd` conversion/publication integration without claiming this crate performs I/O, persistence, canonicalization, ACK handling, or zeroization.
-- Correct the crate package description in `Cargo.toml` so it no longer presents JSON-envelope serialization as the crate's defining production role.
+- Correct the crate package description in `Cargo.toml` so it no longer presents removed JSON-envelope serialization as the crate's defining production role.
 - State that the in-memory model contains raw secret bytes and that external callers own lifecycle, transport, persistence, and memory-erasure policy; do not quote or add secret values.
-- Update `store/json.rs` method Rustdoc, if the independently reviewed cleanup leaves those methods present, to call them public generic serialization helpers with no current in-repository production callers. State that returned/accepted JSON strings are secret-bearing, base64 is encoding rather than protection, and callers own their lifetime/erasure. Do not label them safe debug output or describe a daemon channel/local state path.
+- State that production `underwrap-secretsd` owns store↔canonical-section conversion and publication integration; cleanup 1 removed the generic JSON helpers, so no JSON method documentation remains.
 - Record only static call-path and package-Rustdoc validation evidence in `docs/testing.md`; keep mechanism ownership normative in crate Rustdoc plus `docs/architecture.md` and `docs/secretsd-security.md` rather than duplicating the full flow.
 
-Expected documentation-fix allowlist on the current tree:
+Resulting documentation-fix allowlist:
 
-- `crates/underwrap-secretsd-store/Cargo.toml`
+- `crates/underwrap-secretsd-store/Cargo.toml` — package description only
 - `crates/underwrap-secretsd-store/src/lib.rs`
-- `crates/underwrap-secretsd-store/src/store/json.rs` if retained after cleanup
 - `docs/testing.md`
 - this plan for evidence
 
@@ -1226,13 +1225,6 @@ Approved cleanup 1 — remove the unused public JSON serialization surface:
 - External downstream use of the public methods cannot be disproven by repository search; API removal is accepted under the greenfield/no-published-compatibility posture.
 - Cleanup allowlist: `Cargo.lock`, `crates/underwrap-secretsd-store/Cargo.toml`, and `src/store/{helpers,json,mod,model,tests}.rs` within that crate; no root manifest, flake, `underwrap-secretsd`, documentation, or package-description change.
 - Cleanup validation: refresh then require the lock, exact symbol/dependency/cargo-tree absence, focused/full store and secretsd section-conversion tests, strict package Rustdoc, denied-warning Clippy, rustfmt, bounded workspace tests, integration runner, Nix workspace test, artifact/scope/secret checks, and `git diff --check`.
-
-Resulting documentation-fix allowlist after cleanup 1:
-
-- `crates/underwrap-secretsd-store/Cargo.toml` — package description only
-- `crates/underwrap-secretsd-store/src/lib.rs`
-- `docs/testing.md`
-- this plan for evidence
 
 Expected cross-effects:
 
@@ -1270,7 +1262,14 @@ A VM run is not required because no NixOS, packaging, identity, namespace, capab
   - Repository-wide bounded discovery found no other high-confidence private production deletion independent of current or later findings.
   - Crate/package/testing wording is the fix; broad store/section/publication refactors, current production tests, architecture/security duplication, later findings, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted after cleanup 1.
-- [ ] Implement, independently review, validate, and commit cleanup 1 before the Rustdoc correction.
+- [x] Implement, independently review, validate, and commit cleanup 1 before the Rustdoc correction.
+  - Commit: `e9c8f298e9ba2744659b37111da2dbf28bd66173` (`refactor: remove unused SecretStore JSON surface`).
+  - Exact diff: seven approved paths, four insertions and 124 deletions, SHA-256 `1d88a9ed158b68325df2ac01cc4a595e5e3f2ef67471d1faa4ba47f440b50d2a`; only the three public JSON helpers/module, Serde/base64 derives/attributes/helpers, three helper-only tests, and direct crate dependency/lock edges were removed.
+  - The crate's locked normal/feature trees now contain only `anyhow` and `getrandom`; shared Serde/base64 package records remain for other crates. Package description, crate Rustdoc, root manifest, flake, `underwrap-secretsd`, and documentation were untouched.
+  - Validation passed 23 store tests, six focused section-conversion tests, 42 full secretsd tests, strict denied-warning package Rustdoc, focused denied-warning Clippy, and rustfmt (log SHA-256 `dfa509d46af8ec0d6fd3a78b98770cfc1def27e7cdcc9edc57f5342fdcaffb45`).
+  - Bounded workspace tests passed with exact web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (workspace log SHA-256 `d8ddb1e2bf5cd8f5599e6685e37f260438dc730b71de507f2a6e4ecaede2c3fe`; prerequisite log SHA-256 `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`); the integration runner passed 105 tests (`0f4520dac6480e342fef9cedb4c78746189b3f02ef70f0b57a467db73a0df886`), workspace Clippy passed (`6a924049ad5ae3bc7a66ad12699f624f351beb32a3f26de876294cc2042635e2`), and Nix workspace-test passed (`3581062811b6935948adc748ce2b14938d10b524a4ab9e908506d74e71f1a32c`).
+  - Initial post-implementation review confirmed semantics but withheld on unavailable diff/log evidence; after controller exact scope/stat/hash and full validation, fresh re-review passed with no gap.
+  - Controller checks passed exact symbol/dependency/cargo-tree absence, production section-conversion replacement coverage, no package-description/doc/secret/security/later change, lock scope, `git diff --check`, checksum, artifacts, and clean post-commit tree. Unknown external downstream use remains explicitly accepted under greenfield posture.
 - [ ] Implement and independently review the resulting-tree ownership Rustdoc/package/testing evidence without changing secret-state behavior or adjacent claims.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-040 completion/cross-effects before promoting F-041.
 
