@@ -2325,10 +2325,164 @@ Focused Vitest checks exercise the shared outcome contract, configured Chromium 
   - F-048 is resolved for the complete current confirmation-mutation inventory. F-037 remains resolved; F-049, F-054, key-custody/soft-refusal behavior, every other finding, Opportunity, and unresolved item remain unchanged. F-049 is next.
   - Final closure review passed cleanup/fix order, separate corrections, request-versus-callback rejection semantics, exact inventory, result behavior, validation/provenance/artifact evidence, corrected-attempt classification, no-VM rationale, bounded cross-effects, and F-049 promotion with no remaining gap.
 
+### Current iteration — F-049 backend internal-error redaction
+
+F-049 remains directly reproducible at clean HEAD `ea660c098812a61a15cb24bd9b3feaa696fbdb91`.
+
+`AdminError::internal` formats its static operation context plus the complete source-error chain into the browser-facing 500 message.
+Thirteen additional admin call sites pass path/error-formatted `String` values to `internal_with_code`, and the SPA renders unrecognized backend messages verbatim.
+The duplicated runtime `RuntimeError::internal` also returns its complete context/error chain over the mTLS service response.
+
+Consequence: an authenticated operator—and, on the runtime surface, the mTLS runtime client—can receive backend-host paths and implementation details that belong in trusted-host diagnostics.
+`underwrapd` may log a runtime response message, but ordinary local wrapper errors remain the daemon's fixed messages; no normal downstream local-caller disclosure is claimed.
+The accepted historical review found no secret-value disclosure, and this iteration makes no stronger claim about arbitrary future error sources.
+
+Security boundary:
+
+- Protected asset: backend-host filesystem topology and implementation diagnostics, excluding public status/code/category information.
+- Attacker/observer: an authenticated admin browser principal for the historical finding; the runtime-client response recipient is included as consistency hardening of the same duplicated backend error constructor.
+- Boundary direction: internal storage/serialization/I/O failure → trusted backend diagnostic log versus public admin/runtime `ServiceErrorResponse`; detailed chains stay host-side while status, stable code, and static public message cross the response boundary.
+- Change direction: strengthen disclosure resistance without changing authorization, operation outcome, status, code, retry, persistence, or resource/secret data behavior.
+
+Exact scope:
+
+- Define one exact generic public message on each surface: `the backend could not complete the request`.
+- Change `AdminError::internal(context, error)` to emit one structured server-side event carrying stable response code `internal`, static context, and the concrete Rust error type name without formatting the arbitrary source value, then return only HTTP 500/code `internal`/the generic public message.
+- Add exactly `AdminError::internal_with_source(code: &'static str, public_message: &'static str, context: &'static str, error: impl fmt::Display)` only for the thirteen audited current code-specific sources: log the same fields plus alternate-Display source detail and return only the supplied static public message.
+- Change the existing helper to exactly `internal_with_code(code: &'static str, public_message: &'static str)` so future dynamic 500 response strings fail to compile; preserve its existing safe literal messages and do not add diagnostic logging where a source error is not supplied.
+- Migrate all thirteen current dynamic code-specific callers:
+  - one store-management list failure;
+  - nine store create/update/delete data-directory/backend/canary/registry/list failures;
+  - three runtime-client-instance registry persistence failures.
+- Preserve every existing response code and assign these exact public messages only to the thirteen migrated dynamic callers; the seventeen existing source-less static call sites retain their current distinct safe messages even when they share a code:
+  - `list_store_failed` → `could not inspect store contents`;
+  - `create_data_dir_failed` → `could not create store data directory`;
+  - `open_store_failed` → `could not open store`;
+  - `canary_write_failed` → `could not initialize encrypted store`;
+  - `write_store_registry_failed` → `could not persist store registry`;
+  - `write_client_instances_failed` → `could not persist client instance registry`.
+- The pre-implementation audit covers 76 lexical source-bearing constructor paths: 44 generic admin paths, the thirteen migrated code-specific admin callers, and nineteen generic runtime uses. One admin adapter at `secrets.rs:309` is statically unreachable after slot parsing, leaving 75 currently reachable failure paths; static occurrence evidence still pins all 76.
+- Generic admin/runtime callers include control-document and resource-blob parse paths whose Serde `Display` can quote an offending stored string; arbitrary source display is therefore prohibited for every generic constructor call.
+- Generic events retain only static context and concrete Rust error type. This preserves searchable operation/type diagnostics without introducing malformed stored values into logs.
+- The thirteen audited code-specific sources are current built-in filesystem/storage list/open/write, data-directory, canary, and store/client-registry persistence operations. Their current display chains contain backend paths, storage identifiers, OS/I/O details, and fixed crypto failures, and source inspection found no brokered material bytes/blob bodies, credentials, private/key material, password/verifier values, or certificate bodies.
+- If a migrated source later stops satisfying that classification, it must move back to type-only logging rather than extending the diagnostic field.
+- Backend paths and non-secret identifier metadata may remain in trusted-host diagnostics under the documented project logging rule; no such detail enters the response.
+- Give every migration a static diagnostic context that names the operation but not request/body values.
+- Apply the same generic-public-message plus type-only structured host-log split to `RuntimeError::internal`; preserve its status/code and every runtime `IntoInternal` caller unchanged under the user-approved runtime extension recorded below.
+- Emit generic admin events at `ERROR` with fixed text `admin internal failure` and fields `response_code`, `context`, and `error_type`; audited `internal_with_source` events additionally carry display-formatted `error`.
+- Emit runtime events at `ERROR` with fixed text `runtime internal failure` and fields `response_code`, `context`, and `error_type`; do not log arbitrary runtime source display.
+- For the thirteen audited admin source fields, “complete chain” means alternate `Display` for `anyhow::Error` chains; for another `impl Display`, only that type's provided display representation is claimed.
+- Response-code/context fields provide searchable category linkage, not a unique per-request correlation identifier.
+- Add sibling admin error tests for direct `internal`, the real `admin_api::util::IntoInternal` adapter, `internal_with_source`, and source-less `internal_with_code`: prove exact status and complete JSON envelope, exact structured fields/event text, generic type-only log omission of an arbitrary source sentinel, nested anyhow chain/path marker only in audited source-bearing logs, response omission, and no diagnostic event for source-less construction.
+- Add sibling runtime error tests for direct `internal` and the `IntoInternal` adapter: prove exact generic response plus type/context log fields and omission of arbitrary source sentinels from both response and logs.
+- Add admin static-source evidence that every 500 helper exposed to handlers accepts only static public text, all 44 lexical generic adapter/direct paths remain inventoried (including the one statically unreachable adapter), exactly thirteen dynamic sources become `internal_with_source`, exactly seventeen production `internal_with_code` calls remain, and no admin response construction contains `{error:#}`, `{e:#}`, source-error `to_string`, or path interpolation. The private general `AdminError::new` is not claimed as a compile-time static-only API.
+- Extend the existing blocked store/client registry unit tests to require exact stable public messages, absence of their real temporary path from the response, and presence of response code/static context/path-bearing detail in the captured server log while preserving F-015 live/reloaded/retry behavior.
+- Extend the real authenticated integration registry-failure matrix for store update, store delete, and client update to require the exact stable public message and omission of the blocked registry path.
+- Add one real runtime wrapper-register handler fault test through `IntoInternal`, using `TestStore` read failure to require exact HTTP 500/code/message plus runtime structured diagnostic context/detail.
+- Expose the existing default plain-store directory as `BackendInstance.storeDir` for deterministic browser fault setup; do not change backend config or storage.
+- Add one configured `desktop-1280` Chromium scenario using the real backend fixture:
+  - require non-root execution for this chmod witness, authenticate, hard-navigate to `/profile` so store pages are unmounted, capture the directory's exact original permission bits, and temporarily remove all permissions;
+  - require a direct authenticated `GET /v1/admin/stores` to return exact HTTP 500/code `list_store_failed`/message `could not inspect store contents` without the fixture temp path;
+  - hard-navigate to `/stores`, explicitly observe exactly two UI store-list GET failures under configured `retry: 1`/`staleTime: 0`, require each to carry the same exact safe envelope, and require the exact same safe inline alert without the temp path;
+  - restore the exact original permission bits in `finally`, verify the restored mode, then require a post-restore authenticated store-list 200 before fixture cleanup.
+- Document the admin/runtime error boundary, stable public messages, structured diagnostic fields, and limits in `docs/backend.md`, `docs/security.md`, and `docs/testing.md`.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-backend/src/admin_api/error.rs`
+- new `crates/underwrap-backend/src/admin_api/error/tests.rs`
+- `crates/underwrap-backend/src/admin_api/stores/mod.rs`
+- `crates/underwrap-backend/src/admin_api/stores/crud.rs`
+- `crates/underwrap-backend/src/admin_api/stores/crud/tests.rs`
+- `crates/underwrap-backend/src/admin_api/client_instances.rs`
+- `crates/underwrap-backend/src/admin_api/client_instances/tests.rs`
+- `crates/underwrap-backend/src/runtime_api/error.rs`
+- new `crates/underwrap-backend/src/runtime_api/error/tests.rs`
+- `crates/underwrap-backend/src/runtime_api/wrappers/tests.rs`
+- `crates/integration-tests/src/tests/registry_failure_atomicity.rs`
+- `web/e2e/backend.ts`
+- new `web/e2e/internal-error-redaction.spec.ts`
+- `docs/backend.md`
+- `docs/security.md`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-049 closes the historical admin-response/SPA rendering disclosure for errors constructed through `AdminError` and also redacts the duplicated runtime internal constructor.
+- F-015 failure atomicity, F-042 parser-boundary wording, F-048 rejection handling, and OpenAPI status/code/schema contracts remain resolved and unchanged.
+- F-054 remains unresolved but is affected: its future all-service log-hygiene evidence must include the new admin/runtime internal-failure events and source-detail fields.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no status/code change, removal of existing safe code-specific recovery guidance, global replacement of every 5xx message, middleware/framework/TLS/session error redesign, API/OpenAPI schema/route, SPA error mapper, toast/layout, retry, operation, storage, transaction, authentication/authorization, or security-boundary weakening;
+- no unique request/correlation id, tracing middleware/span, external telemetry/error service, log transport/retention/access policy, stack trace/backtrace, panic capture, or guarantee that every future third-party error display is value-free;
+- no brokered material bytes/blob bodies, malformed stored string values, credentials, private/key material, password/verifier values, or certificate bodies in tests or logs; trusted-host paths and non-secret identifiers from the thirteen audited source classes are allowed. No claim is made for unaudited future error types or all backend logs; F-054 retains broader log-hygiene ownership;
+- no runtime client protocol shape/status/code change, daemon/frontend mapping or local-wrapper error-copy change, privileged chain, NixOS module/VM, migration, dependency, generated OpenAPI/web schema, later finding, Opportunity, or unrelated refactor;
+- no cross-browser, mobile-browser, real production filesystem, every-admin-route, middleware-generated 500, or application-wide disclosure claim from the one browser scenario.
+
+Validation commands and evidence:
+
+- `cargo test -p underwrap-backend admin_api::error::tests`
+- `cargo test -p underwrap-backend runtime_api::error::tests`
+- `cargo test -p underwrap-backend runtime_api::wrappers::tests::runtime_wrapper_register_internal_failure_is_redacted_and_logged`
+- `cargo test -p underwrap-backend f015_store_`
+- `cargo test -p underwrap-backend f015_client_`
+- `cargo test -p underwrap-backend`
+- `./crates/integration-tests/run`
+- `cd web && npm test`
+- `cd web && npm run build`
+- run the exact quality/fresh-binary/browser sequence below from the repository root; its trap is registered before the temporary target exists and runs on success or failure:
+
+```bash
+set -euo pipefail
+target_dir=""
+cleanup_f049() {
+  if [ -n "$target_dir" ]; then rm -rf "$target_dir"; fi
+  rm -rf result web/test-results web/playwright-report web/coverage
+  rm -f web/src/api/schema.ts
+  if [ -d web/dist ]; then
+    find web/dist -mindepth 1 ! -name .gitkeep -delete
+    rmdir web/dist 2>/dev/null || true
+  fi
+}
+trap cleanup_f049 EXIT
+system=$(nix eval --impure --raw --expr builtins.currentSystem)
+web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build")
+UNDERWRAP_WEB_DIST="$web_dist" cargo clippy --all-targets --workspace -- -D warnings
+cargo fmt -- --check
+target_dir=$(mktemp -d /tmp/underwrap-f049-target.XXXXXX)
+CARGO_TARGET_DIR="$target_dir" UNDERWRAP_WEB_DIST="$web_dist" \
+  cargo build --locked -p underwrap-backend
+backend_bin=$(realpath "$target_dir/debug/underwrap-backend")
+backend_sha256=$(sha256sum "$backend_bin" | cut -d' ' -f1)
+printf 'web_dist=%s\nbackend_bin=%s\nbackend_sha256=%s\n' \
+  "$web_dist" "$backend_bin" "$backend_sha256"
+env UNDERWRAP_BACKENDD_BINARY="$backend_bin" \
+  nix develop --command bash -lc \
+  'cd web && npx playwright test e2e/internal-error-redaction.spec.ts --project=desktop-1280'
+env UNDERWRAP_BACKENDD_BINARY="$backend_bin" \
+  nix develop --command bash -lc 'cd web && npm run test:e2e'
+```
+
+- executable exact generic/source-bearing/static-message/caller/log-field inventory and docs/nonclaim checks
+- `git diff --check`
+
+A VM run is not required because no NixOS/module, identity, namespace, capability, privileged chain, deployment configuration, HTTP/mTLS shape/status/code, or storage/session mechanism changes.
+Focused real admin/runtime handler/fault tests and one configured-Chromium real-backend filesystem failure directly exercise the changed response/log boundary; integration proves exact authenticated registry error envelopes and the otherwise unchanged runtime contract, while workspace checks prove compilation/lints without substituting for the injected runtime fault test.
+
+- [x] Revalidate F-049 against all current admin/runtime internal constructors, thirty production `internal_with_code` call sites, thirteen dynamic source-message call sites, 44 lexical/43 reachable generic admin and nineteen generic runtime source-bearing paths, SPA default rendering, fault tests, docs, and historical report/handover. Evidence: direct CodeGraph/source/caller/test inspection on 2026-08-30; generic and thirteen code-specific admin paths still return formatted source chains, runtime duplicates the generic leak, existing tests mostly pin codes only, and no real 500 browser redaction case exists.
+- [x] Obtain focused user authority for the adjacent runtime consistency extension. Evidence: on 2026-08-30 the user selected **Include runtime API** after the controller explained that historical F-049 is admin/SPA-scoped and the duplicated mTLS response boundary otherwise requires separate authority.
+- [x] Audit every newly diagnostic source class before approving logging. Evidence: independent admin/runtime audits identified 44 lexical/43 reachable generic admin, thirteen dynamic code-specific admin, and nineteen generic runtime paths. They confirmed the thirteen built-in code-specific sources contain paths/identifiers/I/O/fixed crypto detail without material values, but found that generic control-document/resource-blob Serde errors can quote arbitrary malformed stored strings. The design therefore permits source display only for those thirteen audited sites and uses type-only logging for every generic admin/runtime source.
+- [x] Obtain fresh independent approval of public messages, structured host diagnostics, static-type/source inventory, runtime consistency extension, test/browser evidence, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews required focused runtime authority, exact static signatures, migrated-only message mapping, complete source-log safety audit, exact event fields/text, correct runtime observer wording, F-054 impact, admin/runtime adapter and real-handler evidence, authenticated integration assertions, deterministic retry-aware chmod evidence, and literal fresh-binary/cleanup commands. User authority and source audits narrowed generic diagnostics to type-only while retaining source detail only for thirteen audited sites; the plan incorporated every correction, and bounded final implementation/security and evidence dispositions passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before internal-error redaction.
+- [ ] Implement and independently review admin/runtime redaction, all source migrations, tests/browser/docs, and bounded diagnostics without changing codes or operations.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-049 completion/cross-effects before promoting F-050.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-049 — redact internal backend error chains from responses.
 - [ ] F-050 — remove stale master-key configuration from Playwright fixtures.
 - [ ] F-051 — remove stale workflow and temporal wording from published docs.
 - [ ] F-052 — correct audit and writeback comments and vocabulary.
