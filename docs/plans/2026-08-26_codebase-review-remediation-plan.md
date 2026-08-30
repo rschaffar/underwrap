@@ -1080,7 +1080,7 @@ Validation commands and evidence:
   - F-008 and F-009 remain resolved and unchanged at their boundaries; F-039 remains unresolved; F-042 is narrowed because daemon parsing gains this rejection while its inaccurate opaque-blob documentation remains; every other finding/Opportunity/unresolved item is unchanged. F-039 is next.
   - Final closure review found no semantic/evidence correction, requested controller-only Git/hash verification, and then passed after exact plan-only status, five-path 430/77 stat, patch checksum, all retained log hashes, and `git diff --check` were mechanically reconfirmed. F-039 promotion is approved under the unchanged protocol.
 
-### Current iteration — F-039 containing-collection modification timestamps
+### Completed iteration — F-039 containing-collection modification timestamps
 
 F-039 remains directly reproducible at clean HEAD `336e038e38cab12655e7a0d516b3a1ba28d9475f`.
 
@@ -1105,7 +1105,7 @@ Exact scope:
 - Do not clamp or manufacture timestamps; normal `now_secs()` remains far below F-038's canonical maximum, and any future out-of-range candidate remains rejected by canonical publication.
 - Extend store tests for all three setters: backdate item/collection `modified` to distinct safe baselines, mutate one field set, require the requested value change, exact item/collection timestamp equality above the baseline, unchanged `created` and unrelated data, and false/no-state-change behavior for missing collection/item.
 - Extend D-Bus item tests with accepted ACK cases for secret, attributes, and label. For each, require exact item/collection timestamp equality above a backdated baseline in both the published generation and committed live store, equality of accepted and published metadata, unchanged `created`/unrelated fields, the requested value change, and `Item.Modified` returning the accepted value.
-- Strengthen all three existing REJECT tests to require that the published candidate stamps both timestamps equally while the accepted live store remains byte-for-byte unchanged; retain one EOF/shared transport failure as representative F-012 evidence.
+- Strengthen all three existing REJECT tests to require that the published candidate stamps both timestamps equally while the accepted live store remains structurally unchanged; retain one EOF/shared transport failure as representative F-012 evidence.
 - Add one table-driven collection-interface test covering secret, attributes, and label on fresh backdated stores; for each public store setter, require `Collection.Modified` to return the exact shared item/collection timestamp. Do not add property-change signals or a new D-Bus wire harness.
 - Document the same-sample candidate/ACK behavior and same-second limitation in `docs/secretsd-security.md`, explicitly distinguishing arbitrary loaded timestamps (which retain no imposed relation) from generated successful item mutations (which assign one sample to both modified fields without monotonicity), and record the deterministic backdated setter/ACK/REJECT/property matrix in `docs/testing.md`.
 
@@ -1161,8 +1161,22 @@ A VM run is not required because no VM-required boundary changes: NixOS module, 
   - Repository-wide bounded private-definition/reachability review found no high-confidence dead production deletion independent of current or later findings.
   - Broad store/D-Bus refactors, tests/docs deletion, dependencies, generated files, later findings, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved timestamp propagation may begin.
-- [ ] Implement and independently review the shared setter path, accepted/rejected handler evidence, property observation, and documentation without changing F-012 or missing-item behavior.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-039 completion/cross-effects before promoting F-040.
+- [x] Implement and independently review the shared setter path, accepted/rejected handler evidence, property observation, and documentation without changing F-012 or missing-item behavior.
+  - Fix commit: `71abba9b20a2c643f038c2b75e93e6c1d897d4b0` (`fix: propagate item modifications to collections`).
+  - One private helper now resolves an existing item, applies one narrow setter mutation, samples `now_secs()` once, and stamps the item and containing collection with that exact value. Secret, attributes, and label setters all route through it; missing targets return `false` before clock access or mutation.
+  - `Item.SetSecret` retains candidate old-secret zeroization and delegates replacement to the new narrow store setter; the existing candidate publication, exact-ACK commit, rejected-candidate cleanup, displaced-live-secret zeroization, and ignored missing-item result remain unchanged.
+  - Store, handler, and property tests cover all three setters at backdated baselines; ACK publishes/commits matching metadata and both property values, REJECT publishes a synchronized candidate while preserving accepted structure, and each missing collection/item case runs independently on a fresh fixture.
+  - Initial production review passed. Test/docs review required replacing an overbroad byte-level claim and isolating each missing-setter case so later calls could not mask an earlier mutation. A separate correction worker implemented both; fresh re-review passed the exact seven paths, and final post-validation review passed implementation, F-012 preservation, tests, docs, scope, and evidence with no gap.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-039 completion/cross-effects before promoting F-040.
+  - Exact staged diff: seven approved paths, 413 insertions and 96 deletions, SHA-256 `97735060e62f099d7911f69b2ad6ddbe0b9a00e3a7464fdd5c0276cd14f47060`.
+  - Focused/full validation passed 3 store setter tests, 8 item handler tests, 1 collection-property test, all 26 store tests, all 42 secretsd tests, and 25 focused protocol resource-blob tests (log SHA-256 `9463d97c357dae98bada32b5039cb75c1a4edf8d1b383cfe17afbdcfd1a8bcca`).
+  - Bounded non-integration workspace tests passed with exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (workspace log SHA-256 `75dbba606adbd3904eecf544cadb4ef83787a5489aaccc29ab153dcf6f08f7c3`; prerequisite log SHA-256 `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`).
+  - The integration runner passed all 105 tests (log SHA-256 `d31152e6c85a9be18336090bcde7e89e9177d094584a885dd7a89e42bbb08930`); rustfmt and full workspace denied-warning Clippy passed (log SHA-256 `c89c5218ffefea992e7ea7dc3f812d6d8bb041eb8da1f50192fbca3bbd41d373`); the Nix workspace test built successfully (log SHA-256 `4d228b715add0bf0775f02353f830ee77980cb8ded8a4949a2661896b226ed3c`).
+  - The controller's first static inventory expected four `now_secs()` call sites and stopped after all named validation had passed. Source inspection corrected the count to three—create-or-replace, delete, and the shared setter helper—and the exact rerun passed; final review classified this as an evidence-script correction only, not an implementation or test failure.
+  - Controller checks passed exact seven-path scope, three setter routes/one shared clock sample, old-secret zeroization and missing-target preservation, no manual item-handler clock, no secret-bearing docs/diagnostics, no Cargo/dependency/schema/generated/security/later-finding change, `git diff --check`, artifact absence, staged checksum, and clean post-commit tree.
+  - F-039 is resolved for secret, attributes, and label mutations. The two modified fields receive one sampled Unix-second value after a successful setter, but no strict numerical increase or loaded-timestamp relation is claimed.
+  - F-012 and F-038 remain resolved; U-004 is narrowed but remains unresolved for the rest of Secret Service draft conformance; F-040, F-045, F-046, and every other finding/Opportunity/unresolved item remain unchanged. F-040 is next.
+  - Final closure review found no semantic correction, requested controller-only Git/hash verification, and then passed after exact plan-only status, seven-path 413/96 stat, patch checksum, all six retained log hashes, and `git diff --check` were reconfirmed. F-040 promotion is approved.
 
 ### Remaining low queue
 
