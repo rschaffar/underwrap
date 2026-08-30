@@ -976,11 +976,94 @@ Validation commands and evidence:
 
 - [x] Obtain and record the mandatory medium → low transition decision. Evidence: after F-031 through F-037 and their closure records were complete at clean HEAD `7f5ae2472e69332a0d6a64cc378936e53f19d4c6`, the focused `ask_user` prompt presented **Approve transition**, **Pause here**, and **Request changes** with comment entry enabled. On 2026-08-30 the user selected **Approve transition** with no comment. F-038 is next; every D-174 stop condition and per-finding gate remains controlling.
 
+### Current iteration — F-038 JCS-safe resource timestamps
+
+F-038 remains valid but narrowed at clean HEAD `5afb8f4583bacd5aefba411f0d54336f361d9984`.
+
+The resource-blob module states that all four libsecret `u64` timestamps are constrained to the ECMAScript/JCS safe-integer maximum `2^53 - 1`, but `Collection::{created, modified}` and `Item::{created, modified}` still derive unrestricted Serde encoding and decoding.
+
+`ResourceBlob` and `LibsecretSection` canonical methods therefore accept values above the documented v1 contract. F-008 already makes the private host-selectable publication parser reject such values through `validate_publication_semantics`, so the remaining gap is the generic persisted/canonical type boundary and its direct Serde surface.
+
+Consequence: a typed Rust blob can encode an out-of-contract number and other implementations can interpret canonical numeric values differently; ordinary Unix-second timestamps remain many orders of magnitude below the boundary.
+
+Security boundary: none. F-008's untrusted target-publication integrity boundary is already fail-closed and remains unchanged; this iteration repairs the cross-implementation canonical-format contract.
+
+Canonical-format flow:
+
+- Input sources: typed in-memory `Collection`/`Item` values or JSON bytes decoded into those public types.
+- Boundary direction: four unsigned timestamp fields → Serde/JCS encode or JSON decode → canonical `LibsecretSection`/`ResourceBlob` → persistence, transport, publication, and writeback consumers.
+- Preserved behavior: every value from zero through `9_007_199_254_740_991`, canonical field names/order/bytes, schema version, complete-resource and publication size authorities, publication-only identifier/reference rules, and timestamp-generation/update semantics remain unchanged.
+- Newly rejected state: any of the four fields at `9_007_199_254_740_992` or above, including previously persisted out-of-contract v1 blobs; this greenfield correction needs no migration or schema-version bump.
+
+Exact scope:
+
+- Define one private inclusive safe-integer constant and one stable value-free error message in `resource_blob.rs`.
+- Implement one private Serde adapter that deserializes as `u64` and rejects above the maximum, and rejects above the maximum before `serialize_u64` on encoding.
+- Apply that adapter to exactly `Collection.created`, `Collection.modified`, `Item.created`, and `Item.modified`; retain the public Rust field type `u64` and every wire key.
+- Keep `validate_publication_semantics` timestamp checks for direct validation of manually constructed in-memory sections, but make them share the same constant/predicate/message. Do not apply publication-only collection/item/alias/reference restrictions to generic canonical resource methods.
+- Preserve deterministic error precedence: complete-resource size before resource parse; private publication body cap before publication parse; timestamp decode before schema-version/canonical/publication semantics; and timestamp encode before any post-serialization size check.
+- Correct the module Rustdoc so it states explicit encode/decode rejection rather than claiming above-limit values merely round through a floating-point representation.
+- Move only the two existing timestamp-focused tests out of the 625-line `resource_blob/tests.rs` into a new nested `resource_blob/tests/timestamps.rs`, declare that module from `tests.rs`, and keep both resulting test files below the repository's approximate 600-line target. Do not broadly repartition unrelated resource/publication tests.
+- In the timestamp module, require the full 32-outcome matrix with the other three timestamps held at safe values: four fields × two containers (`ResourceBlob`, `LibsecretSection`) × typed maximum serialization success, independently formatted raw-JSON maximum decoding success, typed maximum-plus-one serialization rejection, and independently formatted raw-JSON maximum-plus-one decoding rejection.
+- Construct every decoding vector as JSON bytes without first serializing an annotated `Collection`, `Item`, `LibsecretSection`, or `ResourceBlob`; the rejecting typed serializer must never be used to manufacture an above-limit input.
+- Exercise `validate_publication_semantics()` directly on manually constructed sections: all four fields accept the maximum, temporal relationships such as created greater than modified remain accepted, and each field independently rejects maximum-plus-one without serialization.
+- Require the same stable value-free timestamp message in direct semantic, serialization, and deserialization error chains.
+- Update the strict-publication regression to prove typed encoding rejects maximum-plus-one and independently supplied above-limit JSON rejects during decode.
+- Pin precedence with explicit mixed-defect vectors: an unsafe-timestamp resource above 2 MiB returns `ResourceTooLargeError`; an unsafe-timestamp publication above 1 MiB returns the publication-cap error; within bounds timestamp decode precedes unknown schema version, noncanonical bytes, and publication identifier/reference semantics; and typed maximum-plus-one serialization returns the timestamp error even when the eventual resource would otherwise exceed 2 MiB.
+- Document the persisted resource timestamp contract in `docs/backend.md` and the exact four-field encode/decode matrix in `docs/testing.md`; leave the already-accurate publication-specific `docs/secretsd-security.md` rule unchanged.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-protocol/src/resource_blob.rs`
+- `crates/underwrap-protocol/src/resource_blob/tests.rs`
+- new `crates/underwrap-protocol/src/resource_blob/tests/timestamps.rs`
+- `docs/backend.md`
+- `docs/testing.md`
+- this plan for evidence
+
+Expected cross-effects:
+
+- F-008 remains resolved; its publication boundary rejects unsafe timestamps earlier during Serde decoding while retaining the independent direct semantic check and all identifier/reference validation.
+- F-009's inclusive 2-MiB complete-resource authority and size-before-parse precedence remain unchanged.
+- F-039 remains unresolved because timestamp update/propagation semantics do not change.
+- F-042 is narrowed but remains unresolved: the daemon's existing typed `ResourceBlob` parse additionally rejects unsafe timestamps, while the inaccurate documentation claim that it treats the blob as opaque still requires its own correction.
+- F-040, F-045, every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no timestamp newtype, signed/float timestamp, field/key/schema-version/OpenAPI/admin DTO/D-Bus type, temporal relation, future-time, created-before-modified, clock source, update propagation, precision, or unit change;
+- no generic publication identifier/path/alias/reference validation at the persisted-resource boundary, canonical-byte exactness change, map/order/secret encoding, size cap, transport envelope, storage layout, migration/repair, compatibility branch, error variant/code, or runtime policy change;
+- no dependency, Cargo lock/root manifest, backend handler, store implementation, daemon, namespace, secretsd, integration harness, SPA, NixOS module, VM, privileged chain, security boundary, later finding, Opportunity, or unresolved-item implementation;
+- no broad test-suite repartition, unrelated test rewrite/deletion, generated artifact, formatting-only churn, or strict-Rustdoc/F-056 work.
+
+Validation commands and evidence:
+
+- `cargo test --locked -p underwrap-protocol resource_blob::tests::timestamps`
+- `cargo test --locked -p underwrap-protocol`
+- `cargo test --locked -p underwrap-protocol --no-default-features --features local-abi`
+- `cargo clippy --locked --all-targets -p underwrap-protocol -- -D warnings`
+- `cargo clippy --locked -p underwrap-protocol --no-default-features --features local-abi -- -D warnings`
+- `cargo test -p underwrap-backend-store`
+- `cargo test -p underwrap-secretsd-store`
+- `cargo test -p underwrap-secretsd`
+- `cargo test -p underwrap-ns`
+- build the exact Nix `web-build` artifact through `UNDERWRAP_WEB_DIST`, then run `cargo test --workspace --exclude integration-tests -- --test-threads=4`
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- workspace Clippy with warnings denied and the exact Nix web artifact
+- `nix build .#checks.x86_64-linux.workspace-test`
+- direct source/test inspection that exactly four fields use the adapter, no generic identifier rule moved, both test modules remain below 600 lines, error text is value-free, and no generated/Cargo/OpenAPI artifact changes
+- `git diff --check`
+
+- [x] Revalidate F-038 against the current four fields, both canonical container APIs, strict publication validation, callers, tests, documentation, F-008/F-009 effects, and historical report/handover. Evidence: direct CodeGraph/source/test/doc inspection and two focused design/evidence reviews on 2026-08-30; publication is already protected, but generic encode/decode remains unrestricted and the maximum-only test still omits above-bound vectors.
+- [x] Obtain fresh independent approval of the four-field Serde design, direct semantic check, precedence, narrow test split/matrix, docs owner, allowlist, non-goals, cross-effects, and validation before cleanup discovery. Evidence: initial reviews approved field-level Serde enforcement but required the explicit 32-outcome matrix, independently authored raw JSON, direct four-field semantic fallback/message evidence, mixed-defect size/schema/canonical/publication precedence, and F-042 narrowing. The plan incorporated every correction; fresh implementation and evidence re-reviews passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before timestamp enforcement.
+- [ ] Implement and independently review the adapter, annotations, focused tests, and documentation without changing valid canonical bytes or temporal semantics.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-038 completion/cross-effects before promoting F-039.
+
 ### Remaining low queue
 
-After the transition gate, promote one row at a time using the same iteration protocol.
-
-- [ ] F-038 — enforce the JCS safe-integer timestamp limit.
+Promote one row at a time using the same iteration protocol.
 - [ ] F-039 — update `Collection.Modified` for item mutations.
 - [ ] F-040 — correct the `underwrap-secretsd-store` persistence Rustdoc.
 - [ ] F-041 — scope persistent-secret-store claims to brokered resources.
