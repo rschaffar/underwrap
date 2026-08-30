@@ -25,6 +25,26 @@ fn random_item_id() -> Result<String> {
 }
 
 impl SecretStore {
+    fn mutate_item(
+        &mut self,
+        collection: &str,
+        id: &str,
+        mutation: impl FnOnce(&mut Item),
+    ) -> bool {
+        let Some(collection) = self.collections.get_mut(collection) else {
+            return false;
+        };
+        let Some(item) = collection.items.get_mut(id) else {
+            return false;
+        };
+
+        mutation(item);
+        let now = now_secs();
+        item.modified = now;
+        collection.modified = now;
+        true
+    }
+
     /// List all item IDs in a collection.
     pub fn list_items(&self, collection: &str) -> Vec<&str> {
         self.collections
@@ -101,6 +121,19 @@ impl SecretStore {
             .map(|item| item.secret.as_slice())
     }
 
+    pub fn set_secret(
+        &mut self,
+        collection: &str,
+        id: &str,
+        secret: &[u8],
+        content_type: &str,
+    ) -> bool {
+        self.mutate_item(collection, id, |item| {
+            item.secret = secret.to_vec();
+            item.content_type = content_type.to_string();
+        })
+    }
+
     pub fn get_attributes(&self, collection: &str, id: &str) -> Option<&HashMap<String, String>> {
         self.collections
             .get(collection)
@@ -114,17 +147,7 @@ impl SecretStore {
         id: &str,
         attrs: HashMap<String, String>,
     ) -> bool {
-        if let Some(item) = self
-            .collections
-            .get_mut(collection)
-            .and_then(|c| c.items.get_mut(id))
-        {
-            item.attributes = attrs;
-            item.modified = now_secs();
-            true
-        } else {
-            false
-        }
+        self.mutate_item(collection, id, |item| item.attributes = attrs)
     }
 
     pub fn get_label(&self, collection: &str, id: &str) -> Option<&str> {
@@ -135,17 +158,7 @@ impl SecretStore {
     }
 
     pub fn set_label(&mut self, collection: &str, id: &str, label: &str) -> bool {
-        if let Some(item) = self
-            .collections
-            .get_mut(collection)
-            .and_then(|c| c.items.get_mut(id))
-        {
-            item.label = label.to_string();
-            item.modified = now_secs();
-            true
-        } else {
-            false
-        }
+        self.mutate_item(collection, id, |item| item.label = label.to_string())
     }
 
     pub fn get_created(&self, collection: &str, id: &str) -> Option<u64> {

@@ -1,6 +1,63 @@
 use super::*;
 use std::collections::HashMap;
 
+const ITEM_MODIFIED_BASELINE: u64 = 11;
+const COLLECTION_MODIFIED_BASELINE: u64 = 17;
+
+fn store_with_backdated_item() -> (SecretStore, String, String) {
+    let mut store = SecretStore::new_default();
+    let target_id = store
+        .create_item(
+            "default",
+            "original label",
+            &HashMap::from([("original key".into(), "original value".into())]),
+            b"synthetic-original-secret",
+            "text/plain",
+            false,
+        )
+        .unwrap()
+        .0;
+    let unrelated_id = store
+        .create_item(
+            "default",
+            "unrelated label",
+            &HashMap::from([("unrelated key".into(), "unrelated value".into())]),
+            b"synthetic-unrelated-secret",
+            "application/octet-stream",
+            false,
+        )
+        .unwrap()
+        .0;
+    let collection = store.collections.get_mut("default").unwrap();
+    collection.modified = COLLECTION_MODIFIED_BASELINE;
+    collection.items.get_mut(&target_id).unwrap().modified = ITEM_MODIFIED_BASELINE;
+    (store, target_id, unrelated_id)
+}
+
+fn assert_item_mutation_metadata(
+    before: &SecretStore,
+    after: &SecretStore,
+    target_id: &str,
+    unrelated_id: &str,
+) {
+    let before_collection = &before.collections["default"];
+    let after_collection = &after.collections["default"];
+    let before_item = &before_collection.items[target_id];
+    let after_item = &after_collection.items[target_id];
+
+    assert_eq!(after_item.modified, after_collection.modified);
+    assert!(after_item.modified > ITEM_MODIFIED_BASELINE);
+    assert!(after_collection.modified > COLLECTION_MODIFIED_BASELINE);
+    assert_eq!(after_item.created, before_item.created);
+    assert_eq!(after_collection.created, before_collection.created);
+    assert_eq!(after_collection.label, before_collection.label);
+    assert_eq!(
+        after_collection.items[unrelated_id],
+        before_collection.items[unrelated_id]
+    );
+    assert_eq!(after.aliases, before.aliases);
+}
+
 #[test]
 fn new_default_has_default_collection() {
     let store = SecretStore::new_default();
@@ -302,39 +359,57 @@ fn search_all_collections() {
 }
 
 #[test]
-fn set_and_get_attributes() {
-    let mut store = SecretStore::new_default();
-    let (id, _) = store
-        .create_item(
-            "default",
-            "Test",
-            &HashMap::new(),
-            b"s",
-            "text/plain",
-            false,
-        )
-        .unwrap();
-    let mut new_attrs = HashMap::new();
-    new_attrs.insert("new_key".to_string(), "new_val".to_string());
-    assert!(store.set_attributes("default", &id, new_attrs.clone()));
-    assert_eq!(store.get_attributes("default", &id), Some(&new_attrs));
+fn set_secret_updates_fields_and_shared_modified_timestamp() {
+    let (mut store, target_id, unrelated_id) = store_with_backdated_item();
+    let before = store.clone();
+
+    assert!(store.set_secret(
+        "default",
+        &target_id,
+        b"synthetic-updated-secret",
+        "application/octet-stream"
+    ));
+
+    let item = &store.collections["default"].items[&target_id];
+    let before_item = &before.collections["default"].items[&target_id];
+    assert_eq!(item.secret, b"synthetic-updated-secret");
+    assert_eq!(item.content_type, "application/octet-stream");
+    assert_eq!(item.attributes, before_item.attributes);
+    assert_eq!(item.label, before_item.label);
+    assert_item_mutation_metadata(&before, &store, &target_id, &unrelated_id);
 }
 
 #[test]
-fn set_and_get_label() {
-    let mut store = SecretStore::new_default();
-    let (id, _) = store
-        .create_item(
-            "default",
-            "Original",
-            &HashMap::new(),
-            b"s",
-            "text/plain",
-            false,
-        )
-        .unwrap();
-    assert!(store.set_label("default", &id, "Renamed"));
-    assert_eq!(store.get_label("default", &id), Some("Renamed"));
+fn set_attributes_updates_field_and_shared_modified_timestamp() {
+    let (mut store, target_id, unrelated_id) = store_with_backdated_item();
+    let before = store.clone();
+    let attributes = HashMap::from([("updated key".into(), "updated value".into())]);
+
+    assert!(store.set_attributes("default", &target_id, attributes.clone()));
+
+    let item = &store.collections["default"].items[&target_id];
+    let before_item = &before.collections["default"].items[&target_id];
+    assert_eq!(item.attributes, attributes);
+    assert_eq!(item.secret, before_item.secret);
+    assert_eq!(item.content_type, before_item.content_type);
+    assert_eq!(item.label, before_item.label);
+    assert_item_mutation_metadata(&before, &store, &target_id, &unrelated_id);
+}
+
+#[test]
+fn set_label_updates_field_and_shared_modified_timestamp() {
+    let (mut store, target_id, unrelated_id) = store_with_backdated_item();
+    let before = store.clone();
+
+    assert!(store.set_label("default", &target_id, "updated label"));
+
+    let item = &store.collections["default"].items[&target_id];
+    let before_item = &before.collections["default"].items[&target_id];
+    assert_eq!(item.label, "updated label");
+    assert_eq!(item.secret, before_item.secret);
+    assert_eq!(item.content_type, before_item.content_type);
+    assert_eq!(item.attributes, before_item.attributes);
+    assert_item_mutation_metadata(&before, &store, &target_id, &unrelated_id);
 }
 
 #[test]
@@ -401,7 +476,42 @@ fn operations_on_nonexistent_items_return_false_or_none() {
     assert_eq!(store.get_attributes("default", "nope"), None);
     assert_eq!(store.get_created("default", "nope"), None);
     assert_eq!(store.get_modified("default", "nope"), None);
-    assert!(!store.set_label("default", "nope", "x"));
-    assert!(!store.set_attributes("default", "nope", HashMap::new()));
     assert!(!store.delete_item("default", "nope"));
+}
+
+#[test]
+fn item_setters_missing_collection_or_item_preserve_exact_state() {
+    #[derive(Clone, Copy, Debug)]
+    enum Setter {
+        Secret,
+        Attributes,
+        Label,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Missing {
+        Collection,
+        Item,
+    }
+
+    for setter in [Setter::Secret, Setter::Attributes, Setter::Label] {
+        for missing in [Missing::Collection, Missing::Item] {
+            let (mut store, _target_id, _unrelated_id) = store_with_backdated_item();
+            let before = store.clone();
+            let (collection_id, item_id) = match missing {
+                Missing::Collection => ("missing", "item"),
+                Missing::Item => ("default", "missing"),
+            };
+
+            let changed = match setter {
+                Setter::Secret => {
+                    store.set_secret(collection_id, item_id, b"synthetic", "text/plain")
+                }
+                Setter::Attributes => store.set_attributes(collection_id, item_id, HashMap::new()),
+                Setter::Label => store.set_label(collection_id, item_id, "label"),
+            };
+            assert!(!changed, "{setter:?} with missing {missing:?}");
+            assert_eq!(store, before, "{setter:?} with missing {missing:?}");
+        }
+    }
 }

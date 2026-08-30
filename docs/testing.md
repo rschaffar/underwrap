@@ -249,7 +249,15 @@ Workspace tests cover:
 Protocol resource-blob timestamp tests exercise exactly 32 boundary outcomes: four fields (`Collection.created`, `Collection.modified`, `Item.created`, and `Item.modified`) × two containers (`ResourceBlob` and `LibsecretSection`) × typed maximum encode success, independently formatted raw maximum decode success, typed maximum-plus-one encode rejection, and independently formatted raw maximum-plus-one decode rejection.
 Direct semantic-validation and strict-publication tests retain the same value-free error message, accept the inclusive maximum without temporal-order rules, and reject each field independently above the maximum.
 Mixed-defect tests pin complete-resource size before parsing, publication-body size before parsing, timestamp decoding before schema, canonical, or publication-semantic checks, and timestamp encoding before a post-serialization resource-size check.
-This evidence establishes the four-field protocol encode/decode boundary and validation order only; it does not establish timestamp generation, clock correctness, future-time policy, or collection/item modification propagation.
+Those protocol tests establish the four-field encode/decode boundary and validation order only; they do not establish timestamp generation, clock correctness, future-time policy, or collection/item modification propagation.
+
+The item-setter timestamp matrix uses distinct deterministic backdated item and collection baselines without sleeps or exact wall-clock expectations.
+Store tests cover `set_secret`, `set_attributes`, and `set_label`, requiring each successful setter to change only its requested fields, preserve created and unrelated data, and assign one exact shared value above both baselines to the item and containing collection `modified` fields.
+The same store matrix covers missing collections and items for all three setters, requiring `false` and exact full-state preservation.
+Item handler ACK tests independently cover secret, attributes, and label mutations on fresh backdated stores, requiring exact published/accepted metadata equality, preserved created and unrelated fields, a shared item/collection timestamp above both baselines, and the exact same value from the `Item.Modified` getter.
+The three matching REJECT tests require the published candidate's item and collection timestamps to be equal while the complete accepted live store remains structurally unchanged, and the EOF test retains separate transport-failure evidence.
+The table-driven `item_setters_update_collection_modified_property` test invokes all three public store setters on fresh backdated stores and requires `Collection.Modified` to return the exact shared item/collection value without a D-Bus wire harness or signal assertion.
+This matrix establishes setter propagation and ACK-gated live-state behavior for these paths only; it does not establish clock correctness, temporal validity of loaded timestamps, monotonicity, subsecond ordering, signal delivery, caller response delivery, or backend durability.
 
 The handler tests enforce the production ordering: retain the write lock, clone
 the accepted store once, mutate the candidate, canonicalize and publish it,

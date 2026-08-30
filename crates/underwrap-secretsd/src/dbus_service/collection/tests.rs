@@ -245,6 +245,60 @@ async fn create_item_ack_registers_new_path_and_replace_reuses_it() {
     assert_eq!(published[1].section.collections["Test"].items.len(), 1);
 }
 
+#[tokio::test]
+async fn item_setters_update_collection_modified_property() {
+    #[derive(Clone, Copy, Debug)]
+    enum Setter {
+        Secret,
+        Attributes,
+        Label,
+    }
+
+    for setter in [Setter::Secret, Setter::Attributes, Setter::Label] {
+        let mut initial = SecretStore::new_default();
+        let item_id = initial
+            .create_item(
+                "default",
+                "original label",
+                &HashMap::from([("original key".into(), "original value".into())]),
+                b"synthetic-original-item",
+                "text/plain",
+                false,
+            )
+            .unwrap()
+            .0;
+        let collection = initial.collections.get_mut("default").unwrap();
+        collection.modified = 17;
+        collection.items.get_mut(&item_id).unwrap().modified = 11;
+
+        let changed = match setter {
+            Setter::Secret => initial.set_secret(
+                "default",
+                &item_id,
+                b"synthetic-updated-item",
+                "application/octet-stream",
+            ),
+            Setter::Attributes => initial.set_attributes(
+                "default",
+                &item_id,
+                HashMap::from([("updated key".into(), "updated value".into())]),
+            ),
+            Setter::Label => initial.set_label("default", &item_id, "updated label"),
+        };
+        assert!(changed, "{setter:?}");
+        let expected = initial.collections["default"].items[&item_id].modified;
+        assert_eq!(expected, initial.collections["default"].modified);
+        assert!(expected > 17);
+
+        let store = Arc::new(RwLock::new(initial));
+        let (publisher_stream, _host) = UnixStream::pair().unwrap();
+        let publisher = Arc::new(Mutex::new(Publisher::from_stream(publisher_stream)));
+        let collection = CollectionInterface::new("default".into(), store, publisher);
+
+        assert_eq!(collection.modified().await.unwrap(), expected, "{setter:?}");
+    }
+}
+
 struct ShutdownGuard(UnixStream);
 
 impl Drop for ShutdownGuard {

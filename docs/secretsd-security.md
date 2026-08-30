@@ -103,9 +103,11 @@ For every host-selectable generation, the host requires:
 - every collection/item `created` and `modified` at most `2^53 - 1`.
 
 Labels, content types, attribute keys/values, and secret bytes remain arbitrary.
-No created-before-modified, future-time, or collection/item temporal relation is
-imposed. A rejected candidate is discarded without changing accepted live
-memory, so later mutation candidates start from the previously accepted state.
+Loaded timestamps may have arbitrary temporal relationships within the protocol bound, with no created-before-modified, future-time, or collection/item temporal rule.
+A successful `Item.SetSecret`, `Item.Attributes`, or `Item.Label` mutation samples one Unix second and assigns that exact value to only the item and containing collection `modified` fields.
+The candidate carries those values during publication, but they enter accepted live memory only after the host ACKs that exact generation.
+The sampled value has one-second resolution and no monotonic guarantee.
+A rejected or failed candidate is discarded without changing accepted live memory, so later mutation candidates start from the previously accepted state.
 
 ## Process hardening
 

@@ -83,10 +83,6 @@ impl ItemInterface {
     }
 
     async fn set_secret(&self, secret: Secret) -> fdo::Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         let mut store = self.store.write().await;
         mutate_and_publish(&mut store, &self.publisher, |candidate| {
             if let Some(item) = candidate
@@ -95,10 +91,13 @@ impl ItemInterface {
                 .and_then(|c| c.items.get_mut(&self.id))
             {
                 item.secret.zeroize();
-                item.secret = secret.value.clone();
-                item.content_type = secret.content_type.clone();
-                item.modified = now;
             }
+            candidate.set_secret(
+                &self.collection_id,
+                &self.id,
+                &secret.value,
+                &secret.content_type,
+            );
             Ok(())
         })?;
         if metadata_trace_enabled() {
