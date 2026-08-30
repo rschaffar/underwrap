@@ -2302,6 +2302,10 @@ Focused Vitest checks exercise the shared outcome contract, configured Chromium 
   - Repository-wide bounded discovery found one accepted cleanup: replace delete-resource's duplicated two-key `Promise.all(qc.invalidateQueries(...))` assembly with existing `invalidateAll` while preserving both exact keys, parallel start, fail-fast rejection, and close-after-invalidation ordering.
   - Independent review accepted the one-file helper reuse as reversible, behavior-preserving, and independent of rejection consumption, F-049, and later work; the extra async forwarding microtask has no observed contract and no timing claim is made.
   - Process this cleanup as its own reviewed, validated commit before the F-048 correction.
+  - Cleanup commit: `fbac0212a2d6f9bc7a1e23cba1799bdba74c0f67` (`refactor: reuse multi-query invalidation helper`); exact one-file four-insertion/five-deletion diff, SHA-256 `d4acc6fb0038a754d51e618e46b9d05763cec3c41648523d7f553cee4b07867e`.
+  - Fresh actual-diff review passed exact key order, parallel start, fail-fast rejection, close-after-both-success semantics, import/format, and separation from the still-unfixed rejection path.
+  - Focused delete-resource validation passed 2 tests (`e40c46077885621919f2c6f5c183f31a8e5f35c44fa86a67922ef8182f8c30be`); the complete SPA suite passed 148 tests (`40038192d7f8dbd05c893d4c934cd9c0893e80892aa0901f3ed9a17ef359858a`); and the production build passed with only the existing chunk advisory (`eb28c9a37c7f5bbf9905fa4cb6d5af9a07d1406805fce6fa386ce45766bfa99a`).
+  - Controller checks passed exact one-file helper reuse, both exact keys, unchanged result/close/F-048 behavior, `git diff --check`, generated-artifact cleanup, checksum, and clean post-commit tree. Cleanup is complete; the F-048 fix may begin.
 - [ ] Implement and independently review the settled outcome, all four guards, unit/browser/static evidence, and testing documentation without suppressing unrelated errors.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-048 completion/cross-effects before promoting F-049.
 
