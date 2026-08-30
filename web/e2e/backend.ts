@@ -70,9 +70,6 @@ export interface BackendInstance {
   tmpDir: string;
   /** Absolute path of the pre-seeded default plain store directory. */
   storeDir: string;
-  /** Absolute path of the configured `stores_data_root`. New dynamic
-   *  stores land at `<dataRoot>/<store_id>/`. */
-  dataRoot: string;
   /** Absolute path of the configured `keys_dir`. Encrypted-store key
    *  files are generated here, one per store. */
   keysDir: string;
@@ -254,7 +251,6 @@ export async function startBackend(
     baseUrl,
     tmpDir,
     storeDir,
-    dataRoot: dataRootsDir,
     keysDir,
     cleanup,
   };
