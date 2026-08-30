@@ -1840,10 +1840,113 @@ The affected shared lexical rule and pure environment planner are exercised dire
   - F-044 is resolved. F-006, F-031, and F-042 remain resolved; F-054 and every other finding/Opportunity/unresolved item remain unchanged. F-045 is next.
   - Final closure review passed ordered history, both stats/checksums, forced-name semantics, recovery correction, validation and prerequisite/transient classifications, controller checks, no-VM rationale, cross-effects, and F-045 promotion. The controller then independently recomputed both commit stats/hashes, every retained log hash, plan-only status, and `git diff --check`.
 
+### Current iteration — F-045 early SetAlias graph validation
+
+F-045 remains valid but narrowed at clean HEAD `986b5e47065371246759c0292c11f3525bec65b0`.
+
+F-008 strict host publication validation rejects malformed collection/alias segments and dangling alias references.
+F-012 candidate commit-after-ACK therefore prevents those malformed candidates from entering accepted live memory or later backend writeback.
+
+`SecretService.SetAlias` still performs no early alias-name, exact collection-path, or target-existence validation.
+Most invalid inputs produce a candidate that the host later rejects with generic `Failed`, but an unexpected non-root collection path fails `strip_prefix`, becomes `None`, and is persisted as a valid alias removal after ACK.
+
+Consequence: untrusted target D-Bus input can remove an existing alias by supplying an unrelated object path, while other malformed/dangling requests cross publication unnecessarily and report the wrong D-Bus error class.
+
+Security boundary:
+
+- Protected asset: integrity and referential consistency of the accepted in-memory and persisted libsecret alias graph.
+- Attacker: the configured target's D-Bus client input, treated as untrusted for robustness and storage integrity even though the target is trusted with its own projected secret.
+- Boundary direction: `Service.SetAlias(name, collection_path)` → early segment/exact-path/existence checks → candidate mutation → canonical publication → exact host ACK → accepted live store → later Checkin.
+- Change direction: malformed or dangling input rejects with `org.freedesktop.DBus.Error.InvalidArgs` before candidate creation/publication, while `/` clear and exact existing collection paths retain their behavior.
+  F-008/F-012 remain defense in depth and no authorization boundary weakens.
+
+Exact implementation scope:
+
+- Introduce one private generic Secret Service path-segment validator used by the existing collection-name validator and the new SetAlias alias/target checks.
+  Preserve the exact current rule: nonempty, at most 128 bytes, and only ASCII letters, digits, or underscore; leading digits and underscores remain legal.
+- Preserve CreateCollection's existing behavior and accepted client names while routing its collection-name check through that helper.
+  Do not add early validation for CreateCollection's optional alias in this finding.
+- Validate the SetAlias alias name before interpreting the collection path or acquiring the store lock.
+  Invalid alias-name input has first-error precedence.
+- Treat exact root path `/` as the sole clear operation.
+- For a non-root path, require the exact `${BASE_PATH}/collection/<one-valid-segment>` shape.
+  Reject another prefix, the collection container path, nested/item paths, extra segments, or a malformed segment with `InvalidArgs`; never reinterpret them as clear.
+- Acquire the store write lock only after alias/path shape validation.
+  For a set operation, require the target collection id to exist in that same locked store before candidate creation.
+- Return `InvalidArgs` for a missing collection with an identifier-only/value-free message and no publication.
+- Only after all checks pass, call the existing `mutate_and_publish` path and preserve exact candidate, canonicalization, ACK/REJECT, zeroization, and commit behavior.
+- Preserve idempotent clear of a missing alias, setting an alias to its current target, ordinary `ReadAlias`, metadata trace policy, and all valid D-Bus signatures/paths.
+
+Exact test scope:
+
+- Add a direct shared-segment-validator matrix: common client names, leading digit/underscore, and exactly 128 ASCII bytes succeed; empty, 129 bytes, slash/nested, dash, dot, space, newline/control, and non-ASCII reject.
+  Use a D-Bus-representable control such as newline rather than NUL for alias-handler cases.
+- Retain CreateCollection name/idempotence tests through the shared helper.
+- Keep handler object-path cases separate from direct validator cases.
+  Require `ObjectPath::try_from` to succeed before every SetAlias path invocation.
+- Add production-handler path rows for unexpected non-root prefix, collection container path, nested/item path, extra segment, an otherwise valid 129-byte segment, and a syntactically valid exact path naming a missing target.
+- Add malformed alias-name rows against an otherwise valid existing target, and invalid alias plus malformed/dangling target rows proving alias-name-first precedence.
+- For every prevalidation row, create a fresh service with an empty publication script and a secret-bearing store containing one unique synthetic sentinel.
+  Require exact `InvalidArgs`, complete store equality, `script.finish().is_empty()`, and diagnostic absence of the sentinel.
+  Seed a retained alias for every path-shape row and prove no request clears or changes it.
+- Retain static source inventory proving all prevalidation branches precede `mutate_and_publish`.
+- Add valid ACK cases for ordinary and leading-digit/underscore aliases, an exact 128-byte alias, and an exact existing collection path whose one collection segment is 128 bytes.
+  Each boundary case must prove one publication and matching accepted/published alias state.
+- Add ACK-backed root-path clear, idempotent clear of a missing alias, and same-target set.
+- Retain existing host REJECT, wrong-generation, and reject-then-ACK tests proving F-012 accepted-state isolation after valid prevalidation.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-secretsd/src/dbus_service/service.rs`
+- `crates/underwrap-secretsd/src/dbus_service/service/tests.rs`
+- `docs/secretsd-security.md` — require early alias/path/existence `InvalidArgs` before candidate publication and retain strict host validation as defense in depth
+- `docs/testing.md` — distinguish direct shared-validator tests from typed production-handler tests and disclaim a D-Bus wire-harness proof
+
+The active plan changes separately for workflow evidence only.
+
+Expected cross-effects:
+
+- F-008 remains resolved; strict host validation stays as defense in depth for all publication producers.
+- F-012 remains resolved; candidate commit-after-ACK and zeroization behavior are unchanged, while malformed requests no longer create candidates.
+- F-039 remains resolved; alias mutation does not change item/collection timestamp semantics.
+- F-046 wrong-typed CreateItem property handling remains unresolved and unchanged.
+- U-004 is narrowed but remains unresolved for broader Secret Service draft conformance.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no CreateCollection optional-alias change, CreateItem property typing, item/collection identifier-generation rule, object registration, alias timestamp, D-Bus signature/path namespace, ReadAlias behavior, session/locking/prompt behavior, or broader draft conformance change;
+- no store-model alias API validation, host strict-validation removal, candidate/ACK/zeroization/publication framing, backend resource format/writeback, migration/repair, automatic graph cleanup, path sanitization, compatibility branch, dependency, Nix/VM, privileged chain, or security-boundary weakening;
+- no value-bearing error/log field, F-046, F-052 vocabulary, F-054 log-evidence expansion, historical record edit, broad refactor, later finding, Opportunity, or unresolved-item implementation.
+
+Validation commands and evidence:
+
+- focused shared segment and SetAlias prevalidation/valid tests
+- `cargo test -p underwrap-secretsd dbus_service::service::tests`
+- `cargo test -p underwrap-secretsd`
+- `cargo test -p underwrap-secretsd-store`
+- `cargo test -p underwrap-protocol resource_blob::tests`
+- `cargo test -p underwrap-ns publication::tests`
+- build exact Nix `web-build`, then run bounded non-integration workspace tests and workspace denied-warning Clippy
+- `./crates/integration-tests/run`
+- `cargo fmt -- --check`
+- `nix build .#checks.x86_64-linux.workspace-test`
+- exact source/test inventory proving malformed shape/name cases reject before lock, all malformed and dangling cases reject before candidate creation/publication, and all valid cases use the existing candidate path
+- direct docs/link/one-sentence/scope/secret checks
+- `git diff --check`
+
+A VM run is not required because no NixOS/module, identity, namespace, capability, privileged chain, D-Bus signature, object registration, or target-visible valid-input behavior changes.
+Direct production-handler tests with scripted publication outcomes cover the changed untrusted input boundary, while protocol/namespace/integration suites cover unchanged downstream validation and writeback.
+
+- [x] Revalidate F-045 against current SetAlias parsing, store alias mutation, strict host validation, F-012 candidate commit/zeroization, tests/docs, F-008/F-039/F-046/U-004 effects, and historical report/handover. Evidence: direct CodeGraph/source/test inspection on 2026-08-30; malformed/dangling candidates no longer poison accepted state, but unexpected non-root paths can still persist unintended removal and early `InvalidArgs` coverage is absent.
+- [x] Obtain fresh independent approval of early validation order, exact path/segment/existence rules, error class, valid/invalid matrix, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: implementation/security review passed. Evidence review required separation of directly validated strings from representable typed object paths, fresh secret-bearing zero-publication fixtures, exact 128-byte alias and collection-target ACK cases, explicit docs evidence, and precise malformed-before-lock versus dangling-under-lock ordering. The plan incorporated every correction and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before SetAlias correction.
+- [ ] Implement and independently review early SetAlias validation and complete no-publication/valid-publication evidence without changing F-008/F-012.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-045 completion/cross-effects before promoting F-046.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-045 — reject malformed or dangling Secret Service aliases.
 - [ ] F-046 — reject wrong-typed `CreateItem` properties.
 - [ ] F-047 — correct profile session-revocation guidance.
 - [ ] F-048 — consume expected confirmation mutation rejections.
