@@ -719,6 +719,20 @@ def local_socket_permissions():
     # Instance configs: full DaemonConfig + minimal underwrap-exec sidecar.
     machine.succeed("test -f /etc/underwrap/daemon/local.yaml")
     machine.succeed("test -f /etc/underwrap/instances/local.yaml")
+    daemon_config = json.loads(
+        machine.succeed("cat /etc/underwrap/daemon/local.yaml")
+    )
+    sidecar_config = json.loads(
+        machine.succeed("cat /etc/underwrap/instances/local.yaml")
+    )
+    assert "ns_binary" not in daemon_config, daemon_config
+    assert set(sidecar_config) == {
+        "socket",
+        "ns_binary",
+        "dbus_daemon_binary",
+        "secretsd_binary",
+    }, sidecar_config
+    assert sidecar_config["ns_binary"] == "/run/wrappers/bin/underwrap-ns", sidecar_config
     # Wrapper-specific sidecar configs must not exist.
     machine.fail("test -e /etc/underwrap/wrappers/local-test-echo.yaml")
 
@@ -3766,7 +3780,6 @@ def plaintext_runtime_backend_url_is_rejected_before_io():
         "instance": "plaintext-test",
         "socket": "/run/underwrap-plaintext-test/wrapper.sock",
         "group": "root",
-        "ns_binary": "/unusable/underwrap-ns",
         "debug_tool_target": "/unusable/debug-tool",
         "target_runtime_dir_base": "/run/underwrap-runtime",
         "wrappers": {},

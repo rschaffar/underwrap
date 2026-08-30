@@ -18,7 +18,6 @@ backend:
 instance: local
 socket: /run/underwrap/local.sock
 group: underwrap-local
-ns_binary: /run/wrappers/bin/underwrap-ns
 debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
 target_runtime_dir_base: /run/user
 wrappers: {}

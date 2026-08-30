@@ -18,8 +18,9 @@ For one Rust crate:
 cargo test -p <crate>
 ```
 
-`cargo test -p underwrap-protocol config` covers the daemon configuration grammar at runtime-validation boundaries.
-It exercises exact instance and wrapper name lengths, reserved `debug`, the complete privileged path-field inventory, canonical relative files paths, canonical absolute and tilde access-path domains, same-domain duplicate and overlap rejection, forced path environment values, and retained unrestricted resource, URL, arbitrary environment, and `PATH` contracts.
+`cargo test -p underwrap-protocol config` covers the full daemon configuration grammar at runtime-validation boundaries.
+It exercises exact instance and wrapper name lengths, reserved `debug`, the complete full-daemon path-field inventory, canonical relative files paths, canonical absolute and tilde access-path domains, same-domain duplicate and overlap rejection, forced path environment values, and retained unrestricted resource, URL, arbitrary environment, and `PATH` contracts.
+The namespace-helper path belongs to the separately tested strict entry-stage sidecar rather than `DaemonConfig`.
 
 For cross-component daemon/backend behavior:
 
@@ -61,6 +62,9 @@ The protocol's default test command exercises the unchanged `full` profile:
 ```bash
 cargo test -p underwrap-protocol
 ```
+
+The wrapper-request tests pin the exact request discriminant, `gh-authorized` selector bytes, and `Real` variant byte.
+They also append the retired encoded session field and require exact trailing-byte rejection, so no compatibility parser can silently restore it.
 
 The namespace wrapper selects the explicit `local-abi` profile, which can be checked independently with:
 
@@ -612,7 +616,7 @@ It checks:
 - users, groups, state/runtime directories, and systemd units;
 - setgid and capability wrappers;
 - socket path, owner, group, and mode;
-- generated daemon and entry-stage config;
+- generated daemon and entry-stage config, including JSON parsing of both files, absence of `ns_binary` from the full daemon config, and the strict sidecar's exact helper-key set and fixed namespace-helper path;
 - local and remote-style runtime client enrollment;
 - the deployed runtime identity cutover: the packaged `underwrap-keygen`
   successfully installs

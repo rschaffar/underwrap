@@ -12,53 +12,21 @@
 use tracing::{info, warn};
 
 /// Audit event for a secret read.
-pub fn read_granted(wrapper: &str, secret: &str, peer_uid: Option<u32>, scope: Option<&str>) {
+pub fn read_granted(wrapper: &str, secret: &str, peer_uid: Option<u32>) {
     info!(
         audit = "read_granted",
         wrapper = wrapper,
         secret = secret,
         peer_uid = peer_uid,
-        scope = scope,
     );
 }
 
 /// Audit event for a denied read.
-pub fn read_denied(wrapper: &str, reason: &str, peer_uid: Option<u32>, scope: Option<&str>) {
+pub fn read_denied(wrapper: &str, reason: &str, peer_uid: Option<u32>) {
     warn!(
         audit = "read_denied",
         wrapper = wrapper,
         reason = reason,
-        peer_uid = peer_uid,
-        scope = scope,
-    );
-}
-
-/// Audit event for a secret store.
-pub fn secret_stored(secret: &str, peer_uid: Option<u32>) {
-    info!(
-        audit = "secret_stored",
-        secret = secret,
-        peer_uid = peer_uid,
-    );
-}
-
-/// Audit event for a denied store.
-pub fn store_denied(secret: &str, reason: &str, peer_uid: Option<u32>) {
-    warn!(
-        audit = "store_denied",
-        secret = secret,
-        reason = reason,
-        peer_uid = peer_uid,
-    );
-}
-
-/// Audit event for approval.
-pub fn approved(wrapper: &str, scope: Option<&str>, seconds: Option<u64>, peer_uid: Option<u32>) {
-    info!(
-        audit = "approved",
-        wrapper = wrapper,
-        scope = scope,
-        seconds = seconds,
         peer_uid = peer_uid,
     );
 }
@@ -72,21 +40,6 @@ pub fn auth_denied(socket: &str, reason: &str, peer_uid: Option<u32>, peer_gid: 
         peer_uid = peer_uid,
         peer_gid = peer_gid,
     );
-}
-
-/// Audit event for a secretsd channel read.
-pub fn secretsd_read(wrapper: &str, item: &str) {
-    info!(audit = "secretsd_read", wrapper = wrapper, item = item,);
-}
-
-/// Audit event for a secretsd channel write.
-pub fn secretsd_write(wrapper: &str, item: &str) {
-    info!(audit = "secretsd_write", wrapper = wrapper, item = item,);
-}
-
-/// Audit event for a secretsd channel delete.
-pub fn secretsd_delete(wrapper: &str, item: &str) {
-    info!(audit = "secretsd_delete", wrapper = wrapper, item = item,);
 }
 
 /// Audit event for a wrapper-resource channel Checkout.

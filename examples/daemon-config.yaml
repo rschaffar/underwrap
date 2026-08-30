@@ -19,8 +19,7 @@ instance: example
 socket: /run/underwrap-example/wrapper.sock
 group: underwrap-example
 
-# Absolute helper paths selected by trusted configuration.
-ns_binary: /run/wrappers/bin/underwrap-ns
+# Absolute debug target selected by trusted daemon configuration.
 debug_tool_target: /nix/store/...-underwrap/bin/underwrap-debug-tool
 
 # The NixOS module provisions one target-owned runtime directory below this

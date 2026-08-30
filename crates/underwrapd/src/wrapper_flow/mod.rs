@@ -41,23 +41,14 @@ pub(crate) async fn handle_wrapper(
     // client, but the daemon — not the client — chooses the target binary
     // and the backend re-evaluates the policy for the variant, so a
     // forged `variant` cannot escalate.
-    let (wrapper_name, variant, scope) = match request {
+    let (wrapper_name, variant) = match request {
         WrapperRequest::Read {
             wrapper_name,
             variant,
-            scope,
-        } => (wrapper_name, variant, scope),
+        } => (wrapper_name, variant),
     };
 
-    let outcome = open_one_invocation(
-        scope.as_deref(),
-        &wrapper_name,
-        variant,
-        &peer,
-        peer_uid,
-        &state,
-    )
-    .await;
+    let outcome = open_one_invocation(&wrapper_name, variant, &peer, peer_uid, &state).await;
     write_frame_async(&mut stream, &outcome.response).await?;
 
     if let Some(channel) = outcome.channel {
@@ -77,7 +68,6 @@ pub(in crate::wrapper_flow) struct ReadOutcome {
 }
 
 async fn open_one_invocation(
-    scope: Option<&str>,
     wrapper_name: &str,
     variant: WrapperVariant,
     peer: &PeerCred,
@@ -111,5 +101,5 @@ async fn open_one_invocation(
         }
     };
 
-    open_invocation(scope, wrapper_name, variant, peer_uid, state, backend).await
+    open_invocation(wrapper_name, variant, peer_uid, state, backend).await
 }

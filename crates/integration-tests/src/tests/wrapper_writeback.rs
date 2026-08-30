@@ -51,7 +51,6 @@ fn open_run(socket_path: &Path, wrapper_name: &str) -> StdUnixStream {
         &WrapperRequest::Read {
             wrapper_name: wrapper_name.to_string(),
             variant: underwrap_protocol::variant::WrapperVariant::Real,
-            scope: None,
         },
     )
     .unwrap();

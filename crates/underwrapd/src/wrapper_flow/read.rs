@@ -30,7 +30,6 @@ use crate::wrapper_resource_channel::ChannelContext;
 use super::ReadOutcome;
 
 pub(super) async fn open_invocation(
-    _scope: Option<&str>,
     wrapper_name: &str,
     variant: WrapperVariant,
     peer_uid: u32,
@@ -101,7 +100,7 @@ pub(super) async fn open_invocation(
             writable,
         } => (resource_id, blob_b64, writable),
         RuntimeWrapperInvocationOpenResponse::Deny { reason } => {
-            audit::read_denied(wrapper_name, &reason, Some(peer_uid), None);
+            audit::read_denied(wrapper_name, &reason, Some(peer_uid));
             return error_outcome(ErrorCode::Unauthorized, reason);
         }
     };
@@ -141,7 +140,7 @@ pub(super) async fn open_invocation(
         }
     }
 
-    audit::read_granted(wrapper_name, &resource_id, Some(peer_uid), None);
+    audit::read_granted(wrapper_name, &resource_id, Some(peer_uid));
 
     let access = if writable {
         AccessMode::ReadWrite

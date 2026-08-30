@@ -37,10 +37,6 @@ pub struct DaemonConfig {
     /// this group is the sole kernel-enforced gate.
     pub group: String,
 
-    /// Absolute path to the `underwrap-ns` helper the daemon names in
-    /// the exec plan.
-    pub ns_binary: PathBuf,
-
     /// Absolute path to the debug tool exec'd for `variant = Debug`.
     /// The daemon emits this only after the backend authorised a
     /// `Debug` invocation, never the wrapper.
@@ -152,7 +148,6 @@ impl DaemonConfig {
 
         for (field, path) in [
             ("socket", self.socket.as_path()),
-            ("ns_binary", self.ns_binary.as_path()),
             ("debug_tool_target", self.debug_tool_target.as_path()),
             (
                 "target_runtime_dir_base",

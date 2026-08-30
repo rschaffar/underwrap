@@ -78,7 +78,6 @@ async fn read_validates_client_supplied_wrapper_name() {
         &WrapperRequest::Read {
             wrapper_name: "ghost-wrapper".to_string(),
             variant: underwrap_protocol::variant::WrapperVariant::Real,
-            scope: None,
         },
     )
     .await

@@ -95,9 +95,11 @@ The module assigns each instance:
 - `/etc/underwrap/daemon/<instance>.yaml`;
 - `/etc/underwrap/instances/<instance>.yaml`.
 
-The generated daemon configuration uses canonical absolute paths for `socket`, `ns_binary`, `debug_tool_target`, `target_runtime_dir_base`, and `backend.client_identity_file`.
+The generated full daemon configuration at `/etc/underwrap/daemon/<instance>.yaml` uses canonical absolute paths for `socket`, `debug_tool_target`, `target_runtime_dir_base`, and `backend.client_identity_file`.
+The root-generated strict entry-stage sidecar at `/etc/underwrap/instances/<instance>.yaml` contains only `socket`, `ns_binary`, `dbus_daemon_binary`, and `secretsd_binary`.
+`underwrap-exec` reads that sidecar, and its `ns_binary` value is the sole configuration authority for the namespace helper path.
 The module also requires canonical absolute paths for each wrapper `target`, optional `backend.ca_file`, and forced `env_set` home/base-XDG value.
-`underwrapd` applies the same lexical checks to every listed runtime field, including hand-written daemon configuration, without requiring the path to exist.
+`underwrapd` applies the same lexical checks to every listed full-daemon runtime field, including hand-written daemon configuration, without requiring the path to exist.
 Backend URLs, resource names, non-path `envSet` values, and `envSet.PATH` retain their separate lexical contracts.
 
 ### Runtime client credential

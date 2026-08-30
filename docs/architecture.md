@@ -80,12 +80,14 @@ caller runs <wrapper> [args]
   → POST /v1/wrapper-invocations/finalize
 ```
 
+The private wrapper request carries only the caller-selected wrapper name and invocation variant.
+Mixed `underwrap-exec` and `underwrapd` binaries are intentionally wire-incompatible and must be deployed together through one package and module generation.
+
 The detailed sequence is:
 
 1. The setgid instance entry point gives `underwrap-exec` the instance-group
    effective GID.
-2. `underwrap-exec` connects to the instance's `0660` socket and sends the
-   caller-selected wrapper name and invocation variant.
+2. `underwrap-exec` loads the socket and helper paths from the root-generated strict instance sidecar, connects to the instance's `0660` socket, and sends only the caller-selected wrapper name and invocation variant.
 3. `underwrapd` reads the peer's effective GID, validates the wrapper name
    against root-owned config, resolves that wrapper's resource, and asks the
    backend to open the invocation.
@@ -196,6 +198,7 @@ capabilities have different privilege lifecycles.
 ### `underwrap-exec`
 
 - starts through the per-instance setgid wrapper;
+- loads the socket and namespace, D-Bus, and Secret Service helper paths from the root-generated strict instance sidecar;
 - authenticates to the instance socket;
 - receives the daemon-chosen execution plan and resource channel;
 - attempts to clear supplementary groups (`EPERM` is tolerated because a

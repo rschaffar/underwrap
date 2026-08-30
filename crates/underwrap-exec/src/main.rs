@@ -15,7 +15,7 @@
 //!    the name and the backend authorises the variant
 //! 3. Loads the trusted instance sidecar (socket + helper binary paths)
 //! 4. Connects to the instance socket and sends `Read { wrapper_name,
-//!    variant, scope }`; receives projection metadata, the daemon-chosen
+//!    variant }`; receives projection metadata, the daemon-chosen
 //!    target binary, and one wrapper-resource channel fd via SCM_RIGHTS
 //! 5. Drops all elevated privileges
 //! 6. Relocates every child-carried descriptor above the reserved slots, then
@@ -254,11 +254,9 @@ fn request_secret(
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("connecting to daemon at {socket_path}"))?;
 
-    let scope = std::env::var("UNDERWRAP_SCOPE").ok();
     let req = WrapperRequest::Read {
         wrapper_name: wrapper_name.to_string(),
         variant,
-        scope,
     };
     write_frame_sync(&mut stream, &req)?;
 

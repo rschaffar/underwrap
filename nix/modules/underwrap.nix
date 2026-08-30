@@ -161,7 +161,6 @@ let
       instance = instName;
       socket = socketPath;
       group = instanceGroup;
-      ns_binary = nsBinaryPath;
       debug_tool_target = "${cfg.package}/bin/underwrap-debug-tool";
       target_runtime_dir_base = cfg.targetRuntimeDirBase;
       wrappers = lib.mapAttrs (_name: w: ({

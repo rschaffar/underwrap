@@ -208,7 +208,6 @@ fn checkout_resource_sync(
         &WrapperRequest::Read {
             wrapper_name: wrapper_name.to_string(),
             variant: underwrap_protocol::variant::WrapperVariant::Real,
-            scope: None,
         },
     )
     .unwrap();
@@ -330,7 +329,6 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
         instance: "local".to_string(),
         socket: base.join("instance.sock"),
         group: crate::harness::current_group_name(),
-        ns_binary: base.join("underwrap-ns"),
         debug_tool_target: base.join("underwrap-debug-tool"),
         target_runtime_dir_base: "/run/user".to_string(),
         wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),

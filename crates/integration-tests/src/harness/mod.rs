@@ -226,7 +226,6 @@ impl TestDaemon {
             // daemon's `egid == instance gid` gate passes for in-process
             // connections.
             group: builders::current_group_name(),
-            ns_binary: base.join("underwrap-ns"),
             debug_tool_target: base.join("underwrap-debug-tool"),
             target_runtime_dir_base: "/run/user".to_string(),
             wrappers,
@@ -280,7 +279,6 @@ impl TestDaemon {
         let req = WrapperRequest::Read {
             wrapper_name: wrapper.to_string(),
             variant,
-            scope: None,
         };
         write_frame_async(&mut stream, &req).await?;
         let resp: WrapperResponse = read_frame_async(&mut stream).await?;

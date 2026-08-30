@@ -19,7 +19,6 @@ pub enum WrapperRequest {
         /// Real target or debug tool. The daemon, not the client, picks
         /// the binary based on the variant the backend authorised.
         variant: WrapperVariant,
-        scope: Option<String>,
     },
 }
 
@@ -29,12 +28,10 @@ impl WireEncode for WrapperRequest {
             Self::Read {
                 wrapper_name,
                 variant,
-                scope,
             } => {
                 0u8.encode(out)?;
                 wrapper_name.encode(out)?;
-                variant.encode(out)?;
-                scope.encode(out)
+                variant.encode(out)
             }
         }
     }
@@ -46,7 +43,6 @@ impl WireDecode for WrapperRequest {
             0 => Ok(Self::Read {
                 wrapper_name: String::decode(reader)?,
                 variant: WrapperVariant::decode(reader)?,
-                scope: Option::<String>::decode(reader)?,
             }),
             other => Err(anyhow!("invalid wrapper request discriminant: {other}")),
         }

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Instance-level header shared by the fixtures below. One socket, one
-/// group, one ns binary, one debug tool per instance.
+/// group, and one debug tool per instance.
 const INSTANCE_HEADER: &str = r#"
 backend:
   url: https://backend.example.internal:8443
@@ -10,7 +10,6 @@ backend:
 instance: local
 socket: /run/underwrap/local.sock
 group: underwrap-local
-ns_binary: /run/wrappers/bin/underwrap-ns
 debug_tool_target: /run/current-system/sw/bin/underwrap-debug-tool
 target_runtime_dir_base: /run/underwrap-runtime
 "#;
@@ -26,10 +25,6 @@ fn minimal_config() {
     assert_eq!(config.instance, "local");
     assert_eq!(config.socket, PathBuf::from("/run/underwrap/local.sock"));
     assert_eq!(config.group, "underwrap-local");
-    assert_eq!(
-        config.ns_binary,
-        PathBuf::from("/run/wrappers/bin/underwrap-ns")
-    );
     assert_eq!(config.target_runtime_dir_base, "/run/underwrap-runtime");
     config.validate().unwrap();
     assert_eq!(config.backend.url, "https://backend.example.internal:8443");
@@ -362,12 +357,9 @@ fn validate_checks_the_complete_absolute_runtime_path_inventory() {
     type ConfigMutation = fn(&mut DaemonConfig);
 
     let invalid = "/valid/../invalid";
-    let cases: [(&str, ConfigMutation); 7] = [
+    let cases: [(&str, ConfigMutation); 6] = [
         ("socket", |config| {
             config.socket = "/valid/../invalid".into();
-        }),
-        ("ns_binary", |config| {
-            config.ns_binary = "/valid/../invalid".into();
         }),
         ("debug_tool_target", |config| {
             config.debug_tool_target = "/valid/../invalid".into();
