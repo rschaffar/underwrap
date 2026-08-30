@@ -1624,6 +1624,15 @@ Expected implementation/test/documentation allowlist — 23 files:
 
 The active plan changes separately for workflow evidence only.
 
+Approved cleanup 1 — reuse the canonical dynamic-store path helper:
+
+- Remove one-use `TestDaemon::store_data_dir` from `crates/integration-tests/src/harness/mod.rs`.
+- Change only `crates/integration-tests/src/tests/rotation.rs` to call existing `store_dir_for`.
+- The rotation test's admin-created `store_<20 hex>` id cannot equal the seeded `test` special case, so both helpers resolve exactly `stores_data_root/<store_id>`.
+- This removes one redundant private test-harness API, preserves F-003 rotation-response-loss evidence, and affects no F-id.
+- Cleanup allowlist: exactly those two integration-test paths.
+- Cleanup validation: exact rotation test through the packaged runner, complete 105-test runner, focused denied-warning integration Clippy, rustfmt, reachability/scope/diff checks, and no generated artifact.
+
 Expected cross-effects:
 
 - F-031 remains resolved with the full daemon grammar narrowed by removal of `ns_binary` and the fixed root-generated sidecar retaining namespace-helper authority.
@@ -1663,7 +1672,12 @@ The VM is mandatory because the NixOS module's generated daemon/sidecar split an
 
 - [x] Revalidate F-043 against current request scope flow, audit output/helpers, daemon versus sidecar namespace-helper paths, config/tests/examples/docs/Nix/VM fixtures, keygen parsing, F-031/F-033/F-052 effects, O-010, and historical report/handover. Evidence: direct CodeGraph/source/test/doc search plus two focused design/evidence reviews on 2026-08-30; all three inert surfaces persist and exact current consumers are enumerated above.
 - [x] Obtain fresh independent approval of all three removals, sidecar authority, private wire/config/audit effects, 23-file allowlist, non-goals, cross-effects, validation, and mandatory VM before cleanup discovery. Evidence: implementation/security review passed the complete scope; evidence review required exact wire/trailing vectors and standalone F-033 local-ABI test/Clippy preservation. The plan incorporated those additions, an interrupted delta review found no blocker, and a bounded final disposition passed on 2026-08-30 with implementation evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before F-043 removals.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before F-043 removals.
+  - Finding-local discovery accepted cleanup 1 exactly as recorded above; independent review proved dynamic-store path equivalence, net-deletion value, reversibility, and no F-id effect.
+  - Repository-wide bounded discovery found no other high-confidence private dead production deletion independent of current or later findings.
+  - Scope/config/audit removals are the F-043 fix; F-044/F-052/F-054 work, broad refactors, dependencies, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted after cleanup 1.
+- [ ] Implement, independently review, validate, and commit cleanup 1 before F-043 removals.
 - [ ] Implement and independently review the exact dead-surface removals and authority evidence without changing the wrapper chain or adjacent findings.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-043 completion/cross-effects before promoting F-044.
 
