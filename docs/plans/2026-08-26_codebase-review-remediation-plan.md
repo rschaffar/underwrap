@@ -2094,7 +2094,7 @@ Typed production-handler tests cover the malformed-value boundary directly, and 
   - F-046 is resolved at the typed production-handler boundary. F-012, F-039, and F-045 remain resolved; U-004 is narrowed but remains unresolved for D-Bus wire behavior and broader Secret Service conformance; every other finding, Opportunity, and unresolved item remains unchanged.
   - Final closure review passed the implementation/test/documentation match, correction ledger, cross-finding boundaries, no-VM rationale, claim limits, and F-047 promotion using the controller-verified commit, scope, checksum, clean-tree, and validation facts.
 
-### Current iteration — F-047 profile session-revocation guidance
+### Completed iteration — F-047 profile session-revocation guidance
 
 F-047 remains directly reproducible at clean HEAD `ed217d7426d88189a867940e1aef25cdc8b2068b`.
 
@@ -2187,8 +2187,22 @@ The real-backend browser scenario directly observes the changed guidance and one
   - Initial actual-diff review required the documented `@/api/client` public barrel instead of a private domain-module import; a separate correction worker changed only that import, and fresh re-review passed exact route/parameter/type/query/error/log-hygiene preservation.
   - Focused client/reveal validation passed 16 tests (`90e4e1eb887230570be1dec5746c3be2c5b862425610c3d5f024e21e583f0d1b`); the complete SPA suite passed 148 tests (`e7ecda4478346275582dcceb4426e34c05280bc3ef528bd2bad52f579f975677`); and the production build passed with only the existing chunk advisory (`b3e89216a323021710568faa21ec68d00a368f9b31c04617b5ca2b2d5327c337`).
   - Controller checks passed exact one-file public-barrel delegation, removal of duplicated inline request assembly, unchanged query key/response mapping, no F-047 fix or later-finding change, `git diff --check`, generated-artifact cleanup, checksum, and clean post-commit tree. Both accepted cleanups are complete; the F-047 correction may begin.
-- [ ] Implement and independently review corrected guidance, two-context browser evidence, and bounded documentation without changing session behavior.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-047 completion/cross-effects before promoting F-048.
+- [x] Implement and independently review corrected guidance, two-context browser evidence, and bounded documentation without changing session behavior.
+  - Fix commit: `4cfac874b1e9023e226a27b465bbe136c177a7e9` (`docs: correct password session guidance`).
+  - Profile guidance now distinguishes fallible submitting-session refresh from lazy admin-API invalidation of every other pre-change session, while the backend OpenAPI source/generated response description states only that refresh was attempted.
+  - Users/Profile and security documentation distinguish verifier persistence, refresh failure, other-session invalidation, and reset/deletion invalidation without claiming static-asset, immediate, enumerated, persistent, or guaranteed refresh behavior.
+  - The existing bootstrap-operator browser scenario now uses two independently authenticated contexts, exact before/current/stale `whoami` status and bodies, an awaited `about:blank` quiescence point, exact visible guidance, stale `/profile` login redirect, explicit `finally` cleanup, and the retained old/new-password round trip without inspecting cookie values.
+  - Initial actual-diff reviews required “password verifier” instead of plaintext-persistence wording and accurate test title/comments; a separate correction worker made only those changes. Fresh post-correction docs/security and browser reviews passed, and final post-validation review found no remaining correction or gap.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-047 completion/cross-effects before promoting F-048.
+  - Exact committed diff: seven approved paths, 94 insertions and 55 deletions, SHA-256 `edee0e68114c026a563f4c1678cecfd69b8566690b10cd8598aea947f5801b91`.
+  - The complete SPA suite passed 148 tests (`2fcdf5fe08952b34c4ce23bf00d49be7c918d4bfbdb5e5697d211fd6f7ce38a5`), and the production build passed with only the existing chunk advisory (`979a06e2664e48f89d64a022281ea4d0e1f5fe54eb63e640bcd11dcb2bc3d742`).
+  - Exact Nix web artifact `/nix/store/z9yynx9cjjjwqxwal9kssypiqg1cs59k-underwrap-web-dist-0.1.0` was built from the changed tree (`8d59c4d06d64611a0d4dffd0d5bd04435da0b25900bfd4a4ef43b2436c2a48bb`) and supplied focused auth-hash, OpenAPI drift, backend build, and rustfmt validation (`783108b6f980f8a2789a7b09681be237a6094b5bc21026fa4785562b97745789`).
+  - The changed-tree backend build produced absolute binary `/home/robert/projects/projektbuero/underwrap/target/debug/underwrap-backend`; exact `UNDERWRAP_BACKENDD_BINARY` pointed both browser commands to that same binary. Focused configured-Chromium profile validation passed both scenarios (`dfbb508979109de4d13447015781e0f07e1c24cfb43834c7aee00c34c09334db`), and the complete configured Playwright suite passed all 36 desktop/mobile scenarios (`b275f6a893790030a16d7257db16d24ec9dd6724920c6d5810a21ef83fa0a97b`).
+  - Static validation passed exact copy/OpenAPI descriptions, two-context exact-response and source-order markers, `finally` cleanup, cookie-value noninspection, and documentation targets/limits (`61fc72e45e906169966a1dc8167f6c887fcfe6909c403ff8d8bc1e5f80f27b0e`).
+  - The implementation writer's first repository-root Prettier command used web-relative paths and failed before editing; the corrected web-root command passed, and unrelated formatter churn was removed before review.
+  - Controller checks passed exact seven-path scope, generated OpenAPI equality, no session/form/router/fixture/config/runtime/F-048 change, one-sentence prose, `git diff --check`, generated schema/build/Playwright/result artifact cleanup, checksum, and clean post-commit tree.
+  - F-047 is resolved and closes the historical V-009 two-context gap for the one observed configured-Chromium self-service flow. F-021 remains resolved; F-048, F-049, F-050, F-053, F-058, every other finding, Opportunity, and unresolved item remain unchanged. F-048 is next.
+  - Final closure review required and then passed explicit provenance that both browser runs used the same absolute freshly built changed-tree backend binary; it passed ordered cleanups, separate corrections, fix semantics, validation, no-VM rationale, bounded cross-effects, and F-048 promotion with no remaining gap.
 
 ### Remaining low queue
 
