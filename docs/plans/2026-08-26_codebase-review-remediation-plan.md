@@ -1765,6 +1765,15 @@ Expected source/test/documentation allowlist:
 
 The active plan changes separately for workflow evidence only.
 
+Approved cleanup 1 — remove unused `ResourceSlot` string parsing trait:
+
+- Delete only `impl std::str::FromStr for ResourceSlot` from `crates/underwrap-protocol/src/resource.rs`.
+- Preserve the live `ResourceSlot::parse` method used by backend admin route parsing, Serde/Utoipa derives, names, routing, and all wire behavior.
+- Static search finds no typed/inferred `.parse()`, trait bound, test, doc, example, or dynamic trait-object/registry consumer.
+- This removes seven lines of unused public API with `()` error semantics; hypothetical external use remains unknown but non-blocking under the greenfield/no-published-compatibility posture.
+- Cleanup allowlist: exactly `crates/underwrap-protocol/src/resource.rs`.
+- Cleanup validation: full and isolated local-ABI protocol tests plus denied-warning Clippy, workspace consumer check, rustfmt, exact reachability/diff/artifact checks, and no F-id effect.
+
 Expected cross-effects:
 
 - F-006 remains resolved because namespace rejection remains in pure environment planning before projection effects.
@@ -1801,7 +1810,12 @@ The affected shared lexical rule and pure environment planner are exercised dire
 
 - [x] Revalidate F-044 against current shared forced-name policy, resource validation, environment composition order, daemon conditional parse, backend admin ingress, tests/docs, F-006/F-031/F-042/F-054 effects, and historical report/handover. Evidence: direct CodeGraph/source/test inspection plus two focused design/evidence reviews on 2026-08-30; all five XDG names remain admissible resource env keys and no collision regression exists.
 - [x] Obtain fresh independent approval of the one-line shared production change, fail-closed precedence/legacy behavior, exact test matrix, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: implementation/security review passed. Evidence review required direct bounded no-SCM_RIGHTS observation, an exact focused integration command, and isolated local-ABI denied-warning Clippy; the plan incorporated all three and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before forced-name enforcement.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before forced-name enforcement.
+  - Finding-local discovery accepted cleanup 1 exactly as recorded above; independent review verified no consumer, behavior preservation, public-API greenfield posture, separate hunk, validation, and no F-id effect.
+  - Repository-wide bounded discovery found no other high-confidence private dead production deletion independent of current or later findings.
+  - Forced-name authority/tests/docs are the F-044 fix; env reorder/refactor, F-045/F-050/F-052/F-054, dependencies, formatting, and cosmetic churn are rejected.
+  - Cleanup is exhausted after cleanup 1.
+- [ ] Implement, independently review, validate, and commit cleanup 1 before forced-name enforcement.
 - [ ] Implement and independently review the shared forced-name rejection and complete unit/integration evidence without changing ordinary precedence.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-044 completion/cross-effects before promoting F-045.
 
