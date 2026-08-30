@@ -2204,10 +2204,106 @@ The real-backend browser scenario directly observes the changed guidance and one
   - F-047 is resolved and closes the historical V-009 two-context gap for the one observed configured-Chromium self-service flow. F-021 remains resolved; F-048, F-049, F-050, F-053, F-058, every other finding, Opportunity, and unresolved item remain unchanged. F-048 is next.
   - Final closure review required and then passed explicit provenance that both browser runs used the same absolute freshly built changed-tree backend binary; it passed ordered cleanups, separate corrections, fix semantics, validation, no-VM rationale, bounded cross-effects, and F-048 promotion with no remaining gap.
 
+### Current iteration — F-048 consumed confirmation-mutation failures
+
+F-048 remains directly reproducible at clean HEAD `024aba99d036687f17215dec971a9ce4f6f3a943`.
+
+`useConfirmMutation.confirm` returns TanStack Query's rejecting `mutateAsync` promise after `onError` records the inline message.
+Nine shared confirmation-dialog users and the custom rotate-key confirmation discard or await that promise without consuming failure; two additional `ConfirmDialog` users await direct `mutateAsync` calls with the same result.
+
+Consequence: a normal rejected admin mutation can render its intended inline alert and also escape the event callback as an unhandled promise rejection, polluting global browser diagnostics and development overlays.
+
+Security boundary: none; this changes no authentication, authorization, secret handling, mutation request, backend state, or error text.
+The operational boundary is expected API rejection → mutation owner's inline error state → settled confirmation outcome, with unexpected synchronous or post-success programming errors left outside the rejection consumer.
+
+Exact scope:
+
+- Add a narrow public discriminated outcome in `use-confirm-mutation.ts`: `{ status: "success", result: TResult } | { status: "error" }`.
+- Wrap only the configured raw `mutationFn` call in a private capture step that converts its synchronous throw or rejected request promise into an internal error outcome carrying the error for inline mapping.
+- In TanStack `onSuccess`, map an internal request-error outcome through `describeApiError` and schedule the inline error without invalidation or success callback; for a success outcome, preserve exact invalidation and `opts.onSuccess` ordering.
+- Retain TanStack `onError` for failures thrown by invalidation or `opts.onSuccess`, and do not catch the resulting `mutateAsync` rejection; post-request callback/programming failures remain global diagnostics rather than expected API failures.
+- Change `UseConfirmMutationResult.confirm` to return the public outcome promise after clearing the prior message, and update its contract comment.
+- Claim only that inline error state is recorded/scheduled before the error outcome resolves; React commit of the alert may occur afterward.
+- Preserve all eight simple hook-backed `ConfirmDialog` callbacks unchanged: they may discard the now-fulfilling expected-request outcome promise.
+- Update the two hook result consumers with an explicit error-outcome early return before reading result data:
+  - store deletion preserves cleanup-hint/close behavior only after success;
+  - key rotation preserves one-time key reveal only after success.
+- In each direct `mutateAsync` path, put only the `await mut.mutateAsync()` expression in `try/catch`, return after its existing `onError` schedules the inline message, and leave blocker handling, invalidation, close, and every subsequent success statement outside the catch:
+  - resource deletion preserves blocker/dual-invalidation/close behavior only after success;
+  - wrapper/resource-pair deletion preserves blocker/invalidation/close behavior only after success.
+- Do not add a blanket rejection catch in `ConfirmDialog`; its event boundary remains generic, while every current expected request rejection is consumed by the owner that also controls inline error state.
+- Add focused hook tests that prove:
+  - success returns the exact result, performs the requested invalidations, calls `onSuccess`, and leaves no inline error;
+  - rejected raw mutation resolves to the error outcome after scheduling the mapped inline message and does not call success/invalidation;
+  - a retry clears the old inline message, can succeed, and returns the success result;
+  - an intentionally discarded `void confirm(...)` failure installs a window `unhandledrejection` collector before invocation, records without `preventDefault()`, drains a `setTimeout(..., 0)` macrotask, asserts the inline alert and an empty collector, and removes the listener in `finally`;
+  - rejection from invalidation and from `opts.onSuccess` still rejects `confirm` rather than becoming an error outcome.
+- Extend result-consumer tests:
+  - store-page rotation rejection keeps the rotation dialog open, restores/re-enables the Rotate key button, renders the exact inline error, and never opens key reveal;
+  - resource-delete rejection keeps the dialog open, restores/re-enables Delete, renders the exact inline error, and performs no invalidation/close;
+  - a new delete-pair matrix covers soft refusal with blockers/no invalidation/no close, success with exactly one invalidation/close, and rejected mutation with exact inline error/retained dialog/re-enabled Delete/no invalidation/no close.
+- Add a configured `desktop-1280` Chromium scenario against the real backend and SPA that:
+  - installs both `page.on("pageerror")` and an init-script `unhandledrejection` collector before the first navigation without calling `preventDefault()`;
+  - intercepts exactly one request with method `DELETE`, pathname `/v1/admin/stores/default`, and query `force=false`, continues every nonmatching request, and returns HTTP 503 JSON `{ "code": "synthetic_confirmation_failure", "message": "Synthetic confirmation failure." }`;
+  - opens the real default-store delete confirmation, submits it, observes exact inline text `Synthetic confirmation failure.`, retained dialog, and restored enabled button labelled exactly `Delete`;
+  - waits one browser macrotask and requires both global diagnostic collectors to remain empty.
+- State this as a synthetic intercepted mutation failure through the real SPA/backend fixture, not a real backend DELETE rejection or an application-wide clean-diagnostics result.
+- In the new hook test, add an executable Node-filesystem inventory that recursively scans `web/src`, excludes test files, and asserts the exact path sets for ten production `useConfirmMutation` users, eleven production `ConfirmDialog` users, two direct confirmation `mutateAsync` paths, two hook result-outcome guards, and two direct narrow catches before success-data handling; also assert no blanket catch was added to `ConfirmDialog` and no global rejection suppression exists in production.
+- The focused hook-test command is the exact executable static-inventory command and must fail on a missing, extra, or unguarded production caller.
+- Record the focused unit/browser/static evidence and limits in `docs/testing.md`.
+
+Expected source/test/documentation allowlist:
+
+- `web/src/hooks/use-confirm-mutation.ts`
+- new `web/src/hooks/use-confirm-mutation.test.tsx`
+- `web/src/pages/stores/dialogs/delete.tsx`
+- `web/src/pages/stores/dialogs/rotate-key.tsx`
+- `web/src/pages/secrets/dialogs/delete-resource.tsx`
+- `web/src/pages/secrets/dialogs/delete-resource.test.tsx`
+- `web/src/pages/wrapper-permissions/dialogs/delete-pair.tsx`
+- new `web/src/pages/wrapper-permissions/dialogs/delete-pair.test.tsx`
+- `web/src/pages/stores.test.tsx`
+- new `web/e2e/confirmation-errors.spec.ts`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-048 removes the historical expected-confirmation-rejection diagnostic leak for the complete current ten-hook/two-direct-mutation inventory.
+- F-037's store deletion and dialog-state behavior, F-049's backend response redaction, F-054's broader log-hygiene evidence, key-custody warnings, soft-refusal blockers, and every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no backend/API/OpenAPI, request/response, error mapping/copy, retry count, mutation success, pending state, query key/invalidation, dialog close/disable, blocker, key reveal/custody, store/resource/pair state, authentication/authorization, or security-boundary behavior change;
+- no blanket `window`, React, TanStack, `ConfirmDialog`, router, or application-wide rejection suppression; no consumption of invalidation/`opts.onSuccess`, synchronous callback, success-result processing, or unrelated promise failures;
+- no form-dialog/profile/login/logout/confirmation-danger flow, toast, telemetry, console logging, error reporting service, global error boundary, or F-049 response-content work;
+- no Playwright fixture/config/project, dependency/lockfile, generated API/schema, committed build output, Rust/Nix/VM/privileged-chain, later finding, Opportunity, or broad async refactor;
+- no cross-browser, mobile-browser, tablet, every-API-error, every-event-handler, every-promise, or application-wide clean-console claim from one browser scenario.
+
+Validation commands and evidence:
+
+- `cd web && npm test -- src/hooks/use-confirm-mutation.test.tsx src/components/confirm-dialog.test.tsx src/pages/stores.test.tsx src/pages/secrets/dialogs/delete-resource.test.tsx src/pages/wrapper-permissions/dialogs/delete-pair.test.tsx`
+- `cd web && npm test`
+- `cd web && npm run build`
+- build the exact Nix `web-build`, create a fresh temporary `CARGO_TARGET_DIR`, use `UNDERWRAP_WEB_DIST` to build `underwrap-backend` there, and resolve that changed-tree binary to the exact absolute `UNDERWRAP_BACKENDD_BINARY`
+- inside `nix develop`, run `cd web && npx playwright test e2e/confirmation-errors.spec.ts --project=desktop-1280` with that exact binary
+- inside `nix develop`, run the complete `cd web && npm run test:e2e` with the same exact binary
+- executable count-pinned caller/result-guard/direct-catch inventory plus browser collector/exact-interception/no-global-suppression, allowlist, and generated-artifact checks
+- remove the temporary Cargo target, `result`, generated `web/dist` contents while preserving any tracked marker, ignored generated schema, Playwright results/report/traces/screenshots, and coverage output
+- `git diff --check`
+
+A VM run is not required because no NixOS/module, identity, namespace, capability, privileged chain, backend behavior, API contract, or security mechanism changes.
+Focused Vitest checks exercise the shared outcome contract, configured Chromium observes one real confirmation flow's global diagnostics, and static inventory covers current production consumers without claiming application-wide rejection handling.
+
+- [x] Revalidate F-048 against the current hook contract, all ten hook users, all eleven production `ConfirmDialog` users, both direct `mutateAsync` confirmation paths, four result consumers, current unit/browser coverage, and historical report/handover. Evidence: direct CodeGraph/source/caller inspection on 2026-08-30; all twelve current mutation-confirmation paths can still expose normal API rejection, and no unhandled-rejection test exists.
+- [x] Obtain fresh independent approval of the settled outcome design, exact complete caller updates, unit/browser/static evidence, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews found that settling the whole `mutateAsync` promise would also suppress invalidation/`opts.onSuccess` failures and required raw-`mutationFn` capture, scheduled-not-rendered error-order wording, narrow direct catches, rotate/resource/pair rejection matrices, literal discarded-promise and exact browser collectors/interception, executable path-set inventory, fresh target provenance, and cleanup precision. The plan incorporated every correction; bounded final implementation and evidence dispositions passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before the rejection-consumption fix.
+- [ ] Implement and independently review the settled outcome, all four guards, unit/browser/static evidence, and testing documentation without suppressing unrelated errors.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-048 completion/cross-effects before promoting F-049.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-048 — consume expected confirmation mutation rejections.
 - [ ] F-049 — redact internal backend error chains from responses.
 - [ ] F-050 — remove stale master-key configuration from Playwright fixtures.
 - [ ] F-051 — remove stale workflow and temporal wording from published docs.
