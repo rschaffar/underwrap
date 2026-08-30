@@ -1815,7 +1815,12 @@ The affected shared lexical rule and pure environment planner are exercised dire
   - Repository-wide bounded discovery found no other high-confidence private dead production deletion independent of current or later findings.
   - Forced-name authority/tests/docs are the F-044 fix; env reorder/refactor, F-045/F-050/F-052/F-054, dependencies, formatting, and cosmetic churn are rejected.
   - Cleanup is exhausted after cleanup 1.
-- [ ] Implement, independently review, validate, and commit cleanup 1 before forced-name enforcement.
+- [x] Implement, independently review, validate, and commit cleanup 1 before forced-name enforcement.
+  - Commit: `49ee3a7d06b39cbfd3ac8cada25e2fd602a3efce` (`refactor: remove unused ResourceSlot FromStr`).
+  - Exact diff: one approved file, seven deletions, SHA-256 `98aaaaddc3828f74d2f26092895bba724286e60a29da706154d0d456b169f782`; live `ResourceSlot::parse` and every runtime/Serde/schema behavior remain.
+  - Initial independent review confirmed reachability and semantics but withheld on unavailable Git/test evidence; after controller exact diff and validation, final re-review passed with no gap.
+  - Validation passed 119 full and 63 isolated local-ABI protocol tests, full/local denied-warning Clippy, workspace all-target consumer check, and rustfmt (protocol log SHA-256 `7a93390d0f811df785d2c0ae4d33b5542cd34b70a94bac523b7580be878dac74`; workspace log `8a2933ae25e59188be988ea6218274cb341f13d8bc4b533f57b12ececd4be8b3`; exact Nix web prerequisite `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`).
+  - Controller checks passed exact trait-consumer absence, live parser use, one-file scope, `git diff --check`, checksum, no artifact, and clean post-commit tree. External downstream use remains unknown and accepted under greenfield posture; no F-id changed.
 - [ ] Implement and independently review the shared forced-name rejection and complete unit/integration evidence without changing ordinary precedence.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-044 completion/cross-effects before promoting F-045.
 
