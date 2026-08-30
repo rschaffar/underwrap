@@ -255,6 +255,7 @@ tickets/                     retained historical review and work records
 - `crates/underwrap-secretsd/src/main.rs` — one-shot canonical initialization, in-memory state, and private generation publication
 - `crates/underwrapd/src/peer_auth.rs` — effective-GID peer authentication
 - `crates/underwrapd/src/wrapper_flow/` — wrapper request flow
+- `crates/underwrapd/src/wrapper_flow/read.rs` — secret-bearing backend-open decoding, complete typed resource parsing, conditional env-name validation, and original-byte channel caching
 - `crates/underwrapd/src/wrapper_resource_channel.rs` — scoped resource channel
 - `crates/underwrapd/src/backend_client.rs` — three-endpoint mTLS client
 - `crates/underwrap-backend/src/runtime_api/` — runtime policy enforcement
@@ -315,6 +316,10 @@ test.
 - Never put secret material in argv, between-stage environment variables, shell command lines, or logs.
   The stage handoff uses fd 3.
 - Zeroize secret buffers after use where practical.
+- Treat changes to the resource schema, backend-open response decoding, env-name validation, secret-bearing logging or cloning, original-byte cache lifetime, Checkout copies, or related buffer ownership as security-sensitive.
+- Mandatory review must cover HTTP response decoding in `crates/underwrapd/src/backend_client.rs`, daemon parsing and cache assembly in `crates/underwrapd/src/wrapper_flow/read.rs`, channel handling in `crates/underwrapd/src/wrapper_resource_channel.rs`, the fd-20 protocol codec in `crates/underwrap-protocol/src/message/wrapper_resource.rs`, and the `underwrap-ns` receiver in `crates/underwrap-ns/src/resource_channel.rs` together.
+- Resource-schema or writeback changes must also cover backend runtime finalize in `crates/underwrap-backend/src/runtime_api/invocations.rs`.
+- Libsecret schema changes must also cover the secretsd publication validator in `crates/underwrap-secretsd/src/publication.rs`, the host publication validator in `crates/underwrap-ns/src/publication.rs`, and their shared strict publication validation in `crates/underwrap-protocol/src/resource_blob.rs`, as applicable.
 - Keep the runtime API at wrapper/resource vocabulary. A runtime client must
   never be able to name `control/*` or a storage key.
 

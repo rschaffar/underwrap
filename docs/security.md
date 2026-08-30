@@ -165,7 +165,7 @@ underwrap does not protect against:
 ### 1. Underwrap-managed durable brokered resource material uses backend storage
 
 Active resource values are written through `underwrap-backend`'s selected `StorageBackend`.
-The frontend daemon caches one opaque canonical resource blob in memory for the lifetime of a resource channel.
+The frontend daemon fully parses one authorized decoded resource and caches its original bytes in memory for the lifetime of the scoped resource channel as described in [Daemon open parsing and cache](#daemon-open-parsing-and-cache).
 
 Encrypted rotation can retain `backup/` and `stage/` sibling workspaces outside the active canonical `StorageBackend` path and APIs.
 These workspaces contain ciphertext that remains decryptable with the corresponding generation key, including stale resource values from an earlier generation.
@@ -553,11 +553,50 @@ Secret buffers are zeroized after handoff where practical.
 
 ## Resource projections
 
-Every resource is one JCS-canonical JSON blob containing env, files, and
-libsecret sections. Its inclusive complete-resource limit is 2,097,152 bytes;
-this covers the canonical blob itself, independently of HTTP base64/JSON and
-local wire envelopes. The daemon treats it as opaque canonical bytes and caches
-it only for the scoped resource channel.
+Every resource is one JCS-canonical JSON blob containing env, files, and libsecret sections.
+Its inclusive complete-resource limit is 2,097,152 bytes, independently of HTTP base64/JSON and local wire envelopes.
+
+### Daemon open parsing and cache
+
+For a successful invocation-open response, reqwest first buffers the complete HTTP body in ordinary non-zeroizing storage, and Serde then allocates the owned response strings, including `blob_b64`.
+The daemon applies no application-level HTTP response-body cap, and the admitted call's 30-second deadline covers body buffering and response deserialization.
+A non-success response is likewise read as uncapped error text, but that path does not parse a resource blob.
+
+`underwrapd::wrapper_flow::read` standard-base64-decodes the complete owned `blob_b64` string before checking the decoded resource size.
+`ResourceBlob::from_canonical_bytes` first enforces the inclusive 2,097,152-byte decoded limit and then Serde parses the complete typed JSON.
+That parse allocates all env, files, and libsecret keys and metadata, base64-decodes every secret value into an owned `SecretBytes`, and enforces the safe-integer bound on every present collection and item `created` and `modified` timestamp during traversal.
+Only after the complete typed parse does it require resource schema version 1.
+
+Unknown fields are ignored by the outer invocation-open response DTO, `ResourceBlob`, and nested resource structs.
+Known duplicate struct fields are rejected by the derived Serde visitors, duplicate keys within map-valued objects are not independently rejected and later entries replace earlier entries, and omitted sections carrying `serde(default)` become empty.
+When env projection is enabled, the daemon additionally validates every parsed env name against the reserved and hardening grammar.
+When env projection is disabled, it does not validate env names, although the complete typed resource is still materialized.
+
+The daemon does not independently compare the input with JCS reserialization and therefore does not prove exact canonical bytes.
+Accepted noncanonical forms, ignored fields, defaulted omissions, and duplicate map keys remain in the original bytes later cached even though the temporary typed representation is normalized.
+The trusted backend normally reparses storage and JCS-reserializes before open, but it remains the policy authority and that behavior is not a daemon-side canonicality guarantee.
+
+Daemon open applies no files traversal, routing, overlap, or projectability semantics.
+For libsecret it applies the four timestamp safe-integer bounds but no temporal relationships, future-time plausibility, identifier or path shapes, alias-reference checks, or publication-composition semantics.
+Daemon open enforces only the complete-resource 2-MiB limit, not the independent inclusive 1-MiB canonical libsecret publication-body limit.
+Namespace code later canonicalizes the embedded libsecret section, and secretsd enforces the publication limit while constructing each generation frame.
+A section can therefore pass daemon open but fail generation-zero publication and readiness when its canonical publication body exceeds 1 MiB.
+Backend resource handling, namespace files planning, secretsd publication, and host publication validation retain their documented semantic authority.
+
+The temporary typed `ResourceBlob` remains live while `ChannelContext` is assembled, overlapping both the owned `blob_b64` string and the decoded `blob_bytes` cache.
+Assembly moves the original decoded bytes into `ChannelContext.cached_blob` as an ordinary non-zeroizing `Vec<u8>` for the scoped channel lifetime while the typed resource remains live.
+Only when `open_invocation` returns does the typed `ResourceBlob` drop, and its parsed `SecretBytes` vectors zeroize then.
+Outer HTTP, Serde, and base64 strings and buffers, the decoded cache, Checkout and frame vectors, receiver buffers, metadata allocations, allocator remnants, dependency-internal allocations, and operating-system or socket copies have no comprehensive zeroization guarantee.
+
+Checkout copies `cached_blob` into `CheckoutOk.blob`, and wire encoding copies it again into the complete payload vector.
+The receiver bounds the outer frame at the resource limit plus six envelope bytes before frame allocation, checks the inner 2-MiB length, and only then copies the inner blob into the decoded response.
+On the sender, `cached_blob.to_vec()` occurs before wire encoding rechecks the already trusted and capped cache length.
+These ordinary vectors are not zeroizing.
+The daemon serves the original decoded cached bytes verbatim together with the backend-supplied writable hint.
+
+At Checkin, the backend rechecks policy and writability, base64 decoding, decoded size, complete typed parsing including timestamp bounds, schema version, exact JCS bytes, and env immutability.
+Finalize does not add files routing or projectability checks or strict libsecret publication semantics.
+The backend remains trusted and is the policy and brokered-resource persistence authority.
 
 The backend and resource format preserve arbitrary secret bytes. The browser
 admin surface is intentionally text-only: writes convert JavaScript text to

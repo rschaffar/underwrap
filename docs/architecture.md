@@ -89,12 +89,10 @@ The detailed sequence is:
 3. `underwrapd` reads the peer's effective GID, validates the wrapper name
    against root-owned config, resolves that wrapper's resource, and asks the
    backend to open the invocation.
-4. The backend derives the runtime client instance from mTLS, resolves the
-   wrapper/resource pair and permission row, evaluates the permission mode, and
-   returns the canonical resource blob plus its current writable flag.
-5. `underwrapd` chooses the target path: the configured target for `Real`, or
-   `underwrap-debug-tool` for an authorized `Debug` invocation. It creates one
-   scoped resource socketpair and sends the wrapper end with `SCM_RIGHTS`.
+4. The backend derives the runtime client instance from mTLS, resolves the wrapper/resource pair and permission row, evaluates the permission mode, and returns the resource as an owned HTTP JSON/base64 response plus its current writable flag.
+5. `underwrapd` buffers and deserializes the complete success body without an application-level HTTP cap, decodes the outer base64 before applying the decoded 2-MiB limit, fully parses the typed resource including inner `SecretBytes` and safe timestamps before checking schema version 1, and conditionally validates env names only when env projection is enabled.
+   While assembling the scoped channel context, it moves the original decoded bytes into the channel cache; the temporary typed resource remains live until `open_invocation` returns.
+   It then chooses the configured target for `Real` or `underwrap-debug-tool` for an authorized `Debug` invocation, creates one scoped resource socketpair, and sends the wrapper end with `SCM_RIGHTS`.
 6. `underwrap-exec` permanently drops its setgid identity, relocates every
    child-carried descriptor above the fixed slots, maps the resource channel to
    fd 20 and a private parent-liveness reader to fd 21, and sends the
@@ -139,8 +137,11 @@ The detailed sequence is:
     re-evaluates policy and, for a writeback, re-checks writability and env
     immutability before persisting.
 
-The runtime API is stateless: finalize does not rely on backend-side open-session
-state.
+The daemon's complete typed parse is not a daemon-side proof of exact JCS bytes because accepted noncanonical forms, ignored fields, defaulted omissions, and duplicate map keys remain in the original-byte cache.
+Daemon open adds conditional env-name validation but no files projectability semantics and no strict libsecret publication semantics beyond safe timestamp integers; namespace planning and the later independent 1-MiB generation publication/readiness boundary remain authoritative for those concerns.
+The temporary typed resource remains live through scoped channel-context assembly and drops only when `open_invocation` returns, at which point its parsed `SecretBytes` zeroize, while the HTTP/base64 storage, original-byte cache, Checkout/frame copies, and receiver buffers are ordinary non-zeroizing allocations.
+
+The runtime API is stateless: finalize does not rely on backend-side open-session state.
 
 ### Daemon runtime-client concurrency
 

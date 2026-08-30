@@ -246,6 +246,40 @@ Workspace tests cover:
   backpressure;
 - real daemon/backend integration flows.
 
+### Daemon resource-open parser evidence
+
+The focused protocol resource-blob tests cover empty and populated typed round trips, byte-stable canonical re-encoding, independently built equality, sorted map serialization, Unicode, arbitrary non-UTF-8 secret bytes, empty sections, unknown schema rejection, garbage JSON rejection, inclusive complete-resource acceptance at one byte below and exactly 2 MiB, and size-before-parse plus serialization rejection at one byte above 2 MiB.
+The timestamp vectors below add exact safe-integer field and parse-order coverage.
+Strict libsecret publication tests separately cover exact canonical bytes, defaults and unknown or duplicate struct fields at that stricter boundary, identifier and alias-reference semantics, and the inclusive 1-MiB publication cap; they do not turn those checks into daemon-open semantics.
+
+The current `underwrapd` tests decode valid invocation-open `Deny` responses in the runtime-client concurrency fixtures and exercise the request deadline and admission behavior, but they do not drive a secret-bearing `Allow` response through `wrapper_flow/read.rs`.
+The integration runner exercises valid backend `Allow` responses through the real daemon parser, original-byte channel cache, Checkout framing, and receiver on ordinary service-mode reads, a resource above the generic 64-KiB frame limit, exact-2-MiB Checkout and Checkin, writable and read-only finalization, and follow-up Checkout.
+The direct runtime API integration tests additionally pin backend open and finalize behavior, but direct endpoint tests are not daemon parser tests.
+
+There is no dedicated daemon malformed-backend-open matrix for invalid outer JSON, malformed or oversized `blob_b64`, invalid typed resource JSON, unknown/default/duplicate-field behavior, conditional env-name rejection, noncanonical accepted bytes, or the 1-MiB libsecret generation-readiness consequence.
+The repository has no dedicated cargo-fuzz or libFuzzer harness, fuzz target, corpus, or recorded fuzz execution for this boundary, and it does not use proptest or quickcheck here.
+The valid-flow and protocol vectors therefore do not establish malformed-input or fuzz completeness.
+
+Use these focused tests and static parser/copy inventories when reviewing this boundary:
+
+```bash
+cargo test -p underwrap-protocol resource_blob::tests
+cargo test -p underwrapd
+./crates/integration-tests/run
+rg -n 'open_request|open_invocation|blob_b64|blob_bytes|from_canonical_bytes' \
+  crates/underwrapd/src/{backend_client.rs,wrapper_flow/read.rs}
+rg -n 'SecretBytes|cached_blob|CheckoutOk|read_canonical_resource_bytes|MAX_WRAPPER_RESOURCE_FRAME_SIZE' \
+  crates/underwrap-protocol/src crates/underwrapd/src/wrapper_resource_channel.rs
+rg -n 'cargo-fuzz|libFuzzer|fuzz_target!|proptest|quickcheck' \
+  --glob '!docs/**' --glob '!tickets/**' .
+find . \( -path ./.git -o -path ./target -o -path ./result \) -prune -o \
+  -type d \( -name fuzz -o -name fuzz_targets -o -name corpus \) -print
+```
+
+The static inventory follows the owned HTTP DTO and base64 string, decoded resource vector, temporary typed `SecretBytes`, original-byte cache, Checkout copy, encoded payload, bounded receiver frame, and decoded inner copy.
+`SecretBytes` vectors in the temporary parsed resource zeroize on drop, but tests do not instrument post-drop memory and the ordinary HTTP/base64 storage, cache, Checkout/frame vectors, receiver buffers, metadata, allocator remnants, dependency allocations, and operating-system copies remain outside that mechanism.
+This evidence does not establish comprehensive zeroization or resolve the broader copy-erasure gap.
+
 Protocol resource-blob timestamp tests exercise exactly 32 boundary outcomes: four fields (`Collection.created`, `Collection.modified`, `Item.created`, and `Item.modified`) × two containers (`ResourceBlob` and `LibsecretSection`) × typed maximum encode success, independently formatted raw maximum decode success, typed maximum-plus-one encode rejection, and independently formatted raw maximum-plus-one decode rejection.
 Direct semantic-validation and strict-publication tests retain the same value-free error message, accept the inclusive maximum without temporal-order rules, and reject each field independently above the maximum.
 Mixed-defect tests pin complete-resource size before parsing, publication-body size before parsing, timestamp decoding before schema, canonical, or publication-semantic checks, and timestamp encoding before a post-serialization resource-size check.
