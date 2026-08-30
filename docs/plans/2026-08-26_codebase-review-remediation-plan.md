@@ -2094,10 +2094,91 @@ Typed production-handler tests cover the malformed-value boundary directly, and 
   - F-046 is resolved at the typed production-handler boundary. F-012, F-039, and F-045 remain resolved; U-004 is narrowed but remains unresolved for D-Bus wire behavior and broader Secret Service conformance; every other finding, Opportunity, and unresolved item remains unchanged.
   - Final closure review passed the implementation/test/documentation match, correction ledger, cross-finding boundaries, no-VM rationale, claim limits, and F-047 promotion using the controller-verified commit, scope, checksum, clean-tree, and validation facts.
 
+### Current iteration — F-047 profile session-revocation guidance
+
+F-047 remains directly reproducible at clean HEAD `ed217d7426d88189a867940e1aef25cdc8b2068b`.
+
+The Profile page says a self-service password change leaves the operator's other sessions unrevoked and tells the operator to sign out elsewhere.
+The backend instead binds each admin session to the operator's password-hash bytes, persists the new hash before attempting to refresh the submitting session, and rejects every unrefreshed old-hash session when that session next accesses the admin API.
+
+Consequence: an operator can incorrectly conclude that rotating a password does not revoke another possibly compromised session and may look for a nonexistent remote sign-out action instead of relying on the actual lazy admin-API invalidation boundary.
+
+Security boundary:
+
+- Protected asset: backend administrative authority after password rotation.
+- Attacker: a holder of another pre-change session cookie for that operator.
+- Boundary direction: attacker-held stale cookie → admin API request; the authentication layer reloads the persisted operator record, compares its password hash with the session auth hash, and flushes a mismatch before authenticated handling.
+- The self-service handler separately attempts to refresh only the submitting session to the new hash after persistence.
+- Change direction: correct operator/OpenAPI guidance and add one real-backend two-context witness without changing authentication, session storage, password mutation, current-session refresh, cookie, CSRF, routing, or authorization behavior.
+
+Exact scope:
+
+- Replace the Profile guidance with: “Underwrap attempts to refresh this session after the change so it can stay signed in. Other sessions issued before the change are invalidated when they next access the admin API. If this session cannot be refreshed, sign in again with the new password.”
+- Preserve the form, password validation, mutation, success/error handling, and all API runtime behavior unchanged.
+- Change only the password endpoint's HTTP 200 OpenAPI description from the false unconditional “new session issued” claim to “Password changed; submitting-session refresh attempted.” and regenerate the committed OpenAPI document.
+- Refine the Users/Profile section in `docs/admin-ui.md` to distinguish the submitting self-service session's fallible refresh from lazy admin-API invalidation of every other pre-change session; retain the separate rule that password reset and user deletion invalidate all affected sessions when they next access the admin API.
+- Refine `docs/security.md` with the same mechanism and failure qualification; do not claim static SPA/asset access triggers revocation, immediate push revocation, an explicit session-store walk, guaranteed current-session retention, persistent sessions, or server-side enumeration of every session.
+- Strengthen the existing bootstrap-admin password-change scenario in `web/e2e/profile.spec.ts` rather than adding a duplicate backend lifecycle:
+  - create a second independent browser context with `ignoreHTTPSErrors: true` and close it in `finally`;
+  - authenticate the same operator in both contexts and require HTTP 200 plus exact `{ username: ADMIN_USERNAME }` from the second context's pre-change `whoami`;
+  - navigate its page to `about:blank` and await/assert that exact URL before mutation so the deliberate post-change `whoami` is its first backend request after the change;
+  - assert the exact normalized corrected guidance in the submitting context, change the password there, and observe the existing success status;
+  - require HTTP 200 plus exact `{ username: ADMIN_USERNAME }` from the submitting context's next `whoami`, proving successful refresh in this observed run;
+  - require HTTP 200 plus exact `{}` from the other context's first post-change `whoami`, then require `/profile` navigation in that context to redirect to login;
+  - retain the existing old-password rejection and new-password login round trip in the submitting context.
+- Do not inspect, print, compare, or record either session-cookie value; context separation plus independent login and exact before/after `whoami` responses are the evidence.
+- Browser request observations may retain only method, URL, status, and the asserted non-secret `whoami` body; failure artifacts are removed after diagnosis.
+- Record the exact configured-Chromium two-context evidence and its limits in `docs/testing.md`.
+
+Expected source/test/documentation allowlist:
+
+- `web/src/pages/profile.tsx`
+- `web/e2e/profile.spec.ts`
+- `crates/underwrap-backend/src/admin_api/auth/mod.rs` — HTTP 200 OpenAPI description only
+- `crates/underwrap-backend/openapi.json` — generated matching description only
+- `docs/admin-ui.md`
+- `docs/security.md`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-047 closes the historical V-009 two-context gap for one self-service password change in the configured `desktop-1280` Chromium project against one real backend.
+- F-021's hard-navigation sign-out behavior remains resolved and unchanged; this finding does not add remote sign-out or session enumeration.
+- F-048 confirmation rejection handling, F-049 response redaction, F-050 fixture cleanup, F-053 tablet discovery, F-058 tool refresh, and every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no backend runtime/session behavior, endpoint/method/status/body/security schema, session-auth-hash, password hashing/policy/storage, login/logout/whoami/password-change control flow, current-session refresh/error policy, cookie, CSRF, rate limit, audit, user deletion/reset, role, authorization, or security-boundary behavior change;
+- no OpenAPI change beyond the one password-success description and its generated document;
+- no immediate/server-push revocation, static-asset revocation claim, session-store walk/list/revoke endpoint, remote device/session UI, session identifier exposure, cookie inspection, compromised-new-password scenario, concurrent password-change race, restart/persistence claim, or cross-backend/session-store claim;
+- no router/query/cache, form/schema, mutation, error-message, layout/style/accessibility, Playwright fixture/config/project, dependency/lockfile, generated web API/schema, committed build output, Nix/VM/privileged-chain, later finding, Opportunity, or unrelated refactor;
+- no cross-browser, mobile-browser, tablet, instant-revocation timing, all-admin-route, all-session, or general OWASP-conformance claim from the one browser scenario.
+
+Validation commands and evidence:
+
+- `cd web && npm test`
+- `cd web && npm run build`
+- `system=$(nix eval --impure --raw --expr builtins.currentSystem); web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build"); UNDERWRAP_WEB_DIST="$web_dist" cargo test -p underwrap-backend auth::tests::session_auth_hash_changes_when_password_rotates; UNDERWRAP_WEB_DIST="$web_dist" cargo test -p underwrap-backend --test openapi_export openapi_spec_round_trips; UNDERWRAP_WEB_DIST="$web_dist" cargo build -p underwrap-backend`
+- resolve the freshly built binary to an absolute path and run `cd web && npx playwright test e2e/profile.spec.ts --project=desktop-1280` inside `nix develop` with exact `UNDERWRAP_BACKENDD_BINARY`
+- run the complete `cd web && npm run test:e2e` inside `nix develop` with the same exact `UNDERWRAP_BACKENDD_BINARY`
+- inspect focused trace/request evidence only after a failure; never retain or quote cookie values
+- static exact-copy/OpenAPI/docs-target, two-context/`finally`/first-admin-request/exact-response, no-cookie-inspection, allowlist, and generated-artifact checks
+- remove `result`, generated `web/dist` contents while preserving any tracked marker, ignored generated schema, Playwright results/report/traces/screenshots, and coverage output
+- `git diff --check`
+
+A VM run is not required because no NixOS/module, identity, namespace, capability, privileged chain, backend executable behavior, HTTP wire behavior, or session mechanism changes.
+The real-backend browser scenario directly observes the changed guidance and one current/stale session pair in separate contexts; source and focused backend tests retain mechanism evidence without claiming complete admin-route or session-concurrency coverage.
+
+- [x] Revalidate F-047 against current Profile copy, password-change refresh order/failure policy, auth-hash invalidation, Users/Profile and security documentation, unit/browser coverage, and historical report/handover. Evidence: direct CodeGraph/source/test/documentation inspection at clean HEAD on 2026-08-30; the opposite copy persists, existing hash-change evidence does not exercise two sessions, and the current profile scenario proves only password round trip.
+- [x] Obtain fresh independent approval of exact copy, current/other session semantics, two-context first-request evidence, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews required admin-API qualification, an attacker-facing boundary direction, correction of the fallible-refresh OpenAPI claim, exact status/JSON and `about:blank` browser assertions, `finally` cleanup, exact binary provenance, OpenAPI drift validation, and artifact preservation. The plan incorporated every correction; fresh implementation/security and browser/evidence re-reviews passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before the guidance/evidence correction.
+- [ ] Implement and independently review corrected guidance, two-context browser evidence, and bounded documentation without changing session behavior.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-047 completion/cross-effects before promoting F-048.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-047 — correct profile session-revocation guidance.
 - [ ] F-048 — consume expected confirmation mutation rejections.
 - [ ] F-049 — redact internal backend error chains from responses.
 - [ ] F-050 — remove stale master-key configuration from Playwright fixtures.
