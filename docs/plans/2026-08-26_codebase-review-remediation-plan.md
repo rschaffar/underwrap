@@ -1961,7 +1961,7 @@ Direct production-handler tests with scripted publication outcomes cover the cha
   - F-045 is resolved. F-008, F-012, and F-039 remain resolved; U-004 is narrowed but remains unresolved; F-046 and every other finding/Opportunity/unresolved item remain unchanged. F-046 is next.
   - Final closure review passed commit identity, exact scope/stat/checksum, validation ledger, corrected-attempt classifications, historical alignment, no-VM rationale, and F-046 promotion. The controller then independently reconfirmed plan-only status, commit stat/hash, all seven retained log hashes, and `git diff --check`.
 
-### Current iteration — F-046 typed CreateItem properties
+### Completed iteration — F-046 typed CreateItem properties
 
 F-046 remains directly reproducible at clean HEAD `88daeb19574103add2b6a59aa94c29b27598c8e1`.
 
@@ -2077,8 +2077,22 @@ Typed production-handler tests cover the malformed-value boundary directly, and 
   - Repository-wide bounded discovery found no other high-confidence private dead production deletion independent of current or later findings.
   - Property parsers, ordering, tests, and docs are the F-046 fix; F-047 and broad Secret Service work remain separate.
   - Cleanup is exhausted with no accepted unit and no cleanup commit; the approved CreateItem correction may begin.
-- [ ] Implement and independently review exact property typing and complete no-publication/registration/replacement evidence without changing valid matching behavior.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-046 completion/cross-effects before promoting F-047.
+- [x] Implement and independently review exact property typing and complete no-publication/registration/replacement evidence without changing valid matching behavior.
+  - Fix commit: `4ca869fb1e912a2c4651a6c44b8273220edc6401` (`fix: reject mistyped CreateItem properties`).
+  - Two private parsers now preserve absent defaults but require exact outer `s` and `a{ss}` signatures before conversion, validate Label before Attributes and every side effect, and return fixed value-free `InvalidArgs` for malformed known properties.
+  - The split 408/409/233-line test modules cover direct parser variants, both malformed replacement modes, missing-collection precedence, non-vacuous and enabled metadata tracing, absent/default/unknown properties, subset and vacuous replacement, nonmatching creation, exact accepted/publication state, and registration outcomes while retaining the existing ACK/REJECT tests.
+  - Post-correction production/security review passed without findings; the independent test/evidence review found no source, test, or documentation correction and left only exact Git scope confirmation, which the controller supplied.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-046 completion/cross-effects before promoting F-047.
+  - Exact committed diff: six approved paths, 749 insertions and 14 deletions, SHA-256 `ae4499f63355a84c6a345dadf5007eeace80f0f80cefee7beeb6851af3a070cf`.
+  - Metadata-enabled malformed tests passed 2 rows; the complete collection module passed 16 tests; full secretsd passed 59; secretsd-store passed 23; protocol resource-blob passed 24; and namespace publication passed 15 (combined log SHA-256 `534e2f75df6b95ec16c73e821e665b612b333309a35aaad040a62d292f1cbd0d`).
+  - The packaged integration runner passed all 106 tests (`70f561a9bf0bc3277d5eb3cb705935924b83efc456b11bfdb5e70db50b64b88f`).
+  - Bounded workspace tests passed with exact Nix web artifact `/nix/store/q6j5j105c1y9ilcppwaph4y9j36wirrz-underwrap-web-dist-0.1.0` (workspace `bdd495661cf435f31f8881602a45b973dd25ef2fdaae9fa1a0d8e7a6226c5e41`; prerequisite `33fec8fdf10471630c29c0c98e6ebbe21fce3ccb07019bab8ff0fab74378da14`); workspace denied-warning Clippy and rustfmt passed (`84d68ca6a75c3946cf5286968d0b7f85cbbf864ddf163f3daa6b1c29f172a173`); and Nix workspace-test passed (`a770bb15c4dfe9a61badda03d492885f63d9b5300b5875fe16b586daf2b60665`).
+  - Static validation proved exact signature-before-conversion checks, Label-before-Attributes and pre-side-effect ordering, the correct nested include, all three test-module size limits, and documentation targets (`0e69b4e8a40695f6a8459a864bc7e0f177a89768a9fa879143ac777005da4a4a`).
+  - Controller checks passed exact six-path scope, fixed value-free diagnostics, trace-sentinel absence, aggregate rather than overstated no-publication/registration claims, typed-handler documentation limits, no dependency/Nix/D-Bus-signature/privileged-chain/generated-artifact/later-finding change, `git diff --check`, checksum, and clean post-commit tree.
+  - The first controller composite stopped after successful tests and quality checks because its porcelain parser represented the new test directory as one untracked path; an exact tracked-plus-untracked inventory corrected the evidence script before Nix validation.
+  - Two static-check drafts imposed a stronger irrelevant ordering among post-validation operations and then searched for wording not used by the documentation; the corrected check proves the approved parser-before-each-side-effect relation and exact current documentation targets.
+  - F-046 is resolved at the typed production-handler boundary. F-012, F-039, and F-045 remain resolved; U-004 is narrowed but remains unresolved for D-Bus wire behavior and broader Secret Service conformance; every other finding, Opportunity, and unresolved item remains unchanged.
+  - Final closure review passed the implementation/test/documentation match, correction ledger, cross-finding boundaries, no-VM rationale, claim limits, and F-047 promotion using the controller-verified commit, scope, checksum, clean-tree, and validation facts.
 
 ### Remaining low queue
 
