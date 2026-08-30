@@ -74,13 +74,12 @@ caller-controlled values such as:
 - `DISPLAY` and `WAYLAND_DISPLAY`;
 - HTTP/HTTPS proxy variables.
 
-`envPassthrough` adds names; it cannot remove built-ins per wrapper in this
-release. Passing a path does not bypass DAC, but a reachable path/socket can
-steer behavior or provide an exfiltration channel.
+`envPassthrough` adds names; it cannot remove built-ins per wrapper.
+Passing a path does not bypass DAC, but a reachable path/socket can steer behavior or provide an exfiltration channel.
 
-If a helper's security claim requires the absence of one of these variables,
-the current wrapper environment model does not provide that guarantee. Do not
-document a stronger boundary than the implementation supplies.
+A helper's security claim can require the absence of one of these variables.
+The wrapper environment does not provide that guarantee.
+Do not document a stronger boundary than the implementation supplies.
 
 ## 6. Are arguments parsed like an API?
 

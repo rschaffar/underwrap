@@ -196,10 +196,11 @@ persistence rules.
 The target starts from `env_clear()`.
 
 The built-in passthrough set includes basic user, terminal, locale, timezone,
-temporary-directory, display, SSH-agent, and proxy variables. It is fixed for
-all wrappers in this release. `envPassthrough` can add names; it cannot remove
-built-ins. `PATH` is not a built-in and should be set through a trusted
-`envSet.PATH` when required.
+temporary-directory, display, SSH-agent, and proxy variables.
+It is fixed for all wrappers.
+`envPassthrough` can add names; it cannot remove built-ins.
+`PATH` is not a built-in and should be set through a trusted `envSet.PATH` when
+required.
 
 Forced paths are:
 

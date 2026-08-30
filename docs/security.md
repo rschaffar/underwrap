@@ -546,9 +546,10 @@ such as:
 - HTTP/HTTPS proxy variables.
 
 `envPassthrough` can add names but cannot remove the built-in set per wrapper.
-Treat this as a first-release limitation when assessing a narrow helper. Passing
-a path-valued variable does not bypass normal DAC or namespace visibility, but
-it can still steer behavior when the referenced path or socket is reachable.
+Treat this as a limitation when assessing a narrow helper.
+Passing a path-valued variable does not bypass normal DAC or namespace
+visibility, but it can still steer behavior when the referenced path or socket
+is reachable.
 
 ### Dumpability, core dumps, and zeroization
 

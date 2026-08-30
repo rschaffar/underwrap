@@ -889,10 +889,8 @@ key on the wire.**
 
 ### Concurrency semantics
 
-`PlainBackend` and `EncryptedBackend` atomically replace one stored value, so a
-reader does not observe a partially written file or ciphertext. The backend
-does not currently provide a transaction, version, compare-and-swap primitive,
-or per-resource mutation lock above that storage operation.
+`PlainBackend` and `EncryptedBackend` atomically replace one stored value, so a reader does not observe a partially written file or ciphertext.
+The backend provides no transaction, version, compare-and-swap primitive, or per-resource mutation lock above that storage operation.
 
 Consequently, concurrent load-modify-save operations against the same resource
 or control document are last-writer-wins. This includes runtime finalize racing

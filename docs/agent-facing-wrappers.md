@@ -101,9 +101,9 @@ env entries.
 
 This blocks ambient `LD_PRELOAD`, `LD_LIBRARY_PATH`, caller `PATH`, and
 wrapper-control variable injection. The built-in passthrough still includes
-caller-controlled temporary-directory, display, SSH-agent, and proxy values and
-cannot be reduced per wrapper in this release. Include those surfaces in the
-helper review.
+caller-controlled temporary-directory, display, SSH-agent, and proxy values.
+It cannot be reduced per wrapper.
+Include those surfaces in the helper review.
 
 ### Dedicated target UID
 

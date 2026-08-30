@@ -42,9 +42,9 @@ Endpoint admission does not create generic Layer-7 proxy support. The backend
 derives the runtime client instance from the peer certificate on its own rustls
 connection. Ordinary TLS termination followed by plaintext HTTP neither reaches
 that peer certificate boundary nor provides an accepted forwarded-certificate
-or proxy-identity protocol. This release adds no trusted proxy header, forwarded
-client certificate, or proxy service identity. Do not configure an `http://`
-upstream as a workaround.
+or proxy-identity protocol.
+underwrap supports no trusted proxy header, forwarded client certificate, or proxy service identity.
+Do not configure an `http://` upstream as a workaround.
 
 A minimal `step` recipe is:
 
