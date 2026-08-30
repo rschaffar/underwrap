@@ -10,12 +10,23 @@ export interface UseConfirmMutationOptions<TArgs = void, TResult = unknown> {
   /** Query keys to invalidate after a successful mutation. */
   invalidate?: ReadonlyArray<readonly unknown[]>;
   /** Called on success after invalidation completes. */
-  onSuccess?: () => void;
+  onSuccess?: () => void | Promise<void>;
 }
 
+export type ConfirmMutationOutcome<TResult> =
+  { status: "success"; result: TResult } | { status: "error" };
+
+interface RequestErrorOutcome {
+  status: "error";
+  error: unknown;
+}
+
+type InternalMutationOutcome<TResult> =
+  { status: "success"; result: TResult } | RequestErrorOutcome;
+
 export interface UseConfirmMutationResult<TArgs = void, TResult = unknown> {
-  /** Invoke the underlying mutation; resolves/rejects with the result. */
-  confirm: (args: TArgs) => Promise<TResult>;
+  /** Resolve expected request failures as an error outcome; reject callback failures. */
+  confirm: (args: TArgs) => Promise<ConfirmMutationOutcome<TResult>>;
   pending: boolean;
   submitError: string | null;
 }
@@ -31,20 +42,31 @@ export function useConfirmMutation<TArgs = void, TResult = unknown>(
 ): UseConfirmMutationResult<TArgs, TResult> {
   const qc = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const mut = useMutation({
-    mutationFn: opts.mutationFn,
-    onSuccess: async () => {
+  const mut = useMutation<InternalMutationOutcome<TResult>, unknown, TArgs>({
+    mutationFn: async (args) => {
+      try {
+        return { status: "success", result: await opts.mutationFn(args) };
+      } catch (error) {
+        return { status: "error", error };
+      }
+    },
+    onSuccess: async (outcome) => {
+      if (outcome.status === "error") {
+        setSubmitError(describeApiError(outcome.error));
+        return;
+      }
       if (opts.invalidate) {
         await invalidateAll(qc, opts.invalidate);
       }
-      opts.onSuccess?.();
+      await opts.onSuccess?.();
     },
     onError: (err) => setSubmitError(describeApiError(err)),
   });
   return {
-    confirm: (args: TArgs) => {
+    confirm: async (args: TArgs) => {
       setSubmitError(null);
-      return mut.mutateAsync(args);
+      const outcome = await mut.mutateAsync(args);
+      return outcome.status === "error" ? { status: "error" } : outcome;
     },
     pending: mut.isPending,
     submitError,

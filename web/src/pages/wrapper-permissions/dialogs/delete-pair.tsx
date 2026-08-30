@@ -60,7 +60,12 @@ export function DeletePairDialog({
 
   async function onConfirm() {
     setSubmitError(null);
-    const result = await mut.mutateAsync();
+    let result: DeletePairResult;
+    try {
+      result = await mut.mutateAsync();
+    } catch {
+      return;
+    }
     if (result.ok) {
       await qc.invalidateQueries({
         queryKey: ["admin", "wrapper-permissions-view", storeId],

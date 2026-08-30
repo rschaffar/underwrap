@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { deleteResource } from "@/api/client";
+import { ApiError, deleteResource } from "@/api/client";
 
 import { DeleteResourceDialog } from "./delete-resource";
 
@@ -96,5 +96,27 @@ describe("DeleteResourceDialog", () => {
 
     await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(invalidate).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the dialog retryable after a rejected delete", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    vi.mocked(deleteResource).mockRejectedValue(
+      new ApiError(503, "synthetic_failure", "Synthetic resource failure."),
+    );
+    const { qc } = renderDialog(onClose);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const dialog = screen.getByRole("dialog", { name: /delete resource/i });
+    const deleteButton = screen.getByTestId("resource-delete-confirm");
+
+    await user.click(deleteButton);
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Synthetic resource failure.",
+    );
+    expect(dialog).toBeVisible();
+    expect(deleteButton).toBeEnabled();
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

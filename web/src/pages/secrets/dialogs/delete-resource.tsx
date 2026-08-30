@@ -122,7 +122,12 @@ export function DeleteResourceDialog({
   });
   async function onConfirm() {
     setSubmitError(null);
-    const result = await mut.mutateAsync();
+    let result: DeleteResourceResult;
+    try {
+      result = await mut.mutateAsync();
+    } catch {
+      return;
+    }
     if (result.ok) {
       // The secrets and wrapper-permissions pages both surface
       // resources via their aggregate views, so invalidating both

@@ -34,7 +34,9 @@ export function RotateStoreKeyDialog({
   });
 
   async function handleRotate() {
-    const result = await confirm();
+    const outcome = await confirm();
+    if (outcome.status === "error") return;
+    const result = outcome.result;
     setRevealKey({ keyHex: result.key_hex, warning: result.warning });
   }
 

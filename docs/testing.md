@@ -597,6 +597,21 @@ StrictMode hook tests and a shared Secrets/Wrapper-permissions Vitest matrix cov
 The configured `desktop-1280` Chromium project covers stale real-backend selection plus intercepted structured-failure and empty-list responses on both per-store pages with exact detail-request observation.
 This evidence establishes the tested frontend selection and rendering behavior only; it does not change or prove backend authorization, store availability, or browser behavior outside the configured project.
 
+The focused confirmation unit matrix covers successful outcomes, raw request rejection and synchronous throw, retry, a deliberately discarded outcome, and rejection from invalidation or the configured success callback.
+The same hook test recursively inventories the exact ten production hook users, eleven production confirmation-dialog users, two direct confirmation mutations, two result guards, and two narrow direct catches while rejecting generic-dialog or production global-rejection suppression.
+
+```bash
+cd web && npm test -- src/hooks/use-confirm-mutation.test.tsx \
+  src/components/confirm-dialog.test.tsx \
+  src/pages/stores.test.tsx \
+  src/pages/secrets/dialogs/delete-resource.test.tsx \
+  src/pages/wrapper-permissions/dialogs/delete-pair.test.tsx
+```
+
+The configured `desktop-1280` confirmation-error scenario intercepts one exact default-store DELETE with a synthetic structured 503 while the SPA and backend fixture remain real.
+It requires the exact inline error, retained dialog, restored Delete button, and empty `pageerror` and unsuppressed `unhandledrejection` collectors after one browser macrotask.
+This scenario does not exercise a real backend DELETE rejection or establish application-wide, cross-browser, mobile-browser, or every-promise diagnostic cleanliness.
+
 Playwright exercises protected routing, authentication, CSRF, stores, secrets, permissions, client instances, and user workflows.
 Authentication coverage includes hard-navigation sign-out with a freshly primed CSRF token, backend session destruction, stale-cookie rejection, and a failed first logout that remains visible and authenticated until a successful retry.
 The first Profile scenario authenticates one operator in two independent browser contexts against one real backend.

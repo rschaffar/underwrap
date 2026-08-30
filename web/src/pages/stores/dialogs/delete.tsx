@@ -32,7 +32,9 @@ export function DeleteStoreDialog({
   });
 
   async function onDelete() {
-    const result = await confirm({ force: requiresForce || force });
+    const outcome = await confirm({ force: requiresForce || force });
+    if (outcome.status === "error") return;
+    const result = outcome.result;
     if (result.cleanup_hint) {
       setCleanupHint(result.cleanup_hint);
     } else {

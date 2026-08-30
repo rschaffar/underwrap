@@ -317,6 +317,46 @@ describe("StoresPage", () => {
     expect(screen.getByTestId("key-reveal-confirm")).toBeDisabled();
   });
 
+  it("keeps rotation retryable and never reveals a key after rejection", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const { url, method } = reqInfo(input);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.includes("/rotate-key") && method === "POST") {
+        return mockJson(503, {
+          code: "synthetic_rotation_failure",
+          message: "Synthetic rotation failure.",
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    const workRow = (await screen.findByText("work")).closest("tr")!;
+    await user.click(
+      within(workRow as HTMLElement).getByRole("button", {
+        name: /rotate key/i,
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /rotate master key/i,
+    });
+    await user.click(within(dialog).getByRole("checkbox"));
+    const rotateButton = within(dialog).getByRole("button", {
+      name: /^rotate key$/i,
+    });
+
+    await user.click(rotateButton);
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Synthetic rotation failure.",
+    );
+    expect(dialog).toBeVisible();
+    expect(rotateButton).toBeEnabled();
+    expect(screen.queryByTestId("key-reveal-dialog")).not.toBeInTheDocument();
+  });
+
   it("shows the cleanup hint after a force-delete leaves data on disk", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
