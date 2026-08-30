@@ -71,7 +71,7 @@ impl SecretService {
         // sanitize, and reject *before* touching the store so an illegal
         // name cannot persist an unreachable collection.
         let name = label.as_deref().unwrap_or("");
-        validate_collection_name(name).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        validate_path_segment(name).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
 
         let alias = if alias.is_empty() { None } else { Some(alias) };
 
@@ -196,22 +196,34 @@ impl SecretService {
     }
 
     async fn set_alias(&self, name: &str, collection: ObjectPath<'_>) -> fdo::Result<()> {
+        validate_path_segment(name)
+            .map_err(|_| fdo::Error::InvalidArgs("invalid alias name".into()))?;
+
         let col_id = if collection.as_str() == "/" {
             None
         } else {
-            collection
+            let prefix = format!("{BASE_PATH}/collection/");
+            let id = collection
                 .as_str()
-                .strip_prefix(&format!("{BASE_PATH}/collection/"))
-                .map(|s| s.to_string())
+                .strip_prefix(&prefix)
+                .ok_or_else(|| fdo::Error::InvalidArgs("invalid collection path".into()))?;
+            validate_path_segment(id)
+                .map_err(|_| fdo::Error::InvalidArgs("invalid collection path".into()))?;
+            Some(id)
         };
 
         let mut store = self.store.write().await;
+        if col_id.is_some_and(|id| !store.collections.contains_key(id)) {
+            return Err(fdo::Error::InvalidArgs(
+                "alias target collection does not exist".into(),
+            ));
+        }
         mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            candidate.set_alias(name, col_id.as_deref());
+            candidate.set_alias(name, col_id);
             if metadata_trace_enabled() {
                 tracing::info!(
                     alias = name,
-                    collection = col_id.as_deref().unwrap_or(""),
+                    collection = col_id.unwrap_or(""),
                     "secretsd Service.SetAlias"
                 );
             }
@@ -231,29 +243,28 @@ impl SecretService {
     }
 }
 
-/// Upper bound on a collection name's length. A D-Bus path element must
-/// fit, with room left for the fixed prefix and a trailing item segment.
-/// Matches the backend admin id cap.
-const MAX_COLLECTION_NAME_LEN: usize = 128;
+/// Upper bound for collection and alias path segments.
+const MAX_PATH_SEGMENT_LEN: usize = 128;
 
-/// Validate a client-requested collection name before it is used as a
-/// D-Bus object-path segment. A path element may contain only
-/// `[A-Za-z0-9_]` and must be non-empty (a leading digit is legal for
-/// object paths). We reject anything else rather than sanitizing it:
-/// the name is untrusted input from the wrapped target, and silently
-/// mapping `foo/bar` or `""` into a path would invite element injection
-/// (collision with `/collection/<col>/<item>` item paths) or an invalid
-/// path. All real clients already use valid names (`gogcli`,
-/// `awsssocli`, `login`, `default`), so this never rejects a real one.
-fn validate_collection_name(name: &str) -> Result<(), &'static str> {
-    if name.is_empty() {
-        return Err("collection name must not be empty");
+/// Validate one client-supplied Secret Service object-path segment.
+///
+/// A segment is nonempty, contains at most 128 bytes, and consists only of
+/// ASCII letters, digits, or underscores. Leading digits and underscores are
+/// valid. Invalid input is rejected rather than sanitized or included in an
+/// error because target-supplied names must not alter object-path structure or
+/// enter diagnostics.
+fn validate_path_segment(segment: &str) -> Result<(), &'static str> {
+    if segment.is_empty() {
+        return Err("path segment must not be empty");
     }
-    if name.len() > MAX_COLLECTION_NAME_LEN {
-        return Err("collection name too long");
+    if segment.len() > MAX_PATH_SEGMENT_LEN {
+        return Err("path segment too long");
     }
-    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        return Err("collection name must match [A-Za-z0-9_]");
+    if !segment
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err("path segment must match [A-Za-z0-9_]");
     }
     Ok(())
 }

@@ -124,21 +124,21 @@ Target-caused indefinite D-Bus stalls remain a denial-of-service non-goal.
 
 ## Handler behavior
 
-Collection creation validates a nonempty, at-most-128-byte ASCII
-alphanumeric/underscore name before mutation. Item identifiers are generated as
-16 random bytes encoded to 32 lowercase hexadecimal characters. Object paths
-are constructed fallibly.
+Collection creation and `SetAlias` share one segment rule that accepts exactly 1 through 128 bytes of ASCII letters, digits, or underscores, including a leading digit or underscore.
+Item identifiers are generated as 16 random bytes encoded to 32 lowercase hexadecimal characters.
+Object paths are constructed fallibly.
 
-Mutation handlers retain the existing write lock through clone, candidate
-mutation, canonicalization, publication, exact ACK observation, and commit. They
-clone the accepted store exactly once and expose the candidate as live state only
-after ACK. Preparation, canonicalization, rejection, response, EOF, and transport
-failure discard the candidate and preserve accepted live memory. Candidate secret
-buffers are zeroized when discarded; on commit, secret buffers displaced from
-the former live store are zeroized, including deletion and replacement values.
-`SetAlias` can still receive a whole-state alias/reference rejection, but that
-candidate alias does not enter live memory. Wrong-typed item properties that
-become semantically valid empty values are not distinguishable at this boundary.
+`SetAlias` validates the alias first and then accepts only `/` for clear or the exact `/org/freedesktop/secrets/collection/<one-valid-segment>` shape for set.
+Malformed aliases and paths return value-free `InvalidArgs` before the store lock and before candidate publication.
+A set operation acquires the write lock and rejects a nonexistent target with value-free `InvalidArgs` before candidate publication, so the existence check and later mutation observe the same accepted store state.
+Root clear, clearing a missing alias, and setting an alias to its existing target remain valid idempotent mutations through publication and ACK.
+Strict host publication validation remains defense in depth against malformed segments and dangling references from any publication producer.
+
+Mutation handlers retain the existing write lock through clone, candidate mutation, canonicalization, publication, exact ACK observation, and commit.
+They clone the accepted store exactly once and expose the candidate as live state only after ACK.
+Preparation, canonicalization, rejection, response, EOF, and transport failure discard the candidate and preserve accepted live memory.
+Candidate secret buffers are zeroized when discarded; on commit, secret buffers displaced from the former live store are zeroized, including deletion and replacement values.
+Wrong-typed item properties that become semantically valid empty values are not distinguishable at this boundary.
 
 ## Backend authorization
 

@@ -323,17 +323,17 @@ They assign one-shot initialization conversion, candidate conversion, canonicali
 [Architecture](architecture.md) and the [Secret Service input boundary](secretsd-security.md) are normative for the complete mechanism and security boundary.
 Static ownership evidence does not prove that callers or configured targets cannot persist or disclose data, or that accepted backend generations cannot later be persisted or disclosed.
 
-The handler tests enforce the production ordering: retain the write lock, clone
-the accepted store once, mutate the candidate, canonicalize and publish it,
-observe the exact matching ACK, and only then commit. Preparation, publication,
-rejection, EOF, response mismatch, and transport failures preserve accepted live
-memory. Tests directly cover the complete-store zeroization helper and handler
-routes. Source/static inventory verifies that discarded candidate and displaced
-secret buffers, including deletion and replacement paths, are zeroized before
-drop; the suite does not instrument memory after drop. The lifecycle tests keep
-the separate host-side consequence explicit: a completely written ACK can remain
-eligible when secretsd or the D-Bus caller misses success, but ACK is neither
-caller delivery nor backend durability and a later Checkin can still fail.
+Direct shared-segment-validator tests accept common client names, leading digits and underscores, and exactly 128 ASCII bytes, while rejecting empty, 129-byte, separator, punctuation, whitespace, control, and non-ASCII input.
+Typed `SetAlias` handler tests construct only `ObjectPath::try_from`-accepted path values and cover unexpected prefixes, the collection container, nested and extra paths, a 129-byte segment, a missing exact target, malformed aliases including newline, and alias-first error precedence.
+Every invalid handler row uses a fresh secret-bearing sentinel store and an empty publication script, requires exact `InvalidArgs`, compares the complete accepted state, and checks that the error omits the sentinel.
+Valid handler rows cover ordinary, leading-digit, leading-underscore, and 128-byte aliases, a 128-byte existing collection target, root clear, missing-alias clear, and same-target set with exactly one accepted matching publication.
+These tests call the production handler with typed Rust values and do not prove D-Bus wire decoding or transport behavior.
+
+The handler tests enforce the production ordering: retain the write lock, clone the accepted store once, mutate the candidate, canonicalize and publish it, observe the exact matching ACK, and only then commit.
+Preparation, publication, rejection, EOF, response mismatch, and transport failures preserve accepted live memory.
+Tests directly cover the complete-store zeroization helper and handler routes.
+Source/static inventory verifies that discarded candidate and displaced secret buffers, including deletion and replacement paths, are zeroized before drop; the suite does not instrument memory after drop.
+The lifecycle tests keep the separate host-side consequence explicit: a completely written ACK can remain eligible when secretsd or the D-Bus caller misses success, but ACK is neither caller delivery nor backend durability and a later Checkin can still fail.
 
 Some integration tests skip when the host cannot supply the required Linux
 capabilities. Focused `underwrap-ns` tests cover complete-plan zero-side-effect
