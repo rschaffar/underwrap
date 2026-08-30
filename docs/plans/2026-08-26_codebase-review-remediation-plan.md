@@ -2325,7 +2325,7 @@ Focused Vitest checks exercise the shared outcome contract, configured Chromium 
   - F-048 is resolved for the complete current confirmation-mutation inventory. F-037 remains resolved; F-049, F-054, key-custody/soft-refusal behavior, every other finding, Opportunity, and unresolved item remain unchanged. F-049 is next.
   - Final closure review passed cleanup/fix order, separate corrections, request-versus-callback rejection semantics, exact inventory, result behavior, validation/provenance/artifact evidence, corrected-attempt classification, no-VM rationale, bounded cross-effects, and F-049 promotion with no remaining gap.
 
-### Current iteration — F-049 backend internal-error redaction
+### Completed iteration — F-049 backend internal-error redaction
 
 F-049 remains directly reproducible at clean HEAD `ea660c098812a61a15cb24bd9b3feaa696fbdb91`.
 
@@ -2481,8 +2481,27 @@ Focused real admin/runtime handler/fault tests and one configured-Chromium real-
   - Existing unit and authenticated integration fault fixtures retain distinct evidence and are not cleanup candidates.
   - Repository-wide bounded discovery found no high-confidence private dead or duplicate production definition independent of F-049 or later ownership before its deadline; sampled Nix helpers were live and TypeScript unused-symbol gates remain enabled.
   - Generated/test/doc deletion, formatting, dependencies, admin/runtime unification, broad refactors, weaker diagnostics, F-050+, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; the F-049 correction may begin.
-- [ ] Implement and independently review admin/runtime redaction, all source migrations, tests/browser/docs, and bounded diagnostics without changing codes or operations.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-049 completion/cross-effects before promoting F-050.
+- [x] Implement and independently review admin/runtime redaction, all source migrations, tests/browser/docs, and bounded diagnostics without changing codes or operations.
+  - Fix commit: `f6f5738286fdbdca175121d24f3491cab10b30df` (`fix: redact backend internal error chains`).
+  - Generic admin/runtime internal failures now return exact HTTP 500/code `internal`/message `the backend could not complete the request` and emit only response code, static context, and concrete error type; arbitrary source display is absent from response and generic log.
+  - Thirteen audited built-in admin filesystem/storage/canary/registry sites retain exact codes, return one of six fixed public messages, and add source detail only to the trusted-host `admin internal failure` event. Seventeen source-less static 500s retain their distinct safe guidance.
+  - Static signatures and tests pin 44 lexical/43 reachable generic admin paths, thirteen audited source migrations, seventeen source-less calls, and nineteen generic runtime paths. The source-detail approval excludes generic parser/Serde chains that can quote malformed stored strings.
+  - Six registry unit faults and the authenticated integration matrix preserve F-015 state/retry behavior while proving exact public messages, response-path omission, and host-log path detail. A real wrapper-register `TestStore` fault proves the runtime type-only boundary.
+  - The real-backend Chromium scenario uses non-root chmod, direct and exactly two retry-aware UI failures, exact response/alert/path omission, exact mode restoration, and post-restore 200.
+  - Initial evidence review required runtime occurrence counts, all thirteen exact mappings/contexts, and narrower admin-500 documentation wording; a separate correction worker added only those items. Fresh post-correction and both post-validation reviews passed source safety, contracts, behavior, and evidence with no remaining correction.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-049 completion/cross-effects before promoting F-050.
+  - Exact committed diff: sixteen approved paths, 761 insertions and 51 deletions, SHA-256 `f53dfc6fb432b23342d23d6935b4151e1f99debaf8daf95e640da4edba838970`.
+  - Focused admin/runtime/error/registry checks and the complete backend passed 268 library, 3 binary, and 5 OpenAPI tests (`5efedb74e8c77354667770940f2a5ae78aedadeeac20ec87fc3227b6d9c76a74`).
+  - The packaged integration runner passed all 106 tests, including exact authenticated registry-error envelopes and path omission (`e722ef66e2254148fdc269904e344437435826f8765e62d51478bebaa760b3eb`).
+  - The complete SPA suite passed 162 tests (`578075162de7c448fde8fc608e812be63f2173d0788ec27a3ef4c9dbc6313e89`), and the production build passed with only the existing chunk advisory (`0c7e7a64f8389a0dca0b2b3e764df72c4cdf14805074f1c7172da54ba659486b`).
+  - Exact changed-tree Nix web artifact `/nix/store/lnmp7mx8pqxm0xab62ccqkaczlg7q48y-underwrap-web-dist-0.1.0` supplied workspace denied-warning Clippy and rustfmt (`be671a61fd98f40151761a0fe536046b17b9e4a21d6bfaf52fbbf6ba9d82fc47`).
+  - Fresh target `/tmp/underwrap-f049-target.M5ky0R` produced absolute backend `/tmp/underwrap-f049-target.M5ky0R/debug/underwrap-backend` with SHA-256 `2cdc7ee55e26764291c0f35d6f33e1fc491d93d04d869416867f2ef3e53df0e0` (provenance `fbb4577cc5a7aec37ef49e413c2e44f686c670fd2dd018368e9bec4b2f545432`; build `8a2e8e14aeb228a784c328ecdb091be6a18c8a3f6edab62748da96f2967cbc32`). Exact `UNDERWRAP_BACKENDD_BINARY` used that same binary for both browser runs, and the target was removed afterward.
+  - Focused configured-Chromium redaction validation passed its one scenario (`24d4b35a537d03de8b3b9401d1e9e46fef090fb20e6cff61220cb67cafb8ed35`); the complete configured Playwright suite passed all 38 desktop/mobile scenarios (`5b7279fdc9e5237139494c63038076af72d15199ee40346c73da5d958fc60bda`).
+  - Static validation passed the 13/17 source split, generic type-only versus audited source-detail boundary, runtime/browser restoration markers, and documentation limits (`da1a898f774602ca09c2aa66f9dcb102b6c830bda25ed663c7d290eda225aa08`).
+  - The implementation worker's first Nix package attempt ran before the two new sibling test files were tracked, so flake source filtering omitted them and compilation stopped at `mod tests`; local full backend tests already passed. The controller staged the exact allowlist, then the packaged integration build, changed-tree Nix artifact, fresh build, and every final check above passed. This was a Git-source provenance correction, not a product/test defect.
+  - Controller checks passed exact sixteen-path scope, exact public status/code/messages, 44/13/17/19 inventories, generic source-display omission, audited source class limits, F-015 behavior, runtime authority, no OpenAPI/F-050/secret-material change, one-sentence bounded docs, `git diff --check`, target/generated/browser artifact cleanup, checksum, and clean post-commit tree.
+  - F-049 is resolved for admin internal errors and the explicitly authorized runtime consistency extension. F-015, F-042, and F-048 remain resolved. F-054 remains unresolved and now owns coverage of the new internal-failure events/source field; every other finding, Opportunity, and unresolved item remains unchanged. F-050 is next.
+  - Final closure review passed runtime authority/source audit, no-cleanup disposition, separate correction review, logging boundary, exact inventories/messages, all validation/provenance/artifact evidence, corrected Nix-attempt classification, no-VM rationale, bounded cross-effects, and F-050 promotion with no remaining gap.
 
 ### Remaining low queue
 
