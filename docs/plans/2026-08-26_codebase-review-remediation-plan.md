@@ -2693,7 +2693,10 @@ Static exact-text and link-resolution evidence directly covers the changed bound
 
 - [x] Revalidate F-051 against the historical report/handover, current four exact temporal phrases, `docs/index.md` workflow/history migration, canonical skill/symlink layout, documentation rules, and adjacent findings. Evidence: direct source/link/search inspection on 2026-08-30; historical dead paths/workflow ownership are already corrected, valid plan/history navigation must remain, and exactly seven qualifiers across six product documents still need present-state wording.
 - [x] Obtain fresh independent approval of exact seven sentences, preserved navigation/history, allowlist, non-goals, cross-effects, validation, and no-test rationale before cleanup discovery. Evidence: initial reviews found two additional documents and three qualifiers, required normalized-whitespace search, exact replacements, complete exclusions, and explicit separation of the six-product-document implementation diff from plan evidence. The plan incorporated every correction; final scope/evidence review passed on 2026-08-30 with implementation evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before the documentation correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before the documentation correction.
+  - Finding-local review found each surrounding qualification/action distinct; further reduction would weaken claims, delete valid navigation/history, become broad editorial work, or overlap the exact fix/F-052+.
+  - Repository-wide bounded discovery found no high-confidence private dead production definition before its deadline; sampled Rust/Nix definitions were live and TypeScript unused-symbol gates remain enabled.
+  - Formatting, navigation/history deletion, broad consolidation, dependencies, later findings, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; the F-051 correction may begin.
 - [ ] Implement and independently review the seven present-state sentences without changing claims or internal-record navigation.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-051 completion/cross-effects before promoting F-052.
 
