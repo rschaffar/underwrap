@@ -597,13 +597,13 @@ StrictMode hook tests and a shared Secrets/Wrapper-permissions Vitest matrix cov
 The configured `desktop-1280` Chromium project covers stale real-backend selection plus intercepted structured-failure and empty-list responses on both per-store pages with exact detail-request observation.
 This evidence establishes the tested frontend selection and rendering behavior only; it does not change or prove backend authorization, store availability, or browser behavior outside the configured project.
 
-Playwright exercises protected routing, authentication, CSRF, stores, secrets,
-permissions, client instances, and user workflows. Authentication coverage
-includes hard-navigation sign-out with a freshly primed CSRF token, backend
-session destruction, stale-cookie rejection, and a failed first logout that
-remains visible and authenticated until a successful retry. The resource
-lifecycle flow shows a typed libsecret blocker in the still-open delete dialog,
-clears it, and then observes successful resource removal.
+Playwright exercises protected routing, authentication, CSRF, stores, secrets, permissions, client instances, and user workflows.
+Authentication coverage includes hard-navigation sign-out with a freshly primed CSRF token, backend session destruction, stale-cookie rejection, and a failed first logout that remains visible and authenticated until a successful retry.
+The first Profile scenario authenticates one operator in two independent browser contexts against one real backend.
+After self-service password change in one context, exact `whoami` responses observe that the submitting session remains authenticated in this run and that the other pre-change session is unauthenticated on its first post-change admin-API request, followed by a `/profile` redirect to login.
+The scenario also retains old-password rejection and new-password login.
+This one configured `desktop-1280` Chromium scenario does not prove that submitting-session refresh cannot fail, immediate push invalidation, static-asset effects, all admin routes or sessions, concurrent password changes, restart behavior, or cross-backend session-store behavior.
+The resource lifecycle flow shows a typed libsecret blocker in the still-open delete dialog, clears it, and then observes successful resource removal.
 
 The focused `focus-indicators.spec.ts` run in the configured `desktop-1280` Chromium project observes the shared dialog close control in the desktop Create store flow under the default dark and toggle-driven light themes and the shared sheet close control in the 375×812 responsive layout under the default dark theme.
 It reaches each close control through the real keyboard focus path and observes an unfocused `box-shadow: none` baseline, a focused non-`none` box shadow in regular colors, and a `:focus-visible` outline at least two pixels wide under emulated forced colors.

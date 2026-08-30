@@ -274,8 +274,10 @@ immediately afterward.
 - **Profile** changes the signed-in operator's password after verifying the
   current password.
 
-Password change, password reset, and user deletion invalidate that user's
-existing sessions on their next request.
+A self-service password change persists the new password verifier before attempting to refresh only the submitting session.
+If that refresh fails, the password change still succeeds and the operator must sign in again with the new password.
+Every other session issued before the self-service password change is invalidated when it next accesses the admin API.
+Password reset and user deletion do not refresh any affected session; they invalidate all affected sessions when those sessions next access the admin API.
 
 Total operator login loss cannot be repaired in the Admin UI because every Users operation requires an authenticated operator.
 

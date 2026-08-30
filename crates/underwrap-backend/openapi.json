@@ -128,7 +128,7 @@
         },
         "responses": {
           "200": {
-            "description": "Password changed; new session issued.",
+            "description": "Password changed; submitting-session refresh attempted.",
             "content": {
               "application/json": {
                 "schema": {

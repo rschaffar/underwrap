@@ -81,9 +81,10 @@ export function ProfilePage({ principal }: ProfilePageProps) {
             Change password
           </h3>
           <p className="mt-1 text-xs text-(--color-muted)">
-            You will stay signed in. Other sessions you own are not
-            revoked by this self-service flow — use sign-out
-            elsewhere if you need that.
+            Underwrap attempts to refresh this session after the change so it
+            can stay signed in. Other sessions issued before the change are
+            invalidated when they next access the admin API. If this session
+            cannot be refreshed, sign in again with the new password.
           </p>
         </div>
         <Form {...form}>

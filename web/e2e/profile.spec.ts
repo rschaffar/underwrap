@@ -1,47 +1,83 @@
 /**
- * Profile page e2e.
+ * Profile page e2e for the bootstrap operator.
  *
- * The multi-user spec already exercises the operator-side flow
- * (operator logs in, visits /profile, changes their own password).
- * This spec covers the admin-side angle: the same self-service flow
- * for an admin user, plus the validation that the password-change
- * round trip works against the real backend.
+ * The first test verifies current-context refresh and lazy admin-API invalidation in a second browser context.
+ * It retains the password roundtrip coverage against the real backend.
  */
 import { test, expect, loginViaUi, ADMIN_USERNAME, ADMIN_PASSWORD } from "./fixtures";
 
-test("admin sees their identity on /profile and can change their password end to end", async ({
+test("bootstrap operator password change refreshes the current context, lazily invalidates a second context, and retains the password roundtrip", async ({
   page,
+  browser,
   backendWithAdmin,
 }) => {
   await loginViaUi(page, backendWithAdmin.baseUrl);
-  await page.goto(`${backendWithAdmin.baseUrl}/profile`);
+  const otherContext = await browser.newContext({ ignoreHTTPSErrors: true });
 
-  // Identity surfaces in the page header. The exact framing
-  // ("Signed in as alice.") is what a reader actually sees, so
-  // assert on substrings to stay resilient to copy changes.
-  await expect(page.getByRole("heading", { name: /profile/i })).toBeVisible();
-  await expect(page.getByRole("main")).toContainText(ADMIN_USERNAME);
+  try {
+    const otherPage = await otherContext.newPage();
+    await loginViaUi(otherPage, backendWithAdmin.baseUrl);
 
-  // Change password through the self-service form.
-  const newPassword = `${ADMIN_PASSWORD}-rotated`;
-  await page.getByLabel(/current password/i).fill(ADMIN_PASSWORD);
-  await page.getByLabel(/^new password$/i).fill(newPassword);
-  await page.getByLabel(/confirm new password/i).fill(newPassword);
-  await page.getByRole("button", { name: /^save$/i }).click();
-  await expect(page.getByRole("status")).toContainText(/password updated/i);
+    const beforeWhoami = await otherContext.request.get(
+      `${backendWithAdmin.baseUrl}/v1/admin/auth/whoami`,
+    );
+    expect(beforeWhoami.status()).toBe(200);
+    expect(await beforeWhoami.json()).toEqual({ username: ADMIN_USERNAME });
 
-  // Sign out and verify the round trip: old password fails, new works.
-  await page.goto(`${backendWithAdmin.baseUrl}/logout`);
-  await page.waitForURL(/\/login(\?|$)/);
-  await page.getByLabel("Username").fill(ADMIN_USERNAME);
-  await page.getByLabel("Password").fill(ADMIN_PASSWORD);
-  await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(
-    page.getByText(/invalid username or password/i),
-  ).toBeVisible();
-  await page.getByLabel("Password").fill(newPassword);
-  await page.getByRole("button", { name: /sign in/i }).click();
-  await page.waitForURL(`${backendWithAdmin.baseUrl}/`);
+    await otherPage.goto("about:blank");
+    await expect(otherPage).toHaveURL("about:blank");
+
+    await page.goto(`${backendWithAdmin.baseUrl}/profile`);
+
+    // Assert the profile heading and operator identity without coupling to the surrounding copy.
+    await expect(page.getByRole("heading", { name: /profile/i })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText(ADMIN_USERNAME);
+
+    const guidance =
+      "Underwrap attempts to refresh this session after the change so it can stay signed in. Other sessions issued before the change are invalidated when they next access the admin API. If this session cannot be refreshed, sign in again with the new password.";
+    await expect(page.getByText(guidance, { exact: true })).toHaveText(
+      guidance,
+    );
+
+    // Change password through the self-service form.
+    const newPassword = `${ADMIN_PASSWORD}-rotated`;
+    await page.getByLabel(/current password/i).fill(ADMIN_PASSWORD);
+    await page.getByLabel(/^new password$/i).fill(newPassword);
+    await page.getByLabel(/confirm new password/i).fill(newPassword);
+    await page.getByRole("button", { name: /^save$/i }).click();
+    await expect(page.getByRole("status")).toContainText(/password updated/i);
+
+    const submittingWhoami = await page
+      .context()
+      .request.get(`${backendWithAdmin.baseUrl}/v1/admin/auth/whoami`);
+    expect(submittingWhoami.status()).toBe(200);
+    expect(await submittingWhoami.json()).toEqual({
+      username: ADMIN_USERNAME,
+    });
+
+    const otherWhoami = await otherContext.request.get(
+      `${backendWithAdmin.baseUrl}/v1/admin/auth/whoami`,
+    );
+    expect(otherWhoami.status()).toBe(200);
+    expect(await otherWhoami.json()).toEqual({});
+
+    await otherPage.goto(`${backendWithAdmin.baseUrl}/profile`);
+    await otherPage.waitForURL(/\/login(\?|$)/);
+    await expect(otherPage).toHaveURL(/\/login(\?|$)/);
+
+    // Sign out and verify the round trip: old password fails, new works.
+    await page.goto(`${backendWithAdmin.baseUrl}/logout`);
+    await page.waitForURL(/\/login(\?|$)/);
+    await page.getByLabel("Username").fill(ADMIN_USERNAME);
+    await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page.getByText(/invalid username or password/i)).toBeVisible();
+    await page.getByLabel("Password").fill(newPassword);
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.waitForURL(`${backendWithAdmin.baseUrl}/`);
+  } finally {
+    await otherContext.close();
+  }
 });
 
 test("profile form rejects a wrong current password without changing anything", async ({

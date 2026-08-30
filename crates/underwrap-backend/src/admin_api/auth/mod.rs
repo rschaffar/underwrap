@@ -191,7 +191,7 @@ pub(crate) async fn handle_admin_whoami(auth_session: AdminAuthSession) -> Json<
     security(("session_cookie" = [], "csrf_header" = [])),
     request_body = AdminPasswordChangeRequest,
     responses(
-        (status = 200, description = "Password changed; new session issued.", body = AdminOkUserResponse),
+        (status = 200, description = "Password changed; submitting-session refresh attempted.", body = AdminOkUserResponse),
         (status = 400, description = "Validation failed (e.g. new password too short).", body = ServiceErrorResponse),
         (status = 401, description = "Current password is incorrect.", body = ServiceErrorResponse),
         (status = 500, description = "Backend could not persist the change.", body = ServiceErrorResponse),

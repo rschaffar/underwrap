@@ -894,14 +894,14 @@ Record replacement uses `NamedTempFile`'s restrictive Unix temporary-file creati
 The application does not chmod or verify the final record mode, does not enforce the `users_dir` mode, and relies on deployment ownership, mode, and umask.
 It does not fsync the parent directory, encrypt verifier records at rest, or guarantee secure erasure.
 
-Sessions do not survive backend restart. Password changes and user deletion
-invalidate that user's sessions through `axum-login`'s session auth-hash check.
-The SPA primes a fresh synchronizer token before every sign-out sequence,
-including hard navigation to `/logout`, and reports success only after the
-logout POST destroys backend authority. A prime or logout failure remains
-visible and retryable without clearing the admin cache or navigating to login.
-All authenticated users have full admin access; there are no roles or per-store
-operator grants.
+Sessions do not survive backend restart.
+A self-service password change persists the new password hash before attempting to refresh only the submitting session's stored authentication hash.
+The refresh can fail after persistence; the password change still succeeds, and that session must sign in again with the new password.
+Every other pre-change session is invalidated when it next accesses the admin API because `axum-login` reloads the operator record and flushes a session whose authentication hash no longer matches.
+Password reset and user deletion do not refresh any affected session; each affected session is invalidated through the same lazy admin-API check.
+The SPA primes a fresh synchronizer token before every sign-out sequence, including hard navigation to `/logout`, and reports success only after the logout POST destroys backend authority.
+A prime or logout failure remains visible and retryable without clearing the admin cache or navigating to login.
+All authenticated users have full admin access; there are no roles or per-store operator grants.
 
 ### Persistent stores
 
