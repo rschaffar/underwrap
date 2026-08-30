@@ -2004,9 +2004,11 @@ Exact malformed test scope:
 - Give every handler row a fresh secret-bearing accepted store and request secret with distinct synthetic sentinels, an empty publication script, and an `ObjectServerHarness`.
 - For `replace=true`, pre-register the matching existing item and prove its path/interface and complete store remain unchanged.
 - For all rows require exact `InvalidArgs`, complete store equality, `script.finish().is_empty()`, and diagnostic absence of property contents, attributes, and both secret sentinels.
+  Install a capture subscriber, emit/assert one non-sensitive control event so capture is non-vacuous, and assert the captured output omits every sentinel.
   Treat no-publication/no-registration as aggregate evidence from the exact prevalidation error, unchanged state/known interface, and static source order; do not claim the empty script inventories attempted writes or that the object harness enumerates unknown random paths.
 - Add a malformed-property row against a missing collection to prove parsing error precedence before store lookup.
-- Retain static source-order evidence for pre-lock, pre-random-id, pre-publication, and pre-registration validation.
+- Retain static source-order evidence that both parsers precede metadata-trace enablement and emission, lock, random id, publication, and registration.
+- Run the malformed-property tests once with `UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA=1` and one test thread to exercise the enabled metadata-trace configuration while preserving process-global initialization ordering.
 
 Exact accepted/default test scope:
 
@@ -2022,9 +2024,14 @@ Exact accepted/default test scope:
 Expected source/test/documentation allowlist:
 
 - `crates/underwrap-secretsd/src/dbus_service/collection.rs`
-- `crates/underwrap-secretsd/src/dbus_service/collection/tests.rs`
+- `crates/underwrap-secretsd/src/dbus_service/collection/tests.rs` — common fixtures and pre-existing collection tests
+- new `crates/underwrap-secretsd/src/dbus_service/collection/tests/property_validation.rs` — parser/order/malformed/missing-collection/tracing evidence
+- new `crates/underwrap-secretsd/src/dbus_service/collection/tests/accepted_properties.rs` — absent/default/unknown/subset/vacuous/nonmatching accepted evidence
 - `docs/secretsd-security.md` — state absent defaults, exact `s`/`a{ss}` admission, Label-first precedence, and pre-lock/candidate/publication/registration `InvalidArgs`
-- `docs/testing.md` — enumerate the two-mode malformed matrix and state that typed handler calls test post-decoding zvariant values rather than D-Bus wire/frame/transport behavior
+- `docs/testing.md` — enumerate the two-mode malformed matrix, non-sensitive control trace plus enabled-tracing run, and typed-handler-not-wire limits
+
+Keep each test module below the approximate 600-line target.
+The nested static source inventory must use the correct relative include path to `collection.rs`.
 
 The active plan changes separately for workflow evidence only.
 
@@ -2045,6 +2052,7 @@ Non-goals:
 Validation commands and evidence:
 
 - focused property-parser, malformed no-publication/no-registration, and accepted/default/replacement tests
+- `UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA=1 cargo test -p underwrap-secretsd dbus_service::collection::tests::property_validation::malformed_item_ -- --test-threads=1`
 - `cargo test -p underwrap-secretsd dbus_service::collection::tests`
 - `cargo test -p underwrap-secretsd`
 - `cargo test -p underwrap-secretsd-store`
@@ -2062,6 +2070,7 @@ Typed production-handler tests cover the malformed-value boundary directly, and 
 
 - [x] Revalidate F-046 against current CreateItem property parsing, zvariant dictionary signatures/conversion, store replacement semantics, F-012 candidate/zeroization, tests/docs, F-039/F-045/U-004 effects, and historical report/handover. Evidence: direct source/vendor/test inspection plus two focused design/evidence reviews on 2026-08-30; absent and malformed variants are still conflated and no wrong-type matrix exists.
 - [x] Obtain fresh independent approval of absent/wrong-type semantics, exact signature and error rules, precedence/order, malformed/accepted matrices, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: initial reviews required outer signature checks before zvariant downcast, nested-variant and unknown-property evidence, explicit `a{sv}` two-mode rows, aggregate rather than direct no-publication/registration claims, exact subset/nonmatch/vacuous replacement expectations, and F-012-only defense wording. The plan incorporated every correction and fresh final re-review passed on 2026-08-30 with implementation evidence pending.
+- [x] Reapprove the post-implementation six-path test split and non-vacuous metadata-trace evidence before correction work. Evidence: initial actual-diff review required the parent/property-validation/accepted-properties split, control trace, static metadata ordering, enabled single-thread trace run, and testing-doc update; a mistakenly implementation-oriented follow-up correctly found those files pending, then a bounded scope-only re-review passed the exact organization and validation on 2026-08-30.
 - [x] Complete finding-local and repository-wide cleanup discovery; independently process accepted cleanup before CreateItem correction.
   - Finding-local discovery proposed removing the unconditional O(1) `secret_len` local and computing it only inside metadata tracing.
   - Independent review rejected that one-binding change as below-value, unmeasured cosmetic churn in the imminent F-046 hunk; it does not shorten secret lifetime or materially reduce complexity.
