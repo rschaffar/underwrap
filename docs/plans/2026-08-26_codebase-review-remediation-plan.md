@@ -3128,7 +3128,7 @@ No separate Rust, SPA, integration, Clippy, or workspace run is required for thi
   - F-055 is resolved. F-004/F-005/F-010/F-027/F-054 remain resolved; retained `tunnel` names are fixture identifiers only; F-056 and every other finding, Opportunity, and unresolved item remain unchanged. F-056 is next.
   - Final closure review passed cleanup/fix/review chronology, topology semantics, first-pass mandatory VM/provenance/artifact evidence, and F-056 promotion after correcting the F-010 cross-effect label; no remaining gap exists.
 
-### Current iteration — F-056 denied-warning workspace Rustdoc gate
+### Completed iteration — F-056 denied-warning workspace Rustdoc gate
 
 F-056 remains directly reproducible at clean HEAD `65565026c8d5c4e5cf44d75a7fae1b265f94633a` with the exact Nix `web-build` prerequisite.
 
@@ -3213,8 +3213,20 @@ Direct strict Cargo docs and the built Nix check exercise the complete changed b
   - Finding-local review found no independent net deletion; every changed Rustdoc token and the new gate/docs are the F-056 fix, while visibility/publication changes are excluded.
   - Repository-wide bounded discovery found no eligible high-confidence private dead production definition before its deadline; inspected dead-code suppressions were live, privileged, or test-only.
   - Broad documentation rewrites, visibility changes, formatting, dependencies, F-057+, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; F-056 implementation may begin.
-- [ ] Implement and independently review all strict-doc corrections, Nix gate, and testing documentation without changing visibility or behavior.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-056 completion/cross-effects before promoting F-057.
+- [x] Implement and independently review all strict-doc corrections, Nix gate, and testing documentation without changing visibility or behavior.
+  - Fix commit: `112f71011570f2464d87807d9c3ffe8fda3da90f` (`docs: enforce warning-free workspace Rustdoc`).
+  - All nine current warnings are corrected with code formatting, exact literal defaults, present state wording, or an unambiguous function link; private modules/items remain private and public DTO/API/config behavior is unchanged.
+  - `checks.workspace-doc` uses pinned Crane `cargoDoc`, `commonArgsWithWeb`, shared artifacts, default locked/no-deps behavior, and denied Rustdoc warnings. Testing docs expose both direct and Nix commands with the exact SPA prerequisite.
+  - The implementation worker completed all changes and direct/Nix validation before timing out during final reporting. Fresh implementation/evidence reviews found no source/gate defect; final disposition passed after controller confirmation of exact scope and artifacts.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-056 completion/cross-effects before promoting F-057.
+  - Exact committed diff: nine approved paths, 26 insertions and 11 deletions, SHA-256 `79bca981f2139bb22e375109e86cd0b81eda0d57fd9f2928d2aaa02b70971850`.
+  - Exact Nix web artifact `/nix/store/b4ys1nya5xmy7f799qmzlmyh37bpxsi5-underwrap-web-dist-0.1.0` supplied the direct denied-warning workspace Rustdoc build, which passed (`b8a1a66801db002c8f0756054ff34a15ae1e331bf0e3af57ad666537e24831f1`; direct log `2861eaaafa416f893e325e920af7a1a099be64d66c949f7515302f148443c3ed`).
+  - `checks.x86_64-linux.workspace-doc` built successfully (`ab036032ada141c165f6f33c5ad8e448afb45cde72a9ec9d51406cd10cebe7c6`), and all-system no-build evaluation found the new check on both supported systems and passed (`03ddc8c3abf8603144f668c97962b95a9d6558e3419adb0521b4d7b43c85c63a`).
+  - Workspace denied-warning Clippy and rustfmt passed (`f2066ca264b9a8598ecd436c70919e1efe1acea4098ad2a13b5d82d67bc049ec`).
+  - Static validation passed all nine corrections, no visibility/lint-allow/private-doc workaround, exact Crane gate wiring, and testing command/prerequisite documentation (`80a5a88b00efa458b99025f0b97119d0682a54887b95f06759f64c52ef295718`).
+  - Controller checks passed exact nine-path scope, no public/default/API/OpenAPI/dependency/lock/F-057 change, `git diff --check`, `target/doc`/result cleanup, checksum, and clean post-commit tree.
+  - F-056 is resolved and strict workspace Rustdoc is now a first-class flake check. F-026/F-027/F-052 remain resolved; F-057/F-058 and every other finding, Opportunity, and unresolved item remain unchanged. F-057 is next.
+  - Final closure review passed no-cleanup disposition, nine corrections/gate, all validation and artifact evidence, no-VM rationale, cross-effects, and F-057 promotion with no remaining gap.
 
 ### Remaining low queue
 
