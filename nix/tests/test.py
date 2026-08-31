@@ -4808,17 +4808,91 @@ def audit_and_no_secret_leaks():
     # AUDIT + NO SECRET LEAKS
     # ============================================================
 
-    logs = machine.succeed(
-        "journalctl -u underwrapd-local.service -u underwrapd-tunnel.service --no-pager"
-        " | sed 's/\\x1b\\[[0-9;]*m//g'"
+    canary_key = "F054_LOG_CANARY"
+    canary = f"underwrap-f054-canary-{uuid.uuid4().hex}".encode("ascii")
+    admin_write_resource_value(
+        ADMIN_LOCAL, "local", "test/token", "env", canary_key, canary
     )
+    set_local_unlocked_permission("test-echo")
+    machine.succeed(
+        su("/run/wrappers/bin/underwrap-local test-echo >/dev/null 2>&1")
+    )
+
+    canonical = base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", "test/token"))
+    canonical_text = canonical.decode("utf-8")
+    canary_b64 = base64.b64encode(canary).decode("ascii")
+    env_entry_signature = (
+        f"{json.dumps(canary_key, ensure_ascii=True)}:"
+        f"{json.dumps(canary_b64, ensure_ascii=True)}"
+    )
+    assert env_entry_signature in canonical_text, (
+        "F054 canonical resource omitted the dedicated env-entry signature"
+    )
+
+    needle_labels = {}
+
+    def add_needle(label, needle):
+        assert len(needle) >= 16, f"F054 representation too short: {label}"
+        needle_labels.setdefault(needle, []).append(label)
+
+    def add_binary_encodings(prefix, value):
+        standard = base64.b64encode(value).decode("ascii")
+        urlsafe = base64.urlsafe_b64encode(value).decode("ascii")
+        add_needle(f"{prefix}/base64-standard-padded", standard)
+        add_needle(f"{prefix}/base64-standard-unpadded", standard.rstrip("="))
+        add_needle(f"{prefix}/base64-url-padded", urlsafe)
+        add_needle(f"{prefix}/base64-url-unpadded", urlsafe.rstrip("="))
+        add_needle(f"{prefix}/hex-lower", value.hex())
+
+    add_needle("canary/plaintext", canary.decode("ascii"))
+    add_binary_encodings("canary", canary)
+    add_needle("canonical/raw-utf8", canonical_text)
+    add_needle(
+        "canonical/json-escaped",
+        json.dumps(canonical_text, ensure_ascii=True)[1:-1],
+    )
+    add_binary_encodings("canonical", canonical)
+    add_needle("canonical/env-entry-signature", env_entry_signature)
+
+    corpora = {}
+    for unit in (
+        "underwrap-backend.service",
+        "underwrap-backend-local.service",
+        "underwrapd-local.service",
+        "underwrapd-tunnel.service",
+    ):
+        corpora[unit] = ANSI_ESCAPE_RE.sub(
+            "",
+            machine.succeed(f"journalctl -u {shlex.quote(unit)} --no-pager --all"),
+        )
+    namespace_corpus = "SYSLOG_IDENTIFIER=underwrap-ns"
+    corpora[namespace_corpus] = ANSI_ESCAPE_RE.sub(
+        "",
+        machine.succeed("journalctl SYSLOG_IDENTIFIER=underwrap-ns --no-pager --all"),
+    )
+
+    for needle, labels in needle_labels.items():
+        representation = "/".join(labels)
+        for corpus_label, corpus in corpora.items():
+            assert needle not in corpus, (
+                f"F054 log hygiene failure: {representation} in {corpus_label}"
+            )
+    machine.log("PASS: dynamic canary absent from selected journal representations")
+
+    logs = "\n".join(corpora.values())
     read_allowed_lines = [
         line for line in logs.splitlines() if 'audit="read_allowed"' in line
     ]
     assert read_allowed_lines, "missing read_allowed"
-    assert any(" INFO " in line for line in read_allowed_lines), read_allowed_lines
-    assert all('resource="' in line for line in read_allowed_lines), read_allowed_lines
-    assert all("secret=" not in line for line in read_allowed_lines), read_allowed_lines
+    assert any(" INFO " in line for line in read_allowed_lines), (
+        "read_allowed was not emitted at INFO"
+    )
+    assert all('resource="' in line for line in read_allowed_lines), (
+        "read_allowed omitted the resource field"
+    )
+    assert all("secret=" not in line for line in read_allowed_lines), (
+        "read_allowed retained the legacy secret field"
+    )
     assert all('"audit":"read_allowed"' not in line for line in read_allowed_lines), (
         "underwrapd audit output unexpectedly used JSON"
     )

@@ -789,11 +789,16 @@ It also pins the `tracing-subscriber` 0.3.23 lockfile entry whose default builde
 Focused namespace formatter tests cover one-line escaping for `permission_readonly`, `server_rejected`, and `resource_too_large`, including paired attempted and maximum lengths.
 The formatter intentionally accepts arbitrary reason strings, so those tests do not prove that production dispatch excludes a legacy reason token.
 The deployed VM proves `read_allowed` in text-formatted daemon output, native-journal `writeback_rejected` fields with `permission_readonly`, the `permission is read-only` warning, warning suppression without event suppression, and absence of the superseded names in those exercised paths.
-These checks do not provide a persistent audit ledger, a configurable audit sink, or a complete encoded/full-resource log-hygiene inventory.
+These audit-format checks do not provide a persistent audit ledger or configurable audit sink; the final hygiene flow below separately covers a bounded encoded and full-resource inventory.
 
 ### Secret hygiene
 
-It checks successful delivery while asserting that configured secret values do not appear in service logs.
+The final hygiene flow stores one unpredictable per-run ASCII canary in a dedicated env entry of `test/token` through the existing mode-restricted transient admin-body helper, ensures the real `test-echo` permission is `Unlocked`, and invokes the wrapper with target stdout and stderr discarded while checking its exit status.
+The driver fetches the resulting canonical bytes and derives deduplicated minimum-length needles for canary plaintext, standard and URL-safe base64 with and without padding, lowercase hex, raw and JSON-escaped canonical text, standard and URL-safe base64 with and without padding and lowercase hex of the complete canonical bytes, and the exact env-entry signature in memory.
+No canary or needle enters a test command argument, test-driver or shell environment variable, assertion message, or test log.
+It searches the unit journals for `underwrap-backend.service`, `underwrap-backend-local.service`, `underwrapd-local.service`, and `underwrapd-tunnel.service`, plus native records selected by `SYSLOG_IDENTIFIER=underwrap-ns`.
+Failures identify only the representation label and corpus, and the expanded corpus also receives the retained fixed-fixture plaintext and base64 scans and audit assertions.
+This is evidence for the selected successful deployed path, journal producers, representations, and retained fixtures, not for target output, every transform, every path or process, external collectors, non-journal sinks, or formal noninterference.
 
 ## Validation by change type
 

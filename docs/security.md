@@ -1080,6 +1080,11 @@ This fallback does not make daemon tracing JSON.
 
 underwrap relies on service logs; it does not provide a persistent audit ledger or configurable audit sink.
 
+The deployed NixOS VM final-hygiene witness sends one unpredictable per-run ASCII canary through an admin env write, backend runtime open, daemon decoding and caching, namespace projection, and a real target invocation whose output is discarded.
+The test driver derives canary plaintext, standard and URL-safe base64 with and without padding, lowercase hex, raw and JSON-escaped complete canonical resource text, standard and URL-safe base64 with and without padding and lowercase hex of the complete canonical bytes, and the exact env-entry signature in memory.
+It searches the four `underwrap-backend.service`, `underwrap-backend-local.service`, `underwrapd-local.service`, and `underwrapd-tunnel.service` unit journals plus native `SYSLOG_IDENTIFIER=underwrap-ns` records without printing values, needles, matching lines, or log buffers on failure.
+This evidence is limited to the selected successful flow, journal producers, representations, and retained fixed fixtures; it does not cover target output, every transformation or execution path, external collectors, non-journal sinks, or formal noninterference.
+
 ## Limitations and operational assumptions
 
 Keep these limits explicit in deployment and wrapper reviews:
