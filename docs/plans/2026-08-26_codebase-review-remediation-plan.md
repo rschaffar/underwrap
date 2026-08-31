@@ -2912,6 +2912,9 @@ The real-backend tablet-project test and exact discovery command directly cover 
   - Cleanup 2 deletes the unused type-only `AdminResourcesListResponse` barrel export from `web/src/api/core.ts`. Independent review found no direct, barrel, test, E2E, dynamic-import, namespace/reflection, or generated-code consumer; the private SPA and generated schema remain unchanged.
   - Responsive production paths are live; project/comment corrections and the new test/docs are the F-053 fix. Broad responsive refactors, formatting, dependencies, F-054+, and cosmetic churn are rejected.
   - Process cleanup 1 and cleanup 2 as separate reviewed, validated commits before F-053 implementation.
+  - Cleanup 1 commit: `2d9af21cb4424ffb17c94978ea715e10c39cc56c` (`test: remove stale mobile project comment`); exact one-file seven-deletion diff, SHA-256 `09d51dcaa9795bc148a5248038487910874f15ef592fe89df688ce1f9f8b6a97`.
+  - Fresh actual-diff review passed exact comment-only scope and byte-identical import/tests. Static diff/syntax checks passed; no runtime test is required for deletion of a false non-executable header.
+  - Controller checks passed no mobile-project/config/assertion/F-053/F-054 change, `git diff --check`, checksum, and clean post-commit tree.
 - [ ] Implement and independently review the configured tablet test/config/docs without changing production UI behavior.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-053 completion/cross-effects before promoting F-054.
 
