@@ -50,12 +50,13 @@ export default defineConfig({
       testIgnore: /.*\.(mobile|tablet)\.spec\.ts/,
     },
     {
-      // Tablet project (768×1024 portrait) — picks up the
-      // `*.tablet.spec.ts` files plus serves as a viewport floor
-      // for table → card transitions.
+      // This tablet project keeps the iPad gen7 WebKit characteristics.
+      // Its viewport and screen are pinned to 768×1024 for the responsive boundary.
       name: "tablet-768",
       use: {
         ...devices["iPad (gen 7)"],
+        viewport: { width: 768, height: 1024 },
+        screen: { width: 768, height: 1024 },
       },
       testMatch: /.*\.tablet\.spec\.ts/,
     },

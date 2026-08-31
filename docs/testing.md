@@ -622,6 +622,10 @@ It requires the exact inline error, retained dialog, restored Delete button, and
 This scenario does not exercise a real backend DELETE rejection or establish application-wide, cross-browser, mobile-browser, or every-promise diagnostic cleanliness.
 
 Playwright exercises protected routing, authentication, CSRF, stores, secrets, permissions, client instances, and user workflows.
+The configured `tablet-768` WebKit scenario runs against one real backend with the iPad gen7 device profile and its initial viewport and screen pinned to 768×1024.
+At exactly 768 CSS pixels, it observes the Stores desktop sidebar and hidden menu trigger, a visible table whose local overflow container computes to `overflow-x: auto` with `scrollWidth > clientWidth`, and no document-level horizontal overflow.
+After resizing the same page to 767×1024, it observes the desktop sidebar hidden, the menu trigger and navigation sheet usable, Profile navigation closing the sheet, the Profile page rendering, and no document-level horizontal overflow.
+This bounded scenario does not establish behavior at other widths, orientations, device scale factors, browser engines, operating systems, physical tablets, zoom or font settings, pages, tables, navigation paths, or backend data shapes.
 The real-backend encrypted-store creation scenario observes the generated master key returned once, while its fixture supplies no master-key directory or configuration field.
 The corresponding backend unit test recursively scans its temporary test root for `.key` files after encrypted-store creation.
 The browser assertion checks only `localStorage`, `sessionStorage`, script-visible `document.cookie`, and the current URL for the returned key value.
