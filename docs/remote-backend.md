@@ -12,6 +12,16 @@ The frontend makes outbound HTTPS connections only. Nix evaluation, daemon URL
 admission, and the request client's HTTPS-only policy enforce this independently;
 there is no plaintext, SSH-tunnel, or backend Unix-socket transport.
 
+## Product and VM test topology
+
+The product deployment described in this guide places backend and frontend roles on separate hosts connected by HTTPS.
+The NixOS VM test does not reproduce that physical topology.
+One NixOS VM runs both backend services and both frontend daemons.
+Its local and remote-style frontend instances connect directly to `127.0.0.1:18443` and `127.0.0.1:18444` respectively.
+The remote-style path exercises real backend-owned rustls, mTLS, certificate-fingerprint runtime principal handling, separate store and client registries, policy, resources, and backend service lifecycle.
+The retained `tunnel` fixture identifiers name the second instance, service account, daemon, and test PKI, but they do not represent SSH transport.
+The VM does not exercise DNS resolution, a non-loopback SAN or hostname, firewall traversal, cross-host routing, latency, partitions, distinct-host compromise, or multi-machine orchestration.
+
 ## Network and trust plan
 
 Before installation, choose:

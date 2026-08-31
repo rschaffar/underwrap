@@ -662,6 +662,17 @@ npm run test:e2e:ui
 The VM test boots a real NixOS system with the module, backend processes,
 frontend instances, wrappers, unprivileged callers, and target programs.
 
+### Product and VM network topology
+
+The product deployment topology supports backend and frontend roles on separate hosts connected by HTTPS.
+The VM supplies one-node transport evidence rather than a multi-machine deployment test.
+One NixOS VM runs both backend services and both frontend daemons.
+The local and remote-style frontend instances connect directly to `127.0.0.1:18443` and `127.0.0.1:18444` respectively.
+The remote-style path exercises real backend-owned rustls, mTLS, certificate-fingerprint runtime principal handling, separate store and client registries, policy, resources, and backend service lifecycle.
+The VM enables no SSH service, and its retained `tunnel` fixture identifiers do not represent SSH transport.
+The VM does not exercise DNS resolution, a non-loopback SAN or hostname, firewall traversal, cross-host routing, latency, partitions, distinct-host compromise, or multi-machine orchestration.
+Separate daemon transport and integration tests retain the CA-selection, hostname-validation, mTLS principal, registration, policy, resource, and writeback evidence described above.
+
 ### Packaging and service layout
 
 It checks:

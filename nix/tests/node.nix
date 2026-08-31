@@ -1,4 +1,5 @@
-# VM test node: both local and remote instances on one machine.
+# VM test node: local and remote-style instances on one machine.
+# Both frontend daemons connect directly to separate loopback HTTPS listeners.
 { pkgs, underwrapPackage, nixosModule, ... }:
 
 let
@@ -378,7 +379,7 @@ let
 in {
   imports = [ nixosModule ];
 
-  environment.systemPackages = [ underwrapPackage pkgs.openssh pkgs.libsecret pkgs.python3 pkgs.curl pkgs.jq ];
+  environment.systemPackages = [ underwrapPackage pkgs.libsecret pkgs.python3 pkgs.curl pkgs.jq ];
 
   # Pre-seeded 32-byte session AEAD keys (one per daemon). The local
   # CA cert at a stable path so the test driver's curl invocations can
@@ -400,7 +401,7 @@ in {
     homeMode = "0755";
   };
 
-  # Backend operator user (simulates workstation side for remote test).
+  # Operator identity for the separate remote-style backend service.
   users.users.underwrap-backend = {
     isSystemUser = true;
     group = "underwrap-backend";
@@ -410,7 +411,7 @@ in {
   };
   users.groups.underwrap-backend = {};
 
-  # Backend daemon service (for remote test).
+  # Separate backend service and listener for remote-style contract coverage.
   systemd.services.underwrap-backend = {
     description = "underwrap backend daemon";
     serviceConfig = {
@@ -489,12 +490,6 @@ in {
     "C /var/lib/underwrap-backend-local/clients/inst_underwrap-local.json 0600 underwrap-local underwrap-local - ${localClientJson}"
   ];
 
-  # SSH server for the tunnel.
-  services.openssh = {
-    enable = true;
-    settings.StreamLocalBindUnlink = "yes";
-  };
-
   # Local backend daemon serving the local frontend instance.
   systemd.services.underwrap-backend-local = {
     description = "underwrap backend daemon (local)";
@@ -545,7 +540,7 @@ in {
   };
 
 
-  # Two underwrap frontend instances: one locally satisfied, one remote-forwarded.
+  # Two frontend instances connect directly to separate same-machine loopback listeners.
   services.underwrap = {
     enable = true;
     package = underwrapPackage;
@@ -779,7 +774,8 @@ in {
         };
       };
 
-      # Remote instance: same frontend contract, backend socket satisfied by SSH tunnel.
+      # Remote-style instance: the same frontend contract uses the second loopback listener directly.
+      # `tunnel` remains a fixture identifier inherited by service, account, and PKI names; it does not denote SSH transport.
       tunnel = {
         allowedUsers = [ "testuser" ];
         backend = {

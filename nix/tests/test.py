@@ -1,4 +1,4 @@
-"""underwrap VM test — local + remote instances on one machine."""
+"""underwrap VM test — local and remote-style instances use direct loopback on one machine."""
 
 import base64
 import contextlib
@@ -534,6 +534,10 @@ def boot_and_service_checks():
 
     machine.wait_for_unit("multi-user.target")
 
+    machine.fail("systemctl is-enabled --quiet sshd.service")
+    machine.fail("systemctl is-active --quiet sshd.service")
+    machine.log("PASS: sshd.service is neither enabled nor active in the loopback-only VM")
+
     # Neither backend listener is started until deployment-side filesystem
     # authority has created its first operator through the real offline CLI.
     provision_backend_operator(
@@ -568,9 +572,8 @@ def boot_and_service_checks():
     login_admin_session(ADMIN_LOCAL)
     login_admin_session(ADMIN_REMOTE)
 
-    # underwrapd-local / underwrapd-tunnel only come up after the
-    # backends are reachable (they issue an empty `POST /v1/wrappers`
-    # register call at startup), so wait for them now.
+    # Both frontend daemons connect directly to their same-machine loopback HTTPS listeners.
+    # They start after the backends are reachable because startup sends an empty `POST /v1/wrappers` registration.
     machine.wait_for_unit("underwrapd-local.service")
     machine.wait_for_unit("underwrapd-tunnel.service")
 
@@ -4225,13 +4228,12 @@ done < <(find -P "$root" -type f -print0 | LC_ALL=C sort -z)
 
 def remote_service_lifecycle():
     # ============================================================
-    # REMOTE INSTANCE: backend service lifecycle
+    # REMOTE-STYLE INSTANCE: same-machine loopback backend lifecycle
     # ============================================================
 
-    # Seed an Unlocked permission for the remote daemon's
-    # `(client_instance, wrapper, resource)` tuple. The remote daemon
-    # has a single wrapper (`remote-echo`) declaring the
-    # `remote/token` resource.
+    # Seed an Unlocked permission for the remote-style daemon's tuple.
+    # The retained `tunnel` identifiers name the fixture and do not denote SSH transport.
+    # The daemon has one `remote-echo` wrapper declaring the `remote/token` resource.
     admin_upsert_permission(
         ADMIN_REMOTE,
         "remote",
@@ -4242,30 +4244,30 @@ def remote_service_lifecycle():
         writable=True,
     )
 
-    # Store secret in backend through the admin API.
+    # Store the resource value through the second loopback backend's admin API.
     admin_write_secret(ADMIN_REMOTE, "remote", "remote-echo", "remote/token/env/REMOTE_TOKEN", "secret_via_service")
 
-    # With backend service up: succeed.
+    # The direct same-machine loopback path succeeds while the second backend is running.
     output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/underwrap-tunnel remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output, f"expected REMOTE_TOKEN: {output}"
-    # The remote target also gets its OWN provisioned runtime dir
-    # (<targetRuntimeDirBase>/<target-user-name>), not the caller-supplied value.
+    # The remote-style target gets its own provisioned runtime directory.
+    # The forced path is `<targetRuntimeDirBase>/<target-user-name>`, not the caller-supplied value.
     assert (
         "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in output
     ), f"expected forced provisioned XDG_RUNTIME_DIR: {output}"
-    machine.log("PASS: remote secret via backend service")
+    machine.log("PASS: remote-style resource reached the second backend over direct loopback HTTPS")
 
-    # No secret on local frontend store disk.
+    # The separate local backend store does not receive the remote-style resource.
     machine.fail("test -f /var/lib/underwrap-backend-local/secrets/remote/token")
-    machine.log("PASS: no remote secret on local frontend disk")
+    machine.log("PASS: remote-style resource is absent from the separate local backend store")
 
-    # Stop backend service: fail.
+    # Stopping the second loopback backend makes the remote-style wrapper fail.
     machine.succeed("systemctl stop underwrap-backend.service")
     time.sleep(0.5)
     machine.fail(su("/run/wrappers/bin/underwrap-tunnel remote-echo"))
-    machine.log("PASS: wrapper fails when backend service is down")
+    machine.log("PASS: remote-style loopback wrapper fails while its backend service is down")
 
-    # Restart backend service: succeed again.
+    # Restarting the second loopback backend restores the same direct path.
     machine.succeed("systemctl start underwrap-backend.service")
     machine.wait_for_unit("underwrap-backend.service")
     time.sleep(1)
@@ -4274,7 +4276,7 @@ def remote_service_lifecycle():
     assert (
         "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in output
     )
-    machine.log("PASS: wrapper works after backend service restart")
+    machine.log("PASS: remote-style loopback wrapper works after backend service restart")
 
 
 def local_backend_managed_permissions():
