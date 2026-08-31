@@ -2845,7 +2845,7 @@ Crate tests pin exact emitted fields/reasons and source shape; integration cover
   - F-052 and O-010 are resolved. F-043/F-044/F-049 remain resolved; F-054 remains unresolved and now owns the renamed event/field/reason inventory; every other finding, Opportunity, and unresolved item remains unchanged. F-053 is next.
   - Final closure review passed user authority, no-cleanup disposition, schema/value equivalence, fix/review chronology, validation/provenance, mandatory-VM success and first-attempt classification, corrected tooling/prerequisite attempts, bounded cross-effects, and F-053 promotion with no remaining gap.
 
-### Current iteration — F-053 discovered tablet responsive coverage
+### Completed iteration — F-053 discovered tablet responsive coverage
 
 F-053 remains directly reproducible at clean HEAD `552bdbfc87a8c5995ec6037357fb20366c72c593`.
 
@@ -2919,8 +2919,22 @@ The real-backend tablet-project test and exact discovery command directly cover 
   - Fresh actual-diff review passed complete reachability, adjacent-export preservation, private/type-only behavior, and separation from F-053/F-054.
   - The complete SPA suite passed 162 tests (`4b8ffaa32f6408f8cd2447baf9790fc5838450c30f57ceb04b620b21ad0f49e8`), and the production TypeScript/Vite build passed with only the existing chunk advisory (`9b11ba8f1a8ae419883ce91d7c52893dd8b3f6d1564a6ac4a0c47a5f746e4789`).
   - Controller checks passed exact one-line scope, no remaining consumer/generated schema/runtime change, `git diff --check`, generated artifact cleanup, checksum, and clean post-commit tree. Both cleanups are complete; F-053 implementation may begin.
-- [ ] Implement and independently review the configured tablet test/config/docs without changing production UI behavior.
-- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-053 completion/cross-effects before promoting F-054.
+- [x] Implement and independently review the configured tablet test/config/docs without changing production UI behavior.
+  - Fix commit: `87014f18576a7b85660266938ed685656428bbe4` (`test: add tablet responsive coverage`).
+  - `tablet-768` keeps iPad gen7 WebKit/touch/mobile characteristics while exact post-spread viewport and screen overrides stabilize 768×1024.
+  - One discovered real-backend scenario proves WebKit and exact initial dimensions, the 768 desktop navigation/table containment boundary, actual bordered local table overflow without document overflow, and the 767 drawer/Profile/sheet-close boundary without document overflow.
+  - Testing documentation records only this configured scenario and excludes other widths/orientations/device scales/browsers/OSes/physical devices/pages/tables/data shapes and broader support claims.
+  - The implementation worker's broad Prettier pass changed the existing mobile expression and documentation table; the controller restored both unrelated hunks. Actual-diff review then required explicit `browserName === "webkit"` and nonzero border evidence; a separate correction added only those assertions, and fresh review passed.
+- [x] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-053 completion/cross-effects before promoting F-054.
+  - Exact submitted base: `b3695f94e2e0634c7742fde6b277087b3deb1b41`; exact committed diff: three approved paths, 101 insertions and 3 deletions, SHA-256 `634ba83be664acc9922f7e0c71eaa5443a64e2f1d6eee4796abc5c49fa3799cc` (provenance `4f46fb26a6ca4a0d1f54f670d508651b732f8695aeaf279487504cab9c38ec04`).
+  - The complete SPA suite passed 162 tests (`9475e7f4e4d645e4e6796ce8511a103fcc1fcf634d98390300c021cb59186455`), and the production build passed with only the existing chunk advisory (`ea166274a229d8b310e010d5bc4464a6ee75916b74591c118311c3f48484bb9d`).
+  - Exact Nix web artifact `/nix/store/b4ys1nya5xmy7f799qmzlmyh37bpxsi5-underwrap-web-dist-0.1.0` supplied fresh target `/tmp/underwrap-f053-target.DwLPDG`, whose absolute backend had SHA-256 `372021e83f77097b3a36fe92bc5a7fc08a64a683c98ee53041011dba2f4cbd2b` (`e33e1130be52d6b7ef427c36f9bb63dfcf9ab0487457242c2deeb0da97038d4f`). The same binary served discovery, focused, and full runs, then the target was removed.
+  - `tablet-768 --list` discovered exactly one test in one file (`1e4c74009c6bd932c01639f738cf3ee022cd4e48532724c1efec1a6636a1a26a`); focused configured-WebKit execution passed it (`bd18aaf3bb3d86bab4a9b0b5f93b26b1a06e0e9485d16c1166af11ffced9a192`).
+  - The complete configured suite passed 38 scenarios: desktop, mobile, and the one tablet scenario (`9ddfb93b4cb6ce7e6e4bf6864b5a72fb53b776f2237293e726404e641146eac3`).
+  - Static validation passed descriptor/override order, exact one-file discovery, 768/767/WebKit/border/overflow/navigation assertions, and documentation limits (`fc9e34563f2f06a9e4bba1a60b085db6d05beda0c87087c72c4180f2fed6cd65`).
+  - Controller checks passed exact three-path scope, no production/mobile/F-054 change, no table/card claim, `git diff --check`, target/generated/browser artifact cleanup, checksum, and clean post-commit tree.
+  - F-053 is resolved. F-036 remains configured Chromium-only; O-015 remains unresolved with no card implementation; F-058 remains separate; F-054 and every other finding, Opportunity, and unresolved item remain unchanged. F-054 is next.
+  - Final closure review passed cleanup/fix/correction chronology, exact discovered/focused/full evidence and binary provenance, bounded claims, no-VM rationale, cross-effects, and F-054 promotion with no remaining gap.
 
 ### Remaining low queue
 
