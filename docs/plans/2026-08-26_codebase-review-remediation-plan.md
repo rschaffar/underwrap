@@ -3209,7 +3209,10 @@ Direct strict Cargo docs and the built Nix check exercise the complete changed b
 
 - [x] Revalidate F-056 against the exact current strict-doc output, all warning locations, item visibility/re-exports, backend web prerequisite, Crane 3d9df76 `cargoDoc` API/defaults/example, flake check wiring, testing docs, and historical report/handover. Evidence: direct strict command plus CodeGraph/source/Crane-doc inspection on 2026-08-30; nine current errors and absent gate are exact, while the report's former `<u8>` warning no longer reproduces.
 - [x] Obtain fresh independent approval of each correction, exact Crane gate, testing docs, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: independent implementation review verified all nine warnings, literal defaults/state wording, private visibility preservation, pinned Crane API/defaults/example, SPA prerequisite, check wiring, cross-effects, and no-VM scope. Evidence review passed direct/Nix docs, all-system evaluation, Clippy/format, inventory, and artifact requirements on 2026-08-30 with implementation/runtime evidence pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before Rustdoc/gate correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before Rustdoc/gate correction.
+  - Finding-local review found no independent net deletion; every changed Rustdoc token and the new gate/docs are the F-056 fix, while visibility/publication changes are excluded.
+  - Repository-wide bounded discovery found no eligible high-confidence private dead production definition before its deadline; inspected dead-code suppressions were live, privileged, or test-only.
+  - Broad documentation rewrites, visibility changes, formatting, dependencies, F-057+, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; F-056 implementation may begin.
 - [ ] Implement and independently review all strict-doc corrections, Nix gate, and testing documentation without changing visibility or behavior.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-056 completion/cross-effects before promoting F-057.
 
