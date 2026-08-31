@@ -3297,6 +3297,9 @@ Locked tree/lock equality plus exact pinned-toolchain workspace checks directly 
   - Finding-local discovery accepted deletion of the empty trailing `[dev-dependencies]` table in `underwrap-secretsd-store/Cargo.toml`. Independent review confirmed it contains no declaration, changes no package/dependency/target/feature/lock behavior, and is exactly reversible.
   - Repository-wide bounded discovery found no other high-confidence eligible private dead production definition before its deadline; inspected dead-code suppressions were live, privileged, or test-only.
   - Resolver/profile/dependency cleanup, formatting, broad manifest normalization, F-058, and cosmetic churn are rejected. Process the one accepted cleanup as a separate reviewed/validated commit before F-057 implementation.
+  - Cleanup commit: `242ac6f9610c6395c1c8da90fb03a273c1d3161a` (`chore: remove empty dev-dependency table`); exact one-file two-deletion diff, SHA-256 `1e903395fc83d76bd823afe48134cb8b626b310fa924b7f1c1a44c607d4572a1`.
+  - Fresh actual-diff review passed exact table-only scope and retained dependency declarations. Locked metadata still reports only normal `anyhow`/`getrandom` dependencies (`41d833187bda89f935160bf54782017af1f3791b5a1bd2bf58a19dffdab564d8`), all 23 package tests passed (`3763ce4009df5016ca0ec23f57ede95c3efdc0e0cdea5920707e665220b30dd5`), and Cargo.lock retained SHA-256 `2f87022544dcca3998b77f09771e9b3d001b90e227e7e9b543b36a06125c8998`.
+  - Controller checks passed exact one-file scope, no dependency/feature/target/lock/F-057 behavior, `git diff --check`, checksum, and clean post-commit tree. Cleanup is complete; F-057 implementation may begin.
 - [ ] Implement and independently review root/member manifests and testing documentation without changing the lock, toolchain, resolver, or dependencies.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-057 completion/cross-effects before promoting F-058.
 
