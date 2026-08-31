@@ -23,7 +23,6 @@ use underwrap_protocol::message::{WrapperResourceRequest, WrapperResourceRespons
 /// The resource's state captured at Checkout, used by the end-of-run
 /// writeback decision. The fd stays open until the namespace tears
 /// down; each IPC op `dup`s it into a temporary `UnixStream`.
-#[allow(dead_code)] // some fields consumed later in the wrapper flow.
 pub struct ResourceChannel {
     pub resource_id: String,
     pub resource_name: String,
