@@ -2936,10 +2936,93 @@ The real-backend tablet-project test and exact discovery command directly cover 
   - F-053 is resolved. F-036 remains configured Chromium-only; O-015 remains unresolved with no card implementation; F-058 remains separate; F-054 and every other finding, Opportunity, and unresolved item remain unchanged. F-054 is next.
   - Final closure review passed cleanup/fix/correction chronology, exact discovered/focused/full evidence and binary provenance, bounded claims, no-VM rationale, cross-effects, and F-054 promotion with no remaining gap.
 
+### Current iteration — F-054 encoded and full-resource log-hygiene evidence
+
+F-054 remains valid but narrowed at clean HEAD `4cc2bba8bfd0cd1b7cd377f5d85d6dc7f7786360`.
+
+The VM's final hygiene scan now covers many fixed plaintext fixtures plus standard base64 for F-007/F-008/F-009 values, but it reads only the two `underwrapd` unit journals.
+It still has no unpredictable per-run canary, no complete canonical-resource or runtime `blob_b64` witness, no base64url/hex/JSON-escaped signatures, and no scan of backend unit or namespace-native journals.
+
+Consequence: a regression that logs a complete canonical resource, `blob_b64`, another common encoding, or the same data from a backend/native namespace event can evade the current passing assertion.
+
+Security boundary:
+
+- Protected asset: brokered resource material in plaintext or common encoded/full-resource representations.
+- Attacker/regression: an implementation change that writes a secret-bearing request, response, canonical blob, or transformed value to service/native journal output.
+- Boundary direction: synthetic brokered value → admin storage → runtime Checkout/backend response → daemon/namespace handling; selected service/native journals must contain none of the per-run value representations.
+- The configured target remains trusted with its projection and can print it; target stdout/stderr is not treated as a broker log.
+
+Exact scope:
+
+- In `nix/tests/test.py`, generate one unpredictable ASCII canary per VM run from a fixed non-secret prefix plus `uuid.uuid4().hex`; never place its value in a shell command, argv, environment, assertion message, or `machine.log` output.
+- Permit only the existing admin helper's transient staging: a host `NamedTemporaryFile` and copied guest `/run/underwrap-admin-body-*` JSON file, both mode-restricted and removed by `finally` immediately after the request. Do not claim the canary exists only in backend storage/target memory during injection.
+- Store the canary through `admin_write_resource_value` in the env slot of the existing `test/token` resource under a dedicated identifier key, retain/restore an Unlocked permission for `test-echo`, and run the real wrapper with both target stdout and stderr redirected to `/dev/null` while preserving exit-status checking. The value then traverses admin storage, backend runtime open/`blob_b64`, underwrapd decode/cache, namespace projection, and the trusted target without intentionally entering logs.
+- Read the resulting canonical resource bytes through the trusted root-only VM harness helper and derive all search needles only in the Python test-driver process.
+- Search these exact per-run value representations:
+  - UTF-8 plaintext;
+  - standard base64 with and without padding;
+  - URL-safe base64 with and without padding;
+  - lowercase hex.
+- Search these exact complete-resource representations:
+  - raw UTF-8 canonical JCS resource bytes;
+  - JSON-escaped canonical text;
+  - standard and URL-safe base64 of the complete canonical bytes, with and without padding;
+  - lowercase hex of the complete canonical bytes;
+  - the exact canonical env-entry signature containing the dedicated key and the canary's base64 value.
+- Deduplicate nonempty needles and require a minimum useful length so a short/common fragment cannot create a misleading collision.
+- Collect journal text in memory without canary-bearing shell arguments from all current relevant backend/daemon units:
+  - `underwrap-backend.service`;
+  - `underwrap-backend-local.service`;
+  - `underwrapd-local.service`;
+  - `underwrapd-tunnel.service`;
+  - native records selected by `SYSLOG_IDENTIFIER=underwrap-ns`.
+- Search every collected log corpus for every derived needle. Assertion failures identify only the representation label and journal corpus, never the needle, surrounding log line, full log buffer, canonical bytes, or canary value.
+- Reuse the expanded relevant-journal corpus for the existing fixed F-007/F-008/F-009/plaintext/base64 checks so backend and namespace journals receive the same retained regression coverage.
+- Keep `read_allowed`/legacy audit vocabulary assertions and the final `ALL TESTS PASSED` marker unchanged apart from using the expanded corpus.
+- Update `docs/security.md` to describe per-run plaintext/common-encoding/full-canonical/`blob_b64` hygiene evidence across the exact selected journals and its limits.
+- Update `docs/testing.md` with canary generation/injection, in-memory derivation/search, nonprinting failure behavior, selected units/native records, retained fixed fixtures, and nonclaims.
+
+Expected source/test/documentation allowlist:
+
+- `nix/tests/test.py`
+- `docs/security.md`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-054 covers the renamed F-052 daemon events/fields/reason and the F-049 backend internal-error event surfaces with the expanded journal selection.
+- The evidence narrows log-hygiene uncertainty for the selected deployed flow/representations only; it does not strengthen the product's no-secret logging rule beyond its existing normative scope.
+- F-055 remote-topology fidelity, every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no production logging/event/sink/level/filter, backend/runtime/daemon/namespace protocol, resource format, projection, target, authorization, persistence, key lifecycle, or secret-handling behavior change;
+- no printing or durable persistence of canary values outside the backend resource; the existing promptly deleted mode-restricted host/guest admin-body staging is the explicit transient exception. No test command/argv/environment/config/Nix-store embedding of the canary;
+- no target-output scan or claim that the trusted target cannot disclose its projection; no shell history, kernel audit, process memory, core, filesystem/cache, browser, network-capture, or non-journal sink scan;
+- no exhaustive encoding/substring/compression/encryption/hash transform, every resource slot/variant/failure/concurrency path, every process/unit, external log collector, retention/access policy, formal noninterference, or proof that all logs are secret-free;
+- no F-055 topology/SSH work, dependency, generated artifact, code formatter, NixOS module behavior, privileged-chain behavior, later finding, Opportunity, or unrelated refactor.
+
+Validation commands and evidence:
+
+- `python3 -m py_compile nix/tests/test.py`
+- static source checks that dynamic needles are created only in Python, no canary value reaches a command/log/error string, exact representations/corpora are complete, and existing fixed checks remain
+- `nix build .#checks.x86_64-linux.vm-test`
+- inspect the complete VM derivation log for the dedicated dynamic-canary PASS marker, retained audit PASS marker, `ALL TESTS PASSED`, and completed test script without printing any canary/needle
+- exact three-path allowlist, docs sentence/link checks, `git diff --check`, bytecode/result/generated artifact cleanup, and clean status
+
+The VM is mandatory because only the deployed test can exercise actual backend/daemon/native journal routing with a run-time canary through the complete wrapper path.
+No separate Rust, SPA, integration, Clippy, or VM-external build is required for this test/docs-only change.
+
+- [x] Revalidate F-054 against the current final VM hygiene function, all fixture/encoding checks added by earlier findings, service/native log producers, admin/runtime/wrapper helpers, F-049/F-052 events, docs, and historical report/handover. Evidence: direct source/search inspection on 2026-08-30; fixed plaintext/base64 coverage is materially stronger than the report baseline, but dynamic canary, full canonical/`blob_b64`, common alternate encodings, backend units, and namespace-native journals remain absent.
+- [x] Obtain fresh independent approval of canary injection/flow, exact representation and journal matrices, nonprinting failure contract, allowlist, non-goals, cross-effects, validation, and mandatory-VM rationale before cleanup discovery. Evidence: initial reviews required explicit mode-restricted transient admin-body staging and both target output streams redirected; after correction, independent security/evidence reviews found no defect and final scope disposition passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before log-hygiene evidence.
+- [ ] Implement and independently review dynamic/full-resource journal scanning and bounded documentation without changing production logging or target trust.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-054 completion/cross-effects before promoting F-055.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-054 — strengthen encoded and full-blob log-hygiene evidence.
 - [ ] F-055 — remove stale SSH setup and describe the loopback-only VM scenario accurately.
 - [ ] F-056 — make strict Rustdoc pass and add the gate.
 - [ ] F-057 — declare the Rust support contract and resolver choice.
