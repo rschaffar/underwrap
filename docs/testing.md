@@ -190,6 +190,45 @@ These audits describe the pinned lockfiles and advisory snapshots at the time
 they run. They do not prove that dependencies are free of undisclosed or future
 vulnerabilities, nor that an affected package path is exploitable by underwrap.
 
+## Frontend and OpenAPI tool matrix
+
+The committed npm lock and pinned Nix inputs define the validated frontend tool matrix.
+The caret constraints in `web/package.json` permit compatible future lock regeneration, but unselected versions are not independently supported.
+
+| Layer | Validated versions |
+| --- | --- |
+| Nix development/build tools | Node 24.19.0 and npm 11.17.0 |
+| SPA runtime | React and React DOM 19.2.8 |
+| Production build | Vite 8.2.2, `@vitejs/plugin-react` 6.1.1, Tailwind CSS and its Vite plugin 4.3.3, and TypeScript 5.9.3 |
+| Unit tests | Vitest and `@vitest/coverage-v8` 4.1.11, jsdom 30.0.1, `@testing-library/dom` 10.4.1, `@testing-library/jest-dom` 7.0.1, `@testing-library/react` 16.3.3, and `@testing-library/user-event` 14.6.6 |
+| Browser tests | `@playwright/test` 1.61.1 with the nixpkgs Playwright driver 1.61.1; the pinned driver helper uses Node 22.23.2 through `PLAYWRIGHT_NODEJS_PATH` |
+| OpenAPI generation and client | utoipa 5.5.0, utoipa-axum 0.2.0, OpenAPI 3.1.0, openapi-typescript 7.13.0, and openapi-fetch 0.17.0 |
+
+TypeScript remains on 5.9 because openapi-typescript 7 declares a TypeScript `^5.x` peer.
+OpenAPI 3.1.0 remains a valid 3.1 feature-line document and is the version emitted by the current generator; publication of OpenAPI 3.2 does not by itself require a format migration.
+The Playwright package is pinned exactly rather than with a caret so npm cannot select browser protocol code that differs from the pinned nixpkgs driver.
+
+Verify the selected matrix and dependency health with:
+
+```bash
+nix develop --command bash -lc '
+  node --version
+  npm --version
+  "$PLAYWRIGHT_NODEJS_PATH" --version
+  cd web
+  npx --no-install playwright --version
+  npm ci
+  npm ls --all
+  npm audit --package-lock-only
+  npm outdated
+  npm test
+  npm run build
+'
+```
+
+A clean `npm outdated` result intentionally retains only newer TypeScript and Node-type majors plus the newer Playwright release that are outside the compatibility constraints above.
+Treat any other direct outdated row, peer-dependency error, audit finding, generated OpenAPI drift, unit-test failure, or build failure as matrix maintenance work rather than silently widening the support claim.
+
 ## Rust toolchain
 
 Rust 1.97.1 is the minimum supported compiler for every workspace package.
