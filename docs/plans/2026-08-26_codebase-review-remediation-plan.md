@@ -2915,6 +2915,10 @@ The real-backend tablet-project test and exact discovery command directly cover 
   - Cleanup 1 commit: `2d9af21cb4424ffb17c94978ea715e10c39cc56c` (`test: remove stale mobile project comment`); exact one-file seven-deletion diff, SHA-256 `09d51dcaa9795bc148a5248038487910874f15ef592fe89df688ce1f9f8b6a97`.
   - Fresh actual-diff review passed exact comment-only scope and byte-identical import/tests. Static diff/syntax checks passed; no runtime test is required for deletion of a false non-executable header.
   - Controller checks passed no mobile-project/config/assertion/F-053/F-054 change, `git diff --check`, checksum, and clean post-commit tree.
+  - Cleanup 2 commit: `e3a29b6bbad83b91de69d7ecbf2f54efc08d0452` (`refactor: remove unused resource-list type export`); exact one-file one-deletion diff, SHA-256 `bf8a327c97dc15c0749fe5acbc6ffd324972b9b255c8c6c38b09c7008933e7b1`.
+  - Fresh actual-diff review passed complete reachability, adjacent-export preservation, private/type-only behavior, and separation from F-053/F-054.
+  - The complete SPA suite passed 162 tests (`4b8ffaa32f6408f8cd2447baf9790fc5838450c30f57ceb04b620b21ad0f49e8`), and the production TypeScript/Vite build passed with only the existing chunk advisory (`9b11ba8f1a8ae419883ce91d7c52893dd8b3f6d1564a6ac4a0c47a5f746e4789`).
+  - Controller checks passed exact one-line scope, no remaining consumer/generated schema/runtime change, `git diff --check`, generated artifact cleanup, checksum, and clean post-commit tree. Both cleanups are complete; F-053 implementation may begin.
 - [ ] Implement and independently review the configured tablet test/config/docs without changing production UI behavior.
 - [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-053 completion/cross-effects before promoting F-054.
 
