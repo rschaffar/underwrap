@@ -2936,7 +2936,7 @@ The real-backend tablet-project test and exact discovery command directly cover 
   - F-053 is resolved. F-036 remains configured Chromium-only; O-015 remains unresolved with no card implementation; F-058 remains separate; F-054 and every other finding, Opportunity, and unresolved item remain unchanged. F-054 is next.
   - Final closure review passed cleanup/fix/correction chronology, exact discovered/focused/full evidence and binary provenance, bounded claims, no-VM rationale, cross-effects, and F-054 promotion with no remaining gap.
 
-### Current iteration — F-054 encoded and full-resource log-hygiene evidence
+### Completed iteration — F-054 encoded and full-resource log-hygiene evidence
 
 F-054 remains valid but narrowed at clean HEAD `4cc2bba8bfd0cd1b7cd377f5d85d6dc7f7786360`.
 
@@ -3020,8 +3020,21 @@ No separate Rust, SPA, integration, Clippy, or VM-external build is required for
   - Finding-local review found no independent net deletion; journal collection/needle derivation consolidation belongs to the approved F-054 evidence fix, and the retained fixed fixture checks remain distinct regression coverage.
   - Repository-wide bounded discovery found no eligible high-confidence private dead production definition before its deadline; matches were live, excluded privileged paths, tests, or documentation.
   - Formatting, broad test-harness refactors, production logging changes, dependencies, F-055+, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; F-054 implementation may begin.
-- [ ] Implement and independently review dynamic/full-resource journal scanning and bounded documentation without changing production logging or target trust.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-054 completion/cross-effects before promoting F-055.
+- [x] Implement and independently review dynamic/full-resource journal scanning and bounded documentation without changing production logging or target trust.
+  - Fix commit: `cccc645bacbfec72af40071431b51b531332e733` (`test: scan encoded resource log canaries`).
+  - The final VM hygiene flow generates one unpredictable valid env canary, injects it through the existing transient mode-restricted admin helper, restores an Unlocked permission, and drives a real wrapper with target output discarded.
+  - In-memory needles cover value plaintext, standard/URL-safe base64 with/without padding, lowercase hex, raw/JSON-escaped canonical text, full canonical standard/URL-safe base64 with/without padding and hex, plus the exact env-entry signature. Values are deduplicated and minimum-length bounded.
+  - Complete untruncated journals from both backend units, both daemon units, and native `underwrap-ns` records receive dynamic and all retained fixed scans. Failures print only representation/corpus labels, never canaries, needles, matching lines, canonical bytes, or log buffers.
+  - Initial source review required a non-reserved env key and `journalctl --all`; both were corrected before VM validation. Fresh reviews found no other source defect, and final source disposition passed the exact three-path diff.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-054 completion/cross-effects before promoting F-055.
+  - Exact committed diff: three approved paths, 92 insertions and 8 deletions, SHA-256 `8fa9b365738d24abf9337dbaaea8992c7cedf7d70e59a9028b490f62b2f538a2`.
+  - Python compilation passed with no output (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
+  - Static validation passed dynamic canary command/log nonprinting via function-scoped AST inspection, the complete encoding/canonical/signature matrix, untruncated exact corpora, and bounded documentation (`aaf244c235df79bb7b8fe9b1a4f3d7d9ef8d229ef9cb6d58817dda83ad1fe95e`). Two earlier controller static drafts inspected the whole file rather than only the hygiene function and then referenced a near-miss documentation phrase; both were evidence-script errors corrected before acceptance.
+  - The first changed-tree VM attempt stopped at the separately owned F-007 raw-blob equality assertion before the F-054 final hygiene function executed (`1466f07fef5bcbe25db5a4c5f2446783aea993d236c1a9b52fd7f1acf2f3ba3d`). It is an out-of-scope intermittent attempt, not F-054 evidence or a proven fixture root cause.
+  - The immediate unchanged-tree rerun passed completely in 187.42 seconds (`5836490e6fe52474b560f84b4006c13b95e03fb010af75c9949da322a376165c`). Its explicit markers prove `PASS: dynamic canary absent from selected journal representations`, the retained audit/no-secret PASS, `machine: ALL TESTS PASSED`, and completed script (`f1c861394982c75a8594e8c6c397b55f3b0c10626d361e84a663f4f21e48471a`; build invocation `63c5df04a32a484878fbeb37a61d7670e123ae373bf87a4ce59ded8bb79ac7f5`).
+  - Controller checks passed exact three-path scope, valid canary key/permission/wrapper flow, explicit transient staging, complete representation/corpus labels, no command/argv/environment/assertion/log value exposure, retained target trust and fixed checks, no production/F-055 change, `git diff --check`, bytecode/result/generated artifact cleanup, checksum, and clean post-commit tree.
+  - F-054 is resolved for the selected per-run representations, successful deployed flow, four service journals, and namespace-native records. The normative no-secret logging rule is unchanged; all broader nonclaims remain. F-055 and every other finding, Opportunity, and unresolved item remain unchanged. F-055 is next.
+  - Final closure reviews found no evidence correction, passed the implementation/documentation/VM ledger under controller-verified hashes, and required only the completed heading/check state now recorded; F-055 promotion has no remaining gap.
 
 ### Remaining low queue
 
