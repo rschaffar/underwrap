@@ -2710,10 +2710,124 @@ Static exact-text and link-resolution evidence directly covers the changed bound
   - F-051 is resolved. F-041/F-042 remain resolved; internal project-memory navigation and README/security maturity wording remain valid; F-052 and every other finding, Opportunity, and unresolved item remain unchanged. F-052 is next.
   - Final closure review passed cleanup disposition, implementation/correction chronology, seven-sentence/six-guide semantics, static/link/symlink evidence, no-test rationale, preserved navigation/maturity, cross-effects, and F-052 promotion with no remaining gap.
 
+### Current iteration — F-052 audit and writeback observability vocabulary
+
+F-052 remains directly reproducible at clean HEAD `1f24cd726ca908b3a1ca660251253a29003e62e5`.
+
+`underwrapd::audit` still promises structured JSON and configurable file/journald/other sinks although production installs `tracing_subscriber::fmt()` with its default human-readable formatter/writer and only an environment filter.
+Its comments and live event schema retain `read_granted`, `secret`, `store_denied`, `kind`, `credential`, and `item` vocabulary even though the values are wrapper/resource permission outcomes and a complete resource Checkin.
+
+The namespace writeback comments and native-journal fallback reason still use “grant,” while the product model uses permission rows, permission modes, and the writable flag.
+
+Consequence: incident responders can search for an unsupported JSON/sink contract or obsolete fields/reasons and miss the text-formatted daemon events or actual resource writeback rejection metadata.
+
+Security boundary:
+
+- Protected asset: correct interpretation and correlation of security-relevant daemon/writeback diagnostic events.
+- Observer: operators and incident responders consuming service output or native journal fields.
+- Boundary direction: authorization/writeback outcome → stable event name/fields/level/sink description; terminology must describe the actual permission/resource decision without implying secret values.
+- No authorization, resource content, policy decision, persistence, or secret-disclosure boundary changes.
+
+Exact scope — `underwrapd` tracing audit events:
+
+- Replace the false module Rustdoc with the deployed contract:
+  - the helper functions emit typed `tracing` fields, not JSON;
+  - production `underwrapd` installs the default human-readable `fmt` formatter and default stdout writer;
+  - `RUST_LOG` controls `EnvFilter`, defaulting to `info`;
+  - the daemon has no audit JSON mode or configured file/journald sink, although a service manager can route stdout externally;
+  - unit tests use a test-only writer and do not define production format/sink behavior.
+- Add a matching comment immediately above the production subscriber initialization in `underwrapd/src/main.rs`; add static source evidence for `fmt()`, `try_from_default_env`, default `info`, and absence of `.json()`/`.with_writer(...)`.
+- Record that the stdout default is grounded in the locked `tracing-subscriber` 0.3.23 `fmt` builder implementation, not proved by source-shape assertions alone.
+- Rename the allowed-read helper/event from `read_granted` to `read_allowed` and replace its `secret` field/parameter with `resource`, whose value is the backend resource id.
+- Keep `read_denied` and `auth_denied` names/fields; describe them as denied permission/authentication outcomes rather than grants.
+- Preserve `resource_checkout`, `resource_checkin`, and `resource_usage_signal` names and wrapper/resource fields.
+- Replace `wrapper_write_denied`/`audit="store_denied"` with `resource_checkin_denied`/`audit="resource_checkin_denied"` carrying only exact fields `wrapper`, `resource`, and `reason`.
+  The removed `kind="resource"`, `credential=<resource id>`, and `item="<full-blob>"` fields are constants or misnamed duplicates, not distinct information.
+- Preserve levels exactly: allowed read, Checkout, Checkin, and UsageSignal at INFO; read/auth/Checkin denials at WARN.
+- Preserve identifier-only/log-hygiene behavior: wrappers, resource ids, peer ids, socket identifiers, and reasons may be logged; resource blob/material values must not be logged.
+
+Exact scope — namespace writeback outcomes:
+
+- In `writeback.rs`, `resource_channel.rs`, and the wrapper-resource protocol Rustdoc, replace permission-model “grant” wording with current permission/writable vocabulary in the Checkout and dispatch contracts:
+  - writable false at Checkout produces local drop plus UsageSignal;
+  - a Checkin can be rejected after backend finalize re-evaluates the permission/writable flag;
+  - complete-size rejection remains separate.
+- Rename the native journal/fallback reason `grant_readonly` to `permission_readonly` and both human warnings from `grant is read-only` to `permission is read-only`; update adjacent comments about mid-run permission changes.
+- Preserve event name `writeback_rejected`, fields, WARN priority, journald-native send, one-line stderr JSON fallback, read-only-warning suppression behavior, and `server_rejected`/`resource_too_large` reasons.
+- Replace permission-model `grant` terminology in the complete wrapper-writeback integration test and NixOS VM fixture, including helper/function/test names, comments, assertion messages, event assertions, and logs. Do not replace ordinary English uses such as Linux capabilities granting privilege outside this permission flow.
+- Do not conflate the namespace's native journald event with `underwrapd`'s text-formatted tracing output.
+
+Exact test/documentation scope:
+
+- Update audit tests and public-module reachability to pin exactly seven live helpers/events and their exact fields, levels, and legacy-field absence. Capture and assert each event on its own output line so fields from another event cannot satisfy the check.
+- Update wrapper read and resource-channel call sites without changing their arguments' values or decision order.
+- Update namespace audit JSON tests to retain formatter coverage for `permission_readonly`, `server_rejected`, and `resource_too_large`, one-line escaping, and paired size fields. Separate static/VM evidence proves production dispatch uses `permission_readonly` and that `grant_readonly` is absent; the formatter accepts arbitrary reason strings and is not claimed to reject a legacy token itself.
+- Add `underwrapd` main-source tests for the exact production subscriber shape and no JSON/custom writer.
+- Update `docs/security.md` to distinguish daemon tracing output from namespace native journald/fallback JSON and enumerate the corrected event/reason vocabulary.
+- Update `docs/testing.md` with the exact static/unit evidence and limits; no persistent audit ledger or configurable sink is claimed.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-protocol/src/message/wrapper_resource.rs`
+- `crates/underwrapd/src/audit.rs`
+- `crates/underwrapd/src/audit/tests.rs`
+- `crates/underwrapd/src/wrapper_flow/read.rs`
+- `crates/underwrapd/src/wrapper_resource_channel.rs`
+- `crates/underwrapd/src/lib/tests.rs`
+- `crates/underwrapd/src/main.rs`
+- `crates/underwrapd/src/main/tests.rs`
+- `crates/underwrap-ns/src/writeback.rs`
+- `crates/underwrap-ns/src/resource_channel.rs`
+- `crates/underwrap-ns/src/main.rs`
+- `crates/underwrap-ns/src/main/tests.rs`
+- `crates/integration-tests/src/tests/wrapper_writeback.rs`
+- `nix/tests/test.py`
+- `docs/security.md`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-052 corrects the deployed audit/writeback observability contract and removes the vocabulary explicitly deferred by F-043.
+- O-010 is fully resolved: F-043 removed dead audit helpers, and F-052 removes the remaining stale helper/event/field/reason vocabulary without compatibility stubs.
+- F-043 remains resolved; F-044 environment behavior and F-049 backend error events remain unchanged.
+- F-054 remains unresolved but is affected: its complete log-hygiene inventory must use the renamed daemon events/fields and `permission_readonly` reason.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no JSON formatter, tracing writer/sink, journald layer, file output, logging configuration option, service-manager routing, persistent audit ledger, telemetry, correlation id, event delivery/durability, or backpressure change;
+- no event level change, additional emission site or semantic outcome, removal of distinct metadata, resource/blob/material value, reason text from backend policy, peer/socket identifier, or native journal/stderr fallback behavior change beyond the exact schema/reason/warning renames;
+- no authorization/policy/permission/writable decision, Checkout/Checkin/UsageSignal protocol, backend finalize, writeback persistence/size, warning suppression timing, target status, execution, or persistence behavior change; event names/fields/reasons and human warning text intentionally change as observability behavior;
+- no admin-backend audit changes, F-049 internal-error event changes, F-054 full log-hygiene implementation, dependency, generated contract, NixOS/module/privileged-chain behavior, later finding, Opportunity, or broad observability refactor;
+- no compatibility branch for old event names/fields/reasons; this greenfield event vocabulary is corrected directly.
+
+Validation commands and evidence:
+
+- `cargo test -p underwrapd audit::tests`
+- `cargo test -p underwrapd tests::public_modules_are_accessible`
+- `cargo test -p underwrapd`
+- `cargo test -p underwrap-ns audit_json_lines_cover_rejection_reasons_and_paired_size_fields -- --test-threads=4`
+- `cargo test -p underwrap-ns -- --test-threads=4` and require a nonzero complete suite
+- `./crates/integration-tests/run`
+- build exact Nix `web-build`, then run `UNDERWRAP_WEB_DIST="$web_dist" cargo clippy --all-targets --workspace -- -D warnings` and `cargo fmt -- --check`
+- `nix build .#checks.x86_64-linux.vm-test`
+- exact static event-name/field/level/call-site/subscriber/reason/comment inventory and docs-link/claim checks
+- `git diff --check`
+
+The VM is mandatory because its deployed journald/stderr assertions directly consume `read_granted`, `grant_readonly`, and `grant is read-only` and must prove the renamed `read_allowed`, `permission_readonly`, `permission is read-only`, warning suppression, native journal fields, and text-formatted daemon output.
+Crate tests pin exact emitted fields/reasons and source shape; integration covers unchanged wrapper/resource flows; workspace quality checks cover all renamed call sites.
+
+- [x] Revalidate F-052 against current audit helpers/tests/callers, `underwrapd` subscriber construction and tracing-subscriber default writer, namespace dispatch/outcome/native-journal code, docs, F-043 deferral, F-054 ownership, and historical report/handover. Evidence: direct CodeGraph/source/vendor/test inspection on 2026-08-30; false JSON/configurable-sink docs, legacy read/store fields/events, grant wording, and `grant_readonly` remain, while production uses default text fmt to stdout and namespace-native journald with stderr JSON fallback.
+- [x] Obtain focused user authority for the O-010 observability behavior change. Evidence: on 2026-08-30 the user selected **Approve clean event schema (recommended)** after the controller separated comment-only F-052 work from live event/field/reason renames and stated that no compatibility aliases would remain.
+- [x] Obtain fresh independent approval of exact event/reason/schema renames, deployed-format wording, complete permission/resource test vocabulary, allowlist, non-goals, O-010/F-054 cross-effects, validation, and mandatory-VM rationale before cleanup discovery. Evidence: initial reviews required the VM and its path, complete protocol/namespace/integration/VM permission vocabulary, human warning renames, per-line event tests, locked-dependency grounding for stdout/text defaults, corrected non-goals, O-010 authority/disposition, exact commands, and production-versus-formatter reason evidence. The plan incorporated every correction, the user approved the live schema change, and final implementation/evidence dispositions passed on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before observability correction.
+- [ ] Implement and independently review comments, event/reason schema, tests/callers, and docs without changing authorization or secret-value handling.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-052 completion/cross-effects before promoting F-053.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-052 — correct audit and writeback comments and vocabulary.
 - [ ] F-053 — add real tablet Playwright coverage or remove the unsupported project claim.
 - [ ] F-054 — strengthen encoded and full-blob log-hygiene evidence.
 - [ ] F-055 — remove stale SSH setup and describe the loopback-only VM scenario accurately.
