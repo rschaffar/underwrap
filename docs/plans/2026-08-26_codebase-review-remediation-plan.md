@@ -3128,10 +3128,94 @@ No separate Rust, SPA, integration, Clippy, or workspace run is required for thi
   - F-055 is resolved. F-004/F-005/F-010/F-027/F-054 remain resolved; retained `tunnel` names are fixture identifiers only; F-056 and every other finding, Opportunity, and unresolved item remain unchanged. F-056 is next.
   - Final closure review passed cleanup/fix/review chronology, topology semantics, first-pass mandatory VM/provenance/artifact evidence, and F-056 promotion after correcting the F-010 cross-effect label; no remaining gap exists.
 
+### Current iteration — F-056 denied-warning workspace Rustdoc gate
+
+F-056 remains directly reproducible at clean HEAD `65565026c8d5c4e5cf44d75a7fae1b265f94633a` with the exact Nix `web-build` prerequisite.
+
+`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` currently fails with nine errors:
+
+- two public links from `underwrap_protocol::service` to private `admin`/`runtime` modules;
+- unescaped `argv[0]` in `underwrap-exec` crate documentation;
+- one ambiguous function/module link to `tracing_subscriber::fmt` in daemon audit Rustdoc;
+- a public backend OpenAPI function linking to private `admin_router`;
+- two public backend config fields linking through the private `users` module;
+- one stale link to removed `ServiceRuntimeState`;
+- public `StoreRegistry` documentation linking to private `ListenerState`.
+
+The flake has test, nextest, Clippy, formatting, audit, deny, coverage, and web checks but no denied-warning workspace Rustdoc check.
+
+Consequence: public API documentation and intra-doc links can regress while the advertised checks remain green.
+
+Security boundary: none; this corrects documentation compilation and release assurance only.
+
+Exact Rustdoc corrections:
+
+- Keep `service::admin` and `service::runtime` private and their DTOs re-exported; replace the two private intra-doc links in `underwrap-protocol/src/service.rs` with code-formatted module names.
+- Wrap `argv[0]` as code in `underwrap-exec/src/main.rs`; do not change stage-1 identity semantics.
+- Link explicitly to the function form [`tracing_subscriber::fmt()`] in `underwrapd/src/audit.rs`; preserve the F-052 output/sink contract.
+- Replace the public `admin_openapi_spec` link to private `admin_router` with code formatting while preserving the exact same-router explanation.
+- Replace the two private `crate::users::*` links in public `BackendConfig` field docs with exact literal default paths:
+  - `/var/lib/underwrap-backend/users`;
+  - `/var/lib/underwrap-backend/bootstrap.json`.
+- Replace removed `ServiceRuntimeState` wording with present listener-shared runtime state without a private link.
+- Replace the public `StoreRegistry` link to private `ListenerState` with code formatting while preserving live shared registry semantics.
+- Do not make private modules/items public merely to satisfy Rustdoc and do not add lint allowances.
+
+Exact gate scope:
+
+- Add `checks.workspace-doc` beside Clippy/formatting using the pinned Crane input's `cargoDoc` helper, `commonArgsWithWeb`, shared `cargoArtifacts`, default `--no-deps`, and `env.RUSTDOCFLAGS = "--deny warnings"`.
+- The Nix check must receive the exact built SPA through existing `UNDERWRAP_WEB_DIST`; do not duplicate Node dependencies or weaken backend build prerequisites.
+- Document the direct and Nix strict-doc commands in `docs/testing.md`, including the required exact Nix web artifact for a local Cargo run.
+- Keep Rustdoc/test/Clippy/format checks separate; do not redefine the aggregate gate or add doctests.
+
+Expected source/test/documentation allowlist:
+
+- `crates/underwrap-protocol/src/service.rs`
+- `crates/underwrap-exec/src/main.rs`
+- `crates/underwrapd/src/audit.rs`
+- `crates/underwrap-backend/src/admin_api/mod.rs`
+- `crates/underwrap-backend/src/config.rs`
+- `crates/underwrap-backend/src/runtime_clients.rs`
+- `crates/underwrap-backend/src/store_registry.rs`
+- `flake.nix`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-056 adds strict workspace public-documentation compilation to the check set and fixes every current denied warning.
+- F-026 aggregate check ownership, F-027 runner behavior, F-052 audit semantics, F-057 Rust support/resolver contract, and F-058 dependency/tool refresh remain unchanged.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no public/private visibility, module/re-export, API/wire/DTO/OpenAPI bytes, config default, stage identity, tracing sink/event, registry/runtime-state, executable behavior, dependency/lockfile/toolchain/MSRV/resolver change;
+- no lint allow, warning suppression, `--document-private-items`, doctest, private-doc publication, crate-level documentation rewrite, README/product-doc overhaul, or generated docs commit;
+- no aggregate flake-check redesign, CI workflow, coverage/audit/deny/Clippy/test behavior, NixOS module/VM, F-057/F-058+, Opportunity, or unrelated refactor;
+- no claim that warning-free Rustdoc proves semantic documentation correctness, API stability, examples, or external links.
+
+Validation commands and evidence:
+
+- `system=$(nix eval --impure --raw --expr builtins.currentSystem); web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build"); RUSTDOCFLAGS='-D warnings' UNDERWRAP_WEB_DIST="$web_dist" cargo doc --workspace --no-deps`
+- `nix build .#checks.x86_64-linux.workspace-doc`
+- `nix flake check --all-systems --no-build`
+- `UNDERWRAP_WEB_DIST="$web_dist" cargo clippy --all-targets --workspace -- -D warnings`
+- `cargo fmt -- --check`
+- exact static inventory of nine baseline errors and nine corrections, no visibility/allow/document-private/dependency/lock/OpenAPI/generated change, check-set wiring, docs command, allowlist, and artifact/status checks
+- remove `result` and any generated local documentation output used only for validation; `git diff --check`
+
+No VM run is required because no NixOS module, privileged chain, runtime behavior, configuration value, API, or deployment mechanism changes.
+Direct strict Cargo docs and the built Nix check exercise the complete changed boundary.
+
+- [x] Revalidate F-056 against the exact current strict-doc output, all warning locations, item visibility/re-exports, backend web prerequisite, Crane 3d9df76 `cargoDoc` API/defaults/example, flake check wiring, testing docs, and historical report/handover. Evidence: direct strict command plus CodeGraph/source/Crane-doc inspection on 2026-08-30; nine current errors and absent gate are exact, while the report's former `<u8>` warning no longer reproduces.
+- [x] Obtain fresh independent approval of each correction, exact Crane gate, testing docs, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: independent implementation review verified all nine warnings, literal defaults/state wording, private visibility preservation, pinned Crane API/defaults/example, SPA prerequisite, check wiring, cross-effects, and no-VM scope. Evidence review passed direct/Nix docs, all-system evaluation, Clippy/format, inventory, and artifact requirements on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before Rustdoc/gate correction.
+- [ ] Implement and independently review all strict-doc corrections, Nix gate, and testing documentation without changing visibility or behavior.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-056 completion/cross-effects before promoting F-057.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-056 — make strict Rustdoc pass and add the gate.
 - [ ] F-057 — declare the Rust support contract and resolver choice.
 - [ ] F-058 — refresh and record the supported frontend and OpenAPI tool matrix.
 
