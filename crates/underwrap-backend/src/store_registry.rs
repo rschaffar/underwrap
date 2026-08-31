@@ -73,7 +73,7 @@ pub enum RegistryLookupError {
 
 /// Open backends + provenance metadata + per-store rotation mutexes for every
 /// store visible to the admin API. Wrapped in an `RwLock` inside
-/// [`crate::runtime_state::ListenerState`] so the CRUD handlers
+/// `ListenerState` so the CRUD handlers
 /// can mutate it without rebooting the daemon. Readers consult
 /// [`StoreRegistry::unlocked_backend`] to fetch the live
 /// `Arc<dyn StorageBackend>` for a store and surface

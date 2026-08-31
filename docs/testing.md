@@ -108,6 +108,7 @@ systems:
 nix build .#checks.x86_64-linux.workspace-test
 nix build .#checks.x86_64-linux.workspace-nextest
 nix build .#checks.x86_64-linux.workspace-clippy
+nix build .#checks.x86_64-linux.workspace-doc
 nix build .#checks.x86_64-linux.workspace-fmt
 nix build .#checks.x86_64-linux.workspace-audit
 nix build .#checks.x86_64-linux.workspace-deny
@@ -118,6 +119,16 @@ nix build .#checks.x86_64-linux.examples-nixos-eval
 nix build .#checks.x86_64-linux.frontend-backend-url-eval
 nix build .#checks.x86_64-linux.frontend-security-assertions-eval
 nix build .#checks.x86_64-linux.frontend-swap-posture-eval
+```
+
+`workspace-doc` builds workspace Rustdoc with warnings denied and uses pinned Crane defaults for `--no-deps` and `--locked`.
+For the direct equivalent, supply the exact Nix-built SPA artifact required by the backend:
+
+```bash
+system=$(nix eval --impure --raw --expr builtins.currentSystem)
+web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build")
+RUSTDOCFLAGS='-D warnings' UNDERWRAP_WEB_DIST="$web_dist" cargo doc --workspace --no-deps
+nix build ".#checks.${system}.workspace-doc"
 ```
 
 `web-build` is the production SPA artifact embedded in the Rust package.

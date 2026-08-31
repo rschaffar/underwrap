@@ -6,8 +6,7 @@
 //! certificate + its SHA-256 fingerprint). On startup the backend
 //! scans the `clients_dir` directory, parses every `<id>.json` file,
 //! validates uniqueness on id / display name / fingerprint, and keeps
-//! the resolved map in [`crate::runtime_state::ServiceRuntimeState`]
-//! for handshake lookups.
+//! the resolved map in listener-shared runtime state for handshake lookups.
 //!
 //! The mTLS-presented client certificate's fingerprint
 //! (`cert_fingerprint_from_der`) is the sole identity signal — there is

@@ -2,7 +2,7 @@
 //!
 //! These helpers emit consistently named, typed [`tracing`] fields without
 //! resource material values. Production `underwrapd` installs the default
-//! human-readable [`tracing_subscriber::fmt`] formatter and its default stdout
+//! human-readable [`tracing_subscriber::fmt()`] formatter and its default stdout
 //! writer. `RUST_LOG` configures the environment filter and defaults to `info`.
 //! The daemon has no audit JSON mode or configured file or journald sink; a
 //! service manager can route stdout externally.

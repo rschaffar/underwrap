@@ -83,14 +83,13 @@ pub struct BackendConfig {
     /// Directory holding the per-user JSON files that make up the
     /// admin operator collection (`<users_dir>/<id>.json`). Missing
     /// directories are treated as an empty collection. Defaults to
-    /// [`crate::users::DEFAULT_USERS_DIR`].
+    /// `/var/lib/underwrap-backend/users`.
     #[serde(default = "default_users_dir")]
     pub users_dir: PathBuf,
     /// Path of the persistent offline-bootstrap sentinel. Its absence with an
     /// empty operator collection makes the SPA show deployment instructions;
     /// only the offline `bootstrap-user` command creates the first operator.
-    /// Defaults to
-    /// [`crate::users::DEFAULT_BOOTSTRAP_FILE`].
+    /// Defaults to `/var/lib/underwrap-backend/bootstrap.json`.
     #[serde(default = "default_bootstrap_file")]
     pub bootstrap_file: PathBuf,
     #[serde(default)]

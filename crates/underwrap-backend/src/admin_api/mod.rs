@@ -148,7 +148,7 @@ pub(crate) fn admin_router(state: Arc<ListenerState>) -> Router<Arc<ListenerStat
 }
 
 /// OpenAPI-only export. Constructs the same path table as
-/// [`admin_router`] (minus the tower layers, which don't affect the
+/// `admin_router` (minus the tower layers, which don't affect the
 /// spec) and returns the `OpenApi` document. Used by the drift test
 /// in `tests/openapi_export.rs` and re-exported from `lib.rs`.
 pub fn admin_openapi_spec() -> OpenApi {

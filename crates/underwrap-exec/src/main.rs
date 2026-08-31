@@ -10,7 +10,7 @@
 //! ```
 //!
 //! 1. Verifies instance identity from the effective GID group
-//!    (`underwrap-<instance>`), never from argv[0]
+//!    (`underwrap-<instance>`), never from `argv[0]`
 //! 2. Parses the wrapper name + variant from argv; the daemon validates
 //!    the name and the backend authorises the variant
 //! 3. Loads the trusted instance sidecar (socket + helper binary paths)

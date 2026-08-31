@@ -1,8 +1,8 @@
 //! Service wire types, split by trust boundary into two submodules:
 //!
-//! - [`admin`] — the admin SPA ↔ backend surface (session-cookie auth,
+//! - `admin` — the admin SPA ↔ backend surface (session-cookie auth,
 //!   OpenAPI/`ToSchema`-bearing `Admin*` DTOs).
-//! - [`runtime`] — the frontend daemon ↔ backend surface (mTLS, the
+//! - `runtime` — the frontend daemon ↔ backend surface (mTLS, the
 //!   `Runtime*` request/response types and reason vocabulary).
 //!
 //! Both are re-exported here so the canonical path stays

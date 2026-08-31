@@ -190,6 +190,12 @@
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
             });
 
+            # Rustdoc.
+            workspace-doc = craneLib.cargoDoc (commonArgsWithWeb // {
+              inherit cargoArtifacts;
+              env.RUSTDOCFLAGS = "--deny warnings";
+            });
+
             # Formatting.
             workspace-fmt = craneLib.cargoFmt {
               inherit src;
