@@ -3036,10 +3036,86 @@ No separate Rust, SPA, integration, Clippy, or VM-external build is required for
   - F-054 is resolved for the selected per-run representations, successful deployed flow, four service journals, and namespace-native records. The normative no-secret logging rule is unchanged; all broader nonclaims remain. F-055 and every other finding, Opportunity, and unresolved item remain unchanged. F-055 is next.
   - Final closure reviews found no evidence correction, passed the implementation/documentation/VM ledger under controller-verified hashes, and required only the completed heading/check state now recorded; F-055 promotion has no remaining gap.
 
+### Current iteration — F-055 loopback-only remote-style VM fidelity
+
+F-055 remains directly reproducible at clean HEAD `45f181fcca4ad6c593b8236a03804eee97de3531`.
+
+The one-node VM includes `pkgs.openssh`, enables `services.openssh`, and labels its second frontend/backend path as SSH-tunnel-satisfied although both backend listeners and both frontend daemons run in the same machine and use `https://127.0.0.1:<port>` directly.
+Product documentation accurately rejects SSH-tunnel transport, but does not state that the VM's “remote-style” evidence is same-host loopback rather than a multi-host deployment.
+
+Consequence: the VM and documentation can be read as evidence for SSH forwarding, DNS/SAN hostnames, firewalling, cross-host routing, or failure isolation that it never configures or observes.
+
+Security boundary:
+
+- Protected asset/claim: interpretation of HTTPS/mTLS transport and deployment-topology evidence.
+- Observer: deployers and reviewers using the VM and remote-backend guide to infer tested topology.
+- Boundary direction: one-node loopback fixture → claimed remote-host transport evidence; the correction names exactly what crosses the loopback socket and what remains untested.
+- No TLS, mTLS principal, URL admission, backend policy, or runtime behavior flaw is asserted.
+
+Exact scope:
+
+- Remove `pkgs.openssh` from the VM's `environment.systemPackages`; retain every package actually used by targets/test helpers.
+- Delete the unused `services.openssh` block and `StreamLocalBindUnlink` setting.
+- Correct `nix/tests/node.nix` comments only:
+  - top-level fixture has local and remote-style instances on one machine;
+  - the second backend is a separate service/listener for remote-style contract coverage;
+  - both frontend instances connect directly to loopback HTTPS;
+  - the `tunnel` instance name remains a fixture identifier inherited by service/account/PKI names and is not evidence of SSH transport.
+- Preserve both backend services, ports 18443/18444, independent store/client registries, mTLS identities/fingerprints, runtime client mappings, wrapper definitions, and instance isolation.
+- Add VM assertions that `sshd.service` is neither enabled nor running; static Nix source evidence separately proves the fixture no longer explicitly adds `pkgs.openssh` to `environment.systemPackages`. Keep the existing second-backend/daemon lifecycle, certificate replacement, old-certificate rejection, status, mapping, policy, resource, and writeback assertions.
+- Update the remote-style function/comments/log labels in `nix/tests/test.py` to say same-machine loopback while preserving the existing `tunnel` fixture identifiers and executable paths.
+- Add a `docs/remote-backend.md` test-coverage subsection that distinguishes product deployment guidance from VM evidence:
+  - one NixOS VM hosts both backend services and both frontend daemons;
+  - direct loopback HTTPS uses 127.0.0.1 and separate ports with real rustls/mTLS/fingerprint principal handling;
+  - the VM does not exercise DNS resolution, a non-loopback SAN/hostname, firewall traversal, cross-host routing/latency/partition, distinct host compromise, or multi-machine orchestration.
+- Update `docs/testing.md` with the same exact one-node/loopback evidence and limitations; retain separate unit/integration CA/hostname evidence already documented.
+- Add static acceptance evidence requiring zero `services.openssh`, `pkgs.openssh`, `StreamLocalBindUnlink`, “SSH tunnel,” “satisfied by SSH,” and false multi-host VM claims in `nix/tests/node.nix`, while preserving the `tunnel` fixture identifiers and product guide's explicit statement that SSH-tunnel transport is unsupported.
+
+Expected source/test/documentation allowlist:
+
+- `nix/tests/node.nix`
+- `nix/tests/test.py`
+- `docs/remote-backend.md`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+The implementation diff is exactly the four fixture/test/documentation paths above; the active plan changes separately only for scope and evidence.
+
+Expected cross-effects:
+
+- Closing F-055 corrects only VM package/service/comment topology and published test-evidence claims.
+- F-004 HTTPS-only transport, F-005 exclusive configured-CA trust, F-010 credential transition, F-027 self-contained integration runner, and F-054 selected-journal hygiene remain resolved and unchanged.
+- The `underwrapd-tunnel.service` fixture name and client-tunnel PKI source remain current identifiers, not transport claims; renaming the complete fixture identity graph is not required for F-055.
+- F-056 and every other finding, Opportunity, and unresolved item remain unchanged.
+
+Non-goals:
+
+- no production SSH support, SSH tunnel, proxy, DNS, firewall, network namespace, second VM/machine, multi-host test, latency/partition/failure injection, SAN/certificate generation, listener address/port, TLS/mTLS, CA trust, credential, runtime principal, store/policy/resource/writeback, or service behavior change;
+- no rename of the `tunnel` instance/service/account/client/PKI fixture identity graph; docs and comments must explicitly prevent interpreting that identifier as transport evidence;
+- no NixOS frontend module/package dependency, wrapper target, runtime PATH, user/group, service sandbox, generated config, VM scenario ordering, test credential, or security-boundary weakening;
+- no F-056+, Opportunity, dependency addition, generated API/schema, SPA, Rust code, or unrelated refactor.
+
+Validation commands and evidence:
+
+- `nix eval`/static inspection of the VM node proving OpenSSH service/package/settings absence and retained required system packages/loopback listeners/two instances
+- `python3 -m py_compile nix/tests/test.py`
+- `nix build .#checks.x86_64-linux.vm-test`
+- inspect the complete VM log for explicit no-sshd, remote-style loopback lifecycle, `ALL TESTS PASSED`, and completed script markers
+- exact static topology/identifier/port/PKI/store/client assertion inventory plus docs links/one-sentence/nonclaim checks
+- exact four-path allowlist, `git diff --check`, result/bytecode/generated artifact cleanup, and clean status
+
+The VM is mandatory because it must prove the removed SSH service is absent while the unchanged second loopback backend/frontend contract still passes end to end.
+No separate Rust, SPA, integration, Clippy, or workspace run is required for this NixOS fixture/test/documentation-only change.
+
+- [x] Revalidate F-055 against current node packages/services/comments, listener URLs, instance/service/account/PKI names, VM remote lifecycle assertions, product remote-backend guidance, testing docs, adjacent transport findings, and historical report/handover. Evidence: direct CodeGraph/source/search inspection on 2026-08-30; OpenSSH package/service/comments remain unused, both paths are direct same-VM 127.0.0.1 HTTPS, and docs lack an explicit VM topology limitation.
+- [x] Obtain fresh independent approval of exact OpenSSH removals, preserved fixture graph, loopback wording/nonclaims, allowlist, non-goals, cross-effects, validation, and mandatory-VM rationale before cleanup discovery. Evidence: initial review confirmed the package/service are unused and required explicit four-path/plan separation plus a static-source-versus-runtime-sshd evidence split. The plan incorporated both corrections; final implementation-scope review passed on 2026-08-30, while evidence review correctly found the approved implementation still pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before fixture/docs correction.
+- [ ] Implement and independently review SSH-state removal, VM assertions/comments, and bounded remote/testing documentation without changing transport behavior.
+- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-055 completion/cross-effects before promoting F-056.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-055 — remove stale SSH setup and describe the loopback-only VM scenario accurately.
 - [ ] F-056 — make strict Rustdoc pass and add the gate.
 - [ ] F-057 — declare the Rust support contract and resolver choice.
 - [ ] F-058 — refresh and record the supported frontend and OpenAPI tool matrix.
