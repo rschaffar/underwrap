@@ -2710,7 +2710,7 @@ Static exact-text and link-resolution evidence directly covers the changed bound
   - F-051 is resolved. F-041/F-042 remain resolved; internal project-memory navigation and README/security maturity wording remain valid; F-052 and every other finding, Opportunity, and unresolved item remain unchanged. F-052 is next.
   - Final closure review passed cleanup disposition, implementation/correction chronology, seven-sentence/six-guide semantics, static/link/symlink evidence, no-test rationale, preserved navigation/maturity, cross-effects, and F-052 promotion with no remaining gap.
 
-### Current iteration — F-052 audit and writeback observability vocabulary
+### Completed iteration — F-052 audit and writeback observability vocabulary
 
 F-052 remains directly reproducible at clean HEAD `1f24cd726ca908b3a1ca660251253a29003e62e5`.
 
@@ -2825,8 +2825,25 @@ Crate tests pin exact emitted fields/reasons and source shape; integration cover
   - Finding-local bounded review found no independent net deletion; removed constants/misnamed fields/helpers are the approved schema fix, while live sink, journal, warning, dispatch, and test structure retain distinct behavior/evidence.
   - Repository-wide bounded discovery found no high-confidence private dead production definition before its deadline; no candidate received complete reachability confirmation.
   - Broad logging refactors, formatting, dependency work, privileged-path cleanup, later findings, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; the F-052 correction may begin.
-- [ ] Implement and independently review comments, event/reason schema, tests/callers, and docs without changing authorization or secret-value handling.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-052 completion/cross-effects before promoting F-053.
+- [x] Implement and independently review comments, event/reason schema, tests/callers, and docs without changing authorization or secret-value handling.
+  - Fix commit: `8d3e1128aed6c9b51e6cb79d9caef9ddb713388e` (`fix: align audit event vocabulary`).
+  - Daemon audit output now has exactly seven current events: INFO `read_allowed`, Checkout, Checkin, and UsageSignal; WARN read/auth/Checkin denials. Allowed reads and every resource-channel event carry resource ids under `resource`; denied Checkin carries only wrapper/resource/reason.
+  - Production comments/docs now describe the default human-readable `tracing-subscriber` 0.3.23 `fmt` output to stdout with `RUST_LOG`/info filtering and no daemon JSON/configurable sink; namespace-native journald plus one-line stderr JSON fallback remains distinct.
+  - Namespace/protocol comments, warnings, integration fixture, and deployed VM use permission/writable vocabulary. Native reason `permission_readonly` replaces `grant_readonly`; `server_rejected` and `resource_too_large` remain exact.
+  - O-010 is fully resolved under explicit user authority: F-043 removed dead helpers and this commit removes remaining legacy helper/event/field/reason vocabulary without compatibility aliases. Authorization, levels, decision order, persistence, and material-value hygiene are unchanged.
+  - Fresh implementation/security and evidence reviews found no source defect. Final review required only exact Git/preimage confirmation, which the controller supplied; post-validation evidence review required careful VM-attempt classification reflected below.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-052 completion/cross-effects before promoting F-053.
+  - Exact committed diff: sixteen approved paths, 352 insertions and 257 deletions, SHA-256 `53e27d8e2a5347652c320249a57288acd4252e847e82276ca39c644978735321`.
+  - Focused and complete validation passed 68 daemon library plus 3 daemon-binary tests, all 125 namespace tests under four threads, and 8 focused wrapper-resource protocol tests (`fbaa32c62d647abe87939ec3840a743a4da6dd2cfcd2f9ff7b55284570d030f2`).
+  - The packaged integration runner passed all 106 tests with renamed permission-flow test names and unchanged runtime behavior (`550b3bb6f26f799bde25444385a634e7f94a2424004c090b12db705828e88829`).
+  - Exact Nix web artifact `/nix/store/6i58lvfr75p3xdn9dwp4kss183q3slk0-underwrap-web-dist-0.1.0` supplied workspace denied-warning Clippy and rustfmt (`a9a94f1bc745b201389636c3a7bcc35dc573a8b421066452517ed4b96ac4e0cd`; quality `2d261377b0bfaec6797175253361f25cff6c2101c2c88c461e5e225584bbc1c7`).
+  - The first changed-tree VM run stopped at the separately owned F-009 raw-blob equality assertion (`7fc76679cdbcc12f66ea5c0c71ca0478beff3bfe5e2733a136fc9e5a9faeda29`). An immediate same-tree rerun passed completely; the first attempt is an out-of-scope, non-reproducing failure rather than a known-current regression or accepted evidence.
+  - The successful VM derivation log contains `machine: ALL TESTS PASSED` and `test script finished in 162.86s` (`2e6f6064338dbce57177d3c7f93fb415498dda2506ec5f30b9a527b3a022dbdd`; markers `2061d87215d6650171b2afcde5dc0ddb529f01814a3dcad5ef6570a16da2e9d4`). It directly exercised text-formatted `read_allowed`, native `permission_readonly`, warning text, warning suppression, legacy absence, and unchanged deployed wrapper/writeback flows.
+  - Static validation passed seven exact events/fields, legacy production absence, subscriber/locked-default grounding, complete namespace/integration/VM permission vocabulary, and documentation sink/schema limits (`dd7113eec64537e76114702fc788c6d9fa1506104f03e6739f8a6b8bfd5364de`). Two controller static drafts failed only from a missing Python `re` import and an exact documentation-phrase mismatch; the corrected script passed.
+  - The implementation worker's first integration attempt omitted the required SPA artifact and stopped in the backend build script after focused daemon/namespace checks. The final packaged runner and every subsequent quality/VM check passed with exact Nix provenance; this is a corrected prerequisite attempt, not product evidence.
+  - Controller checks passed exact sixteen-path scope, exact preimage equivalence of removed constant/misnamed duplicate fields, seven-event levels/values, no legacy production vocabulary or material values, O-010 authority, no authorization/persistence/F-053 change, one-sentence bounded docs, `git diff --check`, result/bytecode/generated artifact cleanup, checksum, and clean post-commit tree.
+  - F-052 and O-010 are resolved. F-043/F-044/F-049 remain resolved; F-054 remains unresolved and now owns the renamed event/field/reason inventory; every other finding, Opportunity, and unresolved item remains unchanged. F-053 is next.
+  - Final closure review passed user authority, no-cleanup disposition, schema/value equivalence, fix/review chronology, validation/provenance, mandatory-VM success and first-attempt classification, corrected tooling/prerequisite attempts, bounded cross-effects, and F-053 promotion with no remaining gap.
 
 ### Remaining low queue
 
