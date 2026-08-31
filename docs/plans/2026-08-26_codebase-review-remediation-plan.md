@@ -2845,10 +2845,75 @@ Crate tests pin exact emitted fields/reasons and source shape; integration cover
   - F-052 and O-010 are resolved. F-043/F-044/F-049 remain resolved; F-054 remains unresolved and now owns the renamed event/field/reason inventory; every other finding, Opportunity, and unresolved item remains unchanged. F-053 is next.
   - Final closure review passed user authority, no-cleanup disposition, schema/value equivalence, fix/review chronology, validation/provenance, mandatory-VM success and first-attempt classification, corrected tooling/prerequisite attempts, bounded cross-effects, and F-053 promotion with no remaining gap.
 
+### Current iteration — F-053 discovered tablet responsive coverage
+
+F-053 remains directly reproducible at clean HEAD `552bdbfc87a8c5995ec6037357fb20366c72c593`.
+
+The `tablet-768` Playwright project still matches only `*.tablet.spec.ts`, but the repository has no matching test and both list/run commands report zero tests.
+The current `iPad (gen 7)` descriptor also supplies an 810×1080 viewport, so the project name/comment no longer establishes the claimed 768×1024 boundary.
+No production table/card responsive transition exists; current entity tables use contained horizontal overflow.
+
+Consequence: aggregate configuration implies tablet and table-transition evidence that does not run and does not match the actual current viewport or UI behavior.
+
+Security boundary: none; this adds bounded browser evidence and changes no product behavior.
+
+Exact scope:
+
+- Keep the project name `tablet-768` and iPad (gen 7) WebKit/touch/mobile characteristics, but override both viewport and screen to exact `{ width: 768, height: 1024 }` after spreading the device descriptor so dependency descriptor drift cannot change the named boundary.
+- Replace the false table-to-card comment with the actual evidence intent: exact `md` navigation breakpoint plus contained horizontal table overflow at the tablet viewport floor.
+- Add one `web/e2e/navigation.tablet.spec.ts` real-backend scenario discovered only by `tablet-768` that:
+  - authenticates through the real UI and requires `browserName === "webkit"`;
+  - proves `window.innerWidth/innerHeight` and `screen.width/screen.height` are exactly 768×1024 before any resize;
+  - navigates to Stores and requires the desktop sidebar visible, Open navigation button hidden, Stores table visible, no document-level horizontal overflow, and table overflow confined to its bordered `overflow-x-auto` container;
+  - resizes to 767×1024, requires the sidebar hidden and Open navigation button visible, opens the real navigation sheet, follows Profile, and requires the sheet to close and Profile to render;
+  - asserts no document-level horizontal overflow after the below-breakpoint navigation.
+- Do not claim or add cards: current Stores, Users, Client instances, and Wrapper permissions surfaces remain tables with local overflow.
+- Update `docs/testing.md` with exact configured WebKit, viewport/screen, 768/767 navigation, contained-table evidence, and limitations.
+
+Expected source/test/documentation allowlist:
+
+- `web/playwright.config.ts`
+- new `web/e2e/navigation.tablet.spec.ts`
+- `docs/testing.md`
+- this plan for scope and evidence
+
+Expected cross-effects:
+
+- Closing F-053 makes `--project=tablet-768 --list` and the focused run nonzero and removes the false table/card evidence claim.
+- F-036 close-control evidence remains configured Chromium only; O-015 purpose-built mobile entity cards remains unresolved and unchanged; F-058 Playwright/tool version refresh remains separate.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no production React/CSS/Tailwind component, breakpoint, navigation, table/card, layout, route, API/backend, authentication, or responsive behavior change;
+- no new card component, table replacement, horizontal-scroll removal, zoom/reflow, keyboard/focus, screen-reader, visual-regression, screenshot, touch-gesture, orientation-change, or accessibility-conformance work;
+- no desktop/mobile project change, Chromium claim, cross-browser/tablet-device matrix, Safari version claim, physical-device claim, all-table/page coverage, or general tablet support statement;
+- no dependency/lockfile, generated API/schema, committed build output, Rust/Nix/VM/privileged-chain, F-054+, Opportunity, or broad test refactor.
+
+Validation commands and evidence:
+
+- `cd web && npm test`
+- `cd web && npm run build`
+- build exact Nix `web-build`, use it for a fresh-target `cargo build --locked -p underwrap-backend`, and record the absolute checksummed `UNDERWRAP_BACKENDD_BINARY`
+- inside `nix develop`, run `cd web && npx playwright test --project=tablet-768 --list` and require exactly one discovered test in one file
+- with the same binary, run `cd web && npx playwright test e2e/navigation.tablet.spec.ts --project=tablet-768`
+- with the same binary, run complete `cd web && npm run test:e2e`
+- static exact project/descriptor/viewport/screen/test-match, 768/767 assertion, overflow/navigation, allowlist, docs-limit, and artifact checks
+- remove fresh target, `result`, generated `web/dist`, ignored schema, Playwright output/traces/screenshots/report, and coverage on success or failure
+- `git diff --check`
+
+No Rust behavior, NixOS/module, identity, namespace, capability, privileged chain, or deployment behavior changes, so no VM run is required.
+The real-backend tablet-project test and exact discovery command directly cover the changed test-evidence boundary.
+
+- [x] Revalidate F-053 against the current Playwright config/device descriptor, discovered files, AppShell `md` breakpoint, table implementations, full suite, docs, O-015/F-036/F-058, and historical report/handover. Evidence: direct CodeGraph/source/config/runtime descriptor/list inspection on 2026-08-30; no tablet file exists, list/run discovers zero, iPad gen 7 currently resolves to 810×1080 WebKit, and no table/card transition exists.
+- [x] Obtain fresh independent approval of exact stable viewport/screen override, one WebKit 768/767 scenario, contained-overflow/navigation assertions, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: implementation review confirmed override ordering, exact Tailwind `md` behavior, local table overflow, cross-effects, and no-VM rationale; evidence review passed exact one-test discovery, WebKit/device assertions, same-binary provenance, docs, and artifact scope on 2026-08-30 with implementation/runtime evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before tablet evidence.
+- [ ] Implement and independently review the configured tablet test/config/docs without changing production UI behavior.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-053 completion/cross-effects before promoting F-054.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-053 — add real tablet Playwright coverage or remove the unsupported project claim.
 - [ ] F-054 — strengthen encoded and full-blob log-hygiene evidence.
 - [ ] F-055 — remove stale SSH setup and describe the loopback-only VM scenario accurately.
 - [ ] F-056 — make strict Rustdoc pass and add the gate.
