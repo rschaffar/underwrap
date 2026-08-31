@@ -3109,7 +3109,10 @@ No separate Rust, SPA, integration, Clippy, or workspace run is required for thi
 
 - [x] Revalidate F-055 against current node packages/services/comments, listener URLs, instance/service/account/PKI names, VM remote lifecycle assertions, product remote-backend guidance, testing docs, adjacent transport findings, and historical report/handover. Evidence: direct CodeGraph/source/search inspection on 2026-08-30; OpenSSH package/service/comments remain unused, both paths are direct same-VM 127.0.0.1 HTTPS, and docs lack an explicit VM topology limitation.
 - [x] Obtain fresh independent approval of exact OpenSSH removals, preserved fixture graph, loopback wording/nonclaims, allowlist, non-goals, cross-effects, validation, and mandatory-VM rationale before cleanup discovery. Evidence: initial review confirmed the package/service are unused and required explicit four-path/plan separation plus a static-source-versus-runtime-sshd evidence split. The plan incorporated both corrections; final implementation-scope review passed on 2026-08-30, while evidence review correctly found the approved implementation still pending.
-- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before fixture/docs correction.
+- [x] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before fixture/docs correction.
+  - Finding-local bounded review confirmed the second backend, `tunnel` instance, PKI, store, listener, wrapper, test-driver globals, and lifecycle function are live. Only the approved OpenSSH state/comments/docs/assertions are removable.
+  - Repository-wide bounded discovery found no high-confidence independent dead production definition before its deadline.
+  - Fixture renames, topology redesign, formatting, dependencies, privileged cleanup, F-056+, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; F-055 implementation may begin.
 - [ ] Implement and independently review SSH-state removal, VM assertions/comments, and bounded remote/testing documentation without changing transport behavior.
 - [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-055 completion/cross-effects before promoting F-056.
 
