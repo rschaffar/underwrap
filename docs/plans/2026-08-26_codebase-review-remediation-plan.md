@@ -3313,10 +3313,93 @@ Locked tree/lock equality plus exact pinned-toolchain workspace checks directly 
   - Controller checks passed exact 13-path scope, no unstaged/untracked content, `git diff --check`, metadata/tree/lock equality, no dependency/toolchain/edition/resolver/profile/runtime/F-058 change, generated-artifact cleanup, checksum, and clean post-commit tree. No VM was required for this metadata/documentation-only change.
   - F-057 is resolved. F-024/F-025/F-033/F-056 remain resolved; F-058 and every other finding, Opportunity, unresolved item, and the separate VM equality-harness obligation remain unchanged. F-058 is next.
 
-### Remaining low queue
+### Current iteration — F-058 supported frontend and OpenAPI tool matrix
 
-Promote one row at a time using the same iteration protocol.
-- [ ] F-058 — refresh and record the supported frontend and OpenAPI tool matrix.
+F-058 remains reproducible in narrowed form at clean HEAD `43d40102f210608e2f66eb117392158cc915c977`.
+
+F-025 already updated the advisory-affected supported lines, pinned Nix Node 24.19.0, and aligned Playwright 1.61.1 with the nixpkgs browser driver.
+The current Rust/OpenAPI stack is already current at utoipa 5.5.0, utoipa-axum 0.2.0, openapi-typescript 7.13.0, and openapi-fetch 0.17.0.
+The generated OpenAPI 3.1.0 document remains valid within the 3.1 feature line even though OpenAPI 3.2.0 is now published.
+
+The selected frontend lock still carries Vite 6.4.3, `@vitejs/plugin-react` 4.7.0, Vitest/coverage 3.2.7, jsdom 26.1.0, `@testing-library/jest-dom` 6.9.1, and lucide-react 0.479.0 while compatible current majors are available.
+Current npm metadata also exposes ordinary compatible patch/minor updates across the direct frontend dependencies.
+`npm audit --package-lock-only` reports zero vulnerabilities, so this finding remains maintenance and evidence currency rather than a demonstrated security defect.
+
+A disposable clean-lock probe selected Vite 8.2.2, plugin-react 6.1.1, Vitest/coverage 4.1.11, jsdom 30.0.1, jest-dom 7.0.1, lucide-react 1.38.0, and current compatible direct versions under pinned Node 24.19.0.
+The first probe preserved all 162 SPA unit tests but found the expected Vitest-4 config typing migration.
+After importing `defineConfig` from `vitest/config` and using ESM-native `import.meta.dirname`, all 29 files/162 tests and the production build passed without source-component changes.
+The manually exposed `npm run test:coverage` command fails its thresholds both before and after the probe; it is pre-existing, is not hidden by this finding, and remains outside F-058 implementation.
+
+Consequence: the production SPA and its browser/unit evidence remain reproducible, but the declared build/test matrix unnecessarily trails compatible current tool lines and leaves support intent implicit.
+
+Security boundary: none.
+The protected assets, attacker model, runtime/admin API, browser authentication, secret-text boundary, backend authority, privileged frontend chain, and deployed security claims remain unchanged.
+
+User decision on 2026-08-31: approve the recommended existing-dependency major refresh with no new direct dependency or intended product/runtime behavior change.
+Keep TypeScript on 5.9 because openapi-typescript 7 declares a TypeScript `^5.x` peer.
+Pin `@playwright/test` exactly to 1.61.1 because the locked nixpkgs Playwright driver is 1.61.1; do not update nixpkgs or `flake.lock` merely to reach Playwright 1.62.1.
+Keep the current utoipa/OpenAPI generator/client lines and OpenAPI 3.1.0 document unchanged because each is current and compatible; version age alone is not a defect.
+
+Expected implementation:
+
+- refresh every direct frontend dependency floor to the selected current compatible version and regenerate one clean npm lock;
+- use caret constraints for production dependencies `@hookform/resolvers` 5.9.1, Radix dialog 1.1.23, label 2.1.15, and slot 1.3.3, TanStack React Query 5.102.8 and Router 1.170.32, class-variance-authority 0.7.1, clsx 2.1.1, lucide-react 1.38.0, openapi-fetch 0.17.0, React and React DOM 19.2.8, React Hook Form 7.87.0, tailwind-merge 3.6.0, and Zod 4.5.4;
+- use caret constraints for development dependencies Tailwind Vite/Tailwind 4.3.3, Testing Library DOM 10.4.1, jest-dom 7.0.1, React 16.3.3, and user-event 14.6.6, Node types 24.13.3, React types 19.2.18, React DOM types 19.2.5, plugin-react 6.1.1, Vitest/coverage-v8 4.1.11, jsdom 30.0.1, openapi-typescript 7.13.0, selfsigned 5.5.0, TypeScript 5.9.3, and Vite 8.2.2;
+- pin `@playwright/test` with the sole exact direct constraint `1.61.1`; every other direct constraint remains caret-prefixed;
+- align `@types/node` with the supported Node 24 line rather than unrelated latest Node 26 types;
+- retain the current TypeScript 5, openapi-typescript 7, openapi-fetch 0, and exact Playwright/Nix-driver lines described above;
+- migrate the shared Vite/Vitest config only as required for the supported tool matrix, preserving proxy, aliases, output naming, jsdom URL, test selection, and coverage configuration;
+- update the Nix npm dependency hash without changing flake inputs, Node, Playwright, Rust, packages, or check wiring;
+- document one exact validated frontend/OpenAPI matrix in `docs/testing.md`, including the TypeScript/OpenAPI and Playwright/Nix compatibility constraints.
+
+Expected implementation allowlist:
+
+- `web/package.json`
+- `web/package-lock.json`
+- `web/vite.config.ts`
+- `flake.nix`
+- `docs/testing.md`
+
+The implementation diff is exactly these five paths; the active plan changes separately for scope and evidence.
+The committed OpenAPI document, generated TypeScript schema, Cargo manifests/lock, flake lock, application source/components/tests, and Playwright config remain byte-unchanged.
+
+Expected cross-effects:
+
+- Closing F-058 refreshes F-025's frontend maintenance baseline while retaining its zero-advisory result and exact Playwright/driver alignment.
+- F-016's generated OpenAPI semantic contract and F-026's shared pinned SPA build/test checks remain resolved and exercise the refreshed matrix.
+- F-047 through F-050 and F-053 retain their full configured browser evidence and must pass unchanged against the refreshed production bundle.
+- The pre-existing red optional SPA coverage-threshold command is neither fixed nor weakened; give that separate future obligation a durable roadmap owner before archiving this remediation plan.
+- Every other finding, Opportunity, unresolved item, and the separate VM equality-harness obligation remain unchanged.
+
+Non-goals:
+
+- no new direct dependency, frontend feature, UI/UX/component/API behavior, generated schema/spec semantic, browser support expansion, production Node runtime, backend/runtime DTO, Rust dependency, or product security change;
+- no TypeScript 7, Node 26 types/runtime, Playwright 1.62+, nixpkgs/flake-input update, OpenAPI 3.2 migration, utoipa/OpenAPI generator/client update, React compiler, Vite devtools, or optional peer installation;
+- no bundle splitting, chunk-warning suppression, output-name change, proxy behavior change, test rewrite, snapshot churn, source formatting, CSS/Tailwind redesign, icon substitution, or compatibility shim;
+- no coverage-threshold reduction, coverage exclusion expansion, unrelated coverage-test work, advisory-policy change, F-025/F-026 redesign, VM/privileged-chain work, later Opportunity, or unrelated dependency refresh outside the npm lock selected by these direct constraints.
+
+Validation commands and evidence:
+
+- record pre-change package/lock/OpenAPI/Cargo/flake hashes, exact direct selected versions, npm audit/outdated output, and pinned Nix Node/Playwright versions
+- regenerate the lock from the approved direct constraints, then run `npm ci`, `npm ls --all`, `npm audit --package-lock-only`, and `npm outdated`
+- require zero npm audit findings and only the explicitly retained TypeScript, Playwright, and Node-type latest-major differences in outdated output
+- `cd web && npm test && npm run build`
+- generate the API schema independently and require byte equality with the pre-change generated schema from the unchanged committed OpenAPI document
+- build the exact Nix `web-build`, compile an exact backend against that artifact, and run the complete configured Playwright suite inside `nix develop` with that backend binary
+- focused backend OpenAPI export/semantic tests plus bounded workspace tests with the exact Nix web artifact
+- `nix build .#checks.x86_64-linux.web-build .#checks.x86_64-linux.web-test`
+- `nix flake check --all-systems --no-build`
+- static exact direct-version/matrix/peer/hash/config/allowlist inventory, unchanged Cargo/OpenAPI/flake-lock/application/test/Playwright paths, generated-artifact cleanup, and `git diff --check`
+
+No VM run is required because no NixOS module, identity, namespace, capability, privileged chain, runtime API, backend behavior, deployed observability, fixture topology, or browser version changes.
+The complete configured browser suite directly exercises the changed production bundle, the x86_64 Nix web builds exercise the refreshed reproducible dependency closure, and all-system no-build evaluation checks its wiring on both supported output sets.
+
+- [x] Revalidate F-058 against current npm/Cargo/OpenAPI/Nix versions, F-016/F-025/F-026/F-047–F-050/F-053, historical report/handover, current registry compatibility metadata, audit/outdated output, and a disposable major-matrix probe. Evidence: direct source/registry/Nix inspection and clean-lock probe on 2026-08-31; current hashes and version outputs are retained under `/tmp/f058-*`, audit reports zero, the corrected probe passes 29 files/162 tests and production build, and the same optional coverage command remains red before/after.
+- [x] Obtain the focused major-refresh decision before scope approval. Evidence: the user approved the recommended refresh on 2026-08-31 with TypeScript 5.9, exact Playwright 1.61.1/Nix alignment, current OpenAPI 3.1 tooling, no new direct dependency, and no intended product/runtime behavior change.
+- [x] Obtain fresh independent approval of the exact version matrix, two-line config migration, five-path allowlist, compatibility holds, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: technical review verified the current majors, peers, TypeScript/OpenAPI and Playwright/Nix holds, OpenAPI validity, audit/probe results, and required the plan to enumerate every direct selected constraint. After that correction, fresh final scope review passed all 33 direct constraints (32 caret plus exact Playwright), exact allowlist, holds, cross-effects, evidence matrix, and no-VM rationale on 2026-08-31 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before dependency/tool-matrix correction.
+- [ ] Implement and independently review the approved package/lock/config/hash/documentation refresh without changing application or API behavior.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-058 completion/cross-effects before final program curation.
 
 ## Completion Checklist
 
