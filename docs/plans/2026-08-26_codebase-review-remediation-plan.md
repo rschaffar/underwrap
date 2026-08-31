@@ -3228,10 +3228,78 @@ Direct strict Cargo docs and the built Nix check exercise the complete changed b
   - F-056 is resolved and strict workspace Rustdoc is now a first-class flake check. F-026/F-027/F-052 remain resolved; F-057/F-058 and every other finding, Opportunity, and unresolved item remain unchanged. F-057 is next.
   - Final closure review passed no-cleanup disposition, nine corrections/gate, all validation and artifact evidence, no-VM rationale, cross-effects, and F-057 promotion with no remaining gap.
 
+### Current iteration — F-057 Rust support and resolver contract
+
+F-057 remains directly reproducible at clean HEAD `3c9923e2b2617fd90b7f954cc8e7b5a93377807f`.
+
+The Rust 2024 workspace explicitly uses Cargo resolver 2, but `[workspace.package]` and all eleven member packages omit `rust-version`.
+The flake and development shell pin Rust/Cargo 1.97.1, so builds have an effective toolchain while package metadata and dependency re-resolution policy remain unstated.
+
+Consequence: maintainers and downstream Cargo tooling cannot distinguish an intentional resolver-2/fail-on-newer-requirement policy from an accidental edition-2024 default override; lockfile re-resolution and support expectations are ambiguous.
+
+Security boundary: none; this changes package metadata and maintenance policy only.
+
+Exact support contract:
+
+- Add `rust-version = "1.97.1"` to `[workspace.package]`.
+- Add `rust-version.workspace = true` to every one of the eleven `[package]` tables, including unpublished `integration-tests`, so `cargo metadata` exposes one exact minimum for every workspace member.
+- Keep edition 2024 and exact flake toolchain 1.97.1 unchanged.
+- Define the contract precisely:
+  - Rust 1.97.1 is the minimum supported compiler for this first-release workspace;
+  - the Nix development/release/check environment uses exactly Rust/Cargo 1.97.1;
+  - newer compilers are not independently promised by this pinned validation matrix even though `rust-version` is a minimum constraint.
+- Keep `resolver = "2"` and add a concise adjacent rationale comment:
+  - dependency versions are pinned by `Cargo.lock` and the Nix toolchain;
+  - the project intentionally wants dependency re-resolution to expose a dependency requiring newer Rust as an error under the supported compiler rather than silently selecting an older dependency through resolver-3 MSRV fallback;
+  - resolver 3 is not selected merely because edition 2024 would default to it for a newly created workspace.
+- Do not claim that resolver 2 enforces `rust-version` during dependency selection; the exact toolchain build is the enforcement evidence.
+- Document the same support/resolver contract and verification commands in `docs/testing.md`.
+
+Expected source/test/documentation allowlist:
+
+- `Cargo.toml`
+- all eleven `crates/*/Cargo.toml` workspace member manifests
+- `docs/testing.md`
+- this plan for scope and evidence
+
+The implementation diff is exactly thirteen manifest/documentation paths; the active plan changes separately only for scope and evidence.
+
+Expected cross-effects:
+
+- Closing F-057 makes every package advertise the same minimum and records why resolver 2 is intentional.
+- F-024/F-025 toolchain/advisory work, F-033 protocol profiles, F-056 strict Rustdoc, and F-058 frontend/OpenAPI tool refresh remain unchanged.
+- Every other finding, Opportunity, and unresolved item remains unchanged.
+
+Non-goals:
+
+- no compiler/toolchain/overlay/edition/resolver/lockfile/dependency/version/feature/profile/package/publication/API/wire/runtime behavior change;
+- no attempt to find a lower historical MSRV, claim compatibility with compilers older than 1.97.1, test arbitrary newer compilers, or promise a semver support window beyond the exact minimum/pinned matrix;
+- no resolver-3 migration, fallback-policy experiment, cargo update, dependency re-resolution, lock regeneration, advisory work, release automation, CI matrix, F-058+, Opportunity, or unrelated manifest cleanup;
+- no NixOS module/VM, frontend, generated artifact, privileged-chain, or security-boundary change.
+
+Validation commands and evidence:
+
+- record pre-change `cargo tree --workspace --locked --edges normal,build,dev` and `Cargo.lock` hashes
+- `cargo metadata --locked --format-version 1 --no-deps` and require exactly eleven packages with `rust_version == "1.97.1"`, edition 2024, and no missing/outlier
+- rerun the exact locked dependency tree and require byte-identical output/hash plus byte-identical `Cargo.lock`
+- `nix develop --command bash -lc 'rustc --version; cargo --version'` and require exact 1.97.1 for both
+- build exact Nix `web-build`, then run bounded workspace tests, strict workspace Rustdoc, workspace denied-warning Clippy, and rustfmt with exact artifact provenance
+- `nix build .#checks.x86_64-linux.workspace-doc`
+- `nix flake check --all-systems --no-build`
+- static exact root/member/rationale/docs inventory, 13-path allowlist, no lock/dependency/flake/generated/artifact change, and `git diff --check`
+
+No VM run is required because no executable, dependency, toolchain, NixOS module, privileged chain, wire, or runtime behavior changes.
+Locked tree/lock equality plus exact pinned-toolchain workspace checks directly cover the metadata/policy boundary.
+
+- [x] Revalidate F-057 against root/member manifests, edition/resolver behavior, pinned flake/dev-shell toolchain, Cargo metadata/tree/lock, F-024/F-025/F-033/F-056/F-058, and historical report/handover. Evidence: direct source/Cargo/Nix inspection on 2026-08-30; all eleven packages report null rust_version, resolver 2 is explicit without rationale, exact Nix Rust/Cargo are 1.97.1, dependency tree SHA-256 is `afee3c91d77540ccad6f9b501c6f275a25a224e24b6f50e1cf0db4f384f21875`, and Cargo.lock SHA-256 is `2f87022544dcca3998b77f09771e9b3d001b90e227e7e9b543b36a06125c8998`.
+- [x] Obtain fresh independent approval of exact minimum, resolver rationale, all-member metadata, allowlist, non-goals, cross-effects, validation, and no-VM rationale before cleanup discovery. Evidence: independent evidence review passed the eleven-package metadata/tree/lock/toolchain/quality/all-system matrix and 13-path/no-VM scope. Policy review verified the exact pinned/minimum/newer wording and, after the controller supplied Cargo's authoritative resolver semantics (`resolver 2` allow versus `resolver 3` fallback), passed the fail-versus-fallback rationale and resolver-enforcement disclaimer on 2026-08-30 with implementation evidence pending.
+- [ ] Complete finding-local and repository-wide cleanup discovery; independently process any accepted cleanup before metadata/docs correction.
+- [ ] Implement and independently review root/member manifests and testing documentation without changing the lock, toolchain, resolver, or dependencies.
+- [ ] Validate, run controller scope/diff/artifact checks, commit coherently, and record F-057 completion/cross-effects before promoting F-058.
+
 ### Remaining low queue
 
 Promote one row at a time using the same iteration protocol.
-- [ ] F-057 — declare the Rust support contract and resolver choice.
 - [ ] F-058 — refresh and record the supported frontend and OpenAPI tool matrix.
 
 ## Completion Checklist
