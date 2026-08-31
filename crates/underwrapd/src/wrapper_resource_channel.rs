@@ -186,13 +186,7 @@ async fn handle_checkin(
             WrapperResourceResponse::CheckinOk
         }
         Ok(RuntimeWrapperInvocationFinalizeResponse::Deny { reason }) => {
-            crate::audit::wrapper_write_denied(
-                "resource",
-                wrapper_name,
-                resource_id,
-                "<full-blob>",
-                &reason,
-            );
+            crate::audit::resource_checkin_denied(wrapper_name, resource_id, &reason);
             WrapperResourceResponse::Error {
                 code: ResourceErrorCode::Unauthorized,
                 message: reason,

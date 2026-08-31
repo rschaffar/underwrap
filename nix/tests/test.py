@@ -324,7 +324,7 @@ def _resource_id_for(url, name):
         ) from e
 
 
-def admin_upsert_grant(url, store, client_instance, wrapper, resource, mode, *, writable=False, reason=None):
+def admin_upsert_permission(url, store, client_instance, wrapper, resource, mode, *, writable=False, reason=None):
     """Upsert a wrapper permission for a
     `(client_instance, wrapper, resource)` tuple. `resource` is the
     operator-facing name; it is translated to the stable backend id
@@ -347,7 +347,7 @@ def admin_upsert_grant(url, store, client_instance, wrapper, resource, mode, *, 
     )
 
 
-def admin_delete_grant(url, store, client_instance, wrapper, resource):
+def admin_delete_permission(url, store, client_instance, wrapper, resource):
     rid = _resource_id_for(url, resource)
     return admin_api(
         url,
@@ -449,7 +449,7 @@ def find_pair(pairs, wrapper, resource):
 
 
 # Wrapper → operator-facing resource name mapping for the local instance.
-# `grant_local_unlocked` resolves the name through `LOCAL_RESOURCE_IDS` before constructing the stable resource id permission tuple.
+# `set_local_unlocked_permission` resolves the name through `LOCAL_RESOURCE_IDS` before constructing the stable resource id permission tuple.
 LOCAL_WRAPPER_RESOURCES = {
     "test-echo": "test/token",
     "test-echo2": "test/other",
@@ -487,7 +487,7 @@ LOCAL_WRAPPER_RESOURCES = {
 }
 
 # Each wrapper now projects exactly one resource, so no secondary
-# grants are needed.
+# permissions are needed.
 
 # Resolved at boot from `GET /v1/admin/client-instances`. The backend
 # assigns runtime-client ids dynamically (see
@@ -510,13 +510,13 @@ def resolve_client_instance(url, store_name):
     )
 
 
-def grant_local_unlocked(wrapper, resource=None):
-    """Shortcut: grant `(local-client, wrapper, resource)` with mode
+def set_local_unlocked_permission(wrapper, resource=None):
+    """Set the `(local-client, wrapper, resource)` permission mode to
     Unlocked. Most VM-test scenarios just want the wrapper to work
     end-to-end without ceremony."""
     if resource is None:
         resource = LOCAL_WRAPPER_RESOURCES[wrapper]
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -757,11 +757,11 @@ def local_store_and_basic_ops():
     # Admin writes through the per-secret PUT endpoint are unconditional;
     # per-permission `writable` controls only wrapper-side persistence.
 
-    # Every wrapper invocation needs a grant for
-    # `(client_instance, wrapper, resource)`. Pre-seed Unlocked grants
+    # Every wrapper invocation needs a permission for
+    # `(client_instance, wrapper, resource)`. Pre-seed Unlocked permissions
     # for the full wrapper/resource fixture so the subsequent test sections
     # can drive the wrappers without per-test boilerplate. Tests that
-    # exercise the *absence* of a grant (or `Locked` / `UnlockedUntil`)
+    # exercise the *absence* of a permission (or `Locked` / `UnlockedUntil`)
     # delete or replace these as they go.
     for wrapper, resource in [
         ("test-echo", "test/token"),
@@ -778,7 +778,7 @@ def local_store_and_basic_ops():
         ("test-ns-pids", "test/ns-pids-store"),
         ("test-ns-pids-env", "test/ns-pids-env-store"),
     ]:
-        grant_local_unlocked(wrapper, resource)
+        set_local_unlocked_permission(wrapper, resource)
 
     admin_write_secret(ADMIN_LOCAL, "local", "test-echo", "test/token/env/MY_TOKEN", "ghp_testvmtoken")
     admin_write_secret(ADMIN_LOCAL, "local", "test-echo2", "test/other/env/OTHER_SECRET", "other_secret_val")
@@ -1585,7 +1585,7 @@ def local_target_uid_files_libsecret():
     # publication; the X-owned private bus tmpfs is never a writeback source.
 
     # --- Files slot under mandatory target UID ---
-    grant_local_unlocked("test-iso-dir")
+    set_local_unlocked_permission("test-iso-dir")
     # Back ~/iso-files with a tmpfs (idmap-capable, caller-owned) so the test is
     # deterministic regardless of the VM's /home filesystem (see iso-home test).
     machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
@@ -1651,7 +1651,7 @@ def local_target_uid_files_libsecret():
     machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
 
     # --- libsecret slot under mandatory target UID ---
-    grant_local_unlocked("test-iso-libsecret")
+    set_local_unlocked_permission("test-iso-libsecret")
     stage_text_secret_for_testuser("iso_libsecret_val", "/tmp/.iso-libsecret-secret")
     machine.succeed(
         'su testuser -s /bin/sh -c "'
@@ -1801,12 +1801,12 @@ def local_ns_handoff_authentication():
 
 def local_target_uid_readonly_writeback():
     # ============================================================
-    # LOCAL INSTANCE: read-only-grant writeback drop under mandatory target UID
+    # LOCAL INSTANCE: read-only permission writeback drop under mandatory target UID
     # ============================================================
     # Proves the read-only drop for a files target in the mandatory uid-X model:
     # the target writes a CHANGED value into its X-owned staging, the supervisor
     # reads the staging back through the single setfsuid(X) window, sees the
-    # change, and DROPS it because the grant is read-only — the backend blob is
+    # change, and DROPS it because the permission is read-only — the backend blob is
     # unchanged and the structured audit event fires. So the cross-uid read still
     # happens (exercising the setfsuid window); only the persist is refused.
     DIR = "test/iso-dir-tok"
@@ -1818,14 +1818,14 @@ def local_target_uid_readonly_writeback():
         "mount -t tmpfs -o mode=0755,uid=1099,gid=100 tmpfs /home/testuser/iso-files"
     )
 
-    # Seed a known baseline via a WRITABLE write, then flip the grant to read-only.
-    grant_local_unlocked("test-iso-dir")  # writable=True
+    # Seed a known baseline via a WRITABLE write, then flip the permission to read-only.
+    set_local_unlocked_permission("test-iso-dir")  # writable=True
     machine.succeed(
         "su testuser -s /bin/sh -c '/run/wrappers/bin/underwrap-local test-iso-dir write'"
     )
     baseline = admin_get_blob(ADMIN_LOCAL, "local", DIR)
 
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-iso-dir", DIR,
         {"kind": "unlocked"}, writable=False,
     )
@@ -1834,7 +1834,7 @@ def local_target_uid_readonly_writeback():
     cursor = journal_cursor()
 
     # `rewrite` writes a DISTINCT value, so the post-run blob differs from the
-    # baseline — the change the read-only grant must drop.
+    # baseline — the change the read-only permission must drop.
     stderr_capture = machine.succeed(
         su(
             "/run/wrappers/bin/underwrap-local test-iso-dir rewrite 2>/tmp/iso-ro-stderr.log "
@@ -1845,7 +1845,7 @@ def local_target_uid_readonly_writeback():
 
     after = admin_get_blob(ADMIN_LOCAL, "local", DIR)
     assert after == baseline, (
-        "FAIL: isolated read-only grant persisted a change — the backend blob changed"
+        "FAIL: isolated read-only permission persisted a change — the backend blob changed"
     )
 
     journal_after = machine.succeed(
@@ -1855,21 +1855,27 @@ def local_target_uid_readonly_writeback():
     assert "AUDIT=writeback_rejected" in journal_after, (
         f"FAIL: isolated read-only drop missing writeback_rejected event: {journal_after!r}"
     )
-    assert "REASON=grant_readonly" in journal_after, (
-        f"FAIL: isolated read-only drop missing grant_readonly reason: {journal_after!r}"
+    assert "REASON=permission_readonly" in journal_after, (
+        f"FAIL: isolated read-only drop missing permission_readonly reason: {journal_after!r}"
+    )
+    assert "REASON=grant_readonly" not in journal_after, (
+        f"FAIL: isolated read-only drop retained legacy reason: {journal_after!r}"
     )
     assert f"RESOURCE_NAME={DIR}" in journal_after, (
         f"FAIL: isolated read-only drop journal event missing resource name: {journal_after!r}"
     )
-    assert "grant is read-only" in stderr_capture, (
+    assert "permission is read-only" in stderr_capture, (
         f"FAIL: isolated read-only drop missing human-readable stderr warning: {stderr_capture!r}"
+    )
+    assert "grant is read-only" not in stderr_capture, (
+        f"FAIL: isolated read-only drop retained legacy warning: {stderr_capture!r}"
     )
     assert f"resource '{DIR}'" in stderr_capture, (
         f"FAIL: isolated read-only drop stderr warning missing resource name: {stderr_capture!r}"
     )
     machine.log(
-        "PASS: read-only grant drops the change after reading the X-owned staging "
-        "through the setfsuid(X) window; journal records grant_readonly"
+        "PASS: read-only permission drops the change after reading the X-owned staging "
+        "through the setfsuid(X) window; journal records permission_readonly"
     )
 
     machine.execute("umount /home/testuser/iso-files 2>/dev/null || true")
@@ -2086,7 +2092,7 @@ def local_libsecret_mode():
     # absence; a separate same-caller process checks the mode-0000 boundary.
     # A uniquely named transient unit supplies exact cgroup-scoped liveness and
     # cleanup.
-    grant_local_unlocked("test-libsecret-bus-probe")
+    set_local_unlocked_permission("test-libsecret-bus-probe")
     probe_id = uuid.uuid4().hex
     probe_unit = f"underwrap-libsecret-bus-probe-{probe_id}.service"
     release_marker = f"/tmp/underwrap-libsecret-bus-release-{probe_id}"
@@ -2343,10 +2349,10 @@ def local_directory_credentials():
     # LOCAL INSTANCE: directory credentials
     # ============================================================
 
-    # New grant model: one Unlocked grant per `(client_instance,
+    # New permission model: one Unlocked permission per `(client_instance,
     # wrapper, resource)` tuple. Read access is then unconditional;
-    # wrapper-side writes are gated by the per-grant `writable: bool`
-    # flag (which `grant_local_unlocked` sets true).
+    # wrapper-side writes are gated by the per-permission `writable: bool`
+    # flag (which `set_local_unlocked_permission` sets true).
     for wrapper in [
         "test-dir-write",
         "test-dir-read",
@@ -2354,7 +2360,7 @@ def local_directory_credentials():
         "test-dir-sleep",
         "test-dir-symlink",
     ]:
-        grant_local_unlocked(wrapper)
+        set_local_unlocked_permission(wrapper)
 
     # Seed a directory credential through a read-write wrapper.
     machine.succeed(su("/run/wrappers/bin/underwrap-local test-dir-write seed"))
@@ -2435,7 +2441,7 @@ def local_directory_credentials():
     )
     machine.log("PASS: directory writeback drops runs that introduce symlinks")
 
-    # Seed the per-grant `writable=true` for the wrappers used by
+    # Seed the per-permission `writable=true` for the wrappers used by
     # the atomic-writeback scenarios. They share the dir-a resource.
     for wrapper in [
         "test-dir-write-then-sleep",
@@ -2443,7 +2449,7 @@ def local_directory_credentials():
         "test-dir-env-probe",
         "test-dir-env-override-probe",
     ]:
-        grant_local_unlocked(wrapper)
+        set_local_unlocked_permission(wrapper)
 
 def journal_cursor():
     """Snapshot the current journal cursor for exact follow-up queries."""
@@ -2514,9 +2520,9 @@ def local_atomic_writeback():
     def reset_blob_state():
         """Re-seed the dir-a blob to a known state. The
         `test-dir-write seed` script writes a deterministic set of
-        files via the writable grant; we then re-fetch the blob bytes
+        files via the writable permission; we then re-fetch the blob bytes
         so subsequent scenarios can byte-compare against this baseline."""
-        grant_local_unlocked("test-dir-write")
+        set_local_unlocked_permission("test-dir-write")
         machine.succeed(su("/run/wrappers/bin/underwrap-local test-dir-write seed"))
         return admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
 
@@ -2527,7 +2533,7 @@ def local_atomic_writeback():
     # writeback_rejected event. `last_used_at` is bumped.
     # ----------------------------------------------------------
     baseline_a = reset_blob_state()
-    grant_local_unlocked("test-dir-read")
+    set_local_unlocked_permission("test-dir-read")
 
     before_pairs = admin_list_pairs(ADMIN_LOCAL, "local")
     before_pair = find_pair(before_pairs, "test-dir-read", DIR_A)
@@ -2558,7 +2564,7 @@ def local_atomic_writeback():
     machine.log("PASS: scenario 1 — clean run leaves backend blob unchanged, last_used bumped")
 
     # ----------------------------------------------------------
-    # Scenario 2: changed run with writable grant — Checkin path
+    # Scenario 2: changed run with writable permission — Checkin path
     # The `test-dir-write update` wrapper rewrites the seeded files;
     # the backend blob's bytes change accordingly, and a second run
     # via `test-dir-read` sees the new content.
@@ -2576,18 +2582,18 @@ def local_atomic_writeback():
     machine.log("PASS: scenario 2 — writable Checkin persists, second run observes new state")
 
     # ----------------------------------------------------------
-    # Scenario 3: changed run with read-only grant — quiet drop
+    # Scenario 3: changed run with read-only permission — quiet drop
     # The `test-dir-readonly-write` wrapper writes mutations through a
-    # grant with `writable=false`. The daemon emits no Checkin (ns
+    # permission with `writable=false`. The daemon emits no Checkin (ns
     # has writable=false from Checkout), the backend blob is
     # unchanged, the journal carries the structured
-    # `AUDIT=writeback_rejected REASON=grant_readonly` event (routed
+    # `AUDIT=writeback_rejected REASON=permission_readonly` event (routed
     # via journald's native socket so it does not clutter the
     # wrapper's stderr), and stderr contains only the human-readable
     # line — which names both the resource and its id.
     # ----------------------------------------------------------
     baseline_a = reset_blob_state()
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -2607,7 +2613,7 @@ def local_atomic_writeback():
     time.sleep(0.5)
 
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
-    assert after_a == baseline_a, "scenario 3: dir-a blob changed despite read-only grant"
+    assert after_a == baseline_a, "scenario 3: dir-a blob changed despite read-only permission"
 
     # The structured audit event is delivered via journald's native
     # socket; the human-readable warning goes to wrapper stderr. The
@@ -2615,8 +2621,11 @@ def local_atomic_writeback():
     assert '"audit":"writeback_rejected"' not in stderr_capture, (
         f"scenario 3: audit JSON leaked onto stderr instead of journald: {stderr_capture!r}"
     )
-    assert "grant is read-only" in stderr_capture, (
+    assert "permission is read-only" in stderr_capture, (
         f"scenario 3: missing human-readable stderr warning: {stderr_capture!r}"
+    )
+    assert "grant is read-only" not in stderr_capture, (
+        f"scenario 3: legacy human-readable warning remained: {stderr_capture!r}"
     )
     assert f"resource '{DIR_A}'" in stderr_capture, (
         f"scenario 3: stderr warning missing resource name: {stderr_capture!r}"
@@ -2629,14 +2638,17 @@ def local_atomic_writeback():
     assert "AUDIT=writeback_rejected" in journal_after, (
         f"scenario 3: missing writeback_rejected event in journal: {journal_after!r}"
     )
-    assert "REASON=grant_readonly" in journal_after, (
-        f"scenario 3: missing grant_readonly reason in journal: {journal_after!r}"
+    assert "REASON=permission_readonly" in journal_after, (
+        f"scenario 3: missing permission_readonly reason in journal: {journal_after!r}"
+    )
+    assert "REASON=grant_readonly" not in journal_after, (
+        f"scenario 3: legacy reason remained in journal: {journal_after!r}"
     )
     assert f"RESOURCE_NAME={DIR_A}" in journal_after, (
         f"scenario 3: journal event missing resource name: {journal_after!r}"
     )
     machine.log(
-        "PASS: scenario 3 — read-only grant drops mutations; journal records audit event, stderr shows named warning"
+        "PASS: scenario 3 — read-only permission drops mutations; journal records audit event, stderr shows named warning"
     )
 
     # ----------------------------------------------------------
@@ -2648,7 +2660,7 @@ def local_atomic_writeback():
     # (env_clear whitelist).
     # ----------------------------------------------------------
     baseline_a = reset_blob_state()
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -2673,8 +2685,11 @@ def local_atomic_writeback():
     assert '"audit":"writeback_rejected"' not in stderr_capture, (
         f"scenario 4: audit JSON leaked to stderr instead of journald: {stderr_capture!r}"
     )
-    assert "grant is read-only" not in stderr_capture, (
+    assert "permission is read-only" not in stderr_capture, (
         f"scenario 4: human-readable stderr line leaked despite suppression env: {stderr_capture!r}"
+    )
+    assert "grant is read-only" not in stderr_capture, (
+        f"scenario 4: legacy stderr warning appeared under suppression: {stderr_capture!r}"
     )
 
     journal_after = machine.succeed(
@@ -2684,8 +2699,11 @@ def local_atomic_writeback():
     assert "AUDIT=writeback_rejected" in journal_after, (
         f"scenario 4: journal missing audit event under suppression: {journal_after!r}"
     )
-    assert "REASON=grant_readonly" in journal_after, (
-        f"scenario 4: journal missing grant_readonly reason: {journal_after!r}"
+    assert "REASON=permission_readonly" in journal_after, (
+        f"scenario 4: journal missing permission_readonly reason: {journal_after!r}"
+    )
+    assert "REASON=grant_readonly" not in journal_after, (
+        f"scenario 4: journal retained legacy reason: {journal_after!r}"
     )
 
     # Env clear + forced HOME/XDG: the target must not see
@@ -2693,7 +2711,7 @@ def local_atomic_writeback():
     # propagated from the wrapper invocation environment, and caller-
     # supplied HOME/XDG values must be replaced with the trusted
     # underwrap defaults.
-    grant_local_unlocked("test-dir-env-probe")
+    set_local_unlocked_permission("test-dir-env-probe")
     target_env = machine.succeed(
         "su testuser -s /bin/sh -c '"
         "UNDERWRAP_SUPPRESS_READONLY_WARNING=1 "
@@ -2722,7 +2740,7 @@ def local_atomic_writeback():
     assert "XDG_CACHE_HOME=/home/testuser/.cache" in target_env, target_env
     assert "XDG_STATE_HOME=/home/testuser/.local/state" in target_env, target_env
 
-    grant_local_unlocked("test-dir-env-override-probe")
+    set_local_unlocked_permission("test-dir-env-override-probe")
     override_env = machine.succeed(
         "su testuser -s /bin/sh -c '"
         "HOME=/tmp/evil-home "
@@ -2744,13 +2762,13 @@ def local_atomic_writeback():
 
     # ----------------------------------------------------------
     # Scenario 5: always-writable namespace mount
-    # Even with a read-only grant, the in-namespace bind mount is RW
+    # Even with a read-only permission, the in-namespace bind mount is RW
     # to the target. A `touch` inside the bound directory must exit 0
     # (the kernel allowed the write); the file does not persist to
     # the backend (covered by scenario 3's blob check, repeated here).
     # ----------------------------------------------------------
     baseline_a = reset_blob_state()
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -2759,26 +2777,26 @@ def local_atomic_writeback():
         {"kind": "unlocked"},
         writable=False,
     )
-    # touch on the bound directory under a read-only grant — must
+    # touch on the bound directory under a read-only permission — must
     # succeed (target sees a writable mount).
     machine.succeed(su("/run/wrappers/bin/underwrap-local test-dir-touch"))
     after_a = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
     assert after_a == baseline_a, (
-        "scenario 5: read-only-grant touch persisted to backend"
+        "scenario 5: read-only permission touch persisted to backend"
     )
-    machine.log("PASS: scenario 5 — read-only grant accepts target touch, drops it at writeback")
+    machine.log("PASS: scenario 5 — read-only permission accepts target touch, drops it at writeback")
 
     # ----------------------------------------------------------
-    # Scenario 6: server-side reject on mid-run grant flip
-    # Wrapper Checkouts a writable grant, then the test driver flips
-    # the grant to writable=false while the target sleeps. On exit,
-    # ns dispatches Checkin against the now-stale grant; the daemon
+    # Scenario 6: server-side reject on mid-run permission flip
+    # Wrapper Checkouts a writable permission, then the test driver flips
+    # the permission to writable=false while the target sleeps. On exit,
+    # ns dispatches Checkin against the now-stale permission; the daemon
     # re-evaluates the policy and returns Unauthorized. The journal
     # carries `writeback_rejected reason=server_rejected` and the
     # backend blob is unchanged.
     # ----------------------------------------------------------
     baseline_a = reset_blob_state()
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -2790,7 +2808,7 @@ def local_atomic_writeback():
 
     machine.execute("rm -f /tmp/dir-write-then-sleep.ready")
     cursor = journal_cursor()
-    # The script sleeps for ~4s after writing; we flip the grant
+    # The script sleeps for ~4s after writing; we flip the permission
     # during the sleep, then wait for the natural exit.
     machine.succeed(
         "su testuser -s /bin/sh -c '"
@@ -2810,8 +2828,8 @@ def local_atomic_writeback():
     if not flipped:
         raise AssertionError("scenario 6: target never signaled write completion")
 
-    # Flip the grant to read-only mid-run.
-    admin_upsert_grant(
+    # Flip the permission to read-only mid-run.
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -2840,7 +2858,7 @@ def local_atomic_writeback():
     assert after_a == baseline_a, "scenario 6: backend blob changed despite mid-run flip"
 
     assert "AUDIT=writeback_rejected" in journal_after, (
-        f"scenario 6: missing audit event in journal after grant flip: {journal_after!r}"
+        f"scenario 6: missing audit event in journal after permission flip: {journal_after!r}"
     )
     assert "REASON=server_rejected" in journal_after, (
         f"scenario 6: missing server_rejected reason in journal: {journal_after!r}"
@@ -2850,14 +2868,17 @@ def local_atomic_writeback():
     assert '"audit":"writeback_rejected"' not in stderr_capture, (
         f"scenario 6: audit JSON leaked to stderr instead of journald: {stderr_capture!r}"
     )
-    assert "grant is read-only" in stderr_capture, (
+    assert "permission is read-only" in stderr_capture, (
         f"scenario 6: missing human-readable stderr warning: {stderr_capture!r}"
+    )
+    assert "grant is read-only" not in stderr_capture, (
+        f"scenario 6: legacy stderr warning remained: {stderr_capture!r}"
     )
     assert f"resource '{DIR_A}'" in stderr_capture, (
         f"scenario 6: stderr warning missing resource name: {stderr_capture!r}"
     )
     machine.log(
-        "PASS: scenario 6 — server rejects Checkin after mid-run grant flip; journal records server_rejected"
+        "PASS: scenario 6 — server rejects Checkin after mid-run permission flip; journal records server_rejected"
     )
 
 
@@ -2924,7 +2945,7 @@ def f006_pre_exec_writeback_gate():
 
     unchanged_resource = "test/dir-a"
     unchanged_wrapper = "test-dir-read"
-    grant_local_unlocked(unchanged_wrapper)
+    set_local_unlocked_permission(unchanged_wrapper)
     before = admin_get_blob(ADMIN_LOCAL, "local", unchanged_resource)
     cursor = journal_cursor()
     status, output = machine.execute(
@@ -2945,7 +2966,7 @@ def f006_pre_exec_writeback_gate():
 
     unroutable_resource = "test/f006-unroutable"
     unroutable_wrapper = "test-f006-unroutable"
-    grant_local_unlocked(unroutable_wrapper)
+    set_local_unlocked_permission(unroutable_wrapper)
     machine.succeed("rm -f /tmp/f006-unroutable-target-ran")
     before = seed(
         unroutable_resource,
@@ -2979,7 +3000,7 @@ def f006_pre_exec_writeback_gate():
 
     missing_resource = "test/f006-exec-missing"
     missing_wrapper = "test-f006-exec-missing"
-    grant_local_unlocked(missing_wrapper)
+    set_local_unlocked_permission(missing_wrapper)
     before = seed(
         missing_resource,
         {".config/f006-exec-missing/token": b"exec-missing-original"},
@@ -3001,7 +3022,7 @@ def f006_pre_exec_writeback_gate():
 
     exit_resource = "test/f006-exit-37"
     exit_wrapper = "test-f006-exit-37"
-    grant_local_unlocked(exit_wrapper)
+    set_local_unlocked_permission(exit_wrapper)
     before = seed(
         exit_resource,
         {".config/f006-exit-37/token": b"before-exit-37"},
@@ -3033,7 +3054,7 @@ def f006_pre_exec_writeback_gate():
 
     signal_resource = "test/f006-sigkill"
     signal_wrapper = "test-f006-sigkill"
-    grant_local_unlocked(signal_wrapper)
+    set_local_unlocked_permission(signal_wrapper)
     before = seed(
         signal_resource,
         {".config/f006-sigkill/token": b"before-sigkill"},
@@ -3080,7 +3101,7 @@ def f007_supervisor_lifecycle():
     """Check relay topology, cancellation teardown, and healthy status/writeback."""
     wrapper = "test-f007-lifecycle"
     resource = "test/f007-lifecycle"
-    grant_local_unlocked(wrapper)
+    set_local_unlocked_permission(wrapper)
     admin_write_resource_value(
         ADMIN_LOCAL,
         "local",
@@ -3502,7 +3523,7 @@ def f007_supervisor_lifecycle():
     )
     capability = machine.succeed(f"getcap {filecap_target}").strip()
     assert capability == f"{filecap_target} cap_net_bind_service=ep", capability
-    grant_local_unlocked(filecap_wrapper)
+    set_local_unlocked_permission(filecap_wrapper)
     cursor = journal_cursor()
     machine.succeed(
         "runuser -u testuser -- /run/wrappers/bin/underwrap-local "
@@ -3615,7 +3636,7 @@ def f009_resource_size_contract():
     # Env values above the generic 64-KiB control limit travel only in Checkout
     # over the authenticated resource channel. The target prints its length and
     # digest, never the value.
-    grant_local_unlocked(env_wrapper)
+    set_local_unlocked_permission(env_wrapper)
     admin_write_resource_value(
         ADMIN_LOCAL, "local", env_resource, "env", "F009_ENV_BULK", F009_ENV_VALUE
     )
@@ -3673,7 +3694,7 @@ def f009_resource_size_contract():
     stored = base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", files_resource))
     assert stored == canonical
     assert len(stored) == MAX_CANONICAL_RESOURCE_BYTES
-    grant_local_unlocked(files_wrapper)
+    set_local_unlocked_permission(files_wrapper)
 
     cursor = journal_cursor()
     initial_output = machine.succeed(
@@ -4207,11 +4228,11 @@ def remote_service_lifecycle():
     # REMOTE INSTANCE: backend service lifecycle
     # ============================================================
 
-    # Seed an Unlocked grant for the remote daemon's
+    # Seed an Unlocked permission for the remote daemon's
     # `(client_instance, wrapper, resource)` tuple. The remote daemon
     # has a single wrapper (`remote-echo`) declaring the
     # `remote/token` resource.
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_REMOTE,
         "remote",
         REMOTE_CLIENT_INSTANCE,
@@ -4256,24 +4277,24 @@ def remote_service_lifecycle():
     machine.log("PASS: wrapper works after backend service restart")
 
 
-def local_backend_managed_grants():
+def local_backend_managed_permissions():
     # ============================================================
-    # LOCAL INSTANCE: backend-managed grants
+    # LOCAL INSTANCE: backend-managed permissions
     # ============================================================
     #
-    # Grants are now keyed on `(client_instance, wrapper, resource)`.
-    # This section exercises the full lifecycle (no grant → denied,
+    # Permissions are now keyed on `(client_instance, wrapper, resource)`.
+    # This section exercises the full lifecycle (no permission → denied,
     # Unlocked → allowed, deleted → denied, UnlockedUntil with a past
     # deadline → denied).
 
-    # Remove the seed grant from the earlier section so we can
-    # exercise the "no grant" path.
-    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
+    # Remove the seed permission from the earlier section so we can
+    # exercise the "no permission" path.
+    admin_delete_permission(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
     machine.fail(su("/run/wrappers/bin/underwrap-local test-echo2 hello"))
-    machine.log("PASS: wrapper with no agent grant is denied")
+    machine.log("PASS: wrapper with no permission row is denied")
 
-    # Unlocked grant → wrapper can read.
-    admin_upsert_grant(
+    # Unlocked permission → wrapper can read.
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -4284,17 +4305,17 @@ def local_backend_managed_grants():
     )
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo2 hello"))
     assert "hello" in output
-    machine.log("PASS: active agent grant allows wrapper action")
+    machine.log("PASS: active permission row allows wrapper action")
 
-    # Deleting the grant revokes future reads.
-    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
+    # Deleting the permission revokes future reads.
+    admin_delete_permission(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
     machine.fail(su("/run/wrappers/bin/underwrap-local test-echo2 hello"))
-    machine.log("PASS: deleting agent grant revokes future wrapper action")
+    machine.log("PASS: deleting the permission row revokes future wrapper action")
 
     # UnlockedUntil with a deadline guaranteed in the past
     # (1970-01-02) is denied lazily on the next request — no flaky
     # sleep needed and no risk of host/guest clock skew.
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -4304,31 +4325,31 @@ def local_backend_managed_grants():
         reason="expired allow",
     )
     machine.fail(su("/run/wrappers/bin/underwrap-local test-echo2 hello"))
-    machine.log("PASS: expired UnlockedUntil grant is not honored")
+    machine.log("PASS: expired UnlockedUntil permission is not honored")
 
     # Clean up so the next test starts fresh.
-    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
+    admin_delete_permission(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo2", "test/other")
 
 
 
 def local_backend_policy_control_center():
     # ============================================================
-    # LOCAL INSTANCE: backend-managed grant mode control
+    # LOCAL INSTANCE: backend-managed permission mode control
     # ============================================================
 
-    # Remove the seed grant so we can prove "no grant → denied".
-    admin_delete_grant(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo", "test/token")
+    # Remove the seed permission so we can prove "no permission → denied".
+    admin_delete_permission(ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, "test-echo", "test/token")
     machine.fail(su("/run/wrappers/bin/underwrap-local test-echo"))
-    machine.log("PASS: wrapper with no grant is denied")
+    machine.log("PASS: wrapper with no permission is denied")
 
-    # Unlocked grant → wrapper can read.
-    grant_local_unlocked("test-echo")
+    # Unlocked permission → wrapper can read.
+    set_local_unlocked_permission("test-echo")
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
-    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after grant: {output}"
-    machine.log("PASS: Unlocked grant allows wrapper read")
+    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN under Unlocked permission: {output}"
+    machine.log("PASS: Unlocked permission allows wrapper read")
 
-    # Locked grant → wrapper denied.
-    admin_upsert_grant(
+    # Locked permission → wrapper denied.
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -4338,16 +4359,16 @@ def local_backend_policy_control_center():
         reason="maintenance",
     )
     machine.fail(su("/run/wrappers/bin/underwrap-local test-echo"))
-    machine.log("PASS: Locked grant denies wrapper read")
+    machine.log("PASS: Locked permission denies wrapper read")
 
     # Re-Unlock → wrapper allowed again.
-    grant_local_unlocked("test-echo")
+    set_local_unlocked_permission("test-echo")
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
-    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after re-grant: {output}"
-    machine.log("PASS: re-Unlocking the grant restores wrapper access")
+    assert "MY_TOKEN=overwrite" in output, f"expected MY_TOKEN after restoring Unlocked: {output}"
+    machine.log("PASS: re-Unlocking the permission restores wrapper access")
 
     # A second wrapper becomes usable when its permission is Unlocked.
-    grant_local_unlocked("test-locked")
+    set_local_unlocked_permission("test-locked")
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-locked"))
     assert "LOCKED_TOKEN=locked_secret" in output, (
         f"expected Unlocked wrapper to work: {output}"
@@ -4364,7 +4385,7 @@ def instance_isolation():
     # instance secrets: it connects only to the local instance socket
     # (gated by the local instance group egid) and the local daemon talks
     # only to the local backend.
-    grant_local_unlocked("test-echo")
+    set_local_unlocked_permission("test-echo")
     output = machine.succeed(su("/run/wrappers/bin/underwrap-local test-echo"))
     assert "REMOTE_TOKEN" not in output
     machine.log("PASS: local wrapper does not leak remote secrets")
@@ -4390,7 +4411,7 @@ def local_debug_subcommand():
         )
 
     # ---- 1. Debug DENIED under Unlocked --------------------------------
-    grant_local_unlocked("test-echo")  # mode = Unlocked
+    set_local_unlocked_permission("test-echo")  # mode = Unlocked
     rc, out = machine.execute(su("/run/wrappers/bin/underwrap-local debug test-echo 2>&1"))
     assert rc != 0, f"debug under Unlocked must FAIL, but rc={rc}; out={out!r}"
     assert "not-unsafe-debug" in out, \
@@ -4405,7 +4426,7 @@ def local_debug_subcommand():
 
     # ---- 2. Debug ALLOWED under UnsafeDebugUntil (future) --------------
     until = int(time.time()) + 600
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -4469,7 +4490,7 @@ def local_debug_subcommand():
     # Debug variant. Two minutes keeps the test outside whole-second truncation
     # and plausible host/VM skew.
     past = int(time.time()) - 120
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -4489,8 +4510,8 @@ def local_debug_subcommand():
     machine.fail(su("/run/wrappers/bin/underwrap-local debug 2>&1"))
     machine.log("PASS: `underwrap-local debug` with no wrapper name rejected")
 
-    # Restore the fixture grant so later sections see test-echo Unlocked.
-    grant_local_unlocked("test-echo")
+    # Restore the fixture permission so later sections see test-echo Unlocked.
+    set_local_unlocked_permission("test-echo")
 
 
 def runtime_api_invariants():
@@ -4510,7 +4531,7 @@ def runtime_api_invariants():
     # the next wrapper call. This does not rebuild the client or reload
     # credential files.
     # ----------------------------------------------------------
-    grant_local_unlocked("test-echo")
+    set_local_unlocked_permission("test-echo")
     wrapper_success_command = su(
         '/run/wrappers/bin/underwrap-local test-echo | grep -q "^MY_TOKEN="'
     )
@@ -4683,7 +4704,7 @@ def runtime_api_invariants():
     # blob, and finalize rejects a writeback that mutates the env section even
     # when the permission is writable.
     # ----------------------------------------------------------
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -4699,7 +4720,7 @@ def runtime_api_invariants():
         body={"wrapper_name": "test-echo", "resource_name": "test/token"},
     )
     assert open_resp["outcome"] == "allow", f"open should Allow, got {open_resp}"
-    assert open_resp["writable"] is True, "grant flipped to writable above"
+    assert open_resp["writable"] is True, "permission flipped to writable above"
     blob_bytes = base64.b64decode(open_resp["blob_b64"])
     blob = json.loads(blob_bytes.decode())
     # Mutate the env section. JCS-canonical JSON for our blob shape
@@ -4744,10 +4765,10 @@ def runtime_api_invariants():
     )
     machine.log("PASS: files-only writeback through the same path succeeds")
 
-    # Clean up the writable grant so later sections don't trip over
+    # Clean up the writable permission so later sections don't trip over
     # it; reset the env-only baseline by re-writing through the
     # admin API.
-    admin_upsert_grant(
+    admin_upsert_permission(
         ADMIN_LOCAL,
         "local",
         LOCAL_CLIENT_INSTANCE,
@@ -4791,7 +4812,17 @@ def audit_and_no_secret_leaks():
         "journalctl -u underwrapd-local.service -u underwrapd-tunnel.service --no-pager"
         " | sed 's/\\x1b\\[[0-9;]*m//g'"
     )
-    assert 'audit="read_granted"' in logs, "missing read_granted"
+    read_allowed_lines = [
+        line for line in logs.splitlines() if 'audit="read_allowed"' in line
+    ]
+    assert read_allowed_lines, "missing read_allowed"
+    assert any(" INFO " in line for line in read_allowed_lines), read_allowed_lines
+    assert all('resource="' in line for line in read_allowed_lines), read_allowed_lines
+    assert all("secret=" not in line for line in read_allowed_lines), read_allowed_lines
+    assert all('"audit":"read_allowed"' not in line for line in read_allowed_lines), (
+        "underwrapd audit output unexpectedly used JSON"
+    )
+    assert 'audit="read_granted"' not in logs, "legacy read_granted remained"
 
     assert "ghp_testvmtoken" not in logs, "secret leaked!"
     assert "locked_secret" not in logs, "secret leaked!"
@@ -4887,7 +4918,7 @@ remote_service_lifecycle()
 instance_isolation()
 local_debug_subcommand()
 local_backend_policy_control_center()
-local_backend_managed_grants()
+local_backend_managed_permissions()
 plaintext_runtime_backend_url_is_rejected_before_io()
 encrypted_store_in_memory_keys()
 runtime_api_invariants()

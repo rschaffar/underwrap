@@ -12,11 +12,11 @@
 //! - `clean_run_only_sends_usage_signal`: Checkout + UsageSignal with
 //!   no Checkin keeps the backend blob byte-identical. This is the
 //!   no-mutation path.
-//! - `writable_grant_persists_checkin`: same Checkout but a mutated
+//! - `writable_permission_persists_checkin`: same Checkout but a mutated
 //!   blob sent via Checkin lands in the backend.
-//! - `readonly_grant_rejects_checkin`: the daemon refuses Checkin
-//!   against a writable=false grant with `ResourceErrorCode::Unauthorized`.
-//! - `grant_flipped_readonly_between_checkout_and_checkin`: a grant
+//! - `readonly_permission_rejects_checkin`: the daemon refuses Checkin
+//!   against a writable=false permission with `ResourceErrorCode::Unauthorized`.
+//! - `permission_flipped_readonly_between_checkout_and_checkin`: a permission
 //!   downgraded mid-run is observed at Checkin time, not Checkout.
 //! - `noncanonical_checkin_rejected`: hand-crafted non-canonical bytes
 //!   are rejected as `ResourceErrorCode::InvalidRequest`. This matches
@@ -144,7 +144,7 @@ fn blob_with_env(key: &str, value: &[u8]) -> ResourceBlob {
 /// instead. The env section is admin-only on the new wire — any
 /// runtime writeback that changes env is rejected with
 /// `env-section-immutable` — so tests that need to verify a
-/// successful Checkin under a writable grant must mutate a writable
+/// successful Checkin under a writable permission must mutate a writable
 /// slot. `files` carries through cleanly.
 fn blob_with_files_entry(key: &str, value: &[u8]) -> ResourceBlob {
     let mut blob = ResourceBlob::empty();
@@ -340,7 +340,7 @@ async fn clean_run_only_sends_usage_signal() {
 }
 
 #[tokio::test]
-async fn writable_grant_persists_checkin() {
+async fn writable_permission_persists_checkin() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_files_entry(".config/gh/hosts.yml", b"github.com:\n  user: alice\n");
@@ -383,7 +383,7 @@ async fn writable_grant_persists_checkin() {
 }
 
 #[tokio::test]
-async fn readonly_grant_rejects_checkin() {
+async fn readonly_permission_rejects_checkin() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_env("GH_TOKEN", b"ghp_initial");
@@ -411,7 +411,7 @@ async fn readonly_grant_rejects_checkin() {
     tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let (_blob, writable) = send_checkout(&mut channel);
-        assert!(!writable, "grant is read-only at Checkout");
+        assert!(!writable, "permission is read-only at Checkout");
 
         let resp = send_checkin(&mut channel, &mutated_bytes);
         match resp {
@@ -434,7 +434,7 @@ async fn readonly_grant_rejects_checkin() {
 }
 
 #[tokio::test]
-async fn grant_flipped_readonly_between_checkout_and_checkin() {
+async fn permission_flipped_readonly_between_checkout_and_checkin() {
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();
 
     let initial = blob_with_env("GH_TOKEN", b"ghp_initial");
@@ -457,9 +457,9 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     // Orchestrate via std mpsc channels (the spawn_blocking thread is
     // outside the tokio runtime, so a sync wait is the cleanest fit).
     // The blocking thread signals "Checkout complete" before the test
-    // thread flips the grant, so the Checkout reliably observes
+    // thread flips the permission, so the Checkout reliably observes
     // writable=true and the Checkin reliably observes the flipped
-    // grant.
+    // permission.
     let socket = daemon.instance_socket.clone();
     let (checkout_done_tx, checkout_done_rx) = std::sync::mpsc::channel::<()>();
     let (flip_tx, flip_rx) = std::sync::mpsc::channel::<()>();
@@ -469,9 +469,12 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     let blocking = tokio::task::spawn_blocking(move || {
         let mut channel = open_run(&socket, "gh-writeback");
         let (_blob, writable) = send_checkout(&mut channel);
-        assert!(writable, "Checkout must observe the still-writable grant");
+        assert!(
+            writable,
+            "Checkout must observe the still-writable permission"
+        );
         checkout_done_tx.send(()).unwrap();
-        // Block until the test thread has flipped the grant.
+        // Block until the test thread has flipped the permission.
         flip_rx.recv().unwrap();
         let resp = send_checkin(&mut channel, &mutated_bytes);
         close_channel(channel);
@@ -479,13 +482,13 @@ async fn grant_flipped_readonly_between_checkout_and_checkin() {
     });
 
     // Wait for the spawn_blocking to finish Checkout before flipping
-    // the grant, otherwise the test thread can race the blocking
+    // the permission, otherwise the test thread can race the blocking
     // thread.
     tokio::task::spawn_blocking(move || checkout_done_rx.recv().unwrap())
         .await
         .unwrap();
 
-    // Flip the grant to read-only via the admin API.
+    // Flip the permission to read-only via the admin API.
     daemon
         .upsert_permission(
             "test",
@@ -575,7 +578,7 @@ async fn noncanonical_checkin_rejected() {
 // channel hits that path for all three verbs:
 //
 //   - Checkout    → backend READ  of `resources/<id>`
-//   - Checkin     → backend WRITE of `resources/<id>` (writable grants)
+//   - Checkin     → backend WRITE of `resources/<id>` (writable permissions)
 //   - UsageSignal → backend READ  of `resources/<id>`
 //
 // These tests pin down that every verb's success-path bumps the pair,
@@ -699,8 +702,8 @@ async fn usage_signal_bumps_last_used() {
 
 #[tokio::test]
 async fn rejected_checkin_still_bumps_last_used() {
-    // Checkout against a writable grant bumps once; the operator
-    // flips the grant read-only; the Checkin is rejected; ns then
+    // Checkout against a writable permission bumps once; the operator
+    // flips the permission read-only; the Checkin is rejected; ns then
     // sends UsageSignal which hits the backend's read path → second
     // bump (or same-second no-op). Either way last_used_at is set.
     let daemon = TestDaemon::start(writeback_wrapper_config()).await.unwrap();

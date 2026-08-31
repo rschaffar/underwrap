@@ -3,7 +3,7 @@
 //! On startup, ns owns the bulk-blob channel fd for the wrapper's one
 //! resource (fd 20, sent by underwrap-exec via dup2). ns sends a
 //! `Checkout` on the channel to capture the current JCS-canonical blob
-//! plus the grant's writability for the end-of-run decision.
+//! plus the permission row's writable flag for the end-of-run decision.
 //!
 //! The fd is held open as a raw integer rather than a `UnixStream`,
 //! mirroring the `DirectoryChannel` pattern: each operation `dup`s
@@ -35,8 +35,10 @@ pub struct ResourceChannel {
 }
 
 /// Drive `Checkout` on the wrapper's resource channel. Returns the
-/// resource's current JCS-canonical blob plus the writability flag
-/// derived from the policy grant.
+/// resource's current JCS-canonical blob plus the writable flag derived from
+/// the permission row. A false flag makes end-of-run dispatch drop local
+/// changes and send `UsageSignal`; backend finalize can still reject a
+/// `Checkin` after re-evaluating the permission mode and writable flag.
 ///
 /// Failure is fatal — security model is no fallback. The error message
 /// names the resource.

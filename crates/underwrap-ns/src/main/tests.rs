@@ -1071,7 +1071,7 @@ fn audit_json_lines_cover_rejection_reasons_and_paired_size_fields() {
     let maximum = underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES;
 
     for (reason, size) in [
-        ("grant_readonly", None),
+        ("permission_readonly", None),
         ("server_rejected", None),
         ("resource_too_large", Some((maximum + 1, maximum))),
     ] {

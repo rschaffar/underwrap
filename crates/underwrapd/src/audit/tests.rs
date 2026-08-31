@@ -40,62 +40,89 @@ fn capture_logs(f: impl FnOnce()) -> String {
     String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
 }
 
+fn assert_event_line(line: &str, level: &str, fields: &str) {
+    assert!(
+        line.trim_start().starts_with(&format!("{level} ")),
+        "{line}"
+    );
+    assert!(line.ends_with(fields), "{line}");
+    assert_eq!(line.matches("audit=").count(), 1, "{line}");
+}
+
 #[test]
-fn every_audit_helper_emits_expected_event_names_and_fields_without_scope() {
+fn every_audit_helper_emits_one_exact_event_line() {
     let output = capture_logs(|| {
-        read_granted("gh-authorized", "github/token", Some(1000));
-        read_denied("gh-authorized", "credential missing", Some(1001));
+        read_allowed("gh-authorized", "res_read", Some(1000));
+        read_denied("gh-authorized", "permission missing", Some(1001));
         auth_denied("wrapper", "gid mismatch", Some(1002), Some(2000));
         resource_checkout("gh-authorized", "res_abc");
         resource_checkin("gh-authorized", "res_abc");
         resource_usage_signal("gh-authorized", "res_abc");
-        wrapper_write_denied(
-            "resource",
-            "gh-authorized",
-            "res_abc",
-            "<full-blob>",
-            "permission is read-only",
-        );
+        resource_checkin_denied("gh-authorized", "res_abc", "permission is read-only");
     });
 
-    assert_eq!(output.matches("audit=").count(), 7, "{output}");
-    for event in [
-        "read_granted",
-        "read_denied",
-        "auth_denied",
-        "resource_checkout",
-        "resource_checkin",
-        "resource_usage_signal",
-        "store_denied",
+    let lines = output.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 7, "{output}");
+    for (line, level, fields) in [
+        (
+            lines[0],
+            "INFO",
+            "audit=\"read_allowed\" wrapper=\"gh-authorized\" resource=\"res_read\" peer_uid=1000",
+        ),
+        (
+            lines[1],
+            "WARN",
+            "audit=\"read_denied\" wrapper=\"gh-authorized\" reason=\"permission missing\" peer_uid=1001",
+        ),
+        (
+            lines[2],
+            "WARN",
+            "audit=\"auth_denied\" socket=\"wrapper\" reason=\"gid mismatch\" peer_uid=1002 peer_gid=2000",
+        ),
+        (
+            lines[3],
+            "INFO",
+            "audit=\"resource_checkout\" wrapper=\"gh-authorized\" resource=\"res_abc\"",
+        ),
+        (
+            lines[4],
+            "INFO",
+            "audit=\"resource_checkin\" wrapper=\"gh-authorized\" resource=\"res_abc\"",
+        ),
+        (
+            lines[5],
+            "INFO",
+            "audit=\"resource_usage_signal\" wrapper=\"gh-authorized\" resource=\"res_abc\"",
+        ),
+        (
+            lines[6],
+            "WARN",
+            "audit=\"resource_checkin_denied\" wrapper=\"gh-authorized\" resource=\"res_abc\" reason=\"permission is read-only\"",
+        ),
     ] {
-        assert!(output.contains(&format!("audit=\"{event}\"")), "{output}");
+        assert_event_line(line, level, fields);
     }
-    assert!(output.contains("wrapper=\"gh-authorized\""), "{output}");
-    assert!(output.contains("secret=\"github/token\""), "{output}");
-    assert!(output.contains("reason=\"credential missing\""), "{output}");
-    assert!(output.contains("peer_uid=1000"), "{output}");
-    assert!(output.contains("peer_gid=2000"), "{output}");
-    assert!(output.contains("resource=\"res_abc\""), "{output}");
-    assert!(output.contains("kind=\"resource\""), "{output}");
-    assert!(output.contains("credential=\"res_abc\""), "{output}");
-    assert!(output.contains("item=\"<full-blob>\""), "{output}");
-    assert!(!output.contains("scope"), "{output}");
+    for legacy in [
+        "read_granted",
+        "store_denied",
+        "secret=",
+        "kind=",
+        "credential=",
+        "item=",
+        "scope=",
+    ] {
+        assert!(!output.contains(legacy), "legacy {legacy:?}: {output}");
+    }
 }
 
 #[test]
-fn audit_logging_includes_identifiers_but_not_secret_material_values() {
+fn audit_logging_includes_identifiers_but_not_resource_material_values() {
     let output = capture_logs(|| {
-        read_granted("gh-authorized", "github/token", Some(1000));
-        wrapper_write_denied(
-            "resource",
-            "gh-authorized",
-            "res_abc",
-            "<full-blob>",
-            "permission is read-only",
-        );
+        read_allowed("gh-authorized", "res_read", Some(1000));
+        resource_checkin_denied("gh-authorized", "res_abc", "permission is read-only");
     });
 
-    assert!(output.contains("github/token"), "{output}");
+    assert!(output.contains("res_read"), "{output}");
     assert!(output.contains("res_abc"), "{output}");
     assert!(!output.contains("ghp_secret_value"), "{output}");
     assert!(!output.contains("super-secret-token"), "{output}");

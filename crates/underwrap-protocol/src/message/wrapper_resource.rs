@@ -2,10 +2,13 @@
 //!
 //! Replaces the per-call libsecret/directory protocols. Three verbs:
 //!
-//! - `Checkout` — wrapper requests the resource blob and writability
-//!   flag at start of run.
+//! - `Checkout` — wrapper requests the resource blob and the writable flag
+//!   derived from the permission row at the start of the run. A false flag
+//!   makes the namespace drop local changes and send `UsageSignal`.
 //! - `Checkin` — wrapper sends a replacement blob at end of run when
-//!   the JCS-canonical bytes changed and the grant was writable.
+//!   the JCS-canonical bytes changed and the Checkout flag was writable.
+//!   Backend finalize re-evaluates the permission mode and writable flag, so
+//!   it can still reject the Checkin.
 //! - `UsageSignal` — wrapper pings the daemon to record that the
 //!   resource was used in this run (bumps `last_used_at` on the
 //!   `(wrapper, resource)` pair) without sending a blob.

@@ -883,7 +883,7 @@ fn wait_for_child(pid: libc::pid_t) -> Result<libc::c_int, String> {
 }
 
 /// `UNDERWRAP_SUPPRESS_READONLY_WARNING=1` silences the stderr line
-/// emitted when a writeback is dropped because the grant is read-only.
+/// emitted when a writeback is dropped because the permission is read-only.
 /// The structured audit event is always emitted — on systemd hosts it
 /// goes to journald's native socket, and only falls back to stderr
 /// when the journal socket is unreachable (so the audit trail still
@@ -907,25 +907,25 @@ fn report_outcomes(outcomes: &[WritebackOutcome]) {
     for outcome in outcomes {
         match outcome {
             WritebackOutcome::Unchanged | WritebackOutcome::Persisted => continue,
-            // Wrapper-local decision: the Checkout's writability bit was
+            // Wrapper-local decision: the Checkout's writable flag was
             // already false, so no Checkin was attempted.
             WritebackOutcome::DroppedReadOnly {
                 resource_id,
                 resource_name,
             } => {
-                emit_audit_event("grant_readonly", resource_id, resource_name, None);
+                emit_audit_event("permission_readonly", resource_id, resource_name, None);
                 if !suppress_readonly_warning {
                     eprintln!(
                         "underwrap: changes to resource '{}' ({}) were not persisted \
-                         (grant is read-only). Set {SUPPRESS_READONLY_WARNING_ENV}=1 to \
+                         (permission is read-only). Set {SUPPRESS_READONLY_WARNING_ENV}=1 to \
                          silence this message.",
                         one_line_display(resource_name),
                         one_line_display(resource_id),
                     );
                 }
             }
-            // Server-side rejection: Checkin was sent but the daemon refused
-            // it (for example, the grant flipped mid-run).
+            // Server-side rejection: Checkin was sent but backend finalize
+            // refused it (for example, the permission became read-only mid-run).
             WritebackOutcome::RejectedReadOnly {
                 resource_id,
                 resource_name,
@@ -934,7 +934,7 @@ fn report_outcomes(outcomes: &[WritebackOutcome]) {
                 if !suppress_readonly_warning {
                     eprintln!(
                         "underwrap: changes to resource '{}' ({}) were not persisted \
-                         (grant is read-only). Set {SUPPRESS_READONLY_WARNING_ENV}=1 to \
+                         (permission is read-only). Set {SUPPRESS_READONLY_WARNING_ENV}=1 to \
                          silence this message.",
                         one_line_display(resource_name),
                         one_line_display(resource_id),

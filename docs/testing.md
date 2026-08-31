@@ -775,10 +775,21 @@ is trusted with the libsecret projection and can disclose it; the witness only
 exercises the same-caller host mount-namespace boundary while that trusted
 target and its private services are live.
 
+### Audit and writeback observability
+
+Focused `underwrapd` audit tests capture each helper on its own test-writer line and pin exactly seven events, their INFO/WARN levels, their fields, and the absence of the removed event and field vocabulary.
+The test-only writer proves emitted tracing metadata, not the production format or sink.
+A main-source test pins `fmt()`, `EnvFilter::try_from_default_env()`, the `info` fallback, and the absence of `.json()` and `.with_writer(...)` in daemon initialization.
+It also pins the `tracing-subscriber` 0.3.23 lockfile entry whose default builder is the evidence for the human-readable formatter and stdout writer; source-shape assertions alone do not establish dependency defaults.
+
+Focused namespace formatter tests cover one-line escaping for `permission_readonly`, `server_rejected`, and `resource_too_large`, including paired attempted and maximum lengths.
+The formatter intentionally accepts arbitrary reason strings, so those tests do not prove that production dispatch excludes a legacy reason token.
+The deployed VM proves `read_allowed` in text-formatted daemon output, native-journal `writeback_rejected` fields with `permission_readonly`, the `permission is read-only` warning, warning suppression without event suppression, and absence of the superseded names in those exercised paths.
+These checks do not provide a persistent audit ledger, a configurable audit sink, or a complete encoded/full-resource log-hygiene inventory.
+
 ### Secret hygiene
 
-It checks successful delivery while asserting that configured secret values do
-not appear in service logs.
+It checks successful delivery while asserting that configured secret values do not appear in service logs.
 
 ## Validation by change type
 

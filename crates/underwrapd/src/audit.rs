@@ -1,27 +1,28 @@
-//! Structured audit logging.
+//! Security-relevant daemon event helpers.
 //!
-//! All security-relevant events are emitted as structured JSON events
-//! via the `tracing` framework. The daemon's tracing subscriber can be
-//! configured to write these to a file, journald, or any other sink.
+//! These helpers emit consistently named, typed [`tracing`] fields without
+//! resource material values. Production `underwrapd` installs the default
+//! human-readable [`tracing_subscriber::fmt`] formatter and its default stdout
+//! writer. `RUST_LOG` configures the environment filter and defaults to `info`.
+//! The daemon has no audit JSON mode or configured file or journald sink; a
+//! service manager can route stdout externally.
 //!
-//! This module provides helper functions that emit audit events with
-//! consistent field names. Secret material is NEVER included.
-//!
-//! Grants are logged at `info`; denials at `warn`.
+//! Unit tests use a test-only writer to inspect fields. They do not define the
+//! production format or sink contract.
 
 use tracing::{info, warn};
 
-/// Audit event for a secret read.
-pub fn read_granted(wrapper: &str, secret: &str, peer_uid: Option<u32>) {
+/// Audit event for an allowed resource read.
+pub fn read_allowed(wrapper: &str, resource: &str, peer_uid: Option<u32>) {
     info!(
-        audit = "read_granted",
+        audit = "read_allowed",
         wrapper = wrapper,
-        secret = secret,
+        resource = resource,
         peer_uid = peer_uid,
     );
 }
 
-/// Audit event for a denied read.
+/// Audit event for a denied resource-read permission outcome.
 pub fn read_denied(wrapper: &str, reason: &str, peer_uid: Option<u32>) {
     warn!(
         audit = "read_denied",
@@ -31,7 +32,7 @@ pub fn read_denied(wrapper: &str, reason: &str, peer_uid: Option<u32>) {
     );
 }
 
-/// Audit event for auth denial on a socket.
+/// Audit event for a denied peer-authentication outcome on a socket.
 pub fn auth_denied(socket: &str, reason: &str, peer_uid: Option<u32>, peer_gid: Option<u32>) {
     warn!(
         audit = "auth_denied",
@@ -69,18 +70,12 @@ pub fn resource_usage_signal(wrapper: &str, resource: &str) {
     );
 }
 
-/// Audit event for a denied wrapper-initiated write (secretsd or directory).
-///
-/// Emitted when the policy gate refuses a `store.write` for the given
-/// wrapper/credential. `kind` is `"libsecret"` or `"directory"`, `item` is
-/// the relative item id or file path requested by the wrapper.
-pub fn wrapper_write_denied(kind: &str, wrapper: &str, credential: &str, item: &str, reason: &str) {
+/// Audit event for a denied complete-resource Checkin.
+pub fn resource_checkin_denied(wrapper: &str, resource: &str, reason: &str) {
     warn!(
-        audit = "store_denied",
-        kind = kind,
+        audit = "resource_checkin_denied",
         wrapper = wrapper,
-        credential = credential,
-        item = item,
+        resource = resource,
         reason = reason,
     );
 }

@@ -1046,37 +1046,39 @@ That audited detail can contain backend-host paths, identifiers, and I/O or fixe
 A changed or new source class does not inherit that approval and must remain type-only until separately audited.
 These fields provide operation/category searchability rather than a unique request correlation identifier, and no claim covers every framework error or all future backend logs.
 
-Structured daemon events cover:
+`underwrapd` audit helpers emit typed `tracing` fields rather than JSON.
+Production installs the locked `tracing-subscriber` 0.3.23 default human-readable `fmt` formatter and default stdout writer.
+`RUST_LOG` controls its `EnvFilter` and defaults to `info` when the environment value is absent or invalid.
+The daemon has no audit JSON mode or configured file or journald sink, although the service manager can route stdout externally.
 
-- peer-authentication failures and selected peer-auth path;
-- wrapper invocation allows and denials;
-- resource Checkout, Checkin, and UsageSignal activity;
-- backend and channel failures.
+The seven daemon audit events are:
 
-Events contain wrapper/resource/principal metadata, never secret values or
-resource blobs.
+- INFO `read_allowed` with `wrapper`, backend resource id `resource`, and `peer_uid`;
+- WARN `read_denied` with `wrapper`, `reason`, and `peer_uid`;
+- WARN `auth_denied` with `socket`, `reason`, `peer_uid`, and `peer_gid`;
+- INFO `resource_checkout`, `resource_checkin`, and `resource_usage_signal`, each with `wrapper` and `resource`;
+- WARN `resource_checkin_denied` with `wrapper`, `resource`, and `reason`.
 
-When an authorized lifecycle changes a files/libsecret projection that cannot
-be persisted, `underwrap-ns` emits one structured `writeback_rejected` event
-containing the resource id, resource name, and reason. A
-`resource_too_large` rejection also records the attempted complete canonical
-length and the public maximum; it writes an unsuppressible human-readable
-stderr diagnostic with the same safe metadata. Once the private gate authorizes
-finalization, collection and canonical comparison still occur for target exit
-0, nonzero exit, and signal death. Finalization failures remain diagnostic and
-do not replace the target's exit or signal status. Read-only warnings alone can
-be silenced when the caller sets:
+Those fields contain identifiers and decision reasons, never resource material values or resource blobs.
+Other daemon diagnostics remain ordinary tracing events and do not extend this seven-event audit-helper schema.
+
+The namespace writeback event is a separate output path from daemon tracing.
+When an authorized lifecycle changes a files/libsecret projection that cannot be persisted, `underwrap-ns` sends one native-journal `writeback_rejected` event with WARN priority, resource id, resource name, and one of `permission_readonly`, `server_rejected`, or `resource_too_large` as its reason.
+A `resource_too_large` rejection also records the attempted complete canonical length and the public maximum, and writes an unsuppressible human-readable stderr diagnostic with the same safe metadata.
+Once the private gate authorizes finalization, collection and canonical comparison still occur for target exit 0, nonzero exit, and signal death.
+Finalization failures remain diagnostic and do not replace the target's exit or signal status.
+Read-only warnings use the text `permission is read-only` and can be silenced when the caller sets:
 
 ```text
 UNDERWRAP_SUPPRESS_READONLY_WARNING=1
 ```
 
-That variable is consumed by the wrapper and never passed into the target. If
-the journald native socket is unavailable, the audit event falls back to a JSON
-line on stderr even when the read-only warning is suppressed.
+That variable is consumed by the wrapper and never passed into the target.
+Warning suppression does not suppress the native-journal event.
+If the journald native socket is unavailable, the namespace event falls back to one JSON line on stderr even when the read-only warning is suppressed.
+This fallback does not make daemon tracing JSON.
 
-underwrap relies on service logs; it does not provide a persistent audit-ledger
-product.
+underwrap relies on service logs; it does not provide a persistent audit ledger or configurable audit sink.
 
 ## Limitations and operational assumptions
 

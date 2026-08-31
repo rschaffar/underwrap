@@ -37,14 +37,15 @@ pub enum WritebackOutcome {
     Unchanged,
     /// Bytes changed and the daemon accepted the `Checkin`.
     Persisted,
-    /// Bytes changed but the daemon rejected the `Checkin` because the
-    /// grant is not writable. The change has been dropped.
+    /// Bytes changed but backend finalize rejected the `Checkin` after
+    /// re-evaluating the permission mode and writable flag. The change has
+    /// been dropped.
     RejectedReadOnly {
         resource_id: String,
         resource_name: String,
     },
-    /// Bytes changed and the grant was already read-only at Checkout —
-    /// no `Checkin` was attempted. The change has been dropped.
+    /// Bytes changed and the permission row's writable flag was already false
+    /// at Checkout — no `Checkin` was attempted. The change has been dropped.
     DroppedReadOnly {
         resource_id: String,
         resource_name: String,

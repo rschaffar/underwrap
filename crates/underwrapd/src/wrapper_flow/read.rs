@@ -140,7 +140,7 @@ pub(super) async fn open_invocation(
         }
     }
 
-    audit::read_granted(wrapper_name, &resource_id, Some(peer_uid));
+    audit::read_allowed(wrapper_name, &resource_id, Some(peer_uid));
 
     let access = if writable {
         AccessMode::ReadWrite

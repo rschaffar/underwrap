@@ -43,6 +43,9 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Production uses tracing-subscriber 0.3.23's default human-readable fmt
+    // formatter and stdout writer. RUST_LOG configures EnvFilter and defaults to
+    // info; no daemon JSON mode or custom file/journald writer is installed.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
