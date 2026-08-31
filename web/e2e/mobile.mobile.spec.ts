@@ -1,10 +1,3 @@
-/**
- * Mobile-only smoke tests — runs only under the `mobile-chrome`
- * Playwright project (Pixel 5 viewport, 393×851). The acceptance
- * criteria call out a 375×812 viewport explicitly; Pixel 5 is close
- * enough that the same layout assertions apply, and using the named
- * device keeps the user-agent + pixel ratio realistic.
- */
 import { test, expect, loginViaUi } from "./fixtures";
 
 test("drawer nav opens on mobile and a nav destination is reachable", async ({
