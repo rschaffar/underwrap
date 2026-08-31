@@ -3036,7 +3036,7 @@ No separate Rust, SPA, integration, Clippy, or VM-external build is required for
   - F-054 is resolved for the selected per-run representations, successful deployed flow, four service journals, and namespace-native records. The normative no-secret logging rule is unchanged; all broader nonclaims remain. F-055 and every other finding, Opportunity, and unresolved item remain unchanged. F-055 is next.
   - Final closure reviews found no evidence correction, passed the implementation/documentation/VM ledger under controller-verified hashes, and required only the completed heading/check state now recorded; F-055 promotion has no remaining gap.
 
-### Current iteration — F-055 loopback-only remote-style VM fidelity
+### Completed iteration — F-055 loopback-only remote-style VM fidelity
 
 F-055 remains directly reproducible at clean HEAD `45f181fcca4ad6c593b8236a03804eee97de3531`.
 
@@ -3084,7 +3084,7 @@ The implementation diff is exactly the four fixture/test/documentation paths abo
 Expected cross-effects:
 
 - Closing F-055 corrects only VM package/service/comment topology and published test-evidence claims.
-- F-004 HTTPS-only transport, F-005 exclusive configured-CA trust, F-010 credential transition, F-027 self-contained integration runner, and F-054 selected-journal hygiene remain resolved and unchanged.
+- F-004 HTTPS-only transport, F-005 exclusive configured-CA trust, F-010 hardened zram swap-writeback posture, F-027 self-contained integration runner, and F-054 selected-journal hygiene remain resolved and unchanged.
 - The `underwrapd-tunnel.service` fixture name and client-tunnel PKI source remain current identifiers, not transport claims; renaming the complete fixture identity graph is not required for F-055.
 - F-056 and every other finding, Opportunity, and unresolved item remain unchanged.
 
@@ -3113,8 +3113,20 @@ No separate Rust, SPA, integration, Clippy, or workspace run is required for thi
   - Finding-local bounded review confirmed the second backend, `tunnel` instance, PKI, store, listener, wrapper, test-driver globals, and lifecycle function are live. Only the approved OpenSSH state/comments/docs/assertions are removable.
   - Repository-wide bounded discovery found no high-confidence independent dead production definition before its deadline.
   - Fixture renames, topology redesign, formatting, dependencies, privileged cleanup, F-056+, and cosmetic churn are rejected. Cleanup is exhausted with no accepted unit or cleanup commit; F-055 implementation may begin.
-- [ ] Implement and independently review SSH-state removal, VM assertions/comments, and bounded remote/testing documentation without changing transport behavior.
-- [ ] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-055 completion/cross-effects before promoting F-056.
+- [x] Implement and independently review SSH-state removal, VM assertions/comments, and bounded remote/testing documentation without changing transport behavior.
+  - Fix commit: `8ef07a259c6acc7dc660567ee4faf72379c067e9` (`test: describe remote VM as loopback-only`).
+  - The VM no longer explicitly installs OpenSSH, enables sshd, or configures `StreamLocalBindUnlink`; runtime assertions require sshd neither enabled nor active.
+  - Both backend services, direct loopback listeners, frontend daemons, store/client registries, mTLS identities/fingerprints, policy/resources/writeback, outage, restart, and recovery behavior remain exact.
+  - Node/test comments and product/testing docs now call the second path remote-style one-node loopback evidence. Retained `tunnel` instance/service/account/PKI names are explicitly fixture identifiers, not transport claims.
+  - Fresh implementation and evidence reviews found no source correction; final disposition passed after controller confirmation of exact staged scope and evidence.
+- [x] Validate, run controller scope/diff/security/artifact checks, commit coherently, and record F-055 completion/cross-effects before promoting F-056.
+  - Exact committed diff: four approved paths, 51 insertions and 32 deletions, SHA-256 `d479827d3dba95f4551f01733ef0c26e6a020e33f615bad2b80a5cc8329fea0e`.
+  - Python compilation passed; Nix evaluation resolved the changed VM derivation (`de3c54e131b268c95468f1b24b58ae2f7a92d9765e7e33887014eab5282502c0`).
+  - Static validation passed explicit OpenSSH fixture-state absence, retained loopback listeners and identity graph, runtime no-sshd/lifecycle markers, and product-versus-VM documentation (`55cf0f1301057fe7fada21d542dd0e22cdcb6c53bccc6d9e74aa7fe00ca8e4ce`).
+  - The mandatory changed-tree VM passed on its first run (`262465431acfe70c11888be6f8be4285f602890b16391b621aa3b0d4f5c6b3a8`). Its full log contains the no-sshd marker, direct-loopback success, separate-store absence, backend-down failure, restart recovery, `ALL TESTS PASSED`, and `test script finished in 173.38s` (`bb141863c6de484521b69c0aaeacef08f6f50ebc27c910adb919e3c85b6da842`; markers `e595eddceb7924c58da931a70a4cdb173b82ab218642d76f5abf0733933bd65a`).
+  - Controller checks passed exact four-path scope, no explicit OpenSSH package/service/settings, retained two-service/port/PKI/store/client graph, no product transport/F-054/F-056 change, one-sentence bounded docs, `git diff --check`, result/bytecode/generated artifact cleanup, checksum, and clean post-commit tree.
+  - F-055 is resolved. F-004/F-005/F-010/F-027/F-054 remain resolved; retained `tunnel` names are fixture identifiers only; F-056 and every other finding, Opportunity, and unresolved item remain unchanged. F-056 is next.
+  - Final closure review passed cleanup/fix/review chronology, topology semantics, first-pass mandatory VM/provenance/artifact evidence, and F-056 promotion after correcting the F-010 cross-effect label; no remaining gap exists.
 
 ### Remaining low queue
 
