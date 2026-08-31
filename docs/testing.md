@@ -192,13 +192,25 @@ vulnerabilities, nor that an affected package path is exploitable by underwrap.
 
 ## Rust toolchain
 
-The flake explicitly pins Rust 1.97.1 for development shells, Crane packages,
-and checks while retaining the `rust-src`, `rust-analyzer`, and
-`llvm-tools-preview` components. Verify the complete toolchain selection with:
+Rust 1.97.1 is the minimum supported compiler for every workspace package.
+The Nix development, release, and check environment pins Rust and Cargo exactly to 1.97.1.
+Although `rust-version` is a minimum constraint, newer compilers are not independently promised by this pinned validation matrix.
+
+The workspace intentionally keeps Cargo resolver 2.
+`Cargo.lock` pins dependency versions, and Nix pins Rust/Cargo 1.97.1 for normal builds.
+Resolver 2's allow behavior makes dependency re-resolution expose a dependency that requires newer Rust as an error at the exact 1.97.1 build instead of resolver 3 falling back to an older compatible version.
+Resolver 2 does not enforce package `rust-version` during dependency selection; the exact Rust 1.97.1 build provides the enforcement evidence.
+
+Verify the package metadata, locked dependency graph, and complete pinned toolchain selection with:
 
 ```bash
+cargo metadata --locked --format-version 1 --no-deps
+cargo tree --workspace --locked --edges normal,build,dev
 nix develop -c bash -lc 'rustc --version; rustc -Vv; cargo --version; cargo clippy --version; rustfmt --version'
 ```
+
+The metadata command reports exactly eleven edition-2024 packages with `rust_version` set to `1.97.1`.
+The flake retains the `rust-src`, `rust-analyzer`, and `llvm-tools-preview` components.
 
 Rust 1.97.1 is the fixed release selected to move release builds beyond the
 known LLVM optimizer defect range that included the previous reproducible

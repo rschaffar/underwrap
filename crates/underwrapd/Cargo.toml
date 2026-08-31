@@ -3,6 +3,7 @@ name = "underwrapd"
 description = "The underwrap daemon — secret broker with Unix socket IPC"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [lib]

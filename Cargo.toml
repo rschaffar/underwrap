@@ -1,4 +1,7 @@
 [workspace]
+# Cargo.lock pins dependencies, and Nix pins Rust/Cargo 1.97.1 for normal builds.
+# Resolver 2's allow behavior intentionally lets re-resolution expose newer-Rust
+# requirements at the exact 1.97.1 build instead of resolver 3 falling back to older versions.
 resolver = "2"
 members = [
     "crates/underwrap-protocol",
@@ -17,6 +20,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rschaffar/underwrap"
 

@@ -3,6 +3,7 @@ name = "integration-tests"
 description = "End-to-end integration tests for underwrap"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 include = [

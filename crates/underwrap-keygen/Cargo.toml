@@ -3,6 +3,7 @@ name = "underwrap-keygen"
 description = "underwrap client credential keygen helper"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [lib]

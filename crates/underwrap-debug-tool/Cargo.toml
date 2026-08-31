@@ -3,6 +3,7 @@ name = "underwrap-debug-tool"
 description = "Unsafe developer inspection tool for underwrap wrapped environments"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [[bin]]

@@ -3,6 +3,7 @@ name = "underwrap-backend"
 description = "underwrap backend daemon — HTTPS service that holds secrets, serves the runtime mTLS API, and hosts the admin SPA + JSON API"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [lib]

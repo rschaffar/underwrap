@@ -3,6 +3,7 @@ name = "underwrap-ns"
 description = "PID namespace wrapper — reads secret from fd, isolates target in new PID namespace"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [[bin]]

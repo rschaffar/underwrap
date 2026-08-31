@@ -3,6 +3,7 @@ name = "underwrap-secretsd-store"
 description = "In-memory Secret Service state model for underwrap"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [lib]
