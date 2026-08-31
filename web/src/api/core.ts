@@ -213,7 +213,6 @@ export type AdminLibsecretCollectionView = S["AdminLibsecretCollectionView"];
 export type AdminLibsecretItemView = S["AdminLibsecretItemView"];
 export type AdminLibsecretTreeResponse = S["AdminLibsecretTreeResponse"];
 export type AdminPairsListResponse = S["AdminPairsListResponse"];
-export type AdminResourcesListResponse = S["AdminResourcesListResponse"];
 export type AdminSecretEntry = S["AdminSecretEntry"];
 export type AdminSecretListResponse = S["AdminSecretListResponse"];
 export type AdminSecretReadResponse = S["AdminSecretReadResponse"];
