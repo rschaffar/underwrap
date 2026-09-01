@@ -8,4 +8,12 @@ Record the chosen behavior, rejected alternatives, consequences, and evidence ne
 
 Update or supersede the ADR when the decision changes instead of hiding the change in an active plan.
 
-The first workflow decision is [`0001_plans-as-active-workflow.md`](0001_plans-as-active-workflow.md).
+## Accepted decisions
+
+- [`ADR-0001`](0001_plans-as-active-workflow.md) — use plans as the active work workflow;
+- [`ADR-0002`](0002_privileged-configuration-grammar.md) — use a strict privileged configuration grammar;
+- [`ADR-0003`](0003_namespace-local-protocol-profile.md) — isolate the namespace wrapper's local protocol profile;
+- [`ADR-0004`](0004_internal-error-redaction.md) — separate internal-error responses from trusted-host diagnostics;
+- [`ADR-0005`](0005_observability-vocabulary.md) — use one first-release observability vocabulary;
+- [`ADR-0006`](0006_rust-support-and-resolver.md) — pin the Rust support matrix and retain resolver 2;
+- [`ADR-0007`](0007_frontend-tool-matrix.md) — validate one locked frontend and OpenAPI tool matrix.

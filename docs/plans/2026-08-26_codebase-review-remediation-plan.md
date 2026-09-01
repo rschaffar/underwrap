@@ -1,6 +1,6 @@
 # Complete the accepted codebase-review remediation
 
-Status: Active
+Status: Awaiting final acceptance
 
 Execution authority: On 2026-08-27 the user explicitly selected **Transfer and continue**, carrying D-174's standing authority into this plan through F-058 with every stop condition and severity gate intact.
 
@@ -524,8 +524,11 @@ Validation commands:
   - Ordered functional units are cleanup `509b6aa`, SCM_RIGHTS `b39b3b2`, libsecret ownership `316ef4c`, keygen NSS `1691aa5`, daemon NSS `ce4c906`, and final rationale `9824542`; each scope and evidence commit appears in sequence above.
   - F-032 is resolved with semantic rationale at all 212 current production unsafe expressions; lexical parity is discovery evidence and does not claim formal proof or replace executable tests.
   - Explicitly approved O-008 is resolved; no remaining F-id is resolved, narrowed, or expanded by F-032, and F-033 remains the next medium finding.
-  - The accepted VM raw large-blob equality-harness obligation remains separately owned by the unchecked task below and does not alter product behavior or F-032 closure.
-- [ ] Resolve or explicitly close the large raw-blob VM equality-harness obligation before final program completion; it is non-blocking for F-032 under the user's bounded-evidence decision and has no implementation authority yet.
+  - The accepted VM raw large-blob equality-harness obligation remained separate from F-032 and did not alter product behavior or F-032 closure.
+- [x] Explicitly close the large raw-blob VM equality-harness obligation from this remediation program into `docs/roadmaps/vm-raw-blob-equality.md`.
+  - On 2026-09-01 the user selected **Close into roadmap** after reviewing the intermittent exact-tree failures, clean-checkout reproduction, later complete same-tree reruns, unchanged assertions, and absence of a deterministic current product defect or established harness root cause.
+  - The roadmap owns a future grounded investigation and preserves the canonical-byte assertions, secret-safe instrumentation boundary, and approval requirement for any product, protocol, storage, wrapper-chain, or security change.
+  - This disposition closes the program obligation without claiming that the intermittent observation is fixed or resolved.
 
 ### Completed iteration — F-033 privileged namespace dependency profile
 
@@ -3228,7 +3231,7 @@ Direct strict Cargo docs and the built Nix check exercise the complete changed b
   - F-056 is resolved and strict workspace Rustdoc is now a first-class flake check. F-026/F-027/F-052 remain resolved; F-057/F-058 and every other finding, Opportunity, and unresolved item remain unchanged. F-057 is next.
   - Final closure review passed no-cleanup disposition, nine corrections/gate, all validation and artifact evidence, no-VM rationale, cross-effects, and F-057 promotion with no remaining gap.
 
-### Current iteration — F-057 Rust support and resolver contract
+### Completed iteration — F-057 Rust support and resolver contract
 
 F-057 remains directly reproducible at clean HEAD `3c9923e2b2617fd90b7f954cc8e7b5a93377807f`.
 
@@ -3313,7 +3316,7 @@ Locked tree/lock equality plus exact pinned-toolchain workspace checks directly 
   - Controller checks passed exact 13-path scope, no unstaged/untracked content, `git diff --check`, metadata/tree/lock equality, no dependency/toolchain/edition/resolver/profile/runtime/F-058 change, generated-artifact cleanup, checksum, and clean post-commit tree. No VM was required for this metadata/documentation-only change.
   - F-057 is resolved. F-024/F-025/F-033/F-056 remain resolved; F-058 and every other finding, Opportunity, unresolved item, and the separate VM equality-harness obligation remain unchanged. F-058 is next.
 
-### Current iteration — F-058 supported frontend and OpenAPI tool matrix
+### Completed iteration — F-058 supported frontend and OpenAPI tool matrix
 
 F-058 remains reproducible in narrowed form at clean HEAD `43d40102f210608e2f66eb117392158cc915c977`.
 
@@ -3368,7 +3371,7 @@ Expected cross-effects:
 - Closing F-058 refreshes F-025's frontend maintenance baseline while retaining its zero-advisory result and exact Playwright/driver alignment.
 - F-016's generated OpenAPI semantic contract and F-026's shared pinned SPA build/test checks remain resolved and exercise the refreshed matrix.
 - F-047 through F-050 and F-053 retain their full configured browser evidence and must pass unchanged against the refreshed production bundle.
-- The pre-existing red optional SPA coverage-threshold command is neither fixed nor weakened; give that separate future obligation a durable roadmap owner before archiving this remediation plan.
+- The pre-existing red optional SPA coverage-threshold command is neither fixed nor weakened; `docs/roadmaps/spa-unit-coverage.md` owns the future obligation.
 - Every other finding, Opportunity, unresolved item, and the separate VM equality-harness obligation remain unchanged.
 
 Non-goals:
@@ -3418,15 +3421,31 @@ The complete configured browser suite directly exercises the changed production 
   - All-system evaluation initially encountered two invalid local Nix-store IFD derivation records for the unchanged VM client-certificate fingerprint helpers. Re-instantiating and realising those exact deterministic derivations without a source change repaired the local store; the final unchanged staged tree passed every output (`a519ccf5def9e954fdf98b6fe4682091f6d35022bb653056571fd1e7a5331391`).
   - Static validation passed the complete direct/lock/config/hash/matrix contract (`ed8756e9cc04e472a7027ab7922037e44acf29dd181e00bade5cd3589ba01987`). Application, unit, browser, Playwright-config, OpenAPI, Cargo, and flake-lock inventories remained byte-identical (`3f011134495c5b2d99ad16d070140de76938a004a3146a2b9e27918ed29234d8`).
   - Controller checks passed exact five-path scope, no new direct package, exact peer and compatibility holds, `git diff --check`, no unstaged/untracked content, generated artifact cleanup, checksum, and clean post-commit tree. No VM run was required for this build/test dependency and documentation boundary.
-  - F-058 is resolved. F-016/F-025/F-026/F-047–F-050/F-053 remain resolved and all accepted F-031 through F-058 findings are complete. Every Opportunity, unresolved item, the separate VM equality-harness obligation, and the pre-existing optional SPA coverage-threshold gap remain unchanged; final curation must give the coverage gap a roadmap owner before program acceptance and archival.
+  - F-058 is resolved. F-016/F-025/F-026/F-047–F-050/F-053 remain resolved and all accepted F-031 through F-058 findings are complete. Every Opportunity and unresolved item remains outside this plan; `docs/roadmaps/vm-raw-blob-equality.md` and `docs/roadmaps/spa-unit-coverage.md` own the two future test obligations without claiming either is resolved.
+
+## Final curation
+
+The final curation audit on 2026-09-01 maps every durable result to a maintained owner before archival.
+
+- ADR-0001 owns the plan workflow, while ADR-0002 through ADR-0007 own the lasting privileged-grammar, namespace-profile, internal-error, observability, Rust-support, and frontend-matrix decisions and trade-offs.
+- `README.md` and the current architecture, backend, configuration, security, Secret Service security, admin UI, remote-backend, wrapper guidance, and testing guides own user-visible behavior, security limits, operational contracts, and validation claims.
+- Source comments, typed interfaces, Cargo manifests, npm manifests and lock, Nix configuration, and executable tests own current internal mechanics together with the linked public documentation; no separate implementation note is needed for a mechanism already maintained by those normative owners.
+- `docs/roadmaps/vm-raw-blob-equality.md` and `docs/roadmaps/spa-unit-coverage.md` own the only future obligations created or carried by final curation and grant no implementation authority.
+- The immutable review report and handover retain excluded Opportunities and unresolved items as historical evidence without turning them into active work.
+- Exact commit order, reviews, corrected-attempt classifications, validation hashes, and per-finding scope ledgers are completed workflow evidence retained by this plan rather than current product contracts or open obligations.
+- No rejected alternative or dated investigation has a current consequence that lacks an ADR, public-document, source, test, or roadmap owner, so final curation creates no separate research record.
+
+A direct 2026-09-01 coverage run in the pinned Nix development environment passed all 29 SPA test files and 162 tests before the unchanged function gate failed at 52.23 percent against 80 percent; log SHA-256 `7de09bd3b959003ac9c90fde1d0fd7639c05b9ffd04bd94538d3efeec83736ed`.
+
+That expected red command confirms the roadmap baseline rather than invalidating F-058, and no tracked source changed during the run.
 
 ## Completion Checklist
 
 - [x] F-031 through F-037 are resolved or explicitly closed with current evidence.
 - [x] The medium → low transition is explicitly approved and recorded.
-- [ ] F-038 through F-058 are resolved or explicitly closed with current evidence.
-- [ ] Every accepted cleanup and fix has independent review, required validation, controller checks, and an ordered local commit recorded here.
-- [ ] Every cross-finding effect, stop decision, unavailable check, and residual risk has a durable owner.
-- [ ] Accepted decisions, current mechanisms, research, future direction, and user-visible behavior have moved to their maintained documentation owners.
-- [ ] No active ticket or competing plan owns any remaining obligation.
+- [x] F-038 through F-058 are resolved or explicitly closed with current evidence.
+- [x] Every accepted cleanup and fix has independent review, required validation, controller checks, and an ordered local commit recorded here.
+- [x] Every cross-finding effect, stop decision, unavailable check, and residual risk has a durable owner.
+- [x] Accepted decisions, current mechanisms, research, future direction, and user-visible behavior have moved to their maintained documentation owners.
+- [x] No active ticket or competing plan owns any remaining obligation.
 - [ ] The user accepts final program completion before this plan moves to `docs/plans/archived/`.
