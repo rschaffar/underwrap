@@ -68,10 +68,10 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 
 ### 2. Decide and implement the SPA function-coverage release policy
 
-- [ ] Reproduce the current SPA coverage result in the pinned frontend environment from a clean npm installation.
-  Acceptance evidence: the exact revision, command, 29-file and 162-test result or current equivalent, and statement, branch, function, and line totals are recorded without relying only on the 2026-09-01 historical measurement.
-- [ ] Map uncovered API and library functions to observable contracts and identify the meaningful tests needed to reach the existing threshold.
-  Acceptance evidence: each proposed test names request construction, response decoding, error mapping, URL handling, or another behavior claim rather than a percentage-only invocation.
+- [x] Reproduce the current SPA coverage result in the pinned frontend environment from a clean npm installation.
+  Evidence: [`2026-09-01_spa-function-coverage.md`](../research/2026-09-01_spa-function-coverage.md) records clean revision `533d05c00d331c0edfe677b3225bd9c4cd64afba`, Node 24.19.0, npm 11.17.0, the clean-install log hash, all 29 files and 162 tests passing, status 1, and exact totals of 80.20-percent statements, 82.85-percent branches, 52.23-percent functions, and 81.03-percent lines.
+- [x] Map uncovered API and library functions to observable contracts and identify the meaningful tests needed to reach the existing threshold.
+  Evidence: the research record maps every zero-count API wrapper by module to method, URL/path/query placement, request-body forwarding, response decoding, and existing error-mapping coverage and rejects a percentage-only test for the production no-op branch.
 - [ ] Present one focused release-gate decision with a recommendation to the user.
   Acceptance evidence: the user explicitly selects whether `npm run test:coverage` is a first-release gate and where that gate is enforced; any threshold reduction, exclusion expansion, or waiver is named rather than implied.
 - [ ] Implement only the selected gate disposition.
