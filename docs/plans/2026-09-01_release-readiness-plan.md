@@ -81,36 +81,36 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 
 ### 3. Run the clean release matrix and deployment walkthrough
 
-- [ ] Freeze one candidate revision after all accepted corrections and confirm a clean tracked tree before validation.
-  Acceptance evidence: the revision, branch, `git status --short`, supported system, and pinned Rust, Cargo, Node, npm, Playwright, and browser-driver versions are recorded.
-- [ ] Run the complete direct and aggregate validation matrix sequentially without silently replacing a failed run with a passing rerun.
-  Acceptance evidence: `cargo test --workspace`, `cargo fmt -- --check`, `cargo clippy --all-targets --workspace -- -D warnings`, `./crates/integration-tests/run`, SPA unit tests and production build, the selected coverage disposition, Playwright, `npm ls --all`, `npm audit --package-lock-only`, the documented `npm outdated` review, `nix flake check --all-systems --no-build`, and `nix flake check` each have an exact result tied to the candidate revision.
-- [ ] Classify every red or unavailable matrix row before proceeding.
-  Acceptance evidence: each row is fixed and rerun, retained as a release blocker, or explicitly accepted by the user with direct, simulated, unavailable, or user-reported evidence clearly labelled.
-- [ ] Walk through the documented one-backend, one-frontend, one-wrapper deployment in a disposable environment without modifying an operator host or using a production secret.
-  Acceptance evidence: the steps in `docs/getting-started.md` are followed in order through backend bootstrap, store creation, runtime client enrollment, wrapper registration, value insertion, permission unlock, wrapper execution, and deployment checks; browser-equivalent API substitutions are labelled simulated and configured Playwright evidence remains separate.
-- [ ] Reconcile the walkthrough with the separate-host deployment guide without claiming a multi-host test.
-  Acceptance evidence: TLS, service identity, filesystem mode, enrollment, restart, permission, log-hygiene, and encrypted-store restart instructions are checked, while DNS, firewall, routing, latency, partitions, and distinct-host compromise remain explicit untested limits.
-- [ ] Correct any command, ordering, or expectation that the walkthrough disproves.
-  Acceptance evidence: documentation and examples describe only the verified first-release flow, and their relevant parse, evaluation, build, browser, and VM checks pass.
+- [x] Freeze one candidate revision after all accepted corrections and confirm a clean tracked tree before validation.
+  Evidence: clean revision `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` on `release/readiness`, x86-64 Linux 6.18.48, Rust/Cargo 1.97.1, Node 24.19.0, npm 11.17.0, Playwright 1.61.1, driver Node 22.23.2, and Chromium 149.0.7827.55 are recorded in the dated evidence.
+- [x] Run the complete direct and aggregate validation matrix sequentially without silently replacing a failed run with a passing rerun.
+  Evidence: [`2026-09-01_release-readiness-evidence.md`](../research/2026-09-01_release-readiness-evidence.md) records every required command, exact result, local log hash, threshold total, and key Nix output for the clean candidate; all 65 current-system flake checks passed.
+- [x] Classify every red or unavailable matrix row before proceeding.
+  Evidence: [`2026-09-01_workspace-validation-stability.md`](../research/2026-09-01_workspace-validation-stability.md) owns every corrected pre-candidate failure; the evidence record classifies the expected `npm outdated` status, one auxiliary parser error, AArch64 evaluation-only evidence, and unavailable separate-host properties.
+- [x] Walk through the documented one-backend, one-frontend, one-wrapper deployment in a disposable environment without modifying an operator host or using a production secret.
+  Evidence: a purpose-built NixOS VM completed offline bootstrap, plain-store creation, keygen and enrollment, auto-registration, env insertion, permission unlock, both wrapper forms, deployment checks, and backend restart; the successful full-log hash is `534d06c67c24f3a3c26b8b8805a952f8ad43fe2556fb9e47a3c8d16fe94392c6`.
+- [x] Reconcile the walkthrough with the separate-host deployment guide without claiming a multi-host test.
+  Evidence: the dated evidence distinguishes direct same-host TLS, service-identity, mode, enrollment, restart, permission, log-hygiene, and encrypted-restart evidence from unavailable DNS, firewall, routing, latency, partition, orchestration, and distinct-host evidence.
+- [x] Correct any command, ordering, or expectation that the walkthrough disproves.
+  Evidence: three temporary harness-only assumptions were corrected and classified; the documented sequence and product contracts held, no product guide correction was required, and the candidate examples, browser suite, generated contract tests, and VM passed.
 
 ### 4. Prepare the independent security-review handoff
 
-- [ ] Inventory the candidate's protected assets, attackers, trust assumptions, privileged boundaries, wire and storage formats, review hotspots, accepted ADRs, and known limitations without duplicating normative prose.
-  Acceptance evidence: every handoff statement links to its current owner in architecture, security, secretsd-security, backend, testing, source, or an ADR.
-- [ ] Produce a concise reviewer guide for the exact candidate.
-  Acceptance evidence: the guide states review scope and non-scope, supported platforms and toolchains, source/build entry points, threat model, high-value call paths, validation commands, dependency and generated-contract inputs, known blockers and nonclaims, and how evidence was classified.
-- [ ] Produce a dated release-readiness evidence record.
-  Acceptance evidence: it identifies the exact revision and environment, records every matrix and walkthrough result, distinguishes fresh evidence from historical evidence, and contains no credential, secret, resource blob, key, canary, or secret-bearing fixture content.
-- [ ] Check current documentation and generated contracts for review-blocking contradictions.
-  Acceptance evidence: OpenAPI drift, documentation links and paths, example evaluation, terminology, release posture, audit status, and known-limit statements are reviewed and any contradiction is corrected or listed as a blocker.
+- [x] Inventory the candidate's protected assets, attackers, trust assumptions, privileged boundaries, wire and storage formats, review hotspots, accepted ADRs, and known limitations without duplicating normative prose.
+  Evidence: [`2026-09-01_security-review-handoff.md`](../research/2026-09-01_security-review-handoff.md) links each summary to the current architecture, security, secretsd-security, backend, configuration, testing, ADR, source, or evidence owner.
+- [x] Produce a concise reviewer guide for the exact candidate.
+  Evidence: the handoff names candidate `f61d8dd`, the complete release range, supported scope, threat-model entry points, six high-value call-path groups, build and generated inputs, review questions, unavailable properties, and nonclaims.
+- [x] Produce a dated release-readiness evidence record.
+  Evidence: the evidence record identifies the candidate and environment, records direct and simulated matrix and walkthrough evidence, labels unavailable and historical limits, and contains no credential, resource value, blob, key, canary, or secret-bearing fixture content.
+- [x] Check current documentation and generated contracts for review-blocking contradictions.
+  Evidence: OpenAPI export and generated SPA bindings passed; all 247 relative documentation paths and targeted anchors resolved; flake example evaluations passed; terminology and release/audit posture inventory found no blocking contradiction; bounded new-prose and credential-pattern checks passed.
 - [ ] Obtain a bounded independent read-only review of the handoff, evidence record, and all release-readiness changes.
-  Acceptance evidence: fresh review reports no unresolved correctness, security-boundary, evidence, scope, or overclaim finding, or accepted corrections are applied and re-reviewed.
+  Unavailable evidence: the delegated reviewer failed before startup because the installed Pi bundle lacked `dist/bundle/cli.js`; it produced no review result, so independent acceptance remains pending rather than inferred.
 
 ### 5. Curate and close
 
-- [ ] Move every lasting decision, current mechanism, dated investigation, limitation, and future obligation to its designated durable owner.
-  Acceptance evidence: ADRs, implementation notes, research, roadmaps, public documentation, and source each own only the material defined by the project-memory taxonomy.
+- [x] Move every lasting decision, current mechanism, dated investigation, limitation, and future obligation to its designated durable owner.
+  Evidence: ADR-0008 owns the selected gate, source and tests own the corrections, three dated investigations own evidence and residual observations, current product guides remain normative, and no completed roadmap or historical ticket was revived.
 - [ ] Complete final branch and artifact hygiene.
   Acceptance evidence: the candidate tree is clean; generated local schema, coverage output, Playwright artifacts, result links, logs, processes, and temporary secret-bearing material are absent or safely outside the repository; committed files contain no secret values.
 - [ ] Present the complete candidate disposition to the user before archival or integration.
@@ -128,9 +128,9 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 
 - [x] The intermittent raw-blob equality obligation has an evidenced cause and validated correction, or release readiness is explicitly blocked rather than waived implicitly.
 - [x] The SPA coverage release policy is user-selected, durably owned, internally consistent, and implemented.
-- [ ] Every row of the clean release matrix has a fresh candidate-revision result and no unexplained red outcome.
-- [ ] The disposable deployment walkthrough completes with evidence classifications and corrected documentation.
+- [x] Every row of the clean release matrix has a fresh candidate-revision result and no unexplained red outcome.
+- [x] The disposable deployment walkthrough completes with evidence classifications and corrected documentation.
 - [ ] The independent security-review guide and dated evidence record are complete, truthful, secret-free, and independently reviewed.
-- [ ] No dependency, binary-chain, product-contract, protocol, or security-boundary change crossed its stop condition without focused authority.
-- [ ] The repository remains explicit that underwrap is pre-release and has not received an independent end-to-end security audit.
+- [x] No dependency, binary-chain, product-contract, protocol, or security-boundary change crossed its stop condition without focused authority.
+- [x] The repository remains explicit that underwrap is pre-release and has not received an independent end-to-end security audit.
 - [ ] Durable curation, final user acceptance, archival, branch integration, and worktree cleanup are complete.
