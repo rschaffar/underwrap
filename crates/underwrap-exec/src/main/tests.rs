@@ -100,6 +100,34 @@ target: /usr/bin/gh
 
 #[test]
 fn relocate_resource_channel_fd_preserves_owned_socket_and_closes_source() {
+    const CHILD_ENV: &str = "UNDERWRAP_EXEC_RELOCATE_CLOSE_CHILD";
+    const TEST_NAME: &str =
+        "tests::relocate_resource_channel_fd_preserves_owned_socket_and_closes_source";
+
+    // A numeric EBADF witness is process-global: another parallel test can
+    // reuse the source descriptor after relocation closes it. Observe it in a
+    // fresh single-test process where no other test can allocate that number.
+    if std::env::var(CHILD_ENV).ok().as_deref() != Some(TEST_NAME) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg(TEST_NAME)
+            .args(["--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, TEST_NAME)
+            .output()
+            .expect("exec current test executable for relocation close probe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "relocation close probe failed: {}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            output.status
+        );
+        assert!(
+            stdout.contains("test result: ok. 1 passed; 0 failed;"),
+            "relocation close probe did not run exactly one test:\n{stdout}"
+        );
+        return;
+    }
+
     let mut fds = [-1; 2];
     // SAFETY: fds has room for both results, which are adopted exactly once below.
     assert_eq!(
