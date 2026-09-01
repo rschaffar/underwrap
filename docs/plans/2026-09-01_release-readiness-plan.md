@@ -53,14 +53,14 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
   Evidence: `docs/plans/` had no active plan; `git status --short --branch` was clean on `release/readiness`; the dedicated worktree and base revision are recorded above.
 - [x] Revalidate the two roadmap obligations and their historical evidence against the current tree.
   Evidence: current `nix/tests/test.py`, `web/vite.config.ts`, `web/package.json`, both roadmap records, the accepted report and handover, and the archived remediation plan were inspected on 2026-09-01.
-- [ ] Trace every historically implicated F-007/F-009 equality assertion through target completion, namespace lifecycle, daemon terminal-message handling, admin observation, and backend load/save ordering, and record a bounded hypothesis table with exact source evidence.
-  Acceptance evidence: a dated research record identifies each candidate cause as supported, rejected, or still unknown without treating historical attribution as proof.
-- [ ] Add the smallest secret-safe observation needed to distinguish the remaining hypotheses, only if static tracing and existing logs are insufficient.
-  Acceptance evidence: focused review confirms that diagnostics expose only identifiers, lengths, digests, section names, and ordering metadata and do not alter lifecycle timing intentionally.
-- [ ] Run bounded forced VM reproductions against one exact committed tree without retry masking.
-  Acceptance evidence: up to five `nix build --rebuild --no-link .#checks.x86_64-linux.vm-test` executions are recorded individually with revision, outcome, failing assertion or `ALL TESTS PASSED`, and secret-safe mismatch metadata; stop the reproduction loop once evidence isolates the cause.
-- [ ] Correct the evidenced root cause with the smallest design-preserving change, or record the unresolved blocker and stop release-candidate closure.
-  Acceptance evidence: source and test review traces the correction to the cause, preserves canonical byte equality and the documented boundary, and identifies any product, protocol, storage, wrapper-chain, or security effect before implementation.
+- [x] Trace every historically implicated F-007/F-009 equality assertion through target completion, namespace lifecycle, daemon terminal-message handling, admin observation, and backend load/save ordering, and record a bounded hypothesis table with exact source evidence.
+  Evidence: [`2026-09-01_vm-raw-blob-equality.md`](../research/2026-09-01_vm-raw-blob-equality.md) traces namespace dispatch, daemon finalization, backend save ordering, atomic PlainBackend replacement, and test-driver observation and classifies every bounded hypothesis.
+- [x] Add the smallest secret-safe observation needed to distinguish the remaining hypotheses, only if static tracing and existing logs are insufficient.
+  Evidence: temporary length-and-SHA-256 observations exposed only permitted metadata and proved that the guest-side file remained identical while one driver response was short; the durable correction retains only secret-safe consistency failures.
+- [x] Run bounded forced VM reproductions against one exact committed tree without retry masking.
+  Evidence: the research record identifies each uninstrumented and diagnostic run, command outcome, failing assertion, log hash, and decisive metadata; reproduction stopped when the unchanged guest fingerprint and 230400-character driver shortfall isolated the observation boundary.
+- [x] Correct the evidenced root cause with the smallest design-preserving change, or record the unresolved blocker and stop release-candidate closure.
+  Evidence: `nix/tests/test.py::admin_get_blob` now performs bounded exact transfers with no retries, validates every chunk and the complete guest fingerprint, leaves all F-007/F-009 equality assertions unchanged, and has no product, protocol, storage, wrapper-chain, dependency, or security-boundary effect.
 - [ ] Validate the VM disposition without weakening the witness.
   Acceptance evidence: affected focused checks pass, the exact equality assertions remain, and five consecutive forced VM executions pass on one exact corrected revision before the aggregate release matrix is accepted.
 - [ ] Curate the investigation into its durable owner and retire or revise the VM roadmap obligation only after its remaining direction is accurate.

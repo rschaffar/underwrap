@@ -1,6 +1,7 @@
 """underwrap VM test — local and remote-style instances use direct loopback on one machine."""
 
 import base64
+import binascii
 import contextlib
 import errno
 import hashlib
@@ -388,23 +389,81 @@ def install_local_plain_resource_blob(resource, canonical):
         os.unlink(host_path)
 
 
-def admin_get_blob(url, store, resource):
-    """Read a resource blob's canonical bytes directly off the
-    backend's on-disk store and return them base64-encoded.
+_BLOB_OBSERVATION_CHUNK_BYTES = 64 * 1024
 
-    The admin API exposes per-key secret edits rather than whole-blob reads, so
-    the harness uses the storage backend's on-disk layout: a `PlainBackend`
-    stores each
-    resource blob at `<dir>/resources/<resource_id>`. Picking the
-    right `<dir>` per (url, store) keeps the byte-equal comparison
-    semantics callers rely on.
+
+def plain_resource_blob_fingerprint(url, store, resource):
+    """Return only the on-disk blob length and SHA-256 digest."""
+    resource_id = _resource_id_for(url, resource)
+    storage_dir = _storage_dir_for(url, store)
+    blob_path = f"{storage_dir}/resources/{resource_id}"
+    summary = machine.succeed(
+        f"wc -c < {shlex.quote(blob_path)}; "
+        f"sha256sum {shlex.quote(blob_path)} | cut -d' ' -f1"
+    ).splitlines()
+    assert len(summary) == 2, f"unexpected blob fingerprint summary: {summary!r}"
+    length, digest = summary
+    assert length.isdigit(), f"invalid blob length summary: {length!r}"
+    assert re.fullmatch(r"[0-9a-f]{64}", digest), f"invalid blob digest summary: {digest!r}"
+    return int(length), digest
+
+
+def admin_get_blob(url, store, resource):
+    """Return exact canonical bytes as base64 via bounded driver transfers.
+
+    One multi-megabyte shell response can be truncated by the NixOS test driver.
+    Bounded transfers retain byte-for-byte assertions without retries or fixture logs.
     """
     resource_id = _resource_id_for(url, resource)
     storage_dir = _storage_dir_for(url, store)
     blob_path = f"{storage_dir}/resources/{resource_id}"
-    return machine.succeed(
-        f"base64 -w0 {shlex.quote(blob_path)}"
-    ).strip()
+    before = plain_resource_blob_fingerprint(url, store, resource)
+    chunk_count = (
+        before[0] + _BLOB_OBSERVATION_CHUNK_BYTES - 1
+    ) // _BLOB_OBSERVATION_CHUNK_BYTES
+    chunks = []
+    for chunk_index in range(chunk_count):
+        command = (
+            f"dd if={shlex.quote(blob_path)} "
+            f"bs={_BLOB_OBSERVATION_CHUNK_BYTES} skip={chunk_index} "
+            "count=1 status=none | base64 -w0"
+        )
+        status, encoded = machine.execute(command)
+        assert status == 0, (
+            f"resource blob chunk read failed: chunk={chunk_index} status={status}"
+        )
+        encoded = encoded.strip()
+        try:
+            chunk = base64.b64decode(encoded, validate=True)
+        except binascii.Error as error:
+            raise AssertionError(
+                f"resource blob chunk transport was not valid base64: "
+                f"chunk={chunk_index} characters={len(encoded)}"
+            ) from error
+        expected_length = min(
+            _BLOB_OBSERVATION_CHUNK_BYTES,
+            before[0] - chunk_index * _BLOB_OBSERVATION_CHUNK_BYTES,
+        )
+        assert len(chunk) == expected_length, (
+            f"resource blob chunk transport changed length: chunk={chunk_index} "
+            f"expected={expected_length} observed={len(chunk)}"
+        )
+        chunks.append(chunk)
+
+    blob = b"".join(chunks)
+    after = plain_resource_blob_fingerprint(url, store, resource)
+    observed = (len(blob), hashlib.sha256(blob).hexdigest())
+    assert after == before, (
+        "resource blob changed during exact observation; "
+        f"before length={before[0]} sha256={before[1]}; "
+        f"after length={after[0]} sha256={after[1]}"
+    )
+    assert observed == before, (
+        "resource blob chunk transport changed content; "
+        f"guest length={before[0]} sha256={before[1]}; "
+        f"driver length={observed[0]} sha256={observed[1]}"
+    )
+    return base64.b64encode(blob).decode()
 
 
 # `(url, store)` → on-disk PlainBackend root for the resources tree.
