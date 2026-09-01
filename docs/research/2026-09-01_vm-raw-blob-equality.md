@@ -1,6 +1,6 @@
 # VM raw-blob equality investigation
 
-Status: Cause isolated; corrected-revision pass streak pending.
+Status: Cause isolated and corrected-revision pass streak complete.
 
 Date: 2026-09-01.
 
@@ -13,6 +13,20 @@ This investigation covers the intermittent F-007 and F-009 NixOS VM equality fai
 The protected asset is the integrity of backend-managed canonical resource bytes across target completion, namespace teardown, daemon finalization, backend persistence, and test observation.
 
 The investigation did not authorize or make a product, protocol, storage-format, wrapper-chain, or security-boundary change.
+
+## Historical input
+
+Exact-tree runs during F-032 intermittently stopped at the existing F-007 and F-009 comparisons after the relevant wrapper path had otherwise reached its expected terminal state.
+
+A clean detached checkout reproduced one F-007 failure without the F-032 daemon change.
+
+A later F-052 run stopped once at an F-009 comparison and passed completely on an immediate same-tree rerun.
+
+A later F-054 run stopped once at an F-007 comparison and passed completely on an immediate unchanged-tree rerun, while the subsequent F-055 VM run passed on its first attempt.
+
+On 2026-09-01 the user transferred this unresolved evidence from the completed F-031 through F-058 remediation program into a roadmap without claiming a cause or resolution.
+
+The active release-readiness plan then promoted that direction into this investigation.
 
 ## Source trace
 
@@ -89,9 +103,19 @@ The existing byte-for-byte F-007 and F-009 equality assertions and their expecte
 
 The correction affects only VM-test observation and does not change runtime behavior or weaken the canonical-byte witness.
 
-One uncommitted corrected-tree VM run passed completely.
+The correction was committed as `49a0d310ad99aa0641f2f01987031f87c05aeff6`.
 
-The release-readiness plan still requires five consecutive forced runs on one exact committed corrected revision before this disposition is accepted.
+Five consecutive `nix build --rebuild --no-link --print-out-paths .#checks.x86_64-linux.vm-test` executions passed on that exact clean revision and the same `/nix/store/m2pn19l2jyilzpw9r74mxixsibhrcqr8-vm-test-run-underwrap-vm-test.drv` derivation.
+
+| Forced run | Result | Full-log SHA-256 | Full-log size |
+|---|---|---|---|
+| 1 | `ALL TESTS PASSED` | `863d454518bf916c5c0568b3a97c7b69c550ce3fcb7a75effd3c82ebb164100f` | 976115 bytes |
+| 2 | `ALL TESTS PASSED` | `9474ec4d575fdebe6584ac5cce66d4dd3c0c96f79949072151f44eeafaf682c7` | 975937 bytes |
+| 3 | `ALL TESTS PASSED` | `ca3d6d9df9366050e922b577dd697ad6abcc16b51ddd18ee0f3f6522c1f1bcf0` | 975289 bytes |
+| 4 | `ALL TESTS PASSED` | `d876b30ca6cb63781708b360eb7428eebc59a1b36971359d586e9549c9d7411d` | 976086 bytes |
+| 5 | `ALL TESTS PASSED` | `3bd465b1d9d4eef562a7ecc20358162b2daed3e3ef1b05a418746dd7170d6d83` | 975666 bytes |
+
+The full logs remain outside the repository under `/tmp/underwrap-release-readiness-vm-validated-0N-full.log`.
 
 ## Limits
 

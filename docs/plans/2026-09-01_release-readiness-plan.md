@@ -18,7 +18,7 @@ It does not claim that underwrap is released, independently audited, formally ve
 
 ## Relationships
 
-This plan promotes the active obligations in [`vm-raw-blob-equality.md`](../roadmaps/vm-raw-blob-equality.md) and [`spa-unit-coverage.md`](../roadmaps/spa-unit-coverage.md).
+This plan promoted the completed VM obligation now owned by [`2026-09-01_vm-raw-blob-equality.md`](../research/2026-09-01_vm-raw-blob-equality.md) and continues to own the active [`spa-unit-coverage.md`](../roadmaps/spa-unit-coverage.md) obligation.
 
 It is grounded in the accepted review report, historical handover, completed F-001 through F-030 records, and the archived F-031 through F-058 remediation plan.
 
@@ -61,10 +61,10 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
   Evidence: the research record identifies each uninstrumented and diagnostic run, command outcome, failing assertion, log hash, and decisive metadata; reproduction stopped when the unchanged guest fingerprint and 230400-character driver shortfall isolated the observation boundary.
 - [x] Correct the evidenced root cause with the smallest design-preserving change, or record the unresolved blocker and stop release-candidate closure.
   Evidence: `nix/tests/test.py::admin_get_blob` now performs bounded exact transfers with no retries, validates every chunk and the complete guest fingerprint, leaves all F-007/F-009 equality assertions unchanged, and has no product, protocol, storage, wrapper-chain, dependency, or security-boundary effect.
-- [ ] Validate the VM disposition without weakening the witness.
-  Acceptance evidence: affected focused checks pass, the exact equality assertions remain, and five consecutive forced VM executions pass on one exact corrected revision before the aggregate release matrix is accepted.
-- [ ] Curate the investigation into its durable owner and retire or revise the VM roadmap obligation only after its remaining direction is accurate.
-  Acceptance evidence: the dated research record, current testing/security documentation where affected, roadmap state, and this plan agree on the cause, correction, evidence, and nonclaims.
+- [x] Validate the VM disposition without weakening the witness.
+  Evidence: all original byte-for-byte assertions remain; five consecutive forced VM executions reported `ALL TESTS PASSED` on clean revision `49a0d310ad99aa0641f2f01987031f87c05aeff6`; the research record identifies each full-log hash and retained evidence limit.
+- [x] Curate the investigation into its durable owner and retire or revise the VM roadmap obligation only after its remaining direction is accurate.
+  Evidence: the dated research record owns the source trace, hypotheses, cause, correction, five-run evidence, and lower-layer unknown; the resolved roadmap item was removed, and no current product security claim changed.
 
 ### 2. Decide and implement the SPA function-coverage release policy
 
