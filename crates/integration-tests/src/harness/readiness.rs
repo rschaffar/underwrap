@@ -87,15 +87,31 @@ pub(crate) async fn login_admin(
     })
 }
 
-/// Ask the kernel for an unused TCP port on loopback, then release
-/// it so the caller can bind it from the test fixture.
+fn backend_port_startup_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// A process-local reservation for one backend fixture's release-to-bind window.
 ///
-/// This pattern has a tiny race window between releasing the probe listener and
-/// binding the fixture. Port assignment is roughly LIFO inside the ephemeral
-/// range and the fixture binds immediately, so collisions are rare. Holding the
-/// listener until the real server accepts it would eliminate the race but
-/// requires passing an already-bound descriptor into the server.
-pub(crate) fn pick_unused_port() -> Result<u16> {
+/// Keep this value alive until an HTTPS readiness probe proves that the fixture
+/// server owns the selected port.
+pub(crate) struct BackendPortReservation {
+    port: u16,
+    _startup_guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl BackendPortReservation {
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+/// Ask the kernel for an unused TCP port while excluding every other backend
+/// fixture in this test process from selecting a port until this reservation is
+/// dropped.
+pub(crate) async fn reserve_backend_port() -> Result<BackendPortReservation> {
+    let startup_guard = backend_port_startup_lock().lock().await;
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").context("binding ephemeral port for harness")?;
     let port = listener
@@ -103,7 +119,10 @@ pub(crate) fn pick_unused_port() -> Result<u16> {
         .context("reading local_addr from ephemeral listener")?
         .port();
     drop(listener);
-    Ok(port)
+    Ok(BackendPortReservation {
+        port,
+        _startup_guard: startup_guard,
+    })
 }
 
 // Total window: 3000 × 20 ms ≈ 60 s. The loop exits as soon as the listener
@@ -170,3 +189,6 @@ pub(super) async fn wait_for_path(path: &Path) -> Result<()> {
     }
     anyhow::bail!("path never appeared: {}", path.display())
 }
+
+#[cfg(test)]
+mod tests;

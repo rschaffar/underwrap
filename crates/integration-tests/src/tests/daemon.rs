@@ -1,5 +1,5 @@
 use super::*;
-use crate::harness::{pick_unused_port, wait_for_service};
+use crate::harness::{reserve_backend_port, wait_for_service};
 use base64::Engine;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
@@ -111,8 +111,6 @@ wrappers:
 #[tokio::test]
 async fn network_bootstrap_cannot_create_operator() {
     let backend_bin = cargo_bin("underwrap-backend");
-    let https_port = pick_unused_port().unwrap();
-    let admin_url = format!("https://127.0.0.1:{https_port}");
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
@@ -122,6 +120,9 @@ async fn network_bootstrap_cannot_create_operator() {
     std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
+    let port_reservation = reserve_backend_port().await.unwrap();
+    let https_port = port_reservation.port();
+    let admin_url = format!("https://127.0.0.1:{https_port}");
     let backend_config = serde_yaml::to_string(&underwrap_backend::BackendConfig {
         stores_dir: base.join("stores"),
         clients_dir: base.join("clients"),
@@ -175,6 +176,7 @@ async fn network_bootstrap_cannot_create_operator() {
     }
 
     assert_eq!(bootstrap_required, Some(true));
+    drop(port_reservation);
 
     for origin in [None, Some(admin_url.as_str())] {
         let mut request = client
@@ -600,9 +602,6 @@ fn bootstrap_lock_is_released_when_real_owner_is_killed() {
 async fn underwrapd_binary_start_and_read() {
     let daemon_bin = cargo_bin("underwrapd");
     let backend_bin = cargo_bin("underwrap-backend");
-    let https_port = pick_unused_port().unwrap();
-    let service_url = format!("https://127.0.0.1:{https_port}");
-    let admin_url = service_url.clone();
 
     let tempdir = tempfile::TempDir::new().unwrap();
     let base = tempdir.path();
@@ -702,6 +701,10 @@ async fn underwrapd_binary_start_and_read() {
         })
         .unwrap(),
     );
+    let port_reservation = reserve_backend_port().await.unwrap();
+    let https_port = port_reservation.port();
+    let service_url = format!("https://127.0.0.1:{https_port}");
+    let admin_url = service_url.clone();
     let backend_config = serde_yaml::to_string(&underwrap_backend::BackendConfig {
         stores_dir,
         clients_dir,
@@ -733,6 +736,7 @@ async fn underwrapd_binary_start_and_read() {
         .unwrap();
 
     wait_for_admin(&admin_url, &ca_cert).await.unwrap();
+    drop(port_reservation);
     let crate::harness::AdminCredentials {
         session_cookie: admin_session_cookie,
         csrf_cookie: admin_csrf_cookie,
