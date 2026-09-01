@@ -111,8 +111,8 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 
 - [x] Move every lasting decision, current mechanism, dated investigation, limitation, and future obligation to its designated durable owner.
   Evidence: ADR-0008 owns the selected gate, source and tests own the corrections, three dated investigations own evidence and residual observations, current product guides remain normative, and no completed roadmap or historical ticket was revived.
-- [ ] Complete final branch and artifact hygiene.
-  Acceptance evidence: the candidate tree is clean; generated local schema, coverage output, Playwright artifacts, result links, logs, processes, and temporary secret-bearing material are absent or safely outside the repository; committed files contain no secret values.
+- [x] Complete final branch and artifact hygiene.
+  Evidence: generated schema, SPA build and coverage output, Playwright results, `node_modules`, candidate-prefixed temporary logs/scripts/profiles, and diagnostic merge files were removed; no result link or candidate-owned process remained; bounded credential-pattern and diff checks passed; the tracked tree was clean.
 - [ ] Present the complete candidate disposition to the user before archival or integration.
   Acceptance evidence: the user receives exact commits, matrix results, walkthrough classification, security-review handoff location, blockers and known gaps, and chooses whether the plan may be archived and the branch integrated.
 
