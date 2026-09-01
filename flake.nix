@@ -76,7 +76,7 @@
             src = ./web;
             # If this hash drifts the fetch fails with the offending hash
             # printed; copy it back into this file.
-            hash = "sha256-pFTBsCwZVlFXTJNXVGhwLoRJTObPLv6pSuFXerLb5fo=";
+            hash = "sha256-cmWImDUbONd6V2cxQ057dbQkCCJhoN+LkntV3aGMqAM=";
           };
 
           # Both npm scripts generate the API bindings before their main step.
