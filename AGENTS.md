@@ -194,9 +194,9 @@ Existing tickets, handovers, and review reports are immutable evidence; `tickets
 
 Do not create both a plan and a ticket for the same implementation, rewrite historical records, or convert completed tickets into plans.
 
-The remaining accepted 2026 review program is owned by [`docs/plans/2026-08-26_codebase-review-remediation-plan.md`](docs/plans/2026-08-26_codebase-review-remediation-plan.md).
+The completed 2026 review program is recorded in [`docs/plans/archived/2026-08-26_codebase-review-remediation-plan.md`](docs/plans/archived/2026-08-26_codebase-review-remediation-plan.md).
 
-That single iterative plan carries forward the report, handover decisions, D-174 execution authority, D-201 grammar decision, severity ordering, approval and stop gates, cleanup-first discipline, independent review, validation, and evidence requirements.
+Its D-174 execution authority is exhausted, and the archived plan is historical evidence rather than an active work owner.
 
 Use [the writing-plans skill](.agents/skills/writing-plans/SKILL.md) for the active workflow.
 
@@ -421,79 +421,23 @@ Validation by area:
 - NixOS module, identities, namespaces, capabilities, mounts, peer auth:
   `nix build .#checks.x86_64-linux.vm-test`
 
-## Accepted code-review program — historical record and migration
+## Accepted code-review program — completed historical record
 
-The accepted whole-codebase review report at `tickets/_review/codebase_2026-07-18.md` and its handover at `tickets/_handover/codebase_2026-07-18.md` remain immutable historical evidence for the review program.
+The accepted whole-codebase review report at `tickets/_review/codebase_2026-07-18.md`, its handover at `tickets/_handover/codebase_2026-07-18.md`, completed F-001 through F-030 tickets, and the archived F-031 through F-058 plan remain immutable historical evidence.
 
-Read the report and handover before planning work derived from their findings.
+The user accepted final program completion and archival on 2026-09-01.
 
-Do not rewrite those records or infer implementation authority from their historical ticket state.
+D-174's transferred execution authority and the program's severity, transition, cleanup, review, correction, and completion protocol are exhausted and grant no authority for new work.
 
-The active plan workflow replaces ticket materialization and ticket execution for new or resumed work.
+Read the report, handover, and archived plan before planning work derived from their findings, Opportunities, unresolved items, or evidence.
 
-A migrated review plan cites the relevant findings and carries forward every applicable security, approval, review, cleanup, fix, validation, and evidence condition.
+Revalidate historical conclusions against the current tree and use `docs/plans/` for any newly authorized non-trivial work.
 
-The parent/controller remains the sole agent/controller decision-maker and controls repository writes, subject to explicit user approvals and recorded conditions.
+Do not revive or rewrite a historical ticket or the archived plan, and do not infer implementation authority from their approval, completion, continuation, or next-action records.
 
-Process migrated findings by severity in the order critical, high, medium, low.
+Accepted lasting decisions from the completed program live in `docs/adr/`, current behavior and limits live in the product documentation and source, and future test obligations live in `docs/roadmaps/`.
 
-The accepted program starts directly in critical, and transitions from critical to high, high to medium, or medium to low require a focused `ask_user` decision with comment entry enabled.
-
-Advance a lower-severity prerequisite only when necessary and record the exception and reason in the owning plan and decision record.
-
-Use the single active review-remediation plan and execute exactly one finding at a time.
-
-D-174 remains standing implementation authority through F-058 under that plan, subject to every recorded stop condition and the mandatory medium → low transition gate.
-
-Do not infer implementation authority for work outside D-174, including Opportunities, unresolved items, dependencies, binary-chain changes, weaker security boundaries, or materially expanded scope.
-
-A requested plan revision is limited to that plan, and a rejected plan is not replaced by an unapproved competing artifact.
-
-The first committed implementation unit after approval must make the plan's approval, scope, and active state durable.
-
-Before an approved finding fix, run a simplification-cleanup phase that searches both the owning plan's scope and the repository for concrete behavior-preserving reductions.
-
-Do not perform a one-time broad refactor ahead of review, and keep sequencing fix-led by severity.
-
-Accept cleanup only when it reduces complexity, duplication, or dead structure, is independently reversible, and is not optional formatting or renaming.
-
-Cleanup is always behavior-preserving, and user approval never turns a behavior-changing or boundary-weakening change into cleanup.
-
-Handle behavior changes and Opportunities only through separate explicit approval.
-
-Cleanup must not add a dependency, change the `underwrap-exec → underwrap-ns` chain, expose secrets, or absorb an unresolved decision without `ask_user`.
-
-Give every accepted cleanup its own fresh independent review, separate fix pass when needed, focused and boundary-required validation, controller scope/diff/security checks, plan evidence update, and coherent local commit before a finding fix.
-
-Give every finding fix unit the same independent review, fix-worker, validation, controller, and commit treatment.
-
-Record cleanup and fix units in order in the owning plan and move durable facts to their maintained documentation owners.
-
-After the final finding fix, present the outcome, ordered commits, validation, review results, controller checks, decisions, and effects on later findings, then obtain the required completion acceptance before continuing.
-
-If completion changes are requested, continue the same plan and fix unit rather than creating competing ownership.
-
-If continuation crosses a severity band, obtain the separate transition decision after completion acceptance.
-
-If cleanup changes or resolves another finding, record the affected finding, evidence, and cleanup commit immediately and link that work when the finding is later planned.
-
-Opportunities and unresolved items retain separate approval or evidence requirements.
-
-Use one implementation writer, separate fresh reviewer subagents, and a separate fix-worker subagent for accepted review corrections.
-
-The controller synthesizes reviews and independently checks scope, actual diffs, sanity, security invariants, validation, and unrelated-change absence.
-
-On resume, inspect Git state, the owning plan, its approval and evidence, the report and handover, and the next incomplete protocol step rather than reconstructing state from memory.
-
-Use `.agents/skills/writing-plans/SKILL.md` for migrated review work and `.agents/skills/underwrap-ticket-workflow/SKILL.md` only to interpret the historical ticket procedure.
-
-## Continuing accepted review work
-
-The accepted report and handover remain source evidence, while the active review-remediation plan is the current owner for F-031 through F-058.
-
-Revalidate each promoted finding against the current tree, update that same plan with exact scope and evidence, and never create a replacement ticket or competing per-finding plan.
-
-Record durable decisions and current mechanisms in their maintained owners rather than leaving them only in the active plan.
+Use `.agents/skills/writing-plans/SKILL.md` for new work, `.agents/skills/underwrap-ticket-workflow/SKILL.md` only to interpret historical records, and `.agents/skills/underwrap-codebase-review/SKILL.md` for a future comprehensive review.
 
 ## Legacy ticket board
 

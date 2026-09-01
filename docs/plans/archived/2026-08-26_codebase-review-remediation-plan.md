@@ -1,6 +1,8 @@
 # Complete the accepted codebase-review remediation
 
-Status: Awaiting final acceptance
+Status: Completed
+
+Completion acceptance: On 2026-09-01 the user selected **Accept and archive**; D-174's transferred execution authority is exhausted, and this archived plan grants no authority for new work.
 
 Execution authority: On 2026-08-27 the user explicitly selected **Transfer and continue**, carrying D-174's standing authority into this plan through F-058 with every stop condition and severity gate intact.
 
@@ -12,15 +14,15 @@ Resolve every remaining accepted finding from F-031 through F-058 in severity or
 
 ## Context
 
-The accepted report is [`tickets/_review/codebase_2026-07-18.md`](../../tickets/_review/codebase_2026-07-18.md).
+The accepted report is [`tickets/_review/codebase_2026-07-18.md`](../../../tickets/_review/codebase_2026-07-18.md).
 
-The historical program state and decisions are in [`tickets/_handover/codebase_2026-07-18.md`](../../tickets/_handover/codebase_2026-07-18.md).
+The historical program state and decisions are in [`tickets/_handover/codebase_2026-07-18.md`](../../../tickets/_handover/codebase_2026-07-18.md).
 
-Completed tickets F-001 through F-030 remain immutable evidence under [`tickets/03_done/`](../../tickets/03_done/).
+Completed tickets F-001 through F-030 remain immutable evidence under [`tickets/03_done/`](../../../tickets/03_done/).
 
 The report, handover, and completed tickets are evidence sources rather than active work owners.
 
-This plan is the single active owner for the remaining accepted review program.
+During execution this plan was the single active owner for the remaining accepted review program, and it now serves as the completed workflow handoff.
 
 ## Plan Relationship
 
@@ -3448,4 +3450,5 @@ That expected red command confirms the roadmap baseline rather than invalidating
 - [x] Every cross-finding effect, stop decision, unavailable check, and residual risk has a durable owner.
 - [x] Accepted decisions, current mechanisms, research, future direction, and user-visible behavior have moved to their maintained documentation owners.
 - [x] No active ticket or competing plan owns any remaining obligation.
-- [ ] The user accepts final program completion before this plan moves to `docs/plans/archived/`.
+- [x] The user accepts final program completion before this plan moves to `docs/plans/archived/`.
+  - Evidence: on 2026-09-01 the user selected **Accept and archive** after reviewing the clean final tip, completed F-031 through F-058 evidence, durable ADR and roadmap owners, independent curation review and corrections, unchanged optional coverage threshold, and exact local archival scope.

@@ -2,6 +2,10 @@
 
 `docs/plans/archived/` holds completed plans after their durable facts and remaining obligations have moved to their maintained owners.
 
+## Archived plans
+
+- [`2026-08-26_codebase-review-remediation-plan.md`](2026-08-26_codebase-review-remediation-plan.md) — completed F-031 through F-058 remediation program, accepted and archived on 2026-09-01.
+
 An archived plan is a workflow handoff and is not the only owner of a security decision, mechanism, measurement, limitation, or open obligation.
 
 Archive only plans whose tasks and completion checks have evidence.

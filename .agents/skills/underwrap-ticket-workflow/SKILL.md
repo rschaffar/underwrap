@@ -35,17 +35,19 @@ Treat handover decisions as binding constraints when an active plan cites them, 
 
 Do not infer authority for new work merely from a historical todo, next-action instruction, ticket approval, completion acceptance, or continuation statement.
 
-For the accepted 2026 program, D-174's standing execution authority and D-201's F-031 grammar decision transfer only through the active review-remediation plan.
+For the accepted 2026 program, D-174's execution authority transferred only through the now-completed review-remediation plan and is exhausted.
 
-## Continue historical review work
+D-201's strict privileged-configuration decision remains current through its ADR and product contract rather than through historical ticket authority.
 
-Use [`docs/plans/2026-08-26_codebase-review-remediation-plan.md`](../../../docs/plans/2026-08-26_codebase-review-remediation-plan.md) as the single active owner for F-031 through F-058.
+## Completed historical review work
 
-Use [`writing-plans`](../writing-plans/SKILL.md) to update and execute that plan.
+Use [`docs/plans/archived/2026-08-26_codebase-review-remediation-plan.md`](../../../docs/plans/archived/2026-08-26_codebase-review-remediation-plan.md) as the completed handoff for F-031 through F-058.
 
-Do not create a replacement ticket or a separate per-finding plan.
+The archived plan is not an active owner and grants no authority for new implementation.
 
-Link historical records rather than copying their large evidence bodies into the active plan.
+Use [`writing-plans`](../writing-plans/SKILL.md) to ground a new plan for approved work derived from historical evidence.
+
+Link historical records rather than copying their large evidence bodies into a new plan.
 
 ## Future reviews
 

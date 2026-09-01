@@ -62,11 +62,11 @@ Existing ticket, handover, and report files are immutable historical evidence; `
 
 Do not create a new ticket for work owned by a plan, and do not create both a plan and a ticket for the same implementation.
 
-The remaining accepted 2026 review program uses one iterative plan rather than one replacement plan per finding.
+The accepted 2026 review program used one iterative plan rather than one replacement plan per finding and is complete in [`docs/plans/archived/2026-08-26_codebase-review-remediation-plan.md`](../../../docs/plans/archived/2026-08-26_codebase-review-remediation-plan.md).
 
-That plan must cite the report and handover, revalidate each finding before implementation, and carry forward severity ordering, approval and stop gates, independent review, cleanup-before-fix discipline, validation, security boundaries, and durable evidence requirements.
+D-174's transferred execution authority is exhausted, and the archived plan grants no authority for new work.
 
-D-174's standing authority transfers to that plan through F-058, while its stop conditions and mandatory medium → low gate remain binding.
+Work derived from its report, Opportunities, unresolved items, or evidence requires a newly grounded plan and any focused decision that its current scope needs.
 
 The retained `underwrap-ticket-workflow` skill is interpretation guidance for historical records, not an executable workflow.
 
@@ -220,7 +220,7 @@ Include meaningful verification in non-trivial commit bodies.
 
 Local commit authority never authorizes push, tag, publish, amend, rebase, squash, or any history rewrite.
 
-For the accepted 2026 review program, update the single active remediation plan with ordered cleanup/fix evidence and preserve every stricter approval, independence, validation, stop, and transition rule recorded by D-174 and the historical handover.
+The archived 2026 review-remediation plan retains its ordered cleanup, fix, approval, review, validation, stop, and transition evidence as a completed workflow handoff rather than an active work owner.
 
 ## Curate and archive
 

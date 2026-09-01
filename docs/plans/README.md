@@ -12,13 +12,13 @@ Tasks use checkboxes and record the exact acceptance evidence required before th
 
 ## Active plans
 
-- [`2026-08-26_codebase-review-remediation-plan.md`](2026-08-26_codebase-review-remediation-plan.md) — execute the remaining accepted F-031 through F-058 review program one finding at a time.
+None.
 
-The accepted report, handover, and completed F-001 through F-030 tickets remain historical evidence and are not converted into plans.
+The completed F-031 through F-058 remediation program is recorded in [`archived/2026-08-26_codebase-review-remediation-plan.md`](archived/2026-08-26_codebase-review-remediation-plan.md).
 
-The active remediation plan carries D-174's standing execution authority and stop conditions, the mandatory medium → low transition gate, and D-201's strict F-031 grammar.
+The accepted report, handover, completed F-001 through F-030 tickets, and archived plan remain historical evidence and are not converted into new plans.
 
-The handover's D-201 instruction to materialize an F-031 ticket is historical and superseded by the plan workflow.
+D-174's execution authority and severity protocol are exhausted, and the handover's D-201 ticket-materialization instruction remains historical rather than active authority.
 
 ## Ownership
 

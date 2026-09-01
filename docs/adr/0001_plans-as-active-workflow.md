@@ -4,7 +4,7 @@ Status: Accepted
 
 Date: 2026-08-26
 
-Amended: 2026-08-27
+Amended: 2026-09-01
 
 ## Decision
 
@@ -20,7 +20,7 @@ Existing ticket, handover, and review-report files remain immutable historical e
 
 Completed tickets are not copied into plans, and the existing report and handover are not rewritten as part of this migration.
 
-The remaining F-031 through F-058 program uses one iterative remediation plan that cites the report and handover, promotes one finding at a time, and carries forward applicable severity, approval, independent-review, cleanup, fix, validation, and evidence constraints.
+The completed F-031 through F-058 program used one iterative remediation plan that cited the report and handover, promoted one finding at a time, and carried forward applicable severity, approval, independent-review, cleanup, fix, validation, and evidence constraints.
 
 No new ticket is created for work that belongs to the plan workflow.
 
@@ -54,6 +54,8 @@ The replacement does not authorize dependency changes, binary-chain changes, wea
 
 The handover's D-201 next-action instruction to materialize F-031 as a ticket is historical and is superseded by this decision.
 
-On 2026-08-27 the user explicitly selected **Transfer and continue**, carrying D-174's standing execution authority into the active remediation plan with all stop conditions and the mandatory medium → low transition gate intact.
+On 2026-08-27 the user explicitly selected **Transfer and continue**, carrying D-174's standing execution authority into the remediation plan with all stop conditions and the mandatory medium → low transition gate intact.
 
-D-201's approved strict configuration grammar remains binding for the F-031 iteration.
+On 2026-09-01 the user accepted final completion and archival of [`the remediation plan`](../plans/archived/2026-08-26_codebase-review-remediation-plan.md), exhausting D-174's transferred implementation authority.
+
+D-201's accepted strict configuration grammar remains owned by [ADR-0002](0002_privileged-configuration-grammar.md) and the current product contract.
