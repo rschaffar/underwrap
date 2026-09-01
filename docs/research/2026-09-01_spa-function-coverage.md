@@ -1,10 +1,18 @@
 # SPA function-coverage investigation
 
-Status: Fresh result and test map complete; release-gate decision pending.
+Status: Release gate accepted, implemented, and directly validated.
 
 Date: 2026-09-01.
 
 Plan owner: [`2026-09-01_release-readiness-plan.md`](../plans/2026-09-01_release-readiness-plan.md).
+
+## Historical input
+
+The optional command was already below its function threshold before the F-058 frontend dependency refresh and remained below it afterward.
+
+On 2026-09-01 the user transferred that unresolved evidence from the completed F-031 through F-058 remediation program into a roadmap without claiming that coverage passed or that it was a release gate.
+
+The active release-readiness plan then promoted that direction into this investigation.
 
 ## Fresh reproduction
 
@@ -81,3 +89,33 @@ The final alternative is not to gate the first release on coverage.
 That choice requires an explicit user-approved rationale and a retained future owner because the configured command would remain red and optional.
 
 No option requires lowering a threshold, expanding an exclusion, changing a runtime dependency, or changing product behavior.
+
+## Accepted decision and implementation
+
+After reviewing the trade-offs, the user selected the recommended Nix gate on 2026-09-01.
+
+[`ADR-0008`](../adr/0008_spa-unit-coverage-gate.md) owns the lasting policy and its alternatives, consequences, and limits.
+
+`web/src/api/endpoints.test.ts` adds 30 table-driven cases that execute every previously uncovered endpoint wrapper through the real typed client and a mocked fetch boundary.
+
+Each case asserts the HTTP method, origin, path, empty query posture, credentials mode, request body when present, and decoded response envelope.
+
+The focused file passed all 30 tests, with log SHA-256 `4b8b9a39dbd7b72b056e8fad822a71781e043b22ff2c4e2665699096868349df`.
+
+The complete direct coverage run passed all 30 files and 192 tests with 96.35-percent statements, 82.85-percent branches, 98.50-percent functions, and 98.27-percent lines.
+
+That direct coverage log has SHA-256 `0eb465f2a2148f585a8d583233cbcff606adc50c555c3cbcbe999eda99d79d1b`.
+
+The direct TypeScript and production Vite build passed with its existing large-chunk advisory, and its log has SHA-256 `c7ec7c68edd185b2ed65ce29c694a56ba8696aaaffe1bdb337bf730daf032928`.
+
+The first Nix `web-test` probe ran before the new untracked test file entered the flake source and therefore reproduced the old 52.23-percent result.
+
+After the intended files were staged, the exact Nix `web-test` derivation passed all 30 files, all 192 tests, and the same four coverage totals.
+
+The successful Nix derivation was `/nix/store/w6l25k7my7sq8vni7q5i8lkzpxi46x0j-underwrap-web-test-0.1.0.drv`, and its full log has SHA-256 `7dfdf1d4f46c1be32263ecb4a79e69dc7097d29040dd816f07c02e5ad38fa46c`.
+
+`nix flake check --all-systems --no-build` evaluated every supported output with the revised gate and passed with log SHA-256 `2e5ea020c48d4cf9ac5bfcf3893f6767bd78d2ad85190a6b0b52fa18b7df4fbc`.
+
+`flake.nix` now makes the existing `web-test` check run `test:coverage`, so the aggregate `nix flake check` owns enforcement without a duplicate Vitest derivation.
+
+No threshold was lowered, no exclusion was expanded, and the coverage boundary did not change.

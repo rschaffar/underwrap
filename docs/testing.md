@@ -44,7 +44,8 @@ For the SPA:
 ```bash
 cd web
 npm ci                  # first run or after lockfile changes
-npm test
+npm test                 # fast complete-suite loop
+npm run test:coverage    # selected API/library release gate
 npm run build
 ```
 
@@ -132,8 +133,9 @@ nix build ".#checks.${system}.workspace-doc"
 ```
 
 `web-build` is the production SPA artifact embedded in the Rust package.
-`web-test` runs the complete Vitest suite; both use one npm dependency closure
-pinned by the committed lockfile and flake hash. `examples-nixos-eval` evaluates
+`web-test` runs the complete Vitest suite and enforces the selected API/library 80-percent statement, branch, function, and line thresholds.
+Both checks use one npm dependency closure pinned by the committed lockfile and flake hash.
+`examples-nixos-eval` evaluates
 and builds both shipped examples as complete NixOS systems through the real
 underwrap module and selected system package.
 
@@ -163,7 +165,7 @@ nix flake check --all-systems --no-build
 The direct SPA commands remain useful for a focused local loop:
 
 ```bash
-cd web && npm test && npm run build
+cd web && npm test && npm run test:coverage && npm run build
 ```
 
 Playwright is a separate host/browser integration suite and the live npm audit
@@ -222,6 +224,7 @@ nix develop --command bash -lc '
   npm audit --package-lock-only
   npm outdated
   npm test
+  npm run test:coverage
   npm run build
 '
 ```

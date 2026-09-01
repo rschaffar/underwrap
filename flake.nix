@@ -108,15 +108,15 @@
             '';
           };
 
-          # Run `vitest run` through the package's unchanged `npm test` script
-          # using the same pinned dependency closure as the production build.
+          # Run the complete Vitest suite and its selected API/library coverage
+          # gate using the same pinned dependency closure as the production build.
           underwrapWebTest = pkgs.buildNpmPackage {
             pname = "underwrap-web-test";
             version = "0.1.0";
             src = ./web;
             npmDeps = webNpmDeps;
             preBuild = webPreBuild;
-            npmBuildScript = "test";
+            npmBuildScript = "test:coverage";
             installPhase = ''
               runHook preInstall
               touch $out

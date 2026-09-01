@@ -16,4 +16,5 @@ Update or supersede the ADR when the decision changes instead of hiding the chan
 - [`ADR-0004`](0004_internal-error-redaction.md) — separate internal-error responses from trusted-host diagnostics;
 - [`ADR-0005`](0005_observability-vocabulary.md) — use one first-release observability vocabulary;
 - [`ADR-0006`](0006_rust-support-and-resolver.md) — pin the Rust support matrix and retain resolver 2;
-- [`ADR-0007`](0007_frontend-tool-matrix.md) — validate one locked frontend and OpenAPI tool matrix.
+- [`ADR-0007`](0007_frontend-tool-matrix.md) — validate one locked frontend and OpenAPI tool matrix;
+- [`ADR-0008`](0008_spa-unit-coverage-gate.md) — gate the selected SPA API/library unit boundary at 80 percent.

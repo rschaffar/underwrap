@@ -18,13 +18,13 @@ It does not claim that underwrap is released, independently audited, formally ve
 
 ## Relationships
 
-This plan promoted the completed VM obligation now owned by [`2026-09-01_vm-raw-blob-equality.md`](../research/2026-09-01_vm-raw-blob-equality.md) and continues to own the active [`spa-unit-coverage.md`](../roadmaps/spa-unit-coverage.md) obligation.
+This plan promoted and completed the VM and SPA roadmap obligations now owned by [`2026-09-01_vm-raw-blob-equality.md`](../research/2026-09-01_vm-raw-blob-equality.md), [`2026-09-01_spa-function-coverage.md`](../research/2026-09-01_spa-function-coverage.md), and [`ADR-0008`](../adr/0008_spa-unit-coverage-gate.md).
 
 It is grounded in the accepted review report, historical handover, completed F-001 through F-030 records, and the archived F-031 through F-058 remediation plan.
 
 Those records remain immutable evidence, and D-174's exhausted authority is not reused.
 
-ADRs 0001 through 0007 and the current architecture, security, testing, deployment, configuration, backend, Admin UI, and secretsd-security documentation remain authoritative for their respective decisions and claims.
+ADRs 0001 through 0008 and the current architecture, security, testing, deployment, configuration, backend, Admin UI, and secretsd-security documentation remain authoritative for their respective decisions and claims.
 
 ## Security invariants
 
@@ -72,13 +72,12 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
   Evidence: [`2026-09-01_spa-function-coverage.md`](../research/2026-09-01_spa-function-coverage.md) records clean revision `533d05c00d331c0edfe677b3225bd9c4cd64afba`, Node 24.19.0, npm 11.17.0, the clean-install log hash, all 29 files and 162 tests passing, status 1, and exact totals of 80.20-percent statements, 82.85-percent branches, 52.23-percent functions, and 81.03-percent lines.
 - [x] Map uncovered API and library functions to observable contracts and identify the meaningful tests needed to reach the existing threshold.
   Evidence: the research record maps every zero-count API wrapper by module to method, URL/path/query placement, request-body forwarding, response decoding, and existing error-mapping coverage and rejects a percentage-only test for the production no-op branch.
-- [ ] Present one focused release-gate decision with a recommendation to the user.
-  Acceptance evidence: the user explicitly selects whether `npm run test:coverage` is a first-release gate and where that gate is enforced; any threshold reduction, exclusion expansion, or waiver is named rather than implied.
-- [ ] Implement only the selected gate disposition.
-  Acceptance evidence if gated: meaningful tests make all four existing 80-percent thresholds pass, no threshold is lowered, no exclusion is expanded, and the release matrix invokes the command at the selected enforcement point.
-  Acceptance evidence if not gated: the user-approved rationale and future owner are documented, and configuration and release documentation no longer imply a silently passing gate.
-- [ ] Curate the decision and retire or revise the SPA roadmap obligation only after its remaining direction is accurate.
-  Acceptance evidence: an ADR owns the release policy if it is a lasting decision, current testing documentation owns the command, and the roadmap contains only genuinely future work.
+- [x] Present one focused release-gate decision with a recommendation to the user.
+  Evidence: after receiving the fresh totals, mapped contracts, enforcement options, recommendation, and explicit trade-off explanation, the user selected and reconfirmed the existing Nix `web-test` check as the first-release enforcement point.
+- [x] Implement only the selected gate disposition.
+  Evidence: 30 endpoint-contract cases make all 30 files and 192 tests pass at 96.35-percent statements, 82.85-percent branches, 98.50-percent functions, and 98.27-percent lines; `web-test` runs `test:coverage`; no threshold or exclusion changed; direct coverage, production build, and the Nix derivation passed.
+- [x] Curate the decision and retire or revise the SPA roadmap obligation only after its remaining direction is accurate.
+  Evidence: [`ADR-0008`](../adr/0008_spa-unit-coverage-gate.md) owns the accepted policy and nonclaims, `docs/testing.md` owns direct and aggregate commands, the dated research record owns the investigation and evidence, and the completed roadmap item was removed.
 
 ### 3. Run the clean release matrix and deployment walkthrough
 
@@ -122,13 +121,13 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - Repeated full VM runs are expensive, and a bounded pass streak cannot prove the absence of a race.
 - Secret-safe instrumentation can still perturb scheduling, so static ordering evidence and uninstrumented confirmation runs remain necessary.
 - The local disposable walkthrough cannot establish the separate-host network properties explicitly excluded by current documentation.
-- The SPA coverage decision is a release-policy choice and remains unresolved until the user answers the focused gate.
+- Coverage instrumentation can shift during a pinned frontend-tool refresh, so changed totals require behavioral review rather than mechanical percentage work.
 - Independent security review may identify new work, and this plan must not pre-accept or silently absorb that work.
 
 ## Completion Checklist
 
-- [ ] The intermittent raw-blob equality obligation has an evidenced cause and validated correction, or release readiness is explicitly blocked rather than waived implicitly.
-- [ ] The SPA coverage release policy is user-selected, durably owned, internally consistent, and implemented.
+- [x] The intermittent raw-blob equality obligation has an evidenced cause and validated correction, or release readiness is explicitly blocked rather than waived implicitly.
+- [x] The SPA coverage release policy is user-selected, durably owned, internally consistent, and implemented.
 - [ ] Every row of the clean release matrix has a fresh candidate-revision result and no unexplained red outcome.
 - [ ] The disposable deployment walkthrough completes with evidence classifications and corrected documentation.
 - [ ] The independent security-review guide and dated evidence record are complete, truthful, secret-free, and independently reviewed.

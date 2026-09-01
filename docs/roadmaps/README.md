@@ -4,7 +4,7 @@
 
 ## Current items
 
-- [SPA unit coverage](spa-unit-coverage.md) — raise meaningful API and library function coverage without weakening the existing gate.
+None.
 
 A roadmap item has no implementation authority, acceptance checklist, or implied user approval.
 
