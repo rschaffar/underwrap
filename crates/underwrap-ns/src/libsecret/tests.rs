@@ -179,8 +179,7 @@ fn secretsd_test_endpoints() -> (OwnedFd, SecretsdChildEndpoints) {
     )
 }
 
-#[test]
-fn dbus_child_consumes_only_unwanted_endpoints_and_selects_address_writer() {
+fn assert_dbus_child_endpoint_selection() {
     let (gate, endpoints) = dbus_test_endpoints();
     let unwanted = [
         endpoints.ready_read.as_raw_fd(),
@@ -203,8 +202,14 @@ fn dbus_child_consumes_only_unwanted_endpoints_and_selects_address_writer() {
     .unwrap();
 }
 
+// A parallel test can reuse a just-closed process-global fd number before
+// `assert_closed` observes it, so make the numeric closure witness exec-isolated.
 #[test]
-fn secretsd_child_consumes_only_unwanted_endpoints_and_selects_three_writers() {
+fn dbus_child_consumes_only_unwanted_endpoints_and_selects_address_writer() {
+    assert_exec_probe(ExecProbeMode::DbusSelection, 0);
+}
+
+fn assert_secretsd_child_endpoint_selection() {
     let (gate, endpoints) = secretsd_test_endpoints();
     let unwanted = [
         endpoints.ready_read.as_raw_fd(),
@@ -225,6 +230,12 @@ fn secretsd_child_consumes_only_unwanted_endpoints_and_selects_three_writers() {
     .unwrap();
 }
 
+// Keep the sibling numeric closure witness under the same isolated fd table.
+#[test]
+fn secretsd_child_consumes_only_unwanted_endpoints_and_selects_three_writers() {
+    assert_exec_probe(ExecProbeMode::SecretsdSelection, 0);
+}
+
 const EXEC_PROBE_TEST: &str = "libsecret::tests::exec_isolated_probe";
 const EXEC_PROBE_MODE_ENV: &str = "UNDERWRAP_LIBSECRET_TEST_PROBE_MODE";
 const EXEC_PROBE_MARKER_FD_ENV: &str = "UNDERWRAP_LIBSECRET_TEST_PROBE_MARKER_FD";
@@ -234,8 +245,10 @@ const EXEC_PROBE_SENTINEL_EXIT: i32 = 200;
 enum ExecProbeMode {
     DbusError,
     DbusPanic,
+    DbusSelection,
     SecretsdError,
     SecretsdPanic,
+    SecretsdSelection,
     ReusedFdUnwind,
 }
 
@@ -244,8 +257,10 @@ impl ExecProbeMode {
         match self {
             Self::DbusError => "dbus-error",
             Self::DbusPanic => "dbus-panic",
+            Self::DbusSelection => "dbus-selection",
             Self::SecretsdError => "secretsd-error",
             Self::SecretsdPanic => "secretsd-panic",
+            Self::SecretsdSelection => "secretsd-selection",
             Self::ReusedFdUnwind => "reused-fd-unwind",
         }
     }
@@ -254,8 +269,10 @@ impl ExecProbeMode {
         match self {
             Self::DbusError => b"underwrap-libsecret-probe:dbus-error\n",
             Self::DbusPanic => b"underwrap-libsecret-probe:dbus-panic\n",
+            Self::DbusSelection => b"underwrap-libsecret-probe:dbus-selection\n",
             Self::SecretsdError => b"underwrap-libsecret-probe:secretsd-error\n",
             Self::SecretsdPanic => b"underwrap-libsecret-probe:secretsd-panic\n",
+            Self::SecretsdSelection => b"underwrap-libsecret-probe:secretsd-selection\n",
             Self::ReusedFdUnwind => b"underwrap-libsecret-probe:reused-fd-unwind\n",
         }
     }
@@ -264,8 +281,10 @@ impl ExecProbeMode {
         match value {
             "dbus-error" => Some(Self::DbusError),
             "dbus-panic" => Some(Self::DbusPanic),
+            "dbus-selection" => Some(Self::DbusSelection),
             "secretsd-error" => Some(Self::SecretsdError),
             "secretsd-panic" => Some(Self::SecretsdPanic),
+            "secretsd-selection" => Some(Self::SecretsdSelection),
             "reused-fd-unwind" => Some(Self::ReusedFdUnwind),
             _ => None,
         }
@@ -392,6 +411,20 @@ fn exec_isolated_probe() {
         return;
     };
 
+    if matches!(
+        mode,
+        ExecProbeMode::DbusSelection | ExecProbeMode::SecretsdSelection
+    ) {
+        let passed = catch_unwind(AssertUnwindSafe(|| match mode {
+            ExecProbeMode::DbusSelection => assert_dbus_child_endpoint_selection(),
+            ExecProbeMode::SecretsdSelection => assert_secretsd_child_endpoint_selection(),
+            _ => unreachable!(),
+        }))
+        .is_ok();
+        // SAFETY: this exec-isolated probe reports an exact bounded success/failure status.
+        unsafe { libc::_exit(if passed { 0 } else { 1 }) }
+    }
+
     if matches!(mode, ExecProbeMode::ReusedFdUnwind) {
         let passed = catch_unwind(AssertUnwindSafe(reused_fd_survives_unwind)).unwrap_or(false);
         // SAFETY: this exec-isolated probe reports an exact bounded success/failure status.
@@ -421,7 +454,9 @@ fn exec_isolated_probe() {
                 panic!("injected secretsd child panic");
             });
         }
-        ExecProbeMode::ReusedFdUnwind => unreachable!(),
+        ExecProbeMode::DbusSelection
+        | ExecProbeMode::SecretsdSelection
+        | ExecProbeMode::ReusedFdUnwind => unreachable!(),
     }));
     // SAFETY: reaching this point means endpoint construction panicked outside
     // the production boundary or a no-return production runner unexpectedly returned.
