@@ -55,9 +55,9 @@ Read these in order when reviewing a trust boundary:
 3. [secretsd security](secretsd-security.md) for the target-facing D-Bus
    boundary
 4. [Testing](testing.md)
+5. [Current candidate security-review handoff](research/2026-09-01_security-review-handoff.md)
 
-The security documentation describes a pre-release design, not a formal proof
-or independent audit.
+The security documentation describes a pre-release design, not a formal proof or independent audit.
 
 ## Internal project records
 

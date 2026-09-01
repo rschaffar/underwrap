@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
+use std::process::Command;
 
 use super::*;
 
@@ -281,6 +282,34 @@ fn valid_and_negative_peer_pidfd_payloads_transfer_only_valid_ownership() {
 
 #[test]
 fn malformed_peer_pidfd_length_closes_the_acquired_descriptor() {
+    const CHILD_ENV: &str = "UNDERWRAP_PEER_PIDFD_CLOSE_CHILD";
+    const TEST_NAME: &str =
+        "peer_auth::tests::malformed_peer_pidfd_length_closes_the_acquired_descriptor";
+
+    // A numeric EBADF witness is process-global: another parallel test can
+    // reuse the descriptor after validation closes it. Observe it in a fresh
+    // single-test process where no other test can allocate that number.
+    if std::env::var(CHILD_ENV).ok().as_deref() != Some(TEST_NAME) {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg(TEST_NAME)
+            .args(["--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, TEST_NAME)
+            .output()
+            .expect("exec current test executable for pidfd close probe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "pidfd close probe failed: {}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            output.status
+        );
+        assert!(
+            stdout.contains("test result: ok. 1 passed; 0 failed;"),
+            "pidfd close probe did not run exactly one test:\n{stdout}"
+        );
+        return;
+    }
+
     let expected_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     let (pidfd, _peer) = UnixStream::pair().expect("temporary Unix descriptors must be created");
     let pidfd = pidfd.into_raw_fd();

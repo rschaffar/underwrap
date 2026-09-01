@@ -53,7 +53,7 @@ pub(crate) use pki::{
 use pki::{principal_client_name, test_pki_paths};
 use readiness::wait_for_path;
 pub(crate) use readiness::{
-    AdminCredentials, csrf_cookie_header, login_admin, pick_unused_port, wait_for_admin,
+    AdminCredentials, csrf_cookie_header, login_admin, reserve_backend_port, wait_for_admin,
     wait_for_service,
 };
 
@@ -131,8 +131,6 @@ impl TestDaemon {
         // request and the daemon validates it against the instance config.
         let instance_socket = base.join("instance.sock");
 
-        let https_port = pick_unused_port()?;
-        let service_url = format!("https://127.0.0.1:{https_port}");
         let pki = test_pki_paths(base, client_name)?;
         let ready_pki = test_pki_paths(base, principal_client_name(accepted_principal)?)?;
 
@@ -163,11 +161,23 @@ impl TestDaemon {
             auto_create_wrapper_assets,
         };
         underwrap_backend::runtime_clients::save_client_instance(&clients_dir, &runtime_client)?;
+        let users_dir = base.join("users");
+        let bootstrap_file = base.join("bootstrap.json");
+        underwrap_backend::cli::bootstrap_user(
+            &users_dir,
+            &bootstrap_file,
+            "tester",
+            "hunter2-long",
+        )?;
+
+        let port_reservation = reserve_backend_port().await?;
+        let https_port = port_reservation.port();
+        let service_url = format!("https://127.0.0.1:{https_port}");
         let backend_config = underwrap_backend::BackendConfig {
             stores_dir: stores_dir.clone(),
             clients_dir: clients_dir.clone(),
-            users_dir: base.join("users"),
-            bootstrap_file: base.join("bootstrap.json"),
+            users_dir,
+            bootstrap_file,
             https: Some(underwrap_backend::HttpsConfig {
                 listen: format!("127.0.0.1:{https_port}"),
                 tls: underwrap_backend::HttpsTlsConfig {
@@ -181,12 +191,6 @@ impl TestDaemon {
                 stores_data_root: Some(stores_data_root.clone()),
             }),
         };
-        underwrap_backend::cli::bootstrap_user(
-            &backend_config.users_dir,
-            &backend_config.bootstrap_file,
-            "tester",
-            "hunter2-long",
-        )?;
 
         let backend_shutdown = Arc::new(Notify::new());
         let backend_shutdown_clone = Arc::clone(&backend_shutdown);
@@ -201,6 +205,7 @@ impl TestDaemon {
         });
 
         wait_for_admin(&service_url, &pki.ca_cert).await?;
+        drop(port_reservation);
         let AdminCredentials {
             session_cookie: admin_session_cookie,
             csrf_cookie: admin_csrf_cookie,

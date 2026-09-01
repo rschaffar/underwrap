@@ -159,6 +159,20 @@ struct RestrictiveUmaskHooks {
 }
 
 #[cfg(unix)]
+struct OwnerReadableExitUmask;
+
+#[cfg(unix)]
+impl Drop for OwnerReadableExitUmask {
+    fn drop(&mut self) {
+        // SAFETY: this runs only in the exact, single-test child after the
+        // restrictive-umask assertions finish or unwind. The process exits next.
+        unsafe {
+            libc::umask(0o077);
+        }
+    }
+}
+
+#[cfg(unix)]
 impl RotationHooks for RestrictiveUmaskHooks {
     fn rotation_id(&self) -> String {
         "1111111111111111".into()
@@ -190,6 +204,7 @@ fn workspace_mode_is_exact_and_failure_cleans_up_under_restrictive_umask() {
     const TEST_NAME: &str = "admin_api::stores::lifecycle::rotation::tests::workspace_mode_is_exact_and_failure_cleans_up_under_restrictive_umask";
 
     if let Ok(parent) = std::env::var(CHILD_ENV) {
+        let _exit_umask = OwnerReadableExitUmask;
         let parent = PathBuf::from(parent);
         let canonical = parent.join("store-data");
         let backend = EncryptedBackend::create_with_key(&canonical, [3; 32]).unwrap();

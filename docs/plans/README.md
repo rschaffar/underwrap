@@ -12,7 +12,7 @@ Tasks use checkboxes and record the exact acceptance evidence required before th
 
 ## Active plans
 
-None.
+- [`2026-09-01_release-readiness-plan.md`](2026-09-01_release-readiness-plan.md) — investigate VM equality instability, decide the SPA coverage gate, validate a clean candidate and deployment walkthrough, and prepare an independent security-review handoff.
 
 The completed F-031 through F-058 remediation program is recorded in [`archived/2026-08-26_codebase-review-remediation-plan.md`](archived/2026-08-26_codebase-review-remediation-plan.md).
 

@@ -4,8 +4,7 @@
 
 ## Current items
 
-- [SPA unit coverage](spa-unit-coverage.md) — raise meaningful API and library function coverage without weakening the existing gate;
-- [VM raw-blob equality investigation](vm-raw-blob-equality.md) — establish and explain the intermittent deployed equality observations without weakening the assertions.
+None.
 
 A roadmap item has no implementation authority, acceptance checklist, or implied user approval.
 
