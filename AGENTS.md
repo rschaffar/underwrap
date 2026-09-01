@@ -98,6 +98,14 @@ Documentation rules:
 
 Do not maintain vendor-specific copies of shared guidance or skills.
 
+## Git worktree workflow
+
+For every task that mutates this repository, use a dedicated feature branch in a linked worktree.
+Create the feature branch from the current local `main` branch unless the task is already running in a suitable linked feature worktree.
+Within the Git lifecycle, do not ask whether to use a worktree, which branch should receive completed work, or which integration method to use.
+Completed work targets local `main` through an ordinary `--no-ff` merge that creates a merge commit.
+After the feature commits and checks are complete, stop before integration and ask the user to approve merging the exact verified feature tip into the exact verified `main` tip.
+
 ## Documentation and communication
 
 Keep documentation and conversations concise, clear, accurate, and useful to a newcomer.
