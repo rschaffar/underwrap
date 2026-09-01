@@ -6,11 +6,15 @@ Status: Ready for independent read-only review.
 
 ## Candidate and requested review
 
-Review product candidate `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` on branch `release/readiness`.
+Review local-integration product candidate `5aae8810d1e941e214e4494057d8c750bcc0f0e4` on branch `release/readiness`.
 
-The release-readiness change range is `6e5c6423c15c8fbb6bfcd8a45f6079b6712d4783..f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e`.
+The integration review range is `7b3145615f5cd775aa2280c4d07315e47d66e066..5aae8810d1e941e214e4494057d8c750bcc0f0e4`.
 
-The dated evidence and this handoff were added after freezing that product candidate and do not change its product behavior.
+This candidate is the required rebase of validated candidate `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` onto local `main`.
+
+Only `AGENTS.md` workflow guidance differs between those product-candidate trees, and the exact rebased candidate received a fresh direct matrix.
+
+The dated evidence and this handoff were added after freezing the product candidate and do not change its product behavior.
 
 Review the branch's handoff and evidence documents as review inputs in addition to the candidate source.
 

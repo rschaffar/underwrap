@@ -6,31 +6,37 @@ Status: Candidate validation complete; independent security review pending.
 
 ## Candidate
 
-The validated product candidate is commit `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` on branch `release/readiness`.
+The local-integration product candidate is commit `5aae8810d1e941e214e4494057d8c750bcc0f0e4` on branch `release/readiness`.
 
-The tracked tree was clean before and after the matrix and disposable walkthrough.
+It is the required rebase of the originally validated candidate `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` onto local `main` commit `7b3145615f5cd775aa2280c4d07315e47d66e066`.
+
+An exact tree comparison found only the eight-line `AGENTS.md` worktree-integration policy inherited from `main`; product source, tests, locks, Nix expressions, and product documentation were unchanged.
+
+The tracked tree was clean before and after both exact-candidate matrices and the disposable walkthrough.
 
 The candidate is review preparation, not a release, tag, publication, formal proof, or completed independent audit.
 
-The release-readiness change range is `6e5c6423c15c8fbb6bfcd8a45f6079b6712d4783..f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e`.
+The integration review range is `7b3145615f5cd775aa2280c4d07315e47d66e066..5aae8810d1e941e214e4494057d8c750bcc0f0e4`.
 
-It contains these commits:
+It contains these rebased commits:
 
-- `5582596` — register the active release-readiness plan;
-- `49a0d31` — make VM blob observation bounded and exact;
-- `533d05c` — curate the VM equality investigation;
-- `371aa3c` — record the SPA coverage decision evidence;
-- `02597c9` — add meaningful API endpoint tests and enforce SPA coverage through Nix;
-- `79d51b3` — isolate namespace fd-ownership witnesses;
-- `97cec13` — refresh the compatible `lucide-react` lock and Nix npm hash;
-- `801f4e9` — serialize integration-backend port reservation through readiness;
-- `49ec912` — preserve restrictive-umask coverage artifacts and isolate target-status EOF witnesses;
-- `40450dd` — isolate the daemon pidfd close witness;
-- `f61d8dd` — isolate the stage-one relocated-fd close witness.
+- `95d089f` — register the active release-readiness plan;
+- `69d9e7a` — make VM blob observation bounded and exact;
+- `489a4e2` — curate the VM equality investigation;
+- `cf00c71` — record the SPA coverage decision evidence;
+- `a7da304` — add meaningful API endpoint tests and enforce SPA coverage through Nix;
+- `8386010` — isolate namespace fd-ownership witnesses;
+- `ba0bcc5` — refresh the compatible `lucide-react` lock and Nix npm hash;
+- `c32f75b` — serialize integration-backend port reservation through readiness;
+- `715a1de` — preserve restrictive-umask coverage artifacts and isolate target-status EOF witnesses;
+- `7ccb7d3` — isolate the daemon pidfd close witness;
+- `5aae881` — isolate the stage-one relocated-fd close witness.
 
 ## Evidence classes
 
-**Direct** means the named command or behavior ran against the exact candidate on this host.
+**Direct** means the named command ran against the exact integration candidate on this host.
+
+**Tree-equivalent direct** means the behavior ran against original candidate `f61d8dd`, and the only later candidate-tree delta was non-product `AGENTS.md` guidance.
 
 **Simulated operator interaction** means the disposable VM used the real authenticated admin API in place of browser clicks while exercising the same backend transition.
 
@@ -57,13 +63,13 @@ Those logs are not committed artifacts and may be removed during hygiene cleanup
 | Chromium | Chrome for Testing `149.0.7827.55`, Playwright revision `1228` |
 | Browser store | `/nix/store/lwir8qh9b4j4a2bsmwrsx6c4z4d1fh8b-playwright-browsers` |
 
-The environment capture has SHA-256 `89d4a825e6ce83120050b9b00738147cc9b53302bbe5fcdca84d60a9dcebc4cf`.
-
-The corrected direct Chromium-version capture has SHA-256 `663eaa9cc4929ea9762d49f81134447c2075058218620764d5c1a0935dedf40a`.
+The post-install exact-candidate environment capture has SHA-256 `18c285bce75fe8599b674a0e53e11a13b8f18e6013a5335d27bad8e7dba7438d`.
 
 ## Clean validation matrix
 
-Every acceptance row below is fresh direct evidence for the exact candidate.
+Every command row below was executed against the exact rebased candidate.
+
+Rows that reused an identical Nix derivation say so rather than claiming a fresh execution.
 
 Commands ran sequentially.
 
@@ -71,23 +77,33 @@ No failed product check was silently replaced by a later pass.
 
 | Row | Result | Local log SHA-256 |
 |---|---|---|
-| Candidate identity and clean status | Passed; branch `release/readiness`, no tracked changes | `89d4a825e6ce83120050b9b00738147cc9b53302bbe5fcdca84d60a9dcebc4cf` |
-| Candidate Nix prerequisites | Passed | `3bf263168231eff5cf352e1660f5904408c15ff6607cef53d8356a15353c8da3` |
-| `cargo test --workspace` | Passed | `6bbb03857803edbac053318f44632bea628f3da419e724225b200c10470e16ed` |
+| Candidate identity and clean status | Passed at exact detached commit `5aae8810`; no tracked changes | `18c285bce75fe8599b674a0e53e11a13b8f18e6013a5335d27bad8e7dba7438d` |
+| Candidate Nix prerequisites | Passed with unchanged output paths | `3b7191c56f8c41b723e4d23959be8a5898fd43caec0b494448ba8bdd324598c6` |
+| `cargo test --workspace` | Passed | `c43e8ac6100e0ca80ff4cc04bcac57d69af1134b49f1e918ac92de4dd2fca1e5` |
 | `cargo fmt -- --check` | Passed with empty output | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `cargo clippy --all-targets --workspace -- -D warnings` | Passed | `38f0a57f525c75b40483ccdaccd639fd5fab29f7e53b27ff6f88018092dd427e` |
-| `./crates/integration-tests/run` | Passed, 107 tests | `d583470813e65bb0fbbb9491b6943d32307612bf41b91f9660fe2eac08bf7e82` |
+| `cargo clippy --all-targets --workspace -- -D warnings` | Passed | `8003b65b9b529f927e4af86ffd2db177ee23ca52d350fd3de53b9c60a43d12b0` |
+| `./crates/integration-tests/run` | Passed, 107 tests | `eea0e8514d17974d7d5924207c73002813e0ef4e0fc673624be7910eaa91fbc2` |
 | Clean `npm ci` | Passed, 247 packages audited, zero vulnerabilities | `dec124538f1e1a07cee0e76280d5ffe7d50e9d2f9df894691fd5396da62c3410` |
-| `npm test` | Passed, 30 files and 192 tests | `d694cb2e384216e5a52945031d87eaa18d6ec33f267ef254d202b6fbde7c0a82` |
-| `npm run test:coverage` | Passed every retained 80-percent threshold | `e85cdc0187b195994d012d0bf8c8b0cbfe64812d286f26dfa02760afb113d0d7` |
-| `npm run build` | Passed | `4ffa8b2b1af49450918de2f2bb9557c724b14bde1ae68a8dffb25e1aacc7eacb` |
-| `npm run test:e2e` | Passed, 38 browser tests | `bc749a033a2358f24aa5a02255a07a5b5c660941fd3404399f5e514b412a4a25` |
+| `npm test` | Passed, 30 files and 192 tests | `b61b8882a22e3f7728c3d65ee1405a7f996d22e79613bc519bc077790ecd32d6` |
+| `npm run test:coverage` | Passed every retained 80-percent threshold | `c09354997f99dc2e30fb40a094bb6b3e0ded7da2cf0ceaaf4a7d89462a4bad9f` |
+| `npm run build` | Passed | `dd5717ea4ab12b05a30b1018aab03556d2d6e711e66840c04a766d3a20f032c7` |
+| `npm run test:e2e` | Passed, 38 browser tests | `987e56d829bc5b56ef8611032b01c186d859f6c4c4af16b18a4487769b0ac3e6` |
 | `npm ls --all` | Passed; only platform and feature optional dependencies were unmet | `5d0a75056dcfadec5251c46ec1690c71e4398591c6e40f4786f74ace600f80d5` |
 | `npm audit --package-lock-only` | Passed, zero vulnerabilities | `a8dadbbee85401562d675d333ffdd2061f80a521a20404a61aae7c2d8feb8d3e` |
 | `npm outdated --json` policy review | Expected status 1 with exactly the three documented deferred rows | `011dcbad2192e6d7bb8fdedc4a371980473265379052f015c5bb8b14b4957942` |
 | `nix flake check --all-systems --no-build` | Passed evaluation for x86-64 and AArch64 Linux | `668b71a3650b242f24a9452c305940c6aed95ecb41da27ba354ca3c83a2d834b` |
-| `nix flake check` | Passed all 65 current-system checks | `eab5b447c1c15b0e90c626f92c32773e10eb94f08856288325cd96346fdc0276` |
-| Candidate VM full log | `ALL TESTS PASSED`, including F-007 and F-009 | `3becfb6a3e8cc3637dcd6530b7395396061f3fbbf93dd1f478e482e60c026f62` |
+| `nix flake check` | Passed exact-candidate evaluation with every output already valid | `68a9b0c110cff2810b749ca36a5791e8c2739b72618989d4263c51124bfdb971` |
+| Candidate VM derivation | Reused the identical successful derivation whose full log reports `ALL TESTS PASSED`, including F-007 and F-009 | `3becfb6a3e8cc3637dcd6530b7395396061f3fbbf93dd1f478e482e60c026f62` |
+
+The original `f61d8dd` full Nix run built all 65 current-system checks and has log SHA-256 `eab5b447c1c15b0e90c626f92c32773e10eb94f08856288325cd96346fdc0276`.
+
+The exact rebased candidate changed only repository workflow guidance, evaluated to the same check derivations, and therefore had zero missing checks to build.
+
+The candidate VM row is identical-derivation evidence rather than a second VM execution after rebase.
+
+An initial environment probe ran `npx` before `npm ci` and resolved an unpinned registry version.
+
+It was rejected as environment evidence, and the accepted capture records the lock-installed Playwright 1.61.1 after clean installation.
 
 The selected SPA totals are 185 of 192 statements, 58 of 70 branches, 66 of 67 functions, and 171 of 174 lines.
 
@@ -129,7 +145,9 @@ The integration backend port race, compatible frontend lock refresh, and earlier
 
 ## Disposable deployment walkthrough
 
-A purpose-built NixOS VM exercised one backend, one frontend instance, and one stateless env wrapper against the exact candidate.
+A purpose-built NixOS VM exercised one backend, one frontend instance, and one stateless env wrapper against original candidate `f61d8dd`.
+
+The rebased integration candidate differs from that walkthrough tree only in repository workflow guidance and received no separate walkthrough execution.
 
 The successful VM result is `/nix/store/gs9pipra4sxsz6cwrqjvbn1mxjv52wi4-vm-test-run-underwrap-release-readiness-walkthrough`.
 
@@ -141,15 +159,15 @@ The temporary scripts remained outside the repository.
 
 | Tutorial step | Evidence classification | Result |
 |---|---|---|
-| Configure one NixOS frontend and wrapper | Direct | Module evaluation, VM boot, daemon startup, shim, sidecars, setgid entry, dedicated target row, and hardened host posture passed |
-| Create backend state and bootstrap the first operator before listener startup | Direct | Dedicated service identity, state ownership, offline stdin-only bootstrap, and hardened service startup passed |
-| Sign in and create a plain `demo` store | Simulated operator interaction with direct backend behavior | Real HTTPS session-cookie and CSRF admin calls created the store before client enrollment |
-| Generate and enroll the runtime client | Direct key generation plus simulated operator interaction | Keygen installed the combined identity as the daemon account with mode `0400`; the real admin API enrolled its public certificate as an active client |
-| Restart the daemon and register assets | Direct | Auto-create produced `demo/token`, `secret-check → demo/token`, and the initial locked, non-writable permission |
-| Add `env/DEMO_TOKEN` and unlock | Simulated operator interaction with direct backend behavior | The real secret and permission endpoints stored a non-production UTF-8 value and selected `Unlocked`, `writable=false` |
-| Run the wrapper | Direct | Both the bare `secret-check` shim and explicit `underwrap-demo secret-check` succeeded and printed only the fixed availability message |
-| Verify deployment state | Direct | Service, setgid group/mode, identity owner/mode, client, resource, pair, permission, `last_used_at`, target UID mapping, TLS verification, backend hardening, state mode, and selected journal non-disclosure checks passed |
-| Restart the plain backend | Direct | The runtime client reconnected and the wrapper succeeded without restoring a key |
+| Configure one NixOS frontend and wrapper | Tree-equivalent direct | Module evaluation, VM boot, daemon startup, shim, sidecars, setgid entry, dedicated target row, and hardened host posture passed |
+| Create backend state and bootstrap the first operator before listener startup | Tree-equivalent direct | Dedicated service identity, state ownership, offline stdin-only bootstrap, and hardened service startup passed |
+| Sign in and create a plain `demo` store | Simulated operator interaction on the tree-equivalent direct VM | Real HTTPS session-cookie and CSRF admin calls created the store before client enrollment |
+| Generate and enroll the runtime client | Tree-equivalent direct key generation plus simulated operator interaction | Keygen installed the combined identity as the daemon account with mode `0400`; the real admin API enrolled its public certificate as an active client |
+| Restart the daemon and register assets | Tree-equivalent direct | Auto-create produced `demo/token`, `secret-check → demo/token`, and the initial locked, non-writable permission |
+| Add `env/DEMO_TOKEN` and unlock | Simulated operator interaction on the tree-equivalent direct VM | The real secret and permission endpoints stored a non-production UTF-8 value and selected `Unlocked`, `writable=false` |
+| Run the wrapper | Tree-equivalent direct | Both the bare `secret-check` shim and explicit `underwrap-demo secret-check` succeeded and printed only the fixed availability message |
+| Verify deployment state | Tree-equivalent direct | Service, setgid group/mode, identity owner/mode, client, resource, pair, permission, `last_used_at`, target UID mapping, TLS verification, backend hardening, state mode, and selected journal non-disclosure checks passed |
+| Restart the plain backend | Tree-equivalent direct | The runtime client reconnected and the wrapper succeeded without restoring a key |
 
 The operator browser clicks were not replayed inside this VM.
 

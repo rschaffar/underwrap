@@ -82,7 +82,9 @@ The relocation close test passed, followed by five complete default-parallel run
 
 Rustfmt and denied-warning Clippy passed for every affected package.
 
-The final clean candidate matrix at `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` passed the direct workspace tests and the complete Nix flake check, including `workspace-llvm-cov`.
+The final pre-integration clean candidate matrix at `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` passed the direct workspace tests and the complete Nix flake check, including `workspace-llvm-cov`.
+
+After the required rebase onto `main`, exact candidate `5aae8810d1e941e214e4494057d8c750bcc0f0e4` differed only in `AGENTS.md` workflow guidance and passed the complete direct matrix again.
 
 The final coverage output is `/nix/store/bshm2i2vsdp32c1smbqv79ln41ksc25d-underwrap-llvm-cov-0.1.0`.
 

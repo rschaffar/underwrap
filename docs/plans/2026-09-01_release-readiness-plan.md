@@ -82,9 +82,9 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 ### 3. Run the clean release matrix and deployment walkthrough
 
 - [x] Freeze one candidate revision after all accepted corrections and confirm a clean tracked tree before validation.
-  Evidence: clean revision `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` on `release/readiness`, x86-64 Linux 6.18.48, Rust/Cargo 1.97.1, Node 24.19.0, npm 11.17.0, Playwright 1.61.1, driver Node 22.23.2, and Chromium 149.0.7827.55 are recorded in the dated evidence.
+  Evidence: clean integration candidate `5aae8810d1e941e214e4494057d8c750bcc0f0e4` on `release/readiness`, its exact eight-line workflow-guidance delta from validated candidate `f61d8dd`, x86-64 Linux 6.18.48, Rust/Cargo 1.97.1, Node 24.19.0, npm 11.17.0, Playwright 1.61.1, driver Node 22.23.2, and Chromium 149.0.7827.55 are recorded in the dated evidence.
 - [x] Run the complete direct and aggregate validation matrix sequentially without silently replacing a failed run with a passing rerun.
-  Evidence: [`2026-09-01_release-readiness-evidence.md`](../research/2026-09-01_release-readiness-evidence.md) records every required command, exact result, local log hash, threshold total, and key Nix output for the clean candidate; all 65 current-system flake checks passed.
+  Evidence: [`2026-09-01_release-readiness-evidence.md`](../research/2026-09-01_release-readiness-evidence.md) records every required command, exact result, local log hash, threshold total, and key Nix output; the pre-rebase tree built all 65 current-system checks, and the exact rebased candidate evaluated to the same already-valid derivations.
 - [x] Classify every red or unavailable matrix row before proceeding.
   Evidence: [`2026-09-01_workspace-validation-stability.md`](../research/2026-09-01_workspace-validation-stability.md) owns every corrected pre-candidate failure; the evidence record classifies the expected `npm outdated` status, one auxiliary parser error, AArch64 evaluation-only evidence, and unavailable separate-host properties.
 - [x] Walk through the documented one-backend, one-frontend, one-wrapper deployment in a disposable environment without modifying an operator host or using a production secret.
@@ -99,7 +99,7 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] Inventory the candidate's protected assets, attackers, trust assumptions, privileged boundaries, wire and storage formats, review hotspots, accepted ADRs, and known limitations without duplicating normative prose.
   Evidence: [`2026-09-01_security-review-handoff.md`](../research/2026-09-01_security-review-handoff.md) links each summary to the current architecture, security, secretsd-security, backend, configuration, testing, ADR, source, or evidence owner.
 - [x] Produce a concise reviewer guide for the exact candidate.
-  Evidence: the handoff names candidate `f61d8dd`, the complete release range, supported scope, threat-model entry points, six high-value call-path groups, build and generated inputs, review questions, unavailable properties, and nonclaims.
+  Evidence: the handoff names integration candidate `5aae881`, the complete rebased release range, supported scope, threat-model entry points, six high-value call-path groups, build and generated inputs, review questions, unavailable properties, and nonclaims.
 - [x] Produce a dated release-readiness evidence record.
   Evidence: the evidence record identifies the candidate and environment, records direct and simulated matrix and walkthrough evidence, labels unavailable and historical limits, and contains no credential, resource value, blob, key, canary, or secret-bearing fixture content.
 - [x] Check current documentation and generated contracts for review-blocking contradictions.
