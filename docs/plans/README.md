@@ -12,11 +12,15 @@ Tasks use checkboxes and record the exact acceptance evidence required before th
 
 ## Active plans
 
-- [`2026-09-01_release-readiness-plan.md`](2026-09-01_release-readiness-plan.md) — investigate VM equality instability, decide the SPA coverage gate, validate a clean candidate and deployment walkthrough, and prepare an independent security-review handoff.
+There are no active plans.
+
+## Completed plans
+
+The completed release-readiness program is recorded in [`archived/2026-09-01_release-readiness-plan.md`](archived/2026-09-01_release-readiness-plan.md).
 
 The completed F-031 through F-058 remediation program is recorded in [`archived/2026-08-26_codebase-review-remediation-plan.md`](archived/2026-08-26_codebase-review-remediation-plan.md).
 
-The accepted report, handover, completed F-001 through F-030 tickets, and archived plan remain historical evidence and are not converted into new plans.
+The accepted report, handover, completed F-001 through F-030 tickets, and archived plans remain historical evidence and are not converted into new plans.
 
 D-174's execution authority and severity protocol are exhausted, and the handover's D-201 ticket-materialization instruction remains historical rather than active authority.
 

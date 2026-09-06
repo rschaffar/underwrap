@@ -4,6 +4,7 @@
 
 ## Archived plans
 
+- [`2026-09-01_release-readiness-plan.md`](2026-09-01_release-readiness-plan.md) — completed candidate validation, deployment walkthrough, bounded internal review, and verified corrections, accepted and archived on 2026-09-06.
 - [`2026-08-26_codebase-review-remediation-plan.md`](2026-08-26_codebase-review-remediation-plan.md) — completed F-031 through F-058 remediation program, accepted and archived on 2026-09-01.
 
 An archived plan is a workflow handoff and is not the only owner of a security decision, mechanism, measurement, limitation, or open obligation.

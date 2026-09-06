@@ -4,7 +4,7 @@ Status: Cause isolated and corrected-revision pass streak complete.
 
 Date: 2026-09-01.
 
-Plan owner: [`2026-09-01_release-readiness-plan.md`](../plans/2026-09-01_release-readiness-plan.md).
+Completed plan: [`2026-09-01_release-readiness-plan.md`](../plans/archived/2026-09-01_release-readiness-plan.md).
 
 ## Scope
 
@@ -26,7 +26,7 @@ A later F-054 run stopped once at an F-007 comparison and passed completely on a
 
 On 2026-09-01 the user transferred this unresolved evidence from the completed F-031 through F-058 remediation program into a roadmap without claiming a cause or resolution.
 
-The active release-readiness plan then promoted that direction into this investigation.
+The release-readiness plan then promoted that direction into this investigation.
 
 ## Source trace
 
@@ -58,7 +58,9 @@ The pinned NixOS test driver 1.1 implementation wraps command output in another 
 
 The first uninstrumented run at commit `5582596` failed the F-007 equality for the `host-kill` case after the preceding `stage1-kill` case passed.
 
-Its full log was retained outside the repository at `/tmp/underwrap-release-readiness-vm-run-01.log`, with SHA-256 `1bb223fc0815fe2d742c3936de0fb65a24f356c31661dcbe6515f84bb9351503` and size 569145 bytes.
+At investigation time, its full log was retained outside the repository at `/tmp/underwrap-release-readiness-vm-run-01.log`, with SHA-256 `1bb223fc0815fe2d742c3936de0fb65a24f356c31661dcbe6515f84bb9351503` and size 569145 bytes.
+
+That temporary log was later removed during final candidate hygiene.
 
 A second run with F-007 length-and-digest diagnostics passed F-007 and failed the F-009 equality after the rejected oversized admin mutation.
 
@@ -115,7 +117,9 @@ Five consecutive `nix build --rebuild --no-link --print-out-paths .#checks.x86_6
 | 4 | `ALL TESTS PASSED` | `d876b30ca6cb63781708b360eb7428eebc59a1b36971359d586e9549c9d7411d` | 976086 bytes |
 | 5 | `ALL TESTS PASSED` | `3bd465b1d9d4eef562a7ecc20358162b2daed3e3ef1b05a418746dd7170d6d83` | 975666 bytes |
 
-The full logs remain outside the repository under `/tmp/underwrap-release-readiness-vm-validated-0N-full.log`.
+At validation time, the full logs were retained outside the repository under `/tmp/underwrap-release-readiness-vm-validated-0N-full.log`.
+
+Those temporary logs were later removed during final candidate hygiene; the table retains their recorded hashes and sizes.
 
 ## Limits
 
