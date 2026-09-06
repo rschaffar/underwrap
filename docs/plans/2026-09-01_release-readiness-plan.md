@@ -6,7 +6,11 @@ Created: 2026-09-01.
 
 Execution authority: On 2026-09-01 the user requested creation and immediate execution of this focused release-readiness plan.
 
-Base revision: `6e5c6423c15c8fbb6bfcd8a45f6079b6712d4783` on branch `release/readiness` in the dedicated linked worktree `/home/robert/projects/projektbuero/underwrap-release-readiness`.
+Review-correction authority: On 2026-09-01 the user explicitly requested correction of the bounded independent review findings.
+
+Original base revision: `6e5c6423c15c8fbb6bfcd8a45f6079b6712d4783` on branch `release/readiness` in the dedicated linked worktree `/home/robert/projects/projektbuero/underwrap-release-readiness`.
+
+Current integration: local `main` merge `8ce345c333a91ce937cf39dd85124c2dd772b8ae` contains release-readiness feature tip `402060e73804f5ea4f64755258123bccdd5ea542`; the original feature branch and worktree were removed after verification.
 
 ## Goal
 
@@ -104,8 +108,8 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
   Evidence: the evidence record identifies the candidate and environment, records direct and simulated matrix and walkthrough evidence, labels unavailable and historical limits, and contains no credential, resource value, blob, key, canary, or secret-bearing fixture content.
 - [x] Check current documentation and generated contracts for review-blocking contradictions.
   Evidence: OpenAPI export and generated SPA bindings passed; all 247 relative documentation paths and targeted anchors resolved; flake example evaluations passed; terminology and release/audit posture inventory found no blocking contradiction; bounded new-prose and credential-pattern checks passed.
-- [ ] Obtain a bounded independent read-only review of the handoff, evidence record, and all release-readiness changes.
-  Unavailable evidence: the delegated reviewer failed before startup because the installed Pi bundle lacked `dist/bundle/cli.js`; it produced no review result, so independent acceptance remains pending rather than inferred.
+- [x] Obtain a bounded independent read-only review of the handoff, evidence record, and all release-readiness changes.
+  Evidence: [`2026-09-01_release-readiness-independent-review.md`](../research/2026-09-01_release-readiness-independent-review.md) records the later fresh-context review after the first delegation infrastructure failure; no Critical or Major product defect was confirmed, and two Minor correction items were identified without representing the result as an external audit.
 
 ### 5. Curate and close
 
@@ -113,8 +117,12 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
   Evidence: ADR-0008 owns the selected gate, source and tests own the corrections, three dated investigations own evidence and residual observations, current product guides remain normative, and no completed roadmap or historical ticket was revived.
 - [x] Complete final branch and artifact hygiene.
   Evidence: generated schema, SPA build and coverage output, Playwright results, `node_modules`, candidate-prefixed temporary logs/scripts/profiles, and diagnostic merge files were removed; no result link or candidate-owned process remained; bounded credential-pattern and diff checks passed; the tracked tree was clean.
-- [ ] Present the complete candidate disposition to the user before archival or integration.
-  Acceptance evidence: the user receives exact commits, matrix results, walkthrough classification, security-review handoff location, blockers and known gaps, and chooses whether the plan may be archived and the branch integrated.
+- [x] Present the complete candidate disposition to the user before archival or integration.
+  Evidence: the user received the exact product and documentation candidates, matrix and walkthrough classifications, pending-review blocker, and known gaps; selected local `main`; approved the exact `--no-ff` merge of `402060e73804f5ea4f64755258123bccdd5ea542` into `7b3145615f5cd775aa2280c4d07315e47d66e066`; and separately approved removal of the merged feature worktree and branch.
+- [x] Correct both Minor independent-review findings without changing production behavior or overstating the remaining test boundary.
+  Evidence: commit `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` adds cooperative cross-process startup locking, exact child-process exclusion/release/CLOEXEC evidence, and no dependency or production change; the handoff, evidence, stability record, and review record reconcile merge topology and the unrelated-process limitation.
+- [ ] Obtain a bounded independent read-only verification of the review corrections.
+  Acceptance evidence: a fresh-context reviewer inspects `8ce345c333a91ce937cf39dd85124c2dd772b8ae..HEAD`, verifies both findings' dispositions and direct checks, and reports no unresolved Critical, Major, or Minor correction defect.
 
 ## Risks and unknowns
 
@@ -130,7 +138,7 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] The SPA coverage release policy is user-selected, durably owned, internally consistent, and implemented.
 - [x] Every row of the clean release matrix has a fresh candidate-revision result and no unexplained red outcome.
 - [x] The disposable deployment walkthrough completes with evidence classifications and corrected documentation.
-- [ ] The independent security-review guide and dated evidence record are complete, truthful, secret-free, and independently reviewed.
+- [ ] The independent security-review guide and dated evidence record are complete, truthful, secret-free, independently reviewed, and their two Minor corrections are independently verified.
 - [x] No dependency, binary-chain, product-contract, protocol, or security-boundary change crossed its stop condition without focused authority.
 - [x] The repository remains explicit that underwrap is pre-release and has not received an independent end-to-end security audit.
 - [ ] Durable curation, final user acceptance, archival, branch integration, and worktree cleanup are complete.

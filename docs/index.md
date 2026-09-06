@@ -56,8 +56,9 @@ Read these in order when reviewing a trust boundary:
    boundary
 4. [Testing](testing.md)
 5. [Current candidate security-review handoff](research/2026-09-01_security-review-handoff.md)
+6. [Bounded independent review outcome](research/2026-09-01_release-readiness-independent-review.md)
 
-The security documentation describes a pre-release design, not a formal proof or independent audit.
+The security documentation describes a pre-release design, not a formal proof or external independent end-to-end audit.
 
 ## Internal project records
 

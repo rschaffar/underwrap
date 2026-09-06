@@ -2,13 +2,13 @@
 
 Date: 2026-09-01.
 
-Status: Candidate validation complete; independent security review pending.
+Status: Candidate validated and integrated; bounded review corrections pending follow-up verification.
 
 ## Candidate
 
-The local-integration product candidate is commit `5aae8810d1e941e214e4494057d8c750bcc0f0e4` on branch `release/readiness`.
+At validation time, the local-integration product candidate was commit `5aae8810d1e941e214e4494057d8c750bcc0f0e4` on branch `release/readiness`.
 
-It is the required rebase of the originally validated candidate `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` onto local `main` commit `7b3145615f5cd775aa2280c4d07315e47d66e066`.
+It was the required rebase of the originally validated candidate `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` onto local `main` commit `7b3145615f5cd775aa2280c4d07315e47d66e066`.
 
 An exact tree comparison found only the eight-line `AGENTS.md` worktree-integration policy inherited from `main`; product source, tests, locks, Nix expressions, and product documentation were unchanged.
 
@@ -31,6 +31,20 @@ It contains these rebased commits:
 - `715a1de` — preserve restrictive-umask coverage artifacts and isolate target-status EOF witnesses;
 - `7ccb7d3` — isolate the daemon pidfd close witness;
 - `5aae881` — isolate the stage-one relocated-fd close witness.
+
+## Integration and review addendum
+
+Documentation-only commits extended the feature to `402060e73804f5ea4f64755258123bccdd5ea542`.
+
+Local `main` integrated that exact feature tip through merge `8ce345c333a91ce937cf39dd85124c2dd772b8ae`.
+
+The feature branch and linked worktree were removed after the verified merge, and the product and documentation candidates remain reachable through its second parent.
+
+The [bounded independent review](2026-09-01_release-readiness-independent-review.md) found no Critical or Major product defect and identified two Minor corrections.
+
+Commit `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` extends backend-fixture startup coordination across cooperating Cargo and nextest processes.
+
+The current documentation reconciles the review, merge, branch cleanup, residual unrelated-process bind window, and continuing external-audit nonclaim.
 
 ## Evidence classes
 
@@ -141,7 +155,11 @@ The failures and dispositions are owned by [`2026-09-01_workspace-validation-sta
 - a daemon pidfd close witness observed a reused process-global descriptor number;
 - the equivalent stage-one relocation witness was isolated before the final restart.
 
-The integration backend port race, compatible frontend lock refresh, and earlier namespace descriptor witnesses were likewise corrected without retrying, delaying, lowering concurrency, or weakening assertions.
+The original process-local integration backend port collision, compatible frontend lock refresh, and earlier namespace descriptor witnesses were likewise corrected without retrying, delaying, lowering concurrency, or weakening assertions.
+
+The later bounded review found that separate cooperating nextest processes remained outside that first mutex.
+
+Correction `efecdb1` adds cross-process advisory coordination through HTTPS readiness while documenting that an unrelated process can still claim a released loopback port.
 
 ## Disposable deployment walkthrough
 
@@ -236,8 +254,10 @@ Coverage thresholds and totals are regression evidence, not correctness or secur
 
 No production credential, host, resource, release tag, publication path, or version bump was used.
 
-A delegated bounded review was attempted but failed before startup because the installed Pi bundle lacked `dist/bundle/cli.js`.
+An initial delegated bounded review attempt failed before startup because the installed Pi bundle lacked `dist/bundle/cli.js`.
 
 That infrastructure failure produced no review evidence and does not count as independent acceptance.
 
-Independent security review has not yet accepted this candidate.
+A later fresh-context bounded internal review completed, found no Critical or Major product defect, and produced the two Minor findings and limitations recorded in the linked review record.
+
+This review does not constitute an external independent end-to-end security audit.
