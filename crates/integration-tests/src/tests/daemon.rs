@@ -1,5 +1,5 @@
 use super::*;
-use crate::harness::{reserve_backend_port, wait_for_service};
+use crate::harness::{reserve_backend_startup, wait_for_service};
 use base64::Engine;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
@@ -120,7 +120,7 @@ async fn network_bootstrap_cannot_create_operator() {
     std::fs::write(&server_cert, crate::harness::TEST_SERVER_PEM).unwrap();
     std::fs::write(&server_key, crate::harness::TEST_SERVER_KEY).unwrap();
     std::fs::write(&ca_cert, crate::harness::TEST_CA_PEM).unwrap();
-    let port_reservation = reserve_backend_port().await.unwrap();
+    let port_reservation = reserve_backend_startup().await.unwrap();
     let https_port = port_reservation.port();
     let admin_url = format!("https://127.0.0.1:{https_port}");
     let backend_config = serde_yaml::to_string(&underwrap_backend::BackendConfig {
@@ -701,7 +701,7 @@ async fn underwrapd_binary_start_and_read() {
         })
         .unwrap(),
     );
-    let port_reservation = reserve_backend_port().await.unwrap();
+    let port_reservation = reserve_backend_startup().await.unwrap();
     let https_port = port_reservation.port();
     let service_url = format!("https://127.0.0.1:{https_port}");
     let admin_url = service_url.clone();
