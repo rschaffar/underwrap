@@ -2,25 +2,37 @@
 
 Date: 2026-09-01.
 
-Status: Ready for independent read-only review.
+Status: Bounded fresh-context internal review and correction verification complete.
 
 ## Candidate and requested review
 
-Review local-integration product candidate `5aae8810d1e941e214e4494057d8c750bcc0f0e4` on branch `release/readiness`.
+The reviewed product candidate is commit `5aae8810d1e941e214e4494057d8c750bcc0f0e4`.
 
-The integration review range is `7b3145615f5cd775aa2280c4d07315e47d66e066..5aae8810d1e941e214e4494057d8c750bcc0f0e4`.
-
-This candidate is the required rebase of validated candidate `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` onto local `main`.
+At validation time it was the tip of branch `release/readiness` and the required rebase of validated candidate `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` onto local `main` commit `7b3145615f5cd775aa2280c4d07315e47d66e066`.
 
 Only `AGENTS.md` workflow guidance differs between those product-candidate trees, and the exact rebased candidate received a fresh direct matrix.
 
-The dated evidence and this handoff were added after freezing the product candidate and do not change its product behavior.
+The evidence and handoff additions produced feature tip `402060e73804f5ea4f64755258123bccdd5ea542` without changing product behavior.
 
-Review the branch's handoff and evidence documents as review inputs in addition to the candidate source.
+Local `main` integrated that feature tip through merge `8ce345c333a91ce937cf39dd85124c2dd772b8ae`.
 
-The requested review is an independent assessment, not authorization to release, tag, publish, weaken a boundary, or change a protocol or dependency.
+The feature branch and linked worktree were then removed, while both candidate commits remain reachable through the merge.
 
-Report correctness, security-boundary, evidence, documentation, and overclaim findings separately.
+The requested review was an independent assessment, not authorization to release, tag, publish, weaken a boundary, or change a protocol or dependency.
+
+The review covered correctness, security boundaries, evidence, documentation, and overclaim risks.
+
+## Review outcome
+
+The [bounded independent review record](2026-09-01_release-readiness-independent-review.md) reports no Critical or Major product finding and two Minor corrections.
+
+One correction extends backend-fixture startup coordination across cooperating test processes and preserves the explicit unrelated-process limitation.
+
+The other reconciles this project memory with the completed merge and cleanup.
+
+A second fresh-context bounded internal verification accepted exact correction range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f`, classified both Minor findings as fixed, and reported no unresolved correction defect at any severity.
+
+This review and verification are internal rather than an external independent end-to-end security audit.
 
 ## Start here
 
@@ -161,12 +173,16 @@ Review the release range for four evidence-boundary corrections:
 
 - bounded exact VM blob transfer retained byte-for-byte F-007/F-009 assertions while avoiding one monolithic multi-megabyte test-driver response;
 - meaningful SPA endpoint tests raised function coverage without threshold or exclusion changes, and Nix now enforces the selected gate;
-- integration backend fixtures reserve the selected port through HTTPS readiness rather than retrying or reducing concurrency;
+- integration backend fixtures serialize the selected port's release-to-bind window through HTTPS readiness rather than retrying or reducing concurrency;
 - fd and EOF witnesses run in single-test child processes where process-global descriptor reuse or inheritance cannot falsify their assertions.
 
 The restrictive-umask rotation test retains `umask 0700` during the operation and changes only its throwaway child's exit umask so LLVM can read the generated profile.
 
 Confirm that these are test-evidence changes and do not alter production behavior or weaken the asserted properties.
+
+The initial backend-fixture guard was process-local.
+
+Review correction `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` adds a close-on-exec advisory file lock for cooperating Cargo and nextest processes while explicitly retaining the unrelated-process limit.
 
 ## Build, dependencies, and generated contracts
 
@@ -213,4 +229,6 @@ Configured targets can disclose their own projections, and host root or kernel c
 
 No production system, credential, release tag, package publication, or version bump is in scope.
 
-Independent acceptance remains pending when this handoff is issued.
+Independent acceptance was pending when this handoff was originally issued.
+
+The later bounded internal review outcome, correction verification, and external-audit nonclaim are recorded in the linked review record.

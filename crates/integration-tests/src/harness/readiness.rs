@@ -1,7 +1,10 @@
 //! Readiness probes: port picking and wait-for-URL/path helpers.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 
 fn admin_client(url_root_ca: &Path, timeout: std::time::Duration) -> Result<reqwest::Client> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -92,26 +95,65 @@ fn backend_port_startup_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-/// A process-local reservation for one backend fixture's release-to-bind window.
-///
-/// Keep this value alive until an HTTPS readiness probe proves that the fixture
-/// server owns the selected port.
-pub(crate) struct BackendPortReservation {
-    port: u16,
-    _startup_guard: tokio::sync::MutexGuard<'static, ()>,
+fn backend_startup_lock_path() -> PathBuf {
+    // SAFETY: geteuid takes no pointers, has no failure return, and only reads
+    // the calling process's effective identity.
+    let euid = unsafe { libc::geteuid() };
+    std::env::temp_dir().join(format!("underwrap-integration-backend-startup-{euid}.lock"))
 }
 
-impl BackendPortReservation {
+fn open_backend_startup_lock_file() -> Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(backend_startup_lock_path())
+        .context("opening cross-process backend startup lock")
+}
+
+fn lock_backend_startup_across_processes() -> Result<File> {
+    let lock_file = open_backend_startup_lock_file()?;
+    loop {
+        // SAFETY: lock_file owns a valid descriptor for the duration of this
+        // call. LOCK_EX changes only its advisory-lock state.
+        if unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(lock_file);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error).context("locking cross-process backend startup lock");
+        }
+    }
+}
+
+/// A cooperative reservation for one backend fixture's release-to-bind window.
+///
+/// The in-process mutex avoids blocking another async fixture on `flock`, while
+/// the close-on-exec file lock serializes cooperating Cargo and nextest test
+/// processes that share the same temporary directory and effective UID.
+///
+/// Keep this value alive until an HTTPS readiness probe proves that the fixture
+/// server owns the selected port. An unrelated process that does not take this
+/// advisory lock can still claim the released loopback port.
+pub(crate) struct BackendStartupReservation {
+    port: u16,
+    _cross_process_guard: File,
+    _process_guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl BackendStartupReservation {
     pub(crate) fn port(&self) -> u16 {
         self.port
     }
 }
 
-/// Ask the kernel for an unused TCP port while excluding every other backend
-/// fixture in this test process from selecting a port until this reservation is
-/// dropped.
-pub(crate) async fn reserve_backend_port() -> Result<BackendPortReservation> {
-    let startup_guard = backend_port_startup_lock().lock().await;
+/// Ask the kernel for an unused TCP port while excluding every cooperating
+/// backend fixture until this reservation is dropped.
+pub(crate) async fn reserve_backend_startup() -> Result<BackendStartupReservation> {
+    let process_guard = backend_port_startup_lock().lock().await;
+    let cross_process_guard = lock_backend_startup_across_processes()?;
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").context("binding ephemeral port for harness")?;
     let port = listener
@@ -119,9 +161,10 @@ pub(crate) async fn reserve_backend_port() -> Result<BackendPortReservation> {
         .context("reading local_addr from ephemeral listener")?
         .port();
     drop(listener);
-    Ok(BackendPortReservation {
+    Ok(BackendStartupReservation {
         port,
-        _startup_guard: startup_guard,
+        _cross_process_guard: cross_process_guard,
+        _process_guard: process_guard,
     })
 }
 

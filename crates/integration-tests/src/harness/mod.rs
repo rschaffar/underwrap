@@ -53,7 +53,7 @@ pub(crate) use pki::{
 use pki::{principal_client_name, test_pki_paths};
 use readiness::wait_for_path;
 pub(crate) use readiness::{
-    AdminCredentials, csrf_cookie_header, login_admin, reserve_backend_port, wait_for_admin,
+    AdminCredentials, csrf_cookie_header, login_admin, reserve_backend_startup, wait_for_admin,
     wait_for_service,
 };
 
@@ -170,7 +170,7 @@ impl TestDaemon {
             "hunter2-long",
         )?;
 
-        let port_reservation = reserve_backend_port().await?;
+        let port_reservation = reserve_backend_startup().await?;
         let https_port = port_reservation.port();
         let service_url = format!("https://127.0.0.1:{https_port}");
         let backend_config = underwrap_backend::BackendConfig {

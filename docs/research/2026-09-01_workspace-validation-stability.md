@@ -68,6 +68,20 @@ The earlier libsecret endpoint-selection correction already used the same proces
 
 These corrections strengthen the evidence boundary rather than reducing concurrency, retrying failures, delaying checks, or weakening an assertion.
 
+## Cross-process backend startup correction
+
+The initial backend-port correction held a process-local asynchronous mutex across the probe listener's release-to-bind window and HTTPS readiness.
+
+That serialized ordinary integration fixtures in one libtest process but did not coordinate separate nextest processes.
+
+The bounded independent review identified this as a Minor validation-reliability finding.
+
+Correction `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` retains the asynchronous mutex and adds a close-on-exec advisory file lock shared by cooperating processes with the same temporary directory and effective UID.
+
+The reservation retains both guards until HTTPS readiness, and a fresh child-process witness verifies cross-process exclusion, release on drop, and descriptor non-inheritance.
+
+An unrelated process that does not take the advisory lock can still claim the released loopback port, so the mechanism does not claim universal kernel-level reservation after the probe listener closes.
+
 ## Validation
 
 Focused regular and instrumented restrictive-umask tests passed.
@@ -81,6 +95,12 @@ The malformed pidfd close test passed, followed by five complete default-paralle
 The relocation close test passed, followed by five complete default-parallel runs of all 14 `underwrap-exec` tests.
 
 Rustfmt and denied-warning Clippy passed for every affected package.
+
+The cross-process correction's focused child-process test, all 107 integration tests, integration-test Clippy, and the Nix `workspace-nextest` check passed.
+
+A second fresh-context bounded internal verification accepted correction range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f` with both original Minor findings fixed and no correction defect at any severity.
+
+Exact reviewed tip `2d24142462fb8589ccb23246b39c16e0684e703f` also passed all-system flake evaluation without builds and all 125 compatible current-system flake checks, including the NixOS VM.
 
 The final pre-integration clean candidate matrix at `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` passed the direct workspace tests and the complete Nix flake check, including `workspace-llvm-cov`.
 
