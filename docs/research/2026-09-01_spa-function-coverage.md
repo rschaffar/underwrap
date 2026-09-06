@@ -4,7 +4,7 @@ Status: Release gate accepted, implemented, and directly validated.
 
 Date: 2026-09-01.
 
-Plan owner: [`2026-09-01_release-readiness-plan.md`](../plans/2026-09-01_release-readiness-plan.md).
+Completed plan: [`2026-09-01_release-readiness-plan.md`](../plans/archived/2026-09-01_release-readiness-plan.md).
 
 ## Historical input
 
@@ -12,7 +12,7 @@ The optional command was already below its function threshold before the F-058 f
 
 On 2026-09-01 the user transferred that unresolved evidence from the completed F-031 through F-058 remediation program into a roadmap without claiming that coverage passed or that it was a release gate.
 
-The active release-readiness plan then promoted that direction into this investigation.
+The release-readiness plan then promoted that direction into this investigation.
 
 ## Fresh reproduction
 

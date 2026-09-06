@@ -32,6 +32,10 @@ The other reconciles this project memory with the completed merge and cleanup.
 
 A second fresh-context bounded internal verification accepted exact correction range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f`, classified both Minor findings as fixed, and reported no unresolved correction defect at any severity.
 
+Correction documentation and verification produced tip `abc94fc0ec0842272d0890702bd1be097e2f8aaf`, which local `main` integrated through final merge `dfe0ca7429e9c5e0ac7568d35eab3675257527f1` before the correction branch and worktree were removed.
+
+The completed plan is archived at [`2026-09-01_release-readiness-plan.md`](../plans/archived/2026-09-01_release-readiness-plan.md).
+
 This review and verification are internal rather than an external independent end-to-end security audit.
 
 ## Start here

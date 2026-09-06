@@ -44,7 +44,13 @@ The [bounded independent review](2026-09-01_release-readiness-independent-review
 
 Commit `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` extends backend-fixture startup coordination across cooperating Cargo and nextest processes.
 
-The current documentation reconciles the review, merge, branch cleanup, residual unrelated-process bind window, and continuing external-audit nonclaim.
+Correction documentation and verification produced tip `abc94fc0ec0842272d0890702bd1be097e2f8aaf`.
+
+Local `main` integrated that tip through final tree-identical merge `dfe0ca7429e9c5e0ac7568d35eab3675257527f1`, and the correction feature branch and linked worktree were removed.
+
+On 2026-09-06 the user accepted completion and requested archival of the release-readiness plan.
+
+The current documentation reconciles the review, both merges, branch cleanup, residual unrelated-process bind window, and continuing external-audit nonclaim.
 
 ## Evidence classes
 

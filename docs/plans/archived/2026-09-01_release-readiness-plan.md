@@ -1,16 +1,22 @@
 # Release readiness plan
 
-Status: Active.
+Status: Completed and archived.
 
 Created: 2026-09-01.
+
+Accepted and archived: On 2026-09-06 the user accepted completion and requested archival after the verified correction merge and feature cleanup.
 
 Execution authority: On 2026-09-01 the user requested creation and immediate execution of this focused release-readiness plan.
 
 Review-correction authority: On 2026-09-01 the user explicitly requested correction of the bounded independent review findings.
 
+Archived authority: This completed plan is a workflow handoff and grants no implementation, release, audit, publication, or migration authority.
+
 Original base revision: `6e5c6423c15c8fbb6bfcd8a45f6079b6712d4783` on branch `release/readiness` in the dedicated linked worktree `/home/robert/projects/projektbuero/underwrap-release-readiness`.
 
-Current integration: local `main` merge `8ce345c333a91ce937cf39dd85124c2dd772b8ae` contains release-readiness feature tip `402060e73804f5ea4f64755258123bccdd5ea542`; the original feature branch and worktree were removed after verification.
+Initial integration: local `main` merge `8ce345c333a91ce937cf39dd85124c2dd772b8ae` contains release-readiness feature tip `402060e73804f5ea4f64755258123bccdd5ea542`; the original feature branch and worktree were removed after verification.
+
+Final correction integration: local `main` merge `dfe0ca7429e9c5e0ac7568d35eab3675257527f1` contains correction tip `abc94fc0ec0842272d0890702bd1be097e2f8aaf` with tree `a0b3d3578be46222e5382e8fe549d9c877778701`; the correction feature branch and worktree were removed after verification.
 
 ## Goal
 
@@ -22,7 +28,7 @@ It does not claim that underwrap is released, independently audited, formally ve
 
 ## Relationships
 
-This plan promoted and completed the VM and SPA roadmap obligations now owned by [`2026-09-01_vm-raw-blob-equality.md`](../research/2026-09-01_vm-raw-blob-equality.md), [`2026-09-01_spa-function-coverage.md`](../research/2026-09-01_spa-function-coverage.md), and [`ADR-0008`](../adr/0008_spa-unit-coverage-gate.md).
+This plan promoted and completed the VM and SPA roadmap obligations now owned by [`2026-09-01_vm-raw-blob-equality.md`](../../research/2026-09-01_vm-raw-blob-equality.md), [`2026-09-01_spa-function-coverage.md`](../../research/2026-09-01_spa-function-coverage.md), and [`ADR-0008`](../../adr/0008_spa-unit-coverage-gate.md).
 
 It is grounded in the accepted review report, historical handover, completed F-001 through F-030 records, and the archived F-031 through F-058 remediation plan.
 
@@ -58,7 +64,7 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] Revalidate the two roadmap obligations and their historical evidence against the current tree.
   Evidence: current `nix/tests/test.py`, `web/vite.config.ts`, `web/package.json`, both roadmap records, the accepted report and handover, and the archived remediation plan were inspected on 2026-09-01.
 - [x] Trace every historically implicated F-007/F-009 equality assertion through target completion, namespace lifecycle, daemon terminal-message handling, admin observation, and backend load/save ordering, and record a bounded hypothesis table with exact source evidence.
-  Evidence: [`2026-09-01_vm-raw-blob-equality.md`](../research/2026-09-01_vm-raw-blob-equality.md) traces namespace dispatch, daemon finalization, backend save ordering, atomic PlainBackend replacement, and test-driver observation and classifies every bounded hypothesis.
+  Evidence: [`2026-09-01_vm-raw-blob-equality.md`](../../research/2026-09-01_vm-raw-blob-equality.md) traces namespace dispatch, daemon finalization, backend save ordering, atomic PlainBackend replacement, and test-driver observation and classifies every bounded hypothesis.
 - [x] Add the smallest secret-safe observation needed to distinguish the remaining hypotheses, only if static tracing and existing logs are insufficient.
   Evidence: temporary length-and-SHA-256 observations exposed only permitted metadata and proved that the guest-side file remained identical while one driver response was short; the durable correction retains only secret-safe consistency failures.
 - [x] Run bounded forced VM reproductions against one exact committed tree without retry masking.
@@ -73,7 +79,7 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 ### 2. Decide and implement the SPA function-coverage release policy
 
 - [x] Reproduce the current SPA coverage result in the pinned frontend environment from a clean npm installation.
-  Evidence: [`2026-09-01_spa-function-coverage.md`](../research/2026-09-01_spa-function-coverage.md) records clean revision `533d05c00d331c0edfe677b3225bd9c4cd64afba`, Node 24.19.0, npm 11.17.0, the clean-install log hash, all 29 files and 162 tests passing, status 1, and exact totals of 80.20-percent statements, 82.85-percent branches, 52.23-percent functions, and 81.03-percent lines.
+  Evidence: [`2026-09-01_spa-function-coverage.md`](../../research/2026-09-01_spa-function-coverage.md) records clean revision `533d05c00d331c0edfe677b3225bd9c4cd64afba`, Node 24.19.0, npm 11.17.0, the clean-install log hash, all 29 files and 162 tests passing, status 1, and exact totals of 80.20-percent statements, 82.85-percent branches, 52.23-percent functions, and 81.03-percent lines.
 - [x] Map uncovered API and library functions to observable contracts and identify the meaningful tests needed to reach the existing threshold.
   Evidence: the research record maps every zero-count API wrapper by module to method, URL/path/query placement, request-body forwarding, response decoding, and existing error-mapping coverage and rejects a percentage-only test for the production no-op branch.
 - [x] Present one focused release-gate decision with a recommendation to the user.
@@ -81,16 +87,16 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] Implement only the selected gate disposition.
   Evidence: 30 endpoint-contract cases make all 30 files and 192 tests pass at 96.35-percent statements, 82.85-percent branches, 98.50-percent functions, and 98.27-percent lines; `web-test` runs `test:coverage`; no threshold or exclusion changed; direct coverage, production build, and the Nix derivation passed.
 - [x] Curate the decision and retire or revise the SPA roadmap obligation only after its remaining direction is accurate.
-  Evidence: [`ADR-0008`](../adr/0008_spa-unit-coverage-gate.md) owns the accepted policy and nonclaims, `docs/testing.md` owns direct and aggregate commands, the dated research record owns the investigation and evidence, and the completed roadmap item was removed.
+  Evidence: [`ADR-0008`](../../adr/0008_spa-unit-coverage-gate.md) owns the accepted policy and nonclaims, `docs/testing.md` owns direct and aggregate commands, the dated research record owns the investigation and evidence, and the completed roadmap item was removed.
 
 ### 3. Run the clean release matrix and deployment walkthrough
 
 - [x] Freeze one candidate revision after all accepted corrections and confirm a clean tracked tree before validation.
   Evidence: clean integration candidate `5aae8810d1e941e214e4494057d8c750bcc0f0e4` on `release/readiness`, its exact eight-line workflow-guidance delta from validated candidate `f61d8dd`, x86-64 Linux 6.18.48, Rust/Cargo 1.97.1, Node 24.19.0, npm 11.17.0, Playwright 1.61.1, driver Node 22.23.2, and Chromium 149.0.7827.55 are recorded in the dated evidence.
 - [x] Run the complete direct and aggregate validation matrix sequentially without silently replacing a failed run with a passing rerun.
-  Evidence: [`2026-09-01_release-readiness-evidence.md`](../research/2026-09-01_release-readiness-evidence.md) records every required command, exact result, local log hash, threshold total, and key Nix output; the pre-rebase tree built all 65 current-system checks, and the exact rebased candidate evaluated to the same already-valid derivations.
+  Evidence: [`2026-09-01_release-readiness-evidence.md`](../../research/2026-09-01_release-readiness-evidence.md) records every required command, exact result, local log hash, threshold total, and key Nix output; the pre-rebase tree built all 65 current-system checks, and the exact rebased candidate evaluated to the same already-valid derivations.
 - [x] Classify every red or unavailable matrix row before proceeding.
-  Evidence: [`2026-09-01_workspace-validation-stability.md`](../research/2026-09-01_workspace-validation-stability.md) owns every corrected pre-candidate failure; the evidence record classifies the expected `npm outdated` status, one auxiliary parser error, AArch64 evaluation-only evidence, and unavailable separate-host properties.
+  Evidence: [`2026-09-01_workspace-validation-stability.md`](../../research/2026-09-01_workspace-validation-stability.md) owns every corrected pre-candidate failure; the evidence record classifies the expected `npm outdated` status, one auxiliary parser error, AArch64 evaluation-only evidence, and unavailable separate-host properties.
 - [x] Walk through the documented one-backend, one-frontend, one-wrapper deployment in a disposable environment without modifying an operator host or using a production secret.
   Evidence: a purpose-built NixOS VM completed offline bootstrap, plain-store creation, keygen and enrollment, auto-registration, env insertion, permission unlock, both wrapper forms, deployment checks, and backend restart; the successful full-log hash is `534d06c67c24f3a3c26b8b8805a952f8ad43fe2556fb9e47a3c8d16fe94392c6`.
 - [x] Reconcile the walkthrough with the separate-host deployment guide without claiming a multi-host test.
@@ -101,7 +107,7 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 ### 4. Prepare the independent security-review handoff
 
 - [x] Inventory the candidate's protected assets, attackers, trust assumptions, privileged boundaries, wire and storage formats, review hotspots, accepted ADRs, and known limitations without duplicating normative prose.
-  Evidence: [`2026-09-01_security-review-handoff.md`](../research/2026-09-01_security-review-handoff.md) links each summary to the current architecture, security, secretsd-security, backend, configuration, testing, ADR, source, or evidence owner.
+  Evidence: [`2026-09-01_security-review-handoff.md`](../../research/2026-09-01_security-review-handoff.md) links each summary to the current architecture, security, secretsd-security, backend, configuration, testing, ADR, source, or evidence owner.
 - [x] Produce a concise reviewer guide for the exact candidate.
   Evidence: the handoff names integration candidate `5aae881`, the complete rebased release range, supported scope, threat-model entry points, six high-value call-path groups, build and generated inputs, review questions, unavailable properties, and nonclaims.
 - [x] Produce a dated release-readiness evidence record.
@@ -109,12 +115,12 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] Check current documentation and generated contracts for review-blocking contradictions.
   Evidence: OpenAPI export and generated SPA bindings passed; all 247 relative documentation paths and targeted anchors resolved; flake example evaluations passed; terminology and release/audit posture inventory found no blocking contradiction; bounded new-prose and credential-pattern checks passed.
 - [x] Obtain a bounded independent read-only review of the handoff, evidence record, and all release-readiness changes.
-  Evidence: [`2026-09-01_release-readiness-independent-review.md`](../research/2026-09-01_release-readiness-independent-review.md) records the later fresh-context review after the first delegation infrastructure failure; no Critical or Major product defect was confirmed, and two Minor correction items were identified without representing the result as an external audit.
+  Evidence: [`2026-09-01_release-readiness-independent-review.md`](../../research/2026-09-01_release-readiness-independent-review.md) records the later fresh-context review after the first delegation infrastructure failure; no Critical or Major product defect was confirmed, and two Minor correction items were identified without representing the result as an external audit.
 
 ### 5. Curate and close
 
 - [x] Move every lasting decision, current mechanism, dated investigation, limitation, and future obligation to its designated durable owner.
-  Evidence: ADR-0008 owns the selected gate, source and tests own the corrections, three dated investigations own evidence and residual observations, current product guides remain normative, and no completed roadmap or historical ticket was revived.
+  Evidence: ADR-0008 owns the selected gate, source and tests own the corrections, dated research records own evidence and residual observations, current product guides remain normative, and no completed roadmap or historical ticket was revived.
 - [x] Complete final branch and artifact hygiene.
   Evidence: generated schema, SPA build and coverage output, Playwright results, `node_modules`, candidate-prefixed temporary logs/scripts/profiles, and diagnostic merge files were removed; no result link or candidate-owned process remained; bounded credential-pattern and diff checks passed; the tracked tree was clean.
 - [x] Present the complete candidate disposition to the user before archival or integration.
@@ -123,6 +129,8 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
   Evidence: commit `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` adds cooperative cross-process startup locking, exact child-process exclusion/release/CLOEXEC evidence, and no dependency or production change; commit `2d24142462fb8589ccb23246b39c16e0684e703f` reconciles the handoff, evidence, stability record, and review record with merge topology and the unrelated-process limitation.
 - [x] Obtain a bounded independent read-only verification of the review corrections.
   Evidence: a second fresh-context reviewer inspected exact range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f`, classified both original Minor findings as fixed, reported no unresolved Critical, Major, or Minor correction defect, and accepted the range; focused tests, formatting, denied-warning Clippy, documentation checks, and the separate complete 125-check current-system Nix matrix passed at that tip.
+- [x] Obtain final user acceptance, integrate the corrections, clean their feature resources, and archive the completed plan.
+  Evidence: on 2026-09-06 the user approved the exact ordinary merge of correction tip `abc94fc0ec0842272d0890702bd1be097e2f8aaf` into local `main`, accepted plan completion, and requested archival; final tree-identical merge `dfe0ca7429e9c5e0ac7568d35eab3675257527f1` has the approved commits as its parents; the correction feature branch and linked worktree were removed; every durable fact and limitation retains a current owner outside this archive.
 
 ## Risks and unknowns
 
@@ -130,7 +138,7 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - Secret-safe instrumentation can still perturb scheduling, so static ordering evidence and uninstrumented confirmation runs remain necessary.
 - The local disposable walkthrough cannot establish the separate-host network properties explicitly excluded by current documentation.
 - Coverage instrumentation can shift during a pinned frontend-tool refresh, so changed totals require behavioral review rather than mechanical percentage work.
-- Independent security review may identify new work, and this plan must not pre-accept or silently absorb that work.
+- A future external security assessment may identify new work, and any such work requires a new active plan.
 
 ## Completion Checklist
 
@@ -141,4 +149,4 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] The independent security-review guide and dated evidence record are complete, truthful, secret-free, independently reviewed, and their two Minor corrections are independently verified.
 - [x] No dependency, binary-chain, product-contract, protocol, or security-boundary change crossed its stop condition without focused authority.
 - [x] The repository remains explicit that underwrap is pre-release and has not received an independent end-to-end security audit.
-- [ ] Durable curation, final user acceptance, archival, branch integration, and worktree cleanup are complete.
+- [x] Durable curation, final user acceptance, archival, branch integration, and worktree cleanup are complete.
