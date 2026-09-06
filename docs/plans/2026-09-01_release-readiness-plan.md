@@ -120,9 +120,9 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] Present the complete candidate disposition to the user before archival or integration.
   Evidence: the user received the exact product and documentation candidates, matrix and walkthrough classifications, pending-review blocker, and known gaps; selected local `main`; approved the exact `--no-ff` merge of `402060e73804f5ea4f64755258123bccdd5ea542` into `7b3145615f5cd775aa2280c4d07315e47d66e066`; and separately approved removal of the merged feature worktree and branch.
 - [x] Correct both Minor independent-review findings without changing production behavior or overstating the remaining test boundary.
-  Evidence: commit `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` adds cooperative cross-process startup locking, exact child-process exclusion/release/CLOEXEC evidence, and no dependency or production change; the handoff, evidence, stability record, and review record reconcile merge topology and the unrelated-process limitation.
-- [ ] Obtain a bounded independent read-only verification of the review corrections.
-  Acceptance evidence: a fresh-context reviewer inspects `8ce345c333a91ce937cf39dd85124c2dd772b8ae..HEAD`, verifies both findings' dispositions and direct checks, and reports no unresolved Critical, Major, or Minor correction defect.
+  Evidence: commit `efecdb1373fdd04e5f5600f5ebc31ba49670fc13` adds cooperative cross-process startup locking, exact child-process exclusion/release/CLOEXEC evidence, and no dependency or production change; commit `2d24142462fb8589ccb23246b39c16e0684e703f` reconciles the handoff, evidence, stability record, and review record with merge topology and the unrelated-process limitation.
+- [x] Obtain a bounded independent read-only verification of the review corrections.
+  Evidence: a second fresh-context reviewer inspected exact range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f`, classified both original Minor findings as fixed, reported no unresolved Critical, Major, or Minor correction defect, and accepted the range; focused tests, formatting, denied-warning Clippy, documentation checks, and the separate complete 125-check current-system Nix matrix passed at that tip.
 
 ## Risks and unknowns
 
@@ -138,7 +138,7 @@ Do not create a release tag, publish an artifact, bump a version, or represent a
 - [x] The SPA coverage release policy is user-selected, durably owned, internally consistent, and implemented.
 - [x] Every row of the clean release matrix has a fresh candidate-revision result and no unexplained red outcome.
 - [x] The disposable deployment walkthrough completes with evidence classifications and corrected documentation.
-- [ ] The independent security-review guide and dated evidence record are complete, truthful, secret-free, independently reviewed, and their two Minor corrections are independently verified.
+- [x] The independent security-review guide and dated evidence record are complete, truthful, secret-free, independently reviewed, and their two Minor corrections are independently verified.
 - [x] No dependency, binary-chain, product-contract, protocol, or security-boundary change crossed its stop condition without focused authority.
 - [x] The repository remains explicit that underwrap is pre-release and has not received an independent end-to-end security audit.
 - [ ] Durable curation, final user acceptance, archival, branch integration, and worktree cleanup are complete.

@@ -98,6 +98,10 @@ Rustfmt and denied-warning Clippy passed for every affected package.
 
 The cross-process correction's focused child-process test, all 107 integration tests, integration-test Clippy, and the Nix `workspace-nextest` check passed.
 
+A second fresh-context bounded internal verification accepted correction range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f` with both original Minor findings fixed and no correction defect at any severity.
+
+Exact reviewed tip `2d24142462fb8589ccb23246b39c16e0684e703f` also passed all-system flake evaluation without builds and all 125 compatible current-system flake checks, including the NixOS VM.
+
 The final pre-integration clean candidate matrix at `f61d8ddeb76de76dad0e4c8bffc45dcee7c0bd9e` passed the direct workspace tests and the complete Nix flake check, including `workspace-llvm-cov`.
 
 After the required rebase onto `main`, exact candidate `5aae8810d1e941e214e4494057d8c750bcc0f0e4` differed only in `AGENTS.md` workflow guidance and passed the complete direct matrix again.

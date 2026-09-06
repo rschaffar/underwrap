@@ -2,7 +2,7 @@
 
 Date: 2026-09-01.
 
-Status: Two minor findings corrected; follow-up verification pending.
+Status: Two minor findings corrected and independently verified.
 
 ## Scope and classification
 
@@ -71,6 +71,28 @@ All 107 integration tests passed with log SHA-256 `422a80ae63311d8db13cc0f985227
 The Nix `workspace-nextest` check passed with local build log SHA-256 `c411b838d0660faeeaea322e34c45977dad3ccf5676d10f17d38bd46eaace2e3`.
 
 These local logs are temporary validation artifacts rather than committed evidence.
+
+## Follow-up verification
+
+A second fresh-context reviewer performed a bounded read-only verification of exact correction range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f`.
+
+It classified both original Minor findings as fixed, found no Critical, Major, or Minor correction defect, and accepted the range.
+
+It directly passed the focused cross-process reservation test, Rustfmt, denied-warning integration-test Clippy, diff checks, documentation links and anchors, the one-sentence-per-line heuristic, and a bounded sensitive-pattern scan.
+
+It confirmed that every relevant release-to-bind backend fixture retains both locks through HTTPS readiness and that the records preserve the unrelated-process, external-audit, final-acceptance, and archival limits.
+
+The shared CodeGraph index failed to synchronize the linked worktree with status 1, so the reviewer used exact diff and source inspection without creating another index.
+
+An initial verifier command started from the primary checkout and stopped before testing because its SPA artifact was absent, so it contributed no acceptance evidence.
+
+Separately, exact reviewed tip `2d24142462fb8589ccb23246b39c16e0684e703f` passed all-system flake evaluation without builds and all 125 compatible current-system flake checks, including `workspace-nextest`, LLVM coverage, and the NixOS VM.
+
+Those aggregate logs have SHA-256 values `f4e98a251308ebf4f020170989460a83854097d6b36b00506891bb6be0ae5d59` and `14055002de672f16ee2137672cef67d36d75c5d31393d440d32eaa57dd592e26` respectively.
+
+The aggregate run omitted AArch64 execution as incompatible with the current x86_64-linux host.
+
+This follow-up remains a bounded internal verification rather than an external independent end-to-end audit.
 
 ## Review checks and unavailable evidence
 

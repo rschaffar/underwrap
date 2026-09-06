@@ -2,7 +2,7 @@
 
 Date: 2026-09-01.
 
-Status: Candidate validated and integrated; bounded review corrections pending follow-up verification.
+Status: Candidate validated and integrated; bounded review corrections independently verified.
 
 ## Candidate
 
@@ -260,4 +260,8 @@ That infrastructure failure produced no review evidence and does not count as in
 
 A later fresh-context bounded internal review completed, found no Critical or Major product defect, and produced the two Minor findings and limitations recorded in the linked review record.
 
-This review does not constitute an external independent end-to-end security audit.
+A second fresh-context bounded internal verification accepted exact correction range `8ce345c333a91ce937cf39dd85124c2dd772b8ae..2d24142462fb8589ccb23246b39c16e0684e703f`, classified both original Minor findings as fixed, and reported no unresolved Critical, Major, or Minor correction defect.
+
+At that exact tip, all-system flake evaluation without builds and all 125 compatible current-system flake checks passed; the latter included `workspace-nextest`, LLVM coverage, and the NixOS VM.
+
+This review and follow-up verification do not constitute an external independent end-to-end security audit.
