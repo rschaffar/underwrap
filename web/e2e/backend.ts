@@ -87,32 +87,44 @@ function processExited(proc: ChildProcess): boolean {
   return proc.exitCode !== null || proc.signalCode !== null;
 }
 
-async function waitForProcessExit(
-  proc: ChildProcess,
-  timeoutMs: number,
-): Promise<boolean> {
-  if (processExited(proc)) return true;
+interface SignalOutcome {
+  exited: boolean;
+  signalSent: boolean;
+}
 
-  return new Promise<boolean>((resolveP) => {
+async function signalAndWaitForExit(
+  proc: ChildProcess,
+  signal: NodeJS.Signals,
+  timeoutMs: number,
+): Promise<SignalOutcome> {
+  if (processExited(proc)) return { exited: true, signalSent: false };
+
+  return new Promise<SignalOutcome>((resolveP) => {
     let settled = false;
+    let signalSent = false;
     const finish = (exited: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       proc.removeListener("exit", onExit);
       proc.removeListener("error", onError);
-      resolveP(exited);
+      resolveP({ exited, signalSent });
     };
     const onExit = () => finish(true);
-    // A spawn error has no child to reap. A later signal-delivery error does
-    // not prove that an existing child exited, so keep waiting for exit.
-    const onError = () => {
-      if (proc.pid === undefined || processExited(proc)) finish(true);
-    };
+    // Node can emit this synchronously from kill(), so observation must be
+    // installed before signaling. A signal error is not exit evidence.
+    const onError = () => finish(processExited(proc));
     const timer = setTimeout(() => finish(processExited(proc)), timeoutMs);
     proc.once("exit", onExit);
     proc.once("error", onError);
+    try {
+      signalSent = proc.kill(signal);
+    } catch {
+      finish(processExited(proc));
+      return;
+    }
     if (processExited(proc)) finish(true);
+    else if (!signalSent) finish(false);
   });
 }
 
@@ -144,12 +156,20 @@ export class BackendFixtureOwner {
   private async cleanupOnce(): Promise<void> {
     const proc = this.proc;
     if (proc && proc.pid !== undefined && !processExited(proc)) {
-      proc.kill("SIGTERM");
-      if (!(await waitForProcessExit(proc, this.shutdownTimeoutMs))) {
-        const killSent = proc.kill("SIGKILL");
-        if (!(await waitForProcessExit(proc, this.shutdownTimeoutMs))) {
+      const term = await signalAndWaitForExit(
+        proc,
+        "SIGTERM",
+        this.shutdownTimeoutMs,
+      );
+      if (!term.exited) {
+        const kill = await signalAndWaitForExit(
+          proc,
+          "SIGKILL",
+          this.shutdownTimeoutMs,
+        );
+        if (!kill.exited) {
           throw new Error(
-            killSent
+            kill.signalSent
               ? "underwrap-backend did not exit after SIGKILL"
               : "underwrap-backend could not be sent SIGKILL and did not exit",
           );

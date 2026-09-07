@@ -44,13 +44,13 @@ The implementation preserves the primary startup error, keeps awaited cleanup on
 ## Plan
 
 - [x] Harden `web/e2e/backend.ts` and `web/e2e/fixtures.ts` so temporary state is owned immediately, partial startup invokes cleanup, Playwright use always cleans up after success or failure, process exit is observed before directory removal, and each readiness probe is bounded by the existing startup deadline.
-  Evidence: direct Node execution passed eight focused lifecycle tests covering partial acquisition, spawn failure, fixture-use failure with cleanup failure, TERM-to-KILL escalation including failed TERM delivery, unreaped-child state retention, a stalled probe deadline, and child exit during a stalled probe.
+  Evidence: direct Node execution passed nine focused lifecycle tests covering partial acquisition, spawn failure, fixture-use failure with cleanup failure, TERM-to-KILL escalation including synchronous signal-delivery failures, unreaped-child state retention, a stalled probe deadline, and child exit during a stalled probe.
 - [x] Harden `crates/integration-tests/src/harness/mod.rs` so partial startup owns and releases the backend thread and daemon task, explicit `stop` still joins both services, fallback drop requests shutdown without racing temporary-state lifetime, and the original startup error remains authoritative.
   Evidence: `./crates/integration-tests/run harness::tests -- --nocapture` passed three focused lifecycle tests, including one real backend/daemon fixture fallback drop, and the complete 110-test integration suite passed.
 - [x] Update `docs/testing.md` with the bounded fixture-lifecycle evidence and its limits.
   Evidence: the focused commands, simulated child-process scope, real fixture scope, and production-shutdown and operating-system-signal nonclaims are documented.
 - [x] Run the complete relevant validation for browser support and Rust integration changes.
-  Evidence: `npm run test:e2e-support` passed 8 tests; `npm test` passed 192 tests; `npm run build` passed; the supported Nix-development-shell Playwright run passed 38 tests after building its documented backend-binary prerequisite; `./crates/integration-tests/run` passed 110 tests; Rustfmt and denied-warning integration-test Clippy passed.
+  Evidence: `npm run test:e2e-support` passed 9 tests; `npm test` passed 192 tests; `npm run build` passed; the supported Nix-development-shell Playwright run passed 38 tests after building its documented backend-binary prerequisite; `./crates/integration-tests/run` passed 110 tests; Rustfmt and denied-warning integration-test Clippy passed.
   An earlier Playwright invocation without `target/debug/underwrap-backend` was rejected as invalid prerequisite evidence before the accepted run.
 - [ ] Review the final diff for partial acquisition, cleanup error precedence, bounded waits, process exit ordering, task cancellation, temporary-state lifetime, unrelated changes, and secret-safe diagnostics.
   Acceptance evidence: `git diff --check`, exact changed-path inspection, and a bounded sensitive-pattern scan pass.

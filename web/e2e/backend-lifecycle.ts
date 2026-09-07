@@ -24,7 +24,7 @@ class FakeProcess extends EventEmitter {
   kill(signal: NodeJS.Signals): boolean {
     this.signals.push(signal);
     if (this.failedSignals.has(signal)) {
-      queueMicrotask(() => this.emit("error", new Error(`${signal} failed`)));
+      this.emit("error", new Error(`${signal} failed`));
       return false;
     }
     if (signal === this.exitAfterSignal) {
@@ -99,6 +99,23 @@ test("failed SIGTERM does not masquerade as child exit", async () => {
   assert.deepEqual(proc.signals, ["SIGTERM", "SIGKILL"]);
   assert.equal(proc.signalCode, "SIGKILL");
   assert.equal(existsSync(dir), false);
+});
+
+test("failed synchronous signals retain temporary state", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "underwrap-e2e-owner-test-"));
+  const proc = new FakeProcess();
+  proc.failedSignals.add("SIGTERM");
+  proc.failedSignals.add("SIGKILL");
+  const owner = new BackendFixtureOwner(dir, 5);
+  owner.ownProcess(child(proc));
+
+  try {
+    await assert.rejects(owner.cleanup(), /could not be sent SIGKILL/);
+    assert.equal(existsSync(dir), true);
+    assert.deepEqual(proc.signals, ["SIGTERM", "SIGKILL"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("cleanup retains temporary state when the child cannot be reaped", async () => {
