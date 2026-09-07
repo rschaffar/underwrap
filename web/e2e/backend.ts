@@ -104,8 +104,11 @@ async function waitForProcessExit(
       resolveP(exited);
     };
     const onExit = () => finish(true);
-    // A spawn error means no child exists to reap.
-    const onError = () => finish(true);
+    // A spawn error has no child to reap. A later signal-delivery error does
+    // not prove that an existing child exited, so keep waiting for exit.
+    const onError = () => {
+      if (proc.pid === undefined || processExited(proc)) finish(true);
+    };
     const timer = setTimeout(() => finish(processExited(proc)), timeoutMs);
     proc.once("exit", onExit);
     proc.once("error", onError);
@@ -140,12 +143,16 @@ export class BackendFixtureOwner {
 
   private async cleanupOnce(): Promise<void> {
     const proc = this.proc;
-    if (proc && !processExited(proc)) {
+    if (proc && proc.pid !== undefined && !processExited(proc)) {
       proc.kill("SIGTERM");
       if (!(await waitForProcessExit(proc, this.shutdownTimeoutMs))) {
-        proc.kill("SIGKILL");
+        const killSent = proc.kill("SIGKILL");
         if (!(await waitForProcessExit(proc, this.shutdownTimeoutMs))) {
-          throw new Error("underwrap-backend did not exit after SIGKILL");
+          throw new Error(
+            killSent
+              ? "underwrap-backend did not exit after SIGKILL"
+              : "underwrap-backend could not be sent SIGKILL and did not exit",
+          );
         }
       }
     }

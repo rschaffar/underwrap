@@ -16,11 +16,17 @@ import {
 class FakeProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  pid: number | undefined = 4242;
   readonly signals: NodeJS.Signals[] = [];
+  readonly failedSignals = new Set<NodeJS.Signals>();
   exitAfterSignal: NodeJS.Signals | undefined;
 
   kill(signal: NodeJS.Signals): boolean {
     this.signals.push(signal);
+    if (this.failedSignals.has(signal)) {
+      queueMicrotask(() => this.emit("error", new Error(`${signal} failed`)));
+      return false;
+    }
     if (signal === this.exitAfterSignal) {
       queueMicrotask(() => {
         this.signalCode = signal;
@@ -56,6 +62,34 @@ test("partial fixture cleanup removes temporary state before process ownership",
 test("cleanup awaits SIGKILL exit before removing temporary state", async () => {
   const dir = mkdtempSync(join(tmpdir(), "underwrap-e2e-owner-test-"));
   const proc = new FakeProcess();
+  proc.exitAfterSignal = "SIGKILL";
+  const owner = new BackendFixtureOwner(dir, 5);
+  owner.ownProcess(child(proc));
+
+  await owner.cleanup();
+
+  assert.deepEqual(proc.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(proc.signalCode, "SIGKILL");
+  assert.equal(existsSync(dir), false);
+});
+
+test("spawn failure has no child to reap before temporary cleanup", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "underwrap-e2e-owner-test-"));
+  const proc = new FakeProcess();
+  proc.pid = undefined;
+  const owner = new BackendFixtureOwner(dir, 5);
+  owner.ownProcess(child(proc));
+
+  await owner.cleanup();
+
+  assert.deepEqual(proc.signals, []);
+  assert.equal(existsSync(dir), false);
+});
+
+test("failed SIGTERM does not masquerade as child exit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "underwrap-e2e-owner-test-"));
+  const proc = new FakeProcess();
+  proc.failedSignals.add("SIGTERM");
   proc.exitAfterSignal = "SIGKILL";
   const owner = new BackendFixtureOwner(dir, 5);
   owner.ownProcess(child(proc));

@@ -54,7 +54,7 @@ async fn daemon_task_owner_aborts_on_drop() {
 }
 
 #[tokio::test]
-async fn test_daemon_drop_keeps_tempdir_until_owned_services_release_it() {
+async fn test_daemon_drop_eventually_removes_tempdir_after_owned_services_stop() {
     let wrappers = HashMap::from([(
         "example".to_string(),
         wrapper("/bin/true", "resource", "TOKEN"),

@@ -39,7 +39,7 @@ explicitly set `CARGO_TARGET_DIR`; additional arguments are forwarded to
 Host capability-dependent skips remain distinct from these mandatory build
 prerequisites.
 
-The focused integration-harness lifecycle tests exercise immediate backend-thread ownership, daemon-task abort-on-drop, and temporary-directory retention until owned services release it.
+The focused integration-harness lifecycle tests exercise immediate backend-thread ownership, daemon-task abort-on-drop, and eventual temporary-directory cleanup after fallback fixture drop.
 
 ```bash
 ./crates/integration-tests/run harness::tests -- --nocapture
