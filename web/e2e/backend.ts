@@ -80,6 +80,106 @@ export interface StartBackendOptions {
   withAdmin?: { username: string; password: string };
 }
 
+const BACKEND_STARTUP_TIMEOUT_MS = 15_000;
+const BACKEND_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+function processExited(proc: ChildProcess): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+interface SignalOutcome {
+  exited: boolean;
+  signalSent: boolean;
+}
+
+async function signalAndWaitForExit(
+  proc: ChildProcess,
+  signal: NodeJS.Signals,
+  timeoutMs: number,
+): Promise<SignalOutcome> {
+  if (processExited(proc)) return { exited: true, signalSent: false };
+
+  return new Promise<SignalOutcome>((resolveP) => {
+    let settled = false;
+    let signalSent = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      proc.removeListener("exit", onExit);
+      proc.removeListener("error", onError);
+      resolveP({ exited, signalSent });
+    };
+    const onExit = () => finish(true);
+    // Node can emit this synchronously from kill(), so observation must be
+    // installed before signaling. A signal error is not exit evidence.
+    const onError = () => finish(processExited(proc));
+    const timer = setTimeout(() => finish(processExited(proc)), timeoutMs);
+    proc.once("exit", onExit);
+    proc.once("error", onError);
+    try {
+      signalSent = proc.kill(signal);
+    } catch {
+      finish(processExited(proc));
+      return;
+    }
+    if (processExited(proc)) finish(true);
+    else if (!signalSent) finish(false);
+  });
+}
+
+/** Owns a partially or fully started backend fixture until cleanup completes. */
+export class BackendFixtureOwner {
+  private proc: ChildProcess | undefined;
+  private cleanupPromise: Promise<void> | undefined;
+  private readonly tmpDir: string;
+  private readonly shutdownTimeoutMs: number;
+
+  constructor(
+    tmpDir: string,
+    shutdownTimeoutMs = BACKEND_SHUTDOWN_TIMEOUT_MS,
+  ) {
+    this.tmpDir = tmpDir;
+    this.shutdownTimeoutMs = shutdownTimeoutMs;
+  }
+
+  ownProcess(proc: ChildProcess): void {
+    if (this.proc) throw new Error("backend fixture process is already owned");
+    this.proc = proc;
+  }
+
+  cleanup(): Promise<void> {
+    this.cleanupPromise ??= this.cleanupOnce();
+    return this.cleanupPromise;
+  }
+
+  private async cleanupOnce(): Promise<void> {
+    const proc = this.proc;
+    if (proc && proc.pid !== undefined && !processExited(proc)) {
+      const term = await signalAndWaitForExit(
+        proc,
+        "SIGTERM",
+        this.shutdownTimeoutMs,
+      );
+      if (!term.exited) {
+        const kill = await signalAndWaitForExit(
+          proc,
+          "SIGKILL",
+          this.shutdownTimeoutMs,
+        );
+        if (!kill.exited) {
+          throw new Error(
+            kill.signalSent
+              ? "underwrap-backend did not exit after SIGKILL"
+              : "underwrap-backend could not be sent SIGKILL and did not exit",
+          );
+        }
+      }
+    }
+    rmSync(this.tmpDir, { recursive: true, force: true });
+  }
+}
+
 export async function startBackend(
   opts: StartBackendOptions = {},
 ): Promise<BackendInstance> {
@@ -100,178 +200,244 @@ export async function startBackend(
   }
 
   const tmpDir = mkdtempSync(join(tmpdir(), "underwrap-e2e-"));
-  const port = await pickFreePort();
-  const baseUrl = `https://localhost:${port}`;
+  const owner = new BackendFixtureOwner(tmpDir);
+  try {
+    const port = await pickFreePort();
+    const baseUrl = `https://localhost:${port}`;
 
-  const certPath = join(tmpDir, "cert.pem");
-  const keyPath = join(tmpDir, "key.pem");
-  // selfsigned >=5.x returns a Promise. The keys we use:
-  //   cert: PEM-encoded certificate
-  //   private: PEM-encoded private key
-  const pems = await selfsigned.generate(
-    [{ name: "commonName", value: "localhost" }],
-    {
-      days: 1,
-      keySize: 2048,
-      extensions: [
-        {
-          name: "subjectAltName",
-          altNames: [
-            { type: 2, value: "localhost" },
-            { type: 7, ip: "127.0.0.1" },
-          ],
-        },
-      ],
-    },
-  );
-  writeFileSync(certPath, pems.cert);
-  writeFileSync(keyPath, pems.private);
-
-  const storeDir = join(tmpDir, "store");
-  mkdirSync(storeDir);
-
-  // Pre-seed a single "default" store in the backend's stores
-  // registry. The registry is a directory of `<id>.json` files keyed
-  // on a stable internal id; we write the one file before the daemon
-  // starts so the first page render sees a store and doesn't
-  // redirect through the "no stores visible" empty state.
-  const storesDir = join(tmpDir, "stores");
-  mkdirSync(storesDir);
-  writeFileSync(
-    join(storesDir, "default.json"),
-    JSON.stringify({
-      name: "default",
-      description: "",
-      backend: "plain",
-      dir: storeDir,
-    }),
-  );
-
-  // `stores_data_root` for the create-store path. The store CRUD
-  // tests need this to be set to exercise the create flow; pointing
-  // it at a per-test temp dir keeps the test isolated.
-  const dataRootsDir = join(tmpDir, "data-root");
-  mkdirSync(dataRootsDir);
-
-  const configYaml = [
-    `stores_dir: ${JSON.stringify(storesDir)}`,
-    `clients_dir: ${JSON.stringify(join(tmpDir, "clients"))}`,
-    `users_dir: ${JSON.stringify(join(tmpDir, "users"))}`,
-    `bootstrap_file: ${JSON.stringify(join(tmpDir, "bootstrap.json"))}`,
-    "https:",
-    `  listen: "127.0.0.1:${port}"`,
-    "  tls:",
-    `    cert_file: ${JSON.stringify(certPath)}`,
-    `    key_file: ${JSON.stringify(keyPath)}`,
-    "admin:",
-    "  allowed_origins:",
-    `    - "${baseUrl}"`,
-    `    - "https://127.0.0.1:${port}"`,
-    `  stores_data_root: ${JSON.stringify(dataRootsDir)}`,
-    "",
-  ].join("\n");
-  const configPath = join(tmpDir, "backend.yaml");
-  writeFileSync(configPath, configYaml);
-
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    // Stay quiet by default; flip to "debug" if a test hangs and you
-    // need to see the backend's reasoning.
-    RUST_LOG: process.env.UNDERWRAP_E2E_RUST_LOG ?? "warn",
-  };
-  if (opts.withAdmin) {
-    const provision = spawnSync(
-      binary,
-      [
-        "--config",
-        configPath,
-        "admin",
-        "bootstrap-user",
-        "--username",
-        opts.withAdmin.username,
-      ],
+    const certPath = join(tmpDir, "cert.pem");
+    const keyPath = join(tmpDir, "key.pem");
+    // selfsigned >=5.x returns a Promise. The keys we use:
+    //   cert: PEM-encoded certificate
+    //   private: PEM-encoded private key
+    const pems = await selfsigned.generate(
+      [{ name: "commonName", value: "localhost" }],
       {
-        env,
-        input: `${opts.withAdmin.password}\n`,
-        encoding: "utf8",
+        days: 1,
+        keySize: 2048,
+        extensions: [
+          {
+            name: "subjectAltName",
+            altNames: [
+              { type: 2, value: "localhost" },
+              { type: 7, ip: "127.0.0.1" },
+            ],
+          },
+        ],
       },
     );
-    if (provision.status !== 0) {
-      throw new Error(
-        `offline bootstrap-user (${opts.withAdmin.username}) failed: ${provision.stderr}`,
+    writeFileSync(certPath, pems.cert);
+    writeFileSync(keyPath, pems.private);
+
+    const storeDir = join(tmpDir, "store");
+    mkdirSync(storeDir);
+
+    // Pre-seed a single "default" store in the backend's stores
+    // registry. The registry is a directory of `<id>.json` files keyed
+    // on a stable internal id; we write the one file before the daemon
+    // starts so the first page render sees a store and doesn't
+    // redirect through the "no stores visible" empty state.
+    const storesDir = join(tmpDir, "stores");
+    mkdirSync(storesDir);
+    writeFileSync(
+      join(storesDir, "default.json"),
+      JSON.stringify({
+        name: "default",
+        description: "",
+        backend: "plain",
+        dir: storeDir,
+      }),
+    );
+
+    // `stores_data_root` for the create-store path. The store CRUD
+    // tests need this to be set to exercise the create flow; pointing
+    // it at a per-test temp dir keeps the test isolated.
+    const dataRootsDir = join(tmpDir, "data-root");
+    mkdirSync(dataRootsDir);
+
+    const configYaml = [
+      `stores_dir: ${JSON.stringify(storesDir)}`,
+      `clients_dir: ${JSON.stringify(join(tmpDir, "clients"))}`,
+      `users_dir: ${JSON.stringify(join(tmpDir, "users"))}`,
+      `bootstrap_file: ${JSON.stringify(join(tmpDir, "bootstrap.json"))}`,
+      "https:",
+      `  listen: "127.0.0.1:${port}"`,
+      "  tls:",
+      `    cert_file: ${JSON.stringify(certPath)}`,
+      `    key_file: ${JSON.stringify(keyPath)}`,
+      "admin:",
+      "  allowed_origins:",
+      `    - "${baseUrl}"`,
+      `    - "https://127.0.0.1:${port}"`,
+      `  stores_data_root: ${JSON.stringify(dataRootsDir)}`,
+      "",
+    ].join("\n");
+    const configPath = join(tmpDir, "backend.yaml");
+    writeFileSync(configPath, configYaml);
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      // Stay quiet by default; flip to "debug" if a test hangs and you
+      // need to see the backend's reasoning.
+      RUST_LOG: process.env.UNDERWRAP_E2E_RUST_LOG ?? "warn",
+    };
+    if (opts.withAdmin) {
+      const provision = spawnSync(
+        binary,
+        [
+          "--config",
+          configPath,
+          "admin",
+          "bootstrap-user",
+          "--username",
+          opts.withAdmin.username,
+        ],
+        {
+          env,
+          input: `${opts.withAdmin.password}\n`,
+          encoding: "utf8",
+        },
       );
+      if (provision.status !== 0) {
+        throw new Error(
+          `offline bootstrap-user (${opts.withAdmin.username}) failed: ${provision.stderr}`,
+        );
+      }
     }
-  }
 
-  const proc = spawn(binary, ["--config", configPath], {
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+    const proc = spawn(binary, ["--config", configPath], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    owner.ownProcess(proc);
 
-  // Tee stderr to our stderr when the env var is set — useful when
-  // debugging a test locally; silent in CI.
-  if (process.env.UNDERWRAP_E2E_LOG_BACKEND) {
-    proc.stdout?.on("data", (b: Buffer) => process.stderr.write(b));
-    proc.stderr?.on("data", (b: Buffer) => process.stderr.write(b));
-  }
-
-  // Wait until the admin listener is accepting requests. We probe
-  // the public bootstrap-status endpoint — it's GET, requires no
-  // session, and returns 200 once the server is fully up.
-  await waitForReady(baseUrl, proc);
-
-  const cleanup = async () => {
-    if (!proc.killed && proc.exitCode === null) {
-      proc.kill("SIGTERM");
-      // Wait up to 5 s; if it doesn't exit, SIGKILL.
-      const exited = await Promise.race([
-        new Promise<boolean>((r) => proc.once("exit", () => r(true))),
-        new Promise<boolean>((r) => setTimeout(() => r(false), 5_000)),
-      ]);
-      if (!exited) proc.kill("SIGKILL");
+    // Tee stderr to our stderr when the env var is set — useful when
+    // debugging a test locally; silent in CI.
+    if (process.env.UNDERWRAP_E2E_LOG_BACKEND) {
+      proc.stdout?.on("data", (b: Buffer) => process.stderr.write(b));
+      proc.stderr?.on("data", (b: Buffer) => process.stderr.write(b));
     }
+
+    // Wait until the admin listener is accepting requests. We probe
+    // the public bootstrap-status endpoint — it's GET, requires no
+    // session, and returns 200 once the server is fully up.
+    await waitForReady(baseUrl, proc);
+
+    return {
+      baseUrl,
+      tmpDir,
+      storeDir,
+      cleanup: () => owner.cleanup(),
+    };
+  } catch (error) {
     try {
-      rmSync(tmpDir, { recursive: true, force: true });
+      await owner.cleanup();
     } catch {
-      // best effort
+      // Preserve the startup failure as the authoritative diagnostic.
     }
-  };
-
-  return {
-    baseUrl,
-    tmpDir,
-    storeDir,
-    cleanup,
-  };
+    throw error;
+  }
 }
 
-async function waitForReady(
+export async function useBackendFixture(
+  use: (instance: BackendInstance) => Promise<void>,
+  opts: StartBackendOptions = {},
+  start: (options: StartBackendOptions) => Promise<BackendInstance> = startBackend,
+): Promise<void> {
+  const instance = await start(opts);
+  try {
+    await use(instance);
+  } catch (error) {
+    try {
+      await instance.cleanup();
+    } catch {
+      // Preserve the test failure as the authoritative diagnostic.
+    }
+    throw error;
+  }
+  await instance.cleanup();
+}
+
+type ReadinessProbe = (
+  url: string,
+  timeoutMs: number,
+) => Promise<{ ok: boolean }>;
+
+async function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, rejectP) => {
+        timer = setTimeout(
+          () =>
+            rejectP(new Error(`HTTPS readiness probe exceeded ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export async function waitForReady(
   baseUrl: string,
   proc: ChildProcess,
+  timeoutMs = BACKEND_STARTUP_TIMEOUT_MS,
+  probe: ReadinessProbe = (url, remainingMs) =>
+    fetchInsecure(url, undefined, remainingMs),
 ): Promise<void> {
-  const deadline = Date.now() + 15_000;
+  const exitedMessage = () =>
+    `underwrap-backend exited (code=${proc.exitCode}, signal=${proc.signalCode}) before becoming ready`;
+  let terminationError: Error | undefined;
+  let rejectTerminated: (error: Error) => void = () => {};
+  const terminated = new Promise<never>((_, rejectP) => {
+    rejectTerminated = rejectP;
+  });
+  const onExit = () => {
+    terminationError = new Error(exitedMessage());
+    rejectTerminated(terminationError);
+  };
+  const onError = (error: Error) => {
+    terminationError = error;
+    rejectTerminated(error);
+  };
+  proc.once("exit", onExit);
+  proc.once("error", onError);
+
+  const deadline = Date.now() + timeoutMs;
   let lastErr: unknown = null;
-  while (Date.now() < deadline) {
-    if (proc.exitCode !== null) {
-      throw new Error(
-        `underwrap-backend exited (code=${proc.exitCode}) before becoming ready`,
-      );
+  try {
+    while (Date.now() < deadline) {
+      if (processExited(proc)) throw new Error(exitedMessage());
+      const remainingMs = Math.max(1, deadline - Date.now());
+      try {
+        const res = await bounded(
+          Promise.race([
+            probe(`${baseUrl}/v1/admin/auth/bootstrap/status`, remainingMs),
+            terminated,
+          ]),
+          remainingMs,
+        );
+        if (res.ok) return;
+      } catch (err) {
+        if (terminationError) throw terminationError;
+        if (processExited(proc)) throw new Error(exitedMessage());
+        lastErr = err;
+      }
+      const sleepMs = Math.min(100, Math.max(0, deadline - Date.now()));
+      if (sleepMs > 0) await sleep(sleepMs);
     }
-    try {
-      const res = await fetchInsecure(
-        `${baseUrl}/v1/admin/auth/bootstrap/status`,
-      );
-      if (res.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await sleep(100);
+    throw new Error(
+      `underwrap-backend at ${baseUrl} did not become ready within ${timeoutMs}ms: ${
+        lastErr instanceof Error ? lastErr.message : String(lastErr)
+      }`,
+    );
+  } finally {
+    proc.removeListener("exit", onExit);
+    proc.removeListener("error", onError);
   }
-  throw new Error(
-    `underwrap-backend at ${baseUrl} did not become ready within 15s: ${
-      lastErr instanceof Error ? lastErr.message : String(lastErr)
-    }`,
-  );
 }
 
 /**
@@ -285,6 +451,7 @@ async function waitForReady(
 async function fetchInsecure(
   url: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string },
+  timeoutMs = BACKEND_STARTUP_TIMEOUT_MS,
 ): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> {
   const https = await import("node:https");
   return new Promise((resolveP, rejectP) => {
@@ -297,10 +464,15 @@ async function fetchInsecure(
         path: u.pathname + u.search,
         headers: init?.headers,
         rejectUnauthorized: false,
+        signal: AbortSignal.timeout(timeoutMs),
       },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c) => chunks.push(c));
+        res.on("error", rejectP);
+        res.on("aborted", () =>
+          rejectP(new Error("HTTPS readiness response aborted")),
+        );
         res.on("end", () => {
           const status = res.statusCode ?? 0;
           resolveP({

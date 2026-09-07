@@ -39,6 +39,14 @@ explicitly set `CARGO_TARGET_DIR`; additional arguments are forwarded to
 Host capability-dependent skips remain distinct from these mandatory build
 prerequisites.
 
+The focused integration-harness lifecycle tests exercise immediate backend-thread ownership, daemon-task abort-on-drop, and eventual temporary-directory cleanup after fallback fixture drop.
+
+```bash
+./crates/integration-tests/run harness::tests -- --nocapture
+```
+
+This is fixture failure-path evidence and does not establish production shutdown semantics or universal process cleanup after runtime termination.
+
 For the SPA:
 
 ```bash
@@ -707,8 +715,16 @@ The focused `focus-indicators.spec.ts` run in the configured `desktop-1280` Chro
 It reaches each close control through the real keyboard focus path and observes an unfocused `box-shadow: none` baseline, a focused non-`none` box shadow in regular colors, and a `:focus-visible` outline at least two pixels wide under emulated forced colors.
 This evidence makes no contrast, WCAG conformance, screen-reader, cross-browser, mobile-browser, or application-wide focus-coverage claim.
 
-Run it inside the Nix development shell so Playwright uses the NixOS-compatible
-browser:
+The Node browser-support suite uses simulated child processes to exercise partial acquisition, cleanup after a fixture-use failure, bounded readiness probes, exit observation after escalation, and retention of temporary state when a child cannot be reaped.
+
+```bash
+cd web
+npm run test:e2e-support
+```
+
+This support suite does not spawn the real backend or establish operating-system signal delivery.
+
+Run the Playwright suite inside the Nix development shell so it uses the NixOS-compatible browser:
 
 ```bash
 nix develop
