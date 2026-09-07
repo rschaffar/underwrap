@@ -16,6 +16,8 @@ There are no active plans.
 
 ## Completed plans
 
+The completed test-fixture lifecycle hardening work is recorded in [`archived/2026-09-07_test-fixture-lifecycle-plan.md`](archived/2026-09-07_test-fixture-lifecycle-plan.md).
+
 The completed release-readiness program is recorded in [`archived/2026-09-01_release-readiness-plan.md`](archived/2026-09-01_release-readiness-plan.md).
 
 The completed F-031 through F-058 remediation program is recorded in [`archived/2026-08-26_codebase-review-remediation-plan.md`](archived/2026-08-26_codebase-review-remediation-plan.md).
