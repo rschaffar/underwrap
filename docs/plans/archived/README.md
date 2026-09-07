@@ -4,6 +4,7 @@
 
 ## Archived plans
 
+- [`2026-09-07_test-fixture-lifecycle-plan.md`](2026-09-07_test-fixture-lifecycle-plan.md) — completed browser and Rust integration fixture lifecycle hardening, verified and accepted on 2026-09-07.
 - [`2026-09-01_release-readiness-plan.md`](2026-09-01_release-readiness-plan.md) — completed candidate validation, deployment walkthrough, bounded internal review, and verified corrections, accepted and archived on 2026-09-06.
 - [`2026-08-26_codebase-review-remediation-plan.md`](2026-08-26_codebase-review-remediation-plan.md) — completed F-031 through F-058 remediation program, accepted and archived on 2026-09-01.
 

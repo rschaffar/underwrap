@@ -60,5 +60,7 @@ The implementation preserves the primary startup error, keeps awaited cleanup on
 
 - [x] Every implementation and documentation task has direct or explicitly limited simulated evidence.
 - [x] No dependency, production lifecycle, protocol, security boundary, or privileged binary-chain change is present.
-- [ ] The feature branch is clean and its exact tip and validation evidence are presented for approval before the required `--no-ff` merge into the exact local `main` tip.
-- [ ] Durable current behavior is owned by tests and `docs/testing.md`, and this fully evidenced plan is moved to `docs/plans/archived/` with both plan indexes updated.
+- [x] The feature branch is clean and its exact tip and validation evidence are presented for approval before the required `--no-ff` merge into the exact local `main` tip.
+  Evidence: the user approved exact feature tip `27808a8ffa7d18bf4dff22b0de594e0ec44f34f8` for an ordinary merge into exact local `main` tip `095cb3a39cd14580d95a4cba9f32c77d4d3bb8b7`; integration receipt `6b928f49e9c298a32be7f43bda885b1ff76afab3b9a43dcf79f2b872a6c92465` records merge commit `a54ffac4c06df3a65d31236009b920c6f7def402` with those exact parents and the verified feature tree.
+- [x] Durable current behavior is owned by tests and `docs/testing.md`, and this fully evidenced plan is moved to `docs/plans/archived/` with both plan indexes updated.
+  Evidence: focused tests and `docs/testing.md` own the current behavior and evidence limits; this archival commit moves the completed plan and updates both plan indexes.
