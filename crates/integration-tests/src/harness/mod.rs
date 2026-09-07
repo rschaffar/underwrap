@@ -81,9 +81,74 @@ pub struct TestDaemon {
     client_instance: String,
     shutdown: Arc<Notify>,
     backend_shutdown: Arc<Notify>,
-    backend_handle: thread::JoinHandle<Result<()>>,
-    _tempdir: tempfile::TempDir,
-    handle: tokio::task::JoinHandle<Result<()>>,
+    backend_handle: Option<thread::JoinHandle<Result<()>>>,
+    _tempdir: Arc<tempfile::TempDir>,
+    handle: Option<tokio::task::JoinHandle<Result<()>>>,
+}
+
+struct BackendThreadOwner {
+    shutdown: Arc<Notify>,
+    handle: Option<thread::JoinHandle<Result<()>>>,
+    armed: bool,
+}
+
+impl BackendThreadOwner {
+    fn new(shutdown: Arc<Notify>, handle: thread::JoinHandle<Result<()>>) -> Self {
+        Self {
+            shutdown,
+            handle: Some(handle),
+            armed: true,
+        }
+    }
+
+    fn into_handle(mut self) -> thread::JoinHandle<Result<()>> {
+        let handle = self.handle.take().expect("backend thread owner is armed");
+        self.armed = false;
+        handle
+    }
+}
+
+impl Drop for BackendThreadOwner {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.shutdown.notify_one();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct DaemonTaskOwner {
+    handle: Option<tokio::task::JoinHandle<Result<()>>>,
+}
+
+impl DaemonTaskOwner {
+    fn new(handle: tokio::task::JoinHandle<Result<()>>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    async fn abort_and_wait(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+
+    fn into_handle(mut self) -> tokio::task::JoinHandle<Result<()>> {
+        self.handle.take().expect("daemon task owner is armed")
+    }
+}
+
+impl Drop for DaemonTaskOwner {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 /// Conventional fixture-level secret key. Test fixtures write a
@@ -122,7 +187,7 @@ impl TestDaemon {
         accepted_principal: &str,
         auto_create_wrapper_assets: bool,
     ) -> Result<Self> {
-        let tempdir = tempfile::TempDir::new()?;
+        let tempdir = Arc::new(tempfile::TempDir::new()?);
         let base = tempdir.path();
 
         let storage_dir = base.join("secrets");
@@ -194,7 +259,9 @@ impl TestDaemon {
 
         let backend_shutdown = Arc::new(Notify::new());
         let backend_shutdown_clone = Arc::clone(&backend_shutdown);
+        let backend_tempdir = Arc::clone(&tempdir);
         let backend_handle = thread::spawn(move || {
+            let _tempdir = backend_tempdir;
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -203,6 +270,7 @@ impl TestDaemon {
                 underwrap_backend::server::run(backend_config, Some(backend_shutdown_clone)).await
             })
         });
+        let backend_owner = BackendThreadOwner::new(Arc::clone(&backend_shutdown), backend_handle);
 
         wait_for_admin(&service_url, &pki.ca_cert).await?;
         drop(port_reservation);
@@ -239,13 +307,20 @@ impl TestDaemon {
 
         let shutdown = Arc::new(Notify::new());
         let shutdown_clone = Arc::clone(&shutdown);
-        let handle =
-            tokio::spawn(
-                async move { underwrapd::server::run(config, Some(shutdown_clone)).await },
-            );
+        let daemon_tempdir = Arc::clone(&tempdir);
+        let handle = tokio::spawn(async move {
+            let _tempdir = daemon_tempdir;
+            underwrapd::server::run(config, Some(shutdown_clone)).await
+        });
+        let mut daemon_owner = DaemonTaskOwner::new(handle);
 
-        wait_for_path(&instance_socket).await?;
+        if let Err(error) = wait_for_path(&instance_socket).await {
+            daemon_owner.abort_and_wait().await;
+            return Err(error);
+        }
 
+        let handle = daemon_owner.into_handle();
+        let backend_handle = backend_owner.into_handle();
         Ok(Self {
             instance_socket,
             service_url: service_url.clone(),
@@ -262,9 +337,9 @@ impl TestDaemon {
             client_instance,
             shutdown,
             backend_shutdown,
-            backend_handle,
+            backend_handle: Some(backend_handle),
             _tempdir: tempdir,
-            handle,
+            handle: Some(handle),
         })
     }
 
@@ -995,12 +1070,17 @@ impl TestDaemon {
     }
 
     /// Shut down the daemon.
-    pub async fn stop(self) -> Result<()> {
+    pub async fn stop(mut self) -> Result<()> {
         self.shutdown.notify_one();
         self.backend_shutdown.notify_one();
 
-        let backend_join = tokio::task::spawn_blocking(move || self.backend_handle.join());
-        let (daemon_result, backend_result) = tokio::join!(self.handle, backend_join);
+        let handle = self.handle.take().expect("test daemon task is owned");
+        let backend_handle = self
+            .backend_handle
+            .take()
+            .expect("test backend thread is owned");
+        let backend_join = tokio::task::spawn_blocking(move || backend_handle.join());
+        let (daemon_result, backend_result) = tokio::join!(handle, backend_join);
 
         let daemon_result = match daemon_result {
             Ok(result) => result.context("daemon exited with an error"),
@@ -1021,3 +1101,23 @@ impl TestDaemon {
         }
     }
 }
+
+impl Drop for TestDaemon {
+    fn drop(&mut self) {
+        if self.handle.is_none() && self.backend_handle.is_none() {
+            return;
+        }
+
+        self.shutdown.notify_one();
+        self.backend_shutdown.notify_one();
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.backend_handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

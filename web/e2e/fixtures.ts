@@ -10,7 +10,7 @@
  *                          Tests hit `/login` to exercise the login UI.
  */
 import { test as base, type Page } from "@playwright/test";
-import { startBackend, type BackendInstance } from "./backend";
+import { type BackendInstance, useBackendFixture } from "./backend";
 
 export const ADMIN_USERNAME = "alice";
 export const ADMIN_PASSWORD = "correct-horse-battery";
@@ -21,18 +21,11 @@ interface Fixtures {
 }
 
 export const test = base.extend<Fixtures>({
-  backend: async ({}, use) => {
-    const instance = await startBackend();
-    await use(instance);
-    await instance.cleanup();
-  },
-  backendWithAdmin: async ({}, use) => {
-    const instance = await startBackend({
+  backend: async ({}, use) => useBackendFixture(use),
+  backendWithAdmin: async ({}, use) =>
+    useBackendFixture(use, {
       withAdmin: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD },
-    });
-    await use(instance);
-    await instance.cleanup();
-  },
+    }),
 });
 
 export { expect } from "@playwright/test";
