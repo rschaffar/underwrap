@@ -52,12 +52,13 @@ The implementation preserves the primary startup error, keeps awaited cleanup on
 - [x] Run the complete relevant validation for browser support and Rust integration changes.
   Evidence: `npm run test:e2e-support` passed 9 tests; `npm test` passed 192 tests; `npm run build` passed; the supported Nix-development-shell Playwright run passed 38 tests after building its documented backend-binary prerequisite; `./crates/integration-tests/run` passed 110 tests; Rustfmt and denied-warning integration-test Clippy passed.
   An earlier Playwright invocation without `target/debug/underwrap-backend` was rejected as invalid prerequisite evidence before the accepted run.
-- [ ] Review the final diff for partial acquisition, cleanup error precedence, bounded waits, process exit ordering, task cancellation, temporary-state lifetime, unrelated changes, and secret-safe diagnostics.
-  Acceptance evidence: `git diff --check`, exact changed-path inspection, and a bounded sensitive-pattern scan pass.
+  One first exact-tip Playwright run had an existing wrappers cell-editor visibility timeout; its immediate complete rerun passed all 38 tests.
+- [x] Review the final diff for partial acquisition, cleanup error precedence, bounded waits, process exit ordering, task cancellation, temporary-state lifetime, unrelated changes, and secret-safe diagnostics.
+  Evidence: `git diff --check` passed; exact changed-path inspection and a bounded sensitive-pattern scan found only expected fixture identifiers and test material; three independent bounded review rounds found and drove corrections for asynchronous and synchronous signal-error handling and a Rust evidence overclaim, and the final review approved exact tip `7bdbb262df9e062dbcc66d1f9d9eb170ace17342` with no Critical, Major, or Minor findings.
 
 ## Completion Checklist
 
-- [ ] Every implementation and documentation task has direct or explicitly limited simulated evidence.
+- [x] Every implementation and documentation task has direct or explicitly limited simulated evidence.
 - [x] No dependency, production lifecycle, protocol, security boundary, or privileged binary-chain change is present.
 - [ ] The feature branch is clean and its exact tip and validation evidence are presented for approval before the required `--no-ff` merge into the exact local `main` tip.
 - [ ] Durable current behavior is owned by tests and `docs/testing.md`, and this fully evidenced plan is moved to `docs/plans/archived/` with both plan indexes updated.
