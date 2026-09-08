@@ -265,44 +265,66 @@ nix develop -c bash -lc 'cd web && npm run build && UNDERWRAP_BACKENDD_BINARY="$
 
 ## Plan
 
-- [ ] Add the migration and lifecycle DTOs additively in `crates/underwrap-protocol/src/service/admin.rs`, including the redacted zeroizing key type, exact route shapes, lifecycle states, action fields, and serde/OpenAPI projections.
+- [x] Add the migration and lifecycle DTOs additively in `crates/underwrap-protocol/src/service/admin.rs`, including the redacted zeroizing key type, exact route shapes, lifecycle states, action fields, and serde/OpenAPI projections.
   Acceptance evidence: `cargo test -p underwrap-protocol service::tests::admin_store_migration_contract` and `cargo check --workspace --exclude integration-tests` pass under the validation setup before existing create fields are removed.
 
-- [ ] Add lifecycle leases, exact entry-generation matching, and ready/unlocked/locked/busy/recovery-required states in `crates/underwrap-backend/src/store_registry.rs`, then migrate every production backend lookup without holding registry locks across work.
+- [x] Add lifecycle leases, exact entry-generation matching, and ready/unlocked/locked/busy/recovery-required states in `crates/underwrap-backend/src/store_registry.rs`, then migrate every production backend lookup without holding registry locks across work.
   Acceptance evidence: `cargo test -p underwrap-backend store_registry::tests::migration_lease` and `cargo test -p underwrap-backend store_registry::tests::migration_state` pass under the validation setup; `rg -n 'unlocked_backend|state\.backend\(\).*clone|StoreState::Unlocked' crates/underwrap-backend/src --glob '*.rs'` has a reviewed production disposition for every match; and `cargo check --workspace --exclude integration-tests` passes.
 
-- [ ] Share only collision-safe private-workspace and checked-path primitives between rotation and migration, rename the entry mutex to lifecycle vocabulary, and preserve rotation behavior.
+- [x] Share only collision-safe private-workspace and checked-path primitives between rotation and migration, rename the entry mutex to lifecycle vocabulary, and preserve rotation behavior.
   Acceptance evidence: `cargo test -p underwrap-backend admin_api::stores::lifecycle::rotation` and `cargo test -p underwrap-backend admin_api::stores::lifecycle::concurrency_tests` pass with existing rotation response, retention, key-wipe, audit, and ordinary-I/O semantics.
 
-- [ ] Implement `crates/underwrap-backend/src/admin_api/stores/lifecycle/migration.rs` with separate phases and hooks for copy, canary handling, id-set and byte verification, exact mode and topology checks, promotion, reopen, registry persistence, cleanup, rollback, and recovery-required disposition.
+- [x] Implement `crates/underwrap-backend/src/admin_api/stores/lifecycle/migration.rs` with separate phases and hooks for copy, canary handling, id-set and byte verification, exact mode and topology checks, promotion, reopen, registry persistence, cleanup, rollback, and recovery-required disposition.
   Acceptance evidence: `cargo test -p underwrap-backend admin_api::stores::lifecycle::migration::tests` and `cargo test -p underwrap-backend admin_api::stores::lifecycle::migration::tests::permissive_umask` pass with deterministic filesystem snapshots for both directions and every injected phase failure.
 
-- [ ] Detect exact migration workspaces during startup and publish affected entries only as recovery-required without automatic mutation.
+- [x] Detect exact migration workspaces during startup and publish affected entries only as recovery-required without automatic mutation.
   Acceptance evidence: `cargo test -p underwrap-backend store_registry::tests::migration_workspace` passes for pre-swap, backup, promoted, persisted-target, malformed-manifest, symlink, and multiple-workspace layouts and verifies byte-identical pre/post trees.
 
-- [ ] Wire `POST /v1/admin/store-keys` and `POST /v1/admin/stores/{id}/migrate`, including non-cache key responses, direction-specific key validation, unlocked-source enforcement, lifecycle revalidation, stable store projection, fixed safe errors, and value-free audit fields.
+- [x] Wire `POST /v1/admin/store-keys` and `POST /v1/admin/stores/{id}/migrate`, including non-cache key responses, direction-specific key validation, unlocked-source enforcement, lifecycle revalidation, stable store projection, fixed safe errors, and value-free audit fields.
   Acceptance evidence: `cargo test -p underwrap-backend admin_api::stores::lifecycle` and `cargo test -p underwrap-backend admin_api::stores::lifecycle::audit_tests` pass, including delayed real handler leases, all state/error mappings, byte and mapping preservation, and key/resource-value omission from captured diagnostics.
 
-- [ ] Change encrypted creation and all callers in one compile-clean milestone to require the submitted canonical key before directory creation, reject keys for plain creation, return no key, and retain existing registry failure-atomicity semantics.
+- [x] Change encrypted creation and all callers in one compile-clean milestone to require the submitted canonical key before directory creation, reject keys for plain creation, return no key, and retain existing registry failure-atomicity semantics.
   Acceptance evidence: `cargo test -p underwrap-backend admin_api::stores::crud` and `cargo test -p underwrap-backend admin_api::stores::lifecycle::tests::submitted_creation_key` pass under the validation setup; invalid requests have byte-identical registry/filesystem snapshots; a valid store unlocks after restart with that key; and `cargo check --workspace --exclude integration-tests` passes.
 
-- [ ] Regenerate and verify the Admin OpenAPI and generated SPA contract for the new routes, lifecycle states, conditional key behavior, exact response sets, session-plus-CSRF protection, and non-cache key response.
+- [x] Regenerate and verify the Admin OpenAPI and generated SPA contract for the new routes, lifecycle states, conditional key behavior, exact response sets, session-plus-CSRF protection, and non-cache key response.
   Acceptance evidence: `cargo test -p underwrap-backend --test openapi_export`, `cargo test --workspace --exclude integration-tests`, `cd web && npm run generate:api`, and `cd web && npm run build` pass under the validation setup with reviewed `crates/underwrap-backend/openapi.json` drift.
 
-- [ ] Add direct typed SPA key-generation, create, and migration calls plus a reveal-and-exact-re-entry component that keeps key material out of TanStack caches and handles pre-request cancellation separately from ambiguous post-request failure.
+- [x] Add direct typed SPA key-generation, create, and migration calls plus a reveal-and-exact-re-entry component that keeps key material out of TanStack caches and handles pre-request cancellation separately from ambiguous post-request failure.
   Acceptance evidence: `cd web && npm test -- src/pages/stores.test.tsx` passes exact ordering/body, untrimmed match, mismatch, cancellation, success clearing, ambiguous failure retention, same-key retry, explicit warned discard, cache/URL/browser-storage absence, and unchanged rotation-flow cases.
 
-- [ ] Add Stores-page migration actions and dialogs for plain-to-encrypted and unlocked encrypted-to-plain conversion, including busy/recovery disabling, unlock-first guidance, quiescence warning, and both directional plaintext-residue warnings.
+- [x] Add Stores-page migration actions and dialogs for plain-to-encrypted and unlocked encrypted-to-plain conversion, including busy/recovery disabling, unlock-first guidance, quiescence warning, and both directional plaintext-residue warnings.
   Acceptance evidence: `cd web && npm test -- src/pages/stores.test.tsx` passes lifecycle/action rendering, both directions, stable selection, retryable failures, and no key generation for encrypted-to-plain.
 
-- [ ] Add real authenticated HTTPS and Playwright migration scenarios that preserve store id, metadata, client mapping, resources, control documents, nested ids, and logical bytes across both directions.
+- [x] Add real authenticated HTTPS and Playwright migration scenarios that preserve store id, metadata, client mapping, resources, control documents, nested ids, and logical bytes across both directions.
   Acceptance evidence: `./crates/integration-tests/run tests::store_migration -- --nocapture` and the exact backend-build plus SPA-build plus focused Playwright sequence in Validation Setup pass; direct host-tree inspection finds exact mode `0700` target roots and no retained plaintext migration pathname after successful plain-to-encrypted migration; simulated lost-response cases retain the displayed key and reconcile state.
 
-- [ ] Update `AGENTS.md`, `crates/underwrap-protocol/src/config.rs`, `crates/underwrap-backend-store/src/lib.rs`, `docs/architecture.md`, `docs/security.md`, `docs/backend.md`, `docs/admin-ui.md`, and `docs/testing.md` with the current generation timing, bounded migration-workspace exception, lifecycle contract, commit ordering, quiescence, directional plaintext residue, key re-entry nonclaim, recovery procedure, and evidence limits.
+- [x] Update `AGENTS.md`, `crates/underwrap-protocol/src/config.rs`, `crates/underwrap-backend-store/src/lib.rs`, `docs/architecture.md`, `docs/security.md`, `docs/backend.md`, `docs/admin-ui.md`, and `docs/testing.md` with the current generation timing, bounded migration-workspace exception, lifecycle contract, commit ordering, quiescence, directional plaintext residue, key re-entry nonclaim, recovery procedure, and evidence limits.
   Acceptance evidence: `git diff --check` passes; all changed Markdown links resolve; `rg -n 'generated.*creation|creation.*generat|rotation workspace|locked: bool|rotation_lock|StoreState::Locked' AGENTS.md crates/underwrap-protocol/src/config.rs crates/underwrap-backend-store/src/lib.rs crates/underwrap-backend/src/store_registry.rs crates/underwrap-backend/src/admin_api/stores docs` has a reviewed disposition for every stale-contract candidate; and published prose remains one sentence per line.
 
-- [ ] Run complete relevant validation and obtain a bounded independent review of the migration boundary before integration.
+- [x] Run complete relevant validation and obtain a bounded independent review of the migration boundary before integration.
   Acceptance evidence: `cargo fmt -- --check`, `cargo clippy --all-targets --workspace -- -D warnings`, `cargo test --workspace --exclude integration-tests`, `./crates/integration-tests/run`, `cd web && npm test && npm run test:coverage && npm run build`, the exact changed-tree backend build followed by `nix develop -c bash -lc 'cd web && UNDERWRAP_BACKENDD_BINARY="$PWD/../target/debug/underwrap-backend" npm run test:e2e'`, `nix flake check --all-systems --no-build`, `nix flake check`, `git diff --check`, exact changed-path inspection, bounded sensitive-pattern scanning, and independent review all pass or any unavailable evidence remains open.
+
+## Completion Evidence
+
+Implementation through `2b8c5ee55393e9abbd6fc13a22b19fee1436ee82` was verified on 2026-09-08.
+
+`cargo test --workspace --exclude integration-tests`, `cargo clippy --all-targets --workspace -- -D warnings`, and `cargo fmt --all -- --check` passed with the exact current-tree web artifact.
+
+The real authenticated integration suite passed all 111 tests, including bidirectional store migration.
+
+The SPA passed all 209 unit tests, coverage thresholds, its production build, and all 43 Playwright scenarios against the exact changed-tree backend.
+
+`nix flake check`, including the NixOS VM test, passed all 65 native-system checks.
+
+`nix flake check --all-systems --no-build`, OpenAPI generation and contract tests, `git diff --check`, and clean-tree verification passed.
+
+Independent adversarial reviews covered the backend migration mechanism, browser key custody and reconciliation, documentation, real integration scenario, and final lifecycle error precedence.
+
+Every confirmed Critical, Major, and Minor review finding was corrected and revalidated, and the final focused review reported no remaining Critical, Major, or Minor finding.
+
+No dependency, privileged frontend chain, NixOS module behavior, rotation API, or visible rotation workflow changed.
+
+The maintained product and recovery contracts now live in `AGENTS.md`, `docs/architecture.md`, `docs/security.md`, `docs/backend.md`, `docs/admin-ui.md`, `docs/testing.md`, and the implementation and tests named above.
 
 ## Rollback / Recovery
 
@@ -320,15 +342,15 @@ Operators must complete or roll back any recovery-required store with the matchi
 
 ## Completion Checklist
 
-- [ ] Key generation is authenticated, CSRF-protected, explicitly non-cacheable, and storage-neutral.
-- [ ] Encrypted creation and plain-to-encrypted migration perform no mutation before exact browser re-entry.
-- [ ] Pre-request cancel and mismatch send no mutation, while ambiguous post-request failure retains the generated key and supports reconciliation.
-- [ ] Encrypted-to-plain migration requires an unlocked source and sends no key.
-- [ ] Migration preserves store id, metadata, client mappings, every storage id, and every logical byte except backend-specific canary handling.
-- [ ] New normal storage access is drained or rejected before migration filesystem mutation.
-- [ ] Successful plain-to-encrypted migration retains no plaintext migration pathname and makes no secure-erasure claim.
-- [ ] Every returned failure leaves either a verified source live or an explicit recovery-required state with useful paths preserved.
-- [ ] Startup fails closed on every durable migration workspace without automatic mutation.
-- [ ] Keys and resource values are absent from logs, argv, configuration, manifests, URLs, and durable browser or TanStack storage.
-- [ ] OpenAPI, generated TypeScript, SPA, integration tests, security guidance, and recovery documentation agree.
-- [ ] Validation passes without dependency, Nix module, VM, rotation UX, or privileged-chain changes.
+- [x] Key generation is authenticated, CSRF-protected, explicitly non-cacheable, and storage-neutral.
+- [x] Encrypted creation and plain-to-encrypted migration perform no mutation before exact browser re-entry.
+- [x] Pre-request cancel and mismatch send no mutation, while ambiguous post-request failure retains the generated key and supports reconciliation.
+- [x] Encrypted-to-plain migration requires an unlocked source and sends no key.
+- [x] Migration preserves store id, metadata, client mappings, every storage id, and every logical byte except backend-specific canary handling.
+- [x] New normal storage access is drained or rejected before migration filesystem mutation.
+- [x] Successful plain-to-encrypted migration retains no plaintext migration pathname and makes no secure-erasure claim.
+- [x] Every returned failure leaves either a verified source live or an explicit recovery-required state with useful paths preserved.
+- [x] Startup fails closed on every durable migration workspace without automatic mutation.
+- [x] Keys and resource values are absent from logs, argv, configuration, manifests, URLs, and durable browser or TanStack storage.
+- [x] OpenAPI, generated TypeScript, SPA, integration tests, security guidance, and recovery documentation agree.
+- [x] Validation passes without dependency, Nix module, VM, rotation UX, or privileged-chain changes.
