@@ -68,6 +68,7 @@ the attacker, and the direction of the boundary.
 - `docs/architecture.md` — components and request/data flow
 - `docs/security.md` — threat model, guarantees, mechanisms, and limitations
 - `docs/backend.md` — backend data model and HTTP API
+- `docs/admin-ui.md` — operator workflows and browser behavior
 - `docs/configuration.md` — NixOS and backend configuration
 - `docs/testing.md` — validation commands and coverage
 - `docs/secretsd-security.md` — target-facing Secret Service input boundary
@@ -317,6 +318,8 @@ test.
 
 - Persist underwrap-managed durable brokered resource material only through the backend's selected `StorageBackend`.
   Retained encrypted rotation `backup/` and `stage/` sibling workspaces remain outside the active store path and APIs until trusted-host cleanup.
+  Backend migration may also use one collision-safe mode-`0700` sibling workspace while it copies, verifies, promotes, records, and cleans a converted generation.
+  A migration workspace is removed before success, while any retained exact migration workspace forces `recovery-required` and remains outside admin resource and runtime APIs until trusted-host recovery.
   Keep frontend resource material in process memory, except for files staged on invocation-private `noswap` tmpfs, and do not add disk caches, sidecar databases, local databases, ordinary temporary files, or alternate durable frontend paths.
   Keep libsecret resource state in process memory; the namespace-private libsecret bus tmpfs carries only runtime socket and helper artifacts without a `noswap` claim.
 - Treat runtime identities, backend and CA keys, authentication records, and trusted configuration as separately controlled sensitive domains rather than exceptions to the brokered-resource rule.
@@ -384,6 +387,13 @@ test.
 - Files and libsecret staging are writable to the target. Read-only means
   changes do not persist; do not make a read-only mount fallback that changes
   target behavior.
+- Migration, rotation, update, and delete acquire the entry-owned lifecycle mutex, while lock and unlock revalidate the exact entry and lifecycle state under their final registry lock.
+- Migration publishes `busy` while holding the registry lock, blocks new storage leases, and waits up to 30 seconds for already admitted complete operations to drain before filesystem mutation.
+- The migration copy window must remain free of asynchronous cancellation points after lease drainage, and no registry lock may span `.await`, drainage, storage I/O, filesystem mutation, or registry persistence.
+- Operators must quiesce wrapper traffic and admin mutations before migration because an invocation opened earlier can finalize later under the existing stateless last-writer-wins contract.
+- Migration preserves the stable store id, metadata, runtime client mappings, storage ids, and logical bytes while changing only the backend kind and backend-specific canary presence.
+- Successful plain-to-encrypted migration removes every intentional plaintext migration pathname before success but makes no secure-media-erasure claim.
+- Preserve fixed migration failure disposition: return a phase-specific error only after a verified source and record are restored and secret-bearing workspace cleanup succeeds; otherwise publish `recovery-required` and preserve remaining artifacts.
 - Never remove or weaken security assertions merely to make a test pass.
 
 ## Test layout

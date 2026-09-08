@@ -168,9 +168,13 @@ Active resource values are written through `underwrap-backend`'s selected `Stora
 The frontend daemon fully parses one authorized decoded resource and caches its original bytes in memory for the lifetime of the scoped resource channel as described in [Daemon open parsing and cache](#daemon-open-parsing-and-cache).
 
 Encrypted rotation can retain `backup/` and `stage/` sibling workspaces outside the active canonical `StorageBackend` path and APIs.
-These workspaces contain ciphertext that remains decryptable with the corresponding generation key, including stale resource values from an earlier generation.
-Underwrap retains them indefinitely, and resource deletion, store deletion, restart, later rotation, and API operations do not remove them.
-A trusted backend-host operator owns selective recovery and cleanup.
+These rotation workspaces contain ciphertext that remains decryptable with the corresponding generation key, including stale resource values from an earlier generation.
+Underwrap retains rotation workspaces indefinitely, and resource deletion, store deletion, restart, later rotation, and API operations do not remove them.
+
+Backend migration is a second bounded exception that uses one collision-safe exact mode-`0700` sibling workspace containing `stage/`, later `backup/`, and a non-secret manifest.
+The target generation is written only through its selected `StorageBackend`, but the workspace itself lies outside the canonical active-store path and admin resource and runtime APIs.
+Successful migration removes the displaced generation and workspace before publication, while any remaining exact migration workspace makes startup publish the store as `recovery-required` without automatic selection or deletion.
+A trusted backend-host operator owns migration recovery and rotation-generation recovery and cleanup.
 
 The frontend retains brokered resource material in process memory, except for files bytes staged on namespace-private `noswap` tmpfs during one invocation.
 Libsecret resource state remains in process memory.
@@ -932,16 +936,25 @@ service account.
 
 `EncryptedBackend` uses ChaCha20-Poly1305 with a 32-byte master key:
 
-- the key is generated in backend memory when the store is created or rotated;
-- the create or rotate response displays the generated key once;
+- the authenticated and CSRF-protected key endpoint generates a fresh key in backend memory without mutating storage for encrypted creation or plain-to-encrypted migration;
+- the endpoint returns the key with `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`;
+- encrypted creation and plain-to-encrypted migration accept only one exact untrimmed 64-character lowercase hexadecimal key before their first storage mutation;
+- encrypted-to-plain migration generates and accepts no key;
+- create and migration success responses do not return the key again;
 - no key file is written by underwrap;
-- a reserved encrypted canary verifies later unlock attempts;
+- a reserved encrypted canary verifies encrypted targets and later unlock attempts;
 - an encrypted store starts locked after every backend restart;
 - lock drops the in-memory backend and zeroizes `MasterKey` when its final reference is released;
+- rotation independently generates its fresh key during the mutating operation and retains its existing one-time post-mutation response;
 - rotation re-encrypts and verifies a complete generation under a fresh key, displaces the live directory into a unique mode-`0700` backend-host recovery workspace, and promotes the staged generation with individually atomic renames;
-- every displaced complete ciphertext generation remains unmodified while it is retained as a recovery artifact and is never automatically overwritten or deleted by rotation, restart, later rotation, response success, browser acknowledgement, resource deletion, or store deletion;
-- a failed post-swap rollback either restores the old canonical generation or locks the store with `rotation_recovery_required` while preserving every potentially useful `backup/` or `stage/` directory;
+- every displaced complete rotation ciphertext generation remains unmodified while it is retained as a recovery artifact and is never automatically overwritten or deleted by rotation, restart, later rotation, response success, browser acknowledgement, resource deletion, or store deletion;
+- a failed post-swap rotation rollback either restores the old canonical generation or locks the store with `rotation_recovery_required` while preserving every potentially useful `backup/` or `stage/` directory;
 - unlock and post-promotion reopen require the canonical directory to exist and never create an empty replacement after an interrupted swap.
+
+The SPA keeps generated create and migration keys in transient component state rather than TanStack query or mutation caches and requires exact browser-side re-entry before submitting them.
+Mismatch and cancellation before submission send no mutation request, while an error or lost response after submission is ambiguous and causes the SPA to retain the displayed key and refresh the store list for reconciliation.
+The operator can discard an ambiguously retained key only after acknowledging that it may protect committed or recoverable data.
+No-cache headers and these SPA controls do not prove response delivery, external custody, independent recoverability, absence from HTTP or browser internals, or comprehensive erasure from JavaScript strings, serialization buffers, clipboard state, allocator remnants, screenshots, traces, or process memory.
 
 The operator establishes external custody for each displayed key, such as in an external password manager or vault.
 The backend cannot observe response delivery or external custody.
@@ -951,14 +964,26 @@ Compromise of current unlocked-backend process memory can recover the installed 
 The protected availability boundary runs from ciphertext-generation commit to the one-time replacement-key response and external custody.
 Each retained snapshot remains decryptable by its corresponding generation key, keeping an externally held generation key useful after response loss.
 The confidentiality and storage costs are prolonged generation-key access to stale ciphertext until trusted-host cleanup and unbounded disk use.
-Recovery paths are backend-host-only siblings outside the active canonical path and are not exposed through admin or runtime APIs.
-The exact non-overwriting recovery, verification, and selective-cleanup procedure is normative in [Backend](backend.md#retained-rotation-generations).
+Rotation recovery paths are backend-host-only siblings outside the active canonical path and are not exposed through admin or runtime APIs.
+The exact non-overwriting rotation recovery, verification, and selective-cleanup procedure is normative in [Backend](backend.md#retained-rotation-generations).
 
-The rotation mutex excludes another rotation only. Ordinary reads and writes
-are not coordinated with the copy or multi-rename swap and can fail or be lost,
-so operators must quiesce all access to the store during rotation. The procedure
-does not claim CAS, response delivery, automatic reconciliation, or power-loss
-/fsync durability.
+The entry-owned lifecycle mutex serializes migration with rotation and the other store lifecycle publications that acquire it.
+Migration publishes `busy` while holding the registry lock, rejects later normal storage leases, and waits up to 30 seconds for already admitted leases on that exact entry to drain before storage or filesystem mutation.
+No registry lock is held across asynchronous waiting, storage I/O, filesystem mutation, or store-record persistence.
+A lease timeout restores the unchanged source and returns `503 store_busy`.
+After drainage, migration has no asynchronous cancellation point through copy and publication.
+An invocation opened before migration can still finalize later because runtime open/finalize is stateless, so operators must quiesce wrapper traffic and admin mutations before migration.
+
+Migration copies and verifies the complete storage-id set and every logical value before source displacement.
+After promotion it reopens and re-verifies the target, persists the existing record with only its backend kind changed, removes the displaced source and workspace, publishes the target live entry, and only then returns success.
+A phase-specific failure is returned only when a verified source and source record are authoritative and all secret-bearing migration state has been removed.
+Failed rollback, failed secret-bearing cleanup, an ambiguous split state, or an exact migration workspace found at startup produces `migration_recovery_required` and preserves remaining artifacts for the [stopped-backend recovery procedure](backend.md#backend-migration-recovery).
+Plain-to-encrypted failure can leave plaintext under `backup/`, while encrypted-to-plain failure can leave plaintext under `stage/` or the canonical path.
+Successful plain-to-encrypted migration leaves no intentional plaintext migration pathname, but pathname removal is not secure media erasure and does not prove prior plaintext blocks are unrecoverable.
+
+Rotation acquires the same lifecycle mutex but retains its non-draining semantics for ordinary reads and writes.
+Concurrent rotation reads can fail and writes can be lost, so operators must quiesce all access to the store during rotation.
+Neither lifecycle procedure claims CAS, response delivery, automatic reconciliation, parent-directory fsync, power-loss durability, or secure erasure.
 
 The admin entity graph is enforced for serialized requests. Explicit
 resource-addressed flat and libsecret operations require the exact selected-store
@@ -1101,6 +1126,8 @@ Keep these limits explicit in deployment and wrapper reviews:
 - Plain backend stores are plaintext at rest.
 - Encrypted stores require an external key-custody process and manual unlock
   after restart.
+- Store migration requires operator quiescence and can leave direction-dependent plaintext recovery material in a private backend-host workspace or canonical path after failure or interruption.
+- Successful plain-to-encrypted migration removes intentional plaintext migration paths but provides no secure-media-erasure guarantee.
 - Browser sessions are memory-only and disappear on restart.
 - Abstract D-Bus sockets are outside mount-namespace hiding.
 - Resource and policy availability depends on the backend network path. The

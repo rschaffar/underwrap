@@ -6,7 +6,8 @@
 //!
 //! Only `underwrap-backend` owns a `StorageBackend`. The frontend daemon uses
 //! the resource-oriented HTTPS runtime API and never receives this storage
-//! interface.
+//! interface. Backend migration copies every logical id and value through this
+//! trait so a backend-kind change does not change the stored logical bytes.
 
 mod encrypted;
 mod path;
@@ -26,7 +27,9 @@ use underwrap_protocol::message::SecretBytes;
 /// The storage backend trait.
 ///
 /// Implementations must be safe to share across threads (`Send + Sync`)
-/// because the backend serves concurrent connections.
+/// because the backend serves concurrent connections. The trait provides no
+/// transaction, lease, migration, publication, or secure-erasure guarantee;
+/// `underwrap-backend` owns those lifecycle rules.
 pub trait StorageBackend: Send + Sync {
     /// Read secret material by id. Returns `Ok(None)` if the secret
     /// does not exist yet.
@@ -68,16 +71,17 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
     }
 }
 
-/// Parse exactly 64 hex characters into a 32-byte master key. Leading
-/// or trailing whitespace is trimmed. Used by the admin unlock and
-/// rotate-key flows to convert an operator-supplied hex string into
-/// the byte form consumed by [`EncryptedBackend::open_existing_with_key`].
+/// Parse exactly 64 hex characters into a 32-byte master key after trimming
+/// surrounding whitespace. Admin unlock applies this tolerant parser to an
+/// operator-supplied string. Rotation uses it only to reopen its own generated
+/// replacement and does not accept an operator-supplied key.
 pub fn parse_hex_key(s: &str) -> Result<[u8; 32]> {
     parse_hex_key_bytes(s.trim(), false)
 }
 
-/// Parse the create/migrate key contract without trimming or normalization.
-/// Only one 64-character lowercase hexadecimal string is accepted.
+/// Parse the encrypted-create and plain-to-encrypted migration key contract
+/// without trimming or normalization. Only one 64-character lowercase
+/// hexadecimal string is accepted. Encrypted-to-plain migration accepts no key.
 pub fn parse_hex_key_strict(s: &str) -> Result<[u8; 32]> {
     parse_hex_key_bytes(s, true)
 }
@@ -106,12 +110,13 @@ fn parse_hex_key_bytes(value: &str, lowercase_only: bool) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-/// Reserved key used by encrypted stores as an unlock canary. On
-/// store creation the backend writes [`ENCRYPTED_CANARY_PLAINTEXT`] at
-/// this id under the chosen master key. Unlock verifies the operator's
-/// key by attempting to decrypt this entry — wrong key fails the
-/// AEAD tag check, so the operator cannot install an invalid key by
-/// accident. It lives under the reserved control-plane namespace
+/// Reserved key used by encrypted stores as an unlock canary. Encrypted
+/// creation writes [`ENCRYPTED_CANARY_PLAINTEXT`] at this id under the submitted
+/// master key. Plain-to-encrypted migration writes and verifies it in the
+/// target. Encrypted-to-plain migration verifies the source canary and omits it from
+/// the plain target. Unlock verifies the operator's key by attempting to
+/// decrypt this entry — wrong key fails the AEAD tag check, so the operator
+/// cannot install an invalid key by accident. It lives under the reserved control-plane namespace
 /// (`underwrap_protocol::control::CONTROL_PREFIX`), so the single
 /// `is_control_key` rule hides it from the operator's secret browser
 /// alongside the policy / resources / pairs documents.

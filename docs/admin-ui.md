@@ -44,34 +44,74 @@ The **Stores** page creates and manages storage backends.
 A plain store persists resource blobs as plaintext files under its configured
 data directory. File permissions and backend-host security protect the data.
 
-### Encrypted store
+### Store lifecycle status
 
-Creating an encrypted store returns a new 32-byte master key as hexadecimal
-**exactly once**.
+The Status column and server-provided actions describe what the backend currently permits.
 
-1. Copy the key directly into an external password manager or vault.
-2. Confirm that it is recoverable before leaving the response.
-3. Do not store it beside the backend data directory.
+| Status | Meaning | Available management |
+| --- | --- | --- |
+| `ready` | Plain backend available | Edit, migrate to encrypted, and usage-dependent delete |
+| `unlocked` | Encrypted backend and key available | Edit, migrate to plain, rotate, lock, and usage-dependent delete |
+| `locked` | Encrypted backend without an installed key | Edit, unlock, and conservative force-delete |
+| `busy` | Migration owns the lifecycle | No mutation action |
+| `recovery-required` | Durable migration state needs trusted-host recovery | No mutation action |
 
-The backend never writes this key to disk. An encrypted store starts locked
-after every backend restart. Use **Unlock** and provide the key before runtime
-or admin secret operations can access it.
+Locked, busy, and recovery-required rows show contents as unknown rather than claiming that the store is empty.
+A locked row gives unlock-first migration guidance, while busy and recovery-required rows disable migration.
 
-**Lock** drops the in-memory key. **Rotate key** re-encrypts the store and
-returns the replacement key exactly once. Every displaced ciphertext generation
-remains in a unique backend-host recovery workspace. It consumes disk and stays
-decryptable with its old key until a trusted host operator removes that selected
-artifact after independently verifying a later key through lock/restart,
-unlock, and representative reads. The reveal checkbox prevents accidental local
-dismissal only; it does not tell the backend that delivery or external custody
-succeeded.
+### Encrypted store creation
 
-Quiesce wrapper traffic and other admin access first: rotation is serialized
-only against another rotation, so concurrent reads may fail and concurrent
-writes may be lost. If a response is lost, the old key still opens the retained
-pre-rotation snapshot through the trusted-host procedure in
-[Backend](backend.md#retained-rotation-generations). Recovery and cleanup are
-not browser or API operations.
+The browser first requests a fresh backend-generated 32-byte master key without creating the store.
+The key response is marked `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`.
+The dialog keeps the key in transient component state outside TanStack query and mutation caches and requires exact untrimmed re-entry before sending the create request.
+A mismatch or cancellation before submission sends no create request and clears the dialog state on cancellation.
+
+1. Copy the displayed key directly into an external password manager or vault.
+2. Verify the external copy and re-enter the complete 64-character lowercase hexadecimal value without trimming or normalization.
+3. Submit creation only after the exact browser comparison succeeds.
+4. Do not store the key beside the backend data directory.
+
+The backend never writes this key to disk, and successful creation does not reveal a second copy.
+An encrypted store is `unlocked` after successful creation and starts `locked` after every backend restart.
+Use **Unlock** and provide the key before runtime or admin secret operations can access a locked store.
+
+If the browser sends creation and then receives an error or loses the response, the outcome is ambiguous.
+The dialog retains the displayed key, clears request and re-entry copies where practical, refreshes the Stores list, and allows retry with the same key.
+Discarding that retained key requires an explicit warning acknowledgement because the key may already protect committed or recoverable data.
+
+Exact re-entry proves only that one in-browser comparison matched.
+The no-cache headers and transient-state design do not prove response delivery, external custody, independent recoverability, absence from HTTP or browser internals, or comprehensive zeroization of JavaScript strings, serialization buffers, clipboard state, allocator remnants, screenshots, traces, or process memory.
+
+### Backend migration
+
+**Migrate to encrypted** is available for a `ready` plain store.
+It uses the same pre-mutation generated-key and exact untrimmed re-entry flow as encrypted creation and leaves the migrated store `unlocked`.
+**Migrate to plain** is available for an `unlocked` encrypted store and neither generates nor submits a key.
+
+Migration keeps the stable store id, name, description, creation metadata, runtime client mappings, control documents, resource ids, and logical bytes while changing the backend kind and backend-specific canary presence.
+Quiesce wrapper traffic and all other admin mutations for the selected store before migration.
+The backend blocks new storage operations and waits for admitted operations to drain, but an invocation opened earlier can still finalize later under the existing stateless last-writer-wins behavior.
+
+The dialog warns that failure or interruption can leave plaintext recovery material on the trusted backend host.
+Plain-to-encrypted migration can leave the displaced plaintext source under a private `backup/` workspace after source displacement.
+Encrypted-to-plain migration can leave a plaintext target under a private `stage/` workspace or at the canonical path.
+These mode-`0700` sibling migration workspaces are outside runtime and admin resource APIs.
+Successful plain-to-encrypted migration removes every intentional plaintext migration pathname before success, but path removal is not secure media erasure.
+
+After a submitted migration returns an error or loses its response, reconcile the Stores list by the unchanged store id before retrying.
+The browser retains a generated encryption key across ambiguous failure and allows same-key retry only while the refreshed row still shows the original source backend in an eligible state.
+A committed target, missing source, busy state, locked source, or recovery-required state disables retry without silently discarding the retained key.
+A `recovery-required` store needs the stopped-backend trusted-host [backend migration recovery](backend.md#backend-migration-recovery) procedure, which is not a browser or API operation.
+
+### Lock and key rotation
+
+**Lock** drops the encrypted store's in-memory key.
+**Rotate key** re-encrypts an unlocked store and returns the internally generated replacement key exactly once after mutation.
+Every displaced ciphertext generation remains in a unique mode-`0700` backend-host rotation workspace and stays decryptable with its old key until a trusted host operator removes that selected artifact after independently verifying a later key.
+Rotation shares the store lifecycle mutex with migration but retains its non-draining behavior for ordinary reads and writes.
+Quiesce wrapper traffic and other admin access before rotation because concurrent reads can fail and concurrent writes can be lost.
+If a response is lost, the old key still opens the retained pre-rotation snapshot through the [retained rotation generations](backend.md#retained-rotation-generations) procedure.
+Migration recovery workspaces and retained rotation workspaces have different cleanup and startup semantics and must not be treated as interchangeable.
 
 Store creation is available only when `admin.stores_data_root` is configured.
 

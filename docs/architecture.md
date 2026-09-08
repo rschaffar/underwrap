@@ -400,13 +400,41 @@ The wire carries wrapper and resource names, never a storage key. See
 Stores use either:
 
 - `PlainBackend` — atomic plaintext files under the configured store directory;
-- `EncryptedBackend` — ChaCha20-Poly1305 with an operator-held 32-byte key kept
-  only in backend process memory.
+- `EncryptedBackend` — ChaCha20-Poly1305 with an operator-held 32-byte key kept only in backend process memory.
+
+The store list exposes a lifecycle state and server-derived action fields instead of requiring clients to infer availability from backend kind.
+
+| Lifecycle state | Meaning | Mutating actions |
+| --- | --- | --- |
+| `ready` | Plain backend available | Edit, migrate to encrypted, and usage-dependent delete |
+| `unlocked` | Encrypted backend and key available | Edit, migrate to plain, rotate, lock, and usage-dependent delete |
+| `locked` | Encrypted backend without an installed key | Edit, unlock, and conservative force-delete |
+| `busy` | Migration owns lifecycle publication | None |
+| `recovery-required` | Durable migration state needs trusted-host recovery | None |
 
 Encrypted stores start locked after a backend restart.
 An operator supplies the key through the admin UI/API, and a canary verifies it before the backend installs the unlocked store.
-Key rotation stages and verifies a complete fresh generation, activates it, and retains displaced ciphertext in backend-host sibling workspaces outside the active store path and APIs.
-Startup does not select or reconcile those workspaces, and trusted offline recovery and selective cleanup follow the [backend procedure](backend.md#retained-rotation-generations).
+Before encrypted creation or plain-to-encrypted migration, the browser requests a fresh key from the authenticated and CSRF-protected `POST /v1/admin/store-keys` endpoint without mutating storage.
+The key response carries `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`, while the SPA keeps the key in transient component state outside TanStack query and mutation caches.
+The browser requires exact untrimmed re-entry before sending the later create or migration request, but that comparison and the response headers do not prove response delivery, external custody, independent recoverability, zeroization, or absence from all browser internals.
+Encrypted-to-plain migration generates and submits no key.
+
+Migration preserves the stable store id, metadata, canonical directory, runtime client mappings, control documents, resource ids, and logical bytes while changing the backend kind and backend-specific canary presence.
+The backend publishes `busy` under the registry lock to block new complete-operation leases and waits up to 30 seconds for leases already admitted to that exact store entry to drain.
+No registry lock spans the wait, storage I/O, filesystem mutation, or record persistence.
+Operators still quiesce wrapper traffic and admin mutations because an invocation opened before migration can finalize later under the stateless last-writer-wins contract.
+
+Migration uses one collision-safe mode-`0700` sibling workspace containing a non-secret manifest plus `stage/` and, after source displacement, `backup/`.
+It copies through the source and target `StorageBackend` implementations, verifies the complete id set and every logical byte, displaces the source, promotes and reopens the target, atomically records only the backend-kind change, removes the displaced source and workspace, publishes the target entry, and then returns success.
+Successful plain-to-encrypted migration leaves no intentional plaintext migration pathname, but path removal is not secure media erasure.
+Any failed rollback, secret-bearing cleanup failure, ambiguous split state, or exact migration workspace found at startup produces `recovery-required` without automatic deletion or selection.
+Plain-to-encrypted failure can leave plaintext under `backup/`, while encrypted-to-plain failure can leave plaintext under `stage/` or the canonical path.
+See [Backend migration recovery](backend.md#backend-migration-recovery) for the stopped-backend trusted-host procedure and limits.
+
+Key rotation shares the entry-owned lifecycle mutex but retains its existing non-draining behavior and one-time post-mutation replacement-key response.
+Rotation stages and verifies a complete fresh encrypted generation, activates it, and retains displaced ciphertext in backend-host sibling workspaces outside the active store path and APIs.
+Migration workspaces are cleaned before success or force `recovery-required`, whereas retained rotation workspaces remain discoverable only through trusted backend-host inspection until deliberate cleanup.
+Startup does not select or reconcile retained rotation workspaces, and trusted offline recovery and selective cleanup follow the [retained rotation generations procedure](backend.md#retained-rotation-generations).
 
 ## NixOS module responsibilities
 

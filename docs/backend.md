@@ -18,6 +18,7 @@ Operators manage the backend through the admin UI served directly by
 - [Offline operator recovery](#offline-operator-recovery)
 - [Runtime API](#runtime-api)
 - [Admin API](#admin-api)
+  - [Backend migration recovery](#backend-migration-recovery)
 - [Policy model](#policy-model)
 - [Resources and wrapper/resource pairs](#resources-and-wrapperresource-pairs)
 - [Resource blob storage](#resource-blob-storage)
@@ -101,11 +102,12 @@ admin:
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-An encrypted store's 32-byte master key is generated in memory at
-store-creation time, displayed once in the create-store response, and never
-written to disk by underwrap. After a backend restart, every encrypted store
-starts locked until an operator submits the key via
-`POST /v1/admin/stores/{id}/unlock`.
+Before encrypted creation or plain-to-encrypted migration, the authenticated admin key endpoint generates a fresh 32-byte master key in memory and returns it without mutating storage.
+The operator must submit that exact untrimmed 64-character lowercase hexadecimal key to the later create or migration request.
+Encrypted-to-plain migration generates and accepts no key.
+Underwrap never writes an encrypted-store master key to disk, and create or migration success does not return the key again.
+Key rotation retains its separate one-time post-mutation key response.
+After a backend restart, every encrypted store starts locked until an operator submits its key via `POST /v1/admin/stores/{id}/unlock`.
 
 ### Store registry
 
@@ -129,6 +131,10 @@ file stem):
   "dir": "/var/lib/underwrap-backend/data/store_a1b2c3d4e5f6"
 }
 ```
+
+The store list projects `ready`, `unlocked`, `locked`, `busy`, or `recovery-required` independently of the configured `plain` or `encrypted` backend kind.
+Its action fields are authoritative for edit, migration, rotation, lock, unlock, and usage-dependent deletion controls.
+Locked, busy, and recovery-required stores expose conservative unknown-content usage rather than claiming inspected emptiness.
 
 Store records and runtime client instance records use one write lock per live
 registry. A same-registry create, update, or delete becomes observable to other
@@ -154,11 +160,10 @@ This is a same-registry running-process guarantee, not a transaction or global
 lock. Store deletion checks client mappings and backing-store contents before
 its short registry commit window, and runtime client updates consult the store
 registry separately; concurrent cross-registry or backing-store changes can
-invalidate those check/use results. There is no revision, compare-and-swap,
-automatic retry, reconciliation, or repair. Store creation also creates its
-backing data directory—and an encrypted canary for an encrypted store—before the
-store-registry commit; a failed registry save can leave those pre-registry side
-effects for trusted-host cleanup.
+invalidate those check/use results.
+There is no revision, compare-and-swap, automatic retry, reconciliation, or repair.
+Store creation also creates its backing data directory—and an encrypted canary for an encrypted store—before the store-registry commit; a failed registry save can leave those pre-registry side effects for trusted-host cleanup.
+Conditional key validation completes before any create-side filesystem mutation.
 
 ## Offline operator recovery
 
@@ -343,6 +348,7 @@ produced; the helper does not talk to the backend.
 
 A runtime handler's generic internal failure returns HTTP 500 with code `internal` and exact message `the backend could not complete the request`.
 The corresponding `runtime internal failure` ERROR event records only `response_code`, static `context`, and concrete Rust `error_type`, never the source value's display text.
+Runtime storage requests receive `503 store_busy` while migration owns the store lifecycle and `500 migration_recovery_required` while durable migration state awaits trusted-host recovery.
 
 ## Admin API
 
@@ -402,15 +408,14 @@ tower-sessions) and `csrf_header` (the synchronizer `X-CSRF-Token` header
 issued by `axum_csrf`). The document root has no non-empty security
 requirement. Effective operation security follows OpenAPI inheritance: an
 absent operation-level field inherits the root, while an explicit empty array
-is public. The exact effectively public set is login, whoami, and read-only
-bootstrap status. Every other `GET` carries one session-only Security
-Requirement Object. Each of the 32 protected state-changing operations carries
-one Security Requirement Object containing both schemes, which means session
-**and** CSRF in OpenAPI rather than two alternative (OR) requirements.
+is public.
+The exact effectively public set is login, whoami, and read-only bootstrap status.
+Every other `GET` carries one session-only Security Requirement Object.
+Each of the 34 protected state-changing operations carries one Security Requirement Object containing both schemes, which means session **and** CSRF in OpenAPI rather than two alternative (OR) requirements.
 
-The exact 27 store-backed operations that can encounter a locked store advertise
-`503 Service Unavailable` with canonical code `store_locked` and a
-`ServiceErrorResponse`; the admin contract advertises no `423 Locked` response.
+The exact 32 store-backed operations that can encounter locked or busy state advertise `503 Service Unavailable` with `store_locked` and/or `store_busy` in their annotated contract and a `ServiceErrorResponse`.
+The exact 32 store-backed operations that can encounter durable migration state advertise `500 migration_recovery_required`.
+The admin contract advertises no `423 Locked` response.
 
 The full route table follows, grouped by resource and using the real HTTP
 verbs. It is a human-readable index of the generated client route surface;
@@ -453,40 +458,117 @@ collection, `{iid}` a libsecret item.
 
 ### Stores
 
-- `GET    /v1/admin/stores` — list. Each item carries `locked: bool`;
-  encrypted stores boot locked after every restart and stay locked until
-  an admin unlocks them.
-- `POST   /v1/admin/stores` — create. For `backend = "encrypted"` the
-  backend mints a fresh 32-byte master key in memory, writes an
-  encrypted unlock canary, and returns the key value **exactly once** as
-  `key_hex`. The key never touches disk; operators are solely
-  responsible for storing it.
-- `PUT    /v1/admin/stores/{id}` — update.
-- `DELETE /v1/admin/stores/{id}` — delete. Locked stores require
-  `?force=true` (contents can't be verified empty while locked).
-- `POST   /v1/admin/stores/{id}/unlock` — body `{key_hex}`; decrypts the
-  canary to verify the key, then installs the `Unlocked` backend. Its exact
-  response set is `{200, 400, 403, 404, 409, 500}`: 400 carries
-  `invalid_key_hex` or `store_not_encrypted`; a syntactically valid wrong key is
-  `403 key_mismatch`; 404 carries `not_found`; 409 carries `already_unlocked`;
-  and 500 carries `open_store_failed` or `rotation_recovery_required`.
-- `POST   /v1/admin/stores/{id}/lock` — drop the in-memory backend so
-  subsequent runtime requests fail `503 store_locked`. Idempotent for an
-  already-locked encrypted store. Its exact response set is `{200, 400, 404}`:
-  400 carries `store_not_encrypted` and 404 carries `not_found`.
-- `POST   /v1/admin/stores/{id}/rotate-key` — stage and verify a complete copy
-  under a fresh master key, move the live directory into a unique recovery
-  workspace, promote the staged directory, and return the new `key_hex`
-  **exactly once**. The displaced ciphertext is never automatically deleted.
-  Each filesystem rename is atomic, but the multi-rename operation is not a
-  transaction. The per-store mutex serializes rotations only; ordinary reads
-  and writes do not acquire it. Quiesce wrapper traffic and admin mutations for
-  the store before rotating. Its exact response set is `{200, 404, 409, 500,
-  503}`: 404 carries `not_found`, 409 carries `not_encrypted`, 503 carries
-  `store_locked`, and 500 carries `rotate_stage_failed`, `rotate_list_failed`,
-  `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`,
-  `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, or
-  `rotation_recovery_required`.
+Each list item carries its stable id, metadata, backend kind, lifecycle state, usage projection, and server-derived action fields.
+
+| Lifecycle state | Meaning | Allowed store actions |
+| --- | --- | --- |
+| `ready` | Plain backend available | Edit, migrate to encrypted, and usage-dependent delete |
+| `unlocked` | Encrypted backend and key available | Edit, migrate to plain, rotate, lock, and usage-dependent delete |
+| `locked` | Encrypted backend without an installed key | Edit, unlock, and conservative force-delete |
+| `busy` | Migration owns lifecycle publication | No mutation action |
+| `recovery-required` | Durable migration state needs trusted-host recovery | No mutation action |
+
+Locked, busy, and recovery-required list items do not inspect store contents and do not report known emptiness.
+
+- `GET    /v1/admin/stores` — list stores with lifecycle and action projections.
+- `POST   /v1/admin/store-keys` — generate a fresh key without mutating storage.
+  The response is `200 { key_hex }` with `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`.
+- `POST   /v1/admin/stores` — create a store.
+  Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization, writes the encrypted canary, leaves the store `unlocked`, and returns only the store projection.
+  Plain creation rejects a supplied key and leaves the store `ready`.
+  Conditional key failures are `400 key_required`, `unexpected_key`, or `invalid_key_hex`.
+- `PUT    /v1/admin/stores/{id}` — update operator-facing metadata without changing the stable id or backend kind.
+- `DELETE /v1/admin/stores/{id}` — delete the store record when mapping and content rules allow it.
+  Locked stores require `?force=true` because their contents cannot be inspected.
+- `POST   /v1/admin/stores/{id}/migrate` — convert the backend at the unchanged canonical path while preserving the stable id, metadata, runtime client mappings, control documents, resource ids, and logical bytes.
+  Plain-to-encrypted migration requires the same exact key contract as encrypted creation and leaves the store `unlocked`.
+  Encrypted-to-plain migration requires an unlocked source, accepts no key, and leaves the store `ready`.
+  The endpoint returns `400 key_required`, `unexpected_key`, or `invalid_key_hex`; `404 not_found`; `409 same_backend`; `503 store_locked` or `store_busy`; or one fixed `500` failure from the table below.
+- `POST   /v1/admin/stores/{id}/unlock` — body `{key_hex}` decrypts the canary to verify the key and installs the `unlocked` backend.
+  Surrounding key whitespace remains tolerated only for unlock.
+  The exact response set is `{200, 400, 403, 404, 409, 500, 503}`: 400 carries `invalid_key_hex` or `store_not_encrypted`; a syntactically valid wrong key is `403 key_mismatch`; 404 carries `not_found`; 409 carries `already_unlocked`; 500 carries `open_store_failed`, `rotation_recovery_required`, or `migration_recovery_required`; and 503 carries `store_busy`.
+- `POST   /v1/admin/stores/{id}/lock` — drop the in-memory key so subsequent storage requests fail `503 store_locked`.
+  The operation is idempotent for an already-locked encrypted store and also reports migration `busy` or `recovery-required` states distinctly.
+- `POST   /v1/admin/stores/{id}/rotate-key` — stage and verify a complete encrypted copy under a fresh internally generated master key, activate it, and return the new `key_hex` exactly once.
+  Rotation acquires the shared per-entry lifecycle mutex but retains its existing non-draining behavior for ordinary reads and writes.
+  Quiesce wrapper traffic and admin mutations before rotation because concurrent reads can fail and concurrent writes can be lost.
+  The displaced ciphertext remains in a unique recovery workspace and is never automatically deleted.
+
+Migration failures use fixed value-free public responses.
+
+| Failure disposition | HTTP status and code |
+| --- | --- |
+| Workspace or manifest reservation fails before displacement | `500 migrate_stage_failed` |
+| Source listing fails before displacement | `500 migrate_list_failed` |
+| Source or target canary validation fails before displacement | `500 migrate_canary_failed` |
+| A source value cannot be read before displacement | `500 migrate_read_failed` |
+| A target value cannot be written before displacement | `500 migrate_write_failed` |
+| The staged or promoted id set or logical bytes do not verify | `500 migrate_verify_failed` |
+| Source displacement, target promotion, or checked rollback rename fails | `500 migrate_swap_failed` when a verified source is restored, otherwise `500 migration_recovery_required` |
+| The promoted target cannot be reopened | `500 migrate_reopen_failed` when a verified source is restored, otherwise `500 migration_recovery_required` |
+| Store-record persistence fails | `500 write_store_registry_failed` when the verified source and source record are restored, otherwise `500 migration_recovery_required` |
+| Secret-bearing workspace cleanup partially or wholly fails | `500 migration_recovery_required` |
+| Existing leases do not drain within 30 seconds | `503 store_busy` with the unchanged source restored |
+| Startup finds an exact migration workspace | `500 migration_recovery_required` for storage access until trusted-host recovery |
+
+A phase-specific error is returned only when rollback and cleanup leave one verified source authoritative and no ambiguous split state.
+
+#### Migration admission and publication
+
+Migration acquires the exact entry-owned lifecycle mutex, re-resolves the entry, and publishes `busy` while briefly holding the store-registry write lock.
+The busy publication blocks later runtime and admin storage leases, while leases admitted earlier retain an entry-owned count until their complete handler operation ends.
+Migration waits up to 30 seconds for that count to reach zero before reading the source or changing the filesystem.
+No registry lock is held across lifecycle-mutex waiting, lease drainage, storage I/O, filesystem mutation, or store-record persistence.
+After drainage, the copy and publication window contains no asynchronous cancellation point.
+An invocation opened before migration can still finalize afterward under the existing stateless last-writer-wins contract, so the operator must quiesce wrapper traffic and admin mutations before starting migration.
+
+For canonical store directory `<parent>/<store-id>`, migration exclusively creates:
+
+```text
+<parent>/.<store-id>.underwrap-migration-<16-lowercase-hex-id>/
+```
+
+The workspace and newly created `stage/` target are regular non-symlink directories with exact mode `0700`.
+The renamed `backup/` inherits the canonical source mode while remaining beneath the private workspace, and mode drift prevents cleanup and requires trusted-host recovery.
+Its versioned `manifest.json` contains only the stable store id and source and target backend kinds.
+Every canonical, stage, backup, rollback, and cleanup path receives checked occupancy, directory, and symlink validation before rename or removal.
+
+The backend copies every source id through the source and target `StorageBackend` implementations and verifies the complete target id set and every logical value byte-for-byte.
+Plain-to-encrypted migration rejects a source canary and writes and verifies the canonical encrypted canary in the target.
+Encrypted-to-plain migration verifies the source canary and omits it from the plain target.
+After target verification, publication moves the source to `backup/`, promotes `stage/` to the unchanged canonical path, reopens and re-verifies the target, atomically persists the same store record with only its backend kind changed, removes the displaced source and workspace, publishes the target live entry, and returns success.
+
+| Direction | Plaintext recovery residue after failure or interruption |
+| --- | --- |
+| Plain to encrypted | The displaced plaintext source can remain under `backup/` after displacement, rollback failure, registry failure, cleanup failure, or interruption |
+| Encrypted to plain | The plaintext target can remain under `stage/` or at the canonical path after staging, promotion, cleanup failure, or interruption |
+
+Both residue classes remain under mode-`0700` workspace or store directories, remain outside runtime and admin resource APIs while recovery is required, and require trusted-host handling.
+Successful plain-to-encrypted migration leaves no intentional plaintext migration pathname, but path removal is not secure media erasure and does not prove prior plaintext blocks are unrecoverable.
+
+#### Backend migration recovery
+
+Use this procedure only for a store in `recovery-required` after an interrupted or failed backend migration or after startup detects an exact migration workspace.
+Recovery is a trusted backend-host operation and is not available through the browser or admin API.
+
+1. Stop `underwrap-backend` and every other process that can access the selected store, store registry, canonical data path, or sibling migration workspaces, then verify that the HTTPS listener and writers are stopped.
+2. Inventory the store record, canonical path, and every sibling matching `.<store-id>.underwrap-migration-<16-lowercase-hex-id>` without deleting, overwriting, following symlinks, or normalizing a near-match into the exact namespace.
+3. Preserve every canonical, `stage/`, and `backup/` generation and validate the non-secret manifest when possible to identify its recorded store id and source and target backend kinds, while treating a missing or malformed manifest as recovery state rather than authority.
+4. Reject symlinks and non-directory generation roots, retain exact mode `0700`, and use non-overwriting quarantine names for every move so no unselected state is displaced or destroyed.
+5. Use trusted offline tooling built against the matching release's `StorageBackend` implementations to open each candidate with a backend kind established from the valid manifest, persisted record, and source or target role rather than its pathname alone, supply the matching externally held key for an encrypted candidate, verify the encrypted canary or plain canary absence, list the complete id set, and read every logical value.
+6. Select one verified generation whose control documents, resources, and logical bytes match the intended source or target state, and stop without guessing if no candidate and matching encrypted key can be verified.
+7. Quarantine any unselected canonical generation under a fresh occupied-checked mode-`0700` sibling name, then move the selected generation to the canonical path with checked non-overwriting same-filesystem renames.
+8. Rename every remaining exact migration workspace to a fresh nonmatching mode-`0700` quarantine sibling with checked non-overwriting moves, preserve all of its contents, and verify that no exact migration workspace name remains to trigger startup detection.
+9. Atomically replace the existing store record so its file stem, name, description, `created_at`, and canonical `dir` remain unchanged and only `backend` matches the selected generation.
+10. Restart the backend, unlock an encrypted selected generation with its matching key, and verify the stable store projection, representative control and resource reads, runtime client mappings, and a representative authorized runtime read.
+11. If any verification fails, stop the backend again and preserve all canonical, quarantined, and workspace state before choosing another previously verified candidate.
+12. Delete only explicitly selected obsolete migration artifacts after the chosen generation and mappings have been verified, and leave unrelated retained rotation workspaces untouched.
+
+Underwrap does not ship an automatic migration-recovery selector or cleanup command.
+This procedure requires trusted tooling capable of opening and exhaustively reading a candidate through the matching backend implementation.
+It cannot restore media loss, arbitrary corruption, a missing encrypted-generation key, or effects that were never flushed before power loss.
+Recursive cleanup may already have partially removed an obsolete generation before reporting failure, so recovery does not promise that every earlier file remains present.
+The procedure provides no transaction, compare-and-swap, parent-directory fsync, power-loss durability, or secure-erasure guarantee.
 
 #### Retained rotation generations
 
@@ -920,9 +1002,9 @@ or concurrently produced orphan blobs, dangling pairs, or stale permissions;
 unfiltered aggregate/list endpoints and permission list/delete remain diagnostic
 and cleanup surfaces rather than implicit repair.
 
-Key rotation has the stronger operational requirement described under
-[Stores](#stores): quiesce all reads and writes for that store while rotation is
-in progress.
+Store migration and key rotation have the stronger operational requirements described under [Stores](#stores).
+Migration drains normal storage leases admitted before `busy` but cannot retract a later finalize from an invocation opened earlier, while rotation retains its existing non-draining behavior.
+Quiesce wrapper traffic and admin mutations for the selected store before either operation.
 
 Alongside the resource blobs, each store holds a small reserved
 **control-plane** namespace. Resource ids are server-generated `res_*`
