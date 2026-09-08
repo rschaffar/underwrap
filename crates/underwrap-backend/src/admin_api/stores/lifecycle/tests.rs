@@ -268,6 +268,70 @@ async fn rotate_key_refuses_plain_store() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn recovery_required_precedes_plain_backend_errors_for_lifecycle_actions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "work".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: None,
+            key_hex: None,
+        },
+    );
+    state
+        .shared
+        .stores
+        .write()
+        .unwrap()
+        .entries
+        .get_mut(&store_id)
+        .unwrap()
+        .state = StoreState::RecoveryRequired;
+
+    let (rotate_status, rotate_body) = run_handler(handle_admin_store_rotate_key(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(rotate_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(rotate_body["code"], "migration_recovery_required");
+
+    let (unlock_status, unlock_body) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(store_id.clone()),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest {
+            key_hex: "0".repeat(64),
+        }),
+    ));
+    assert_eq!(unlock_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(unlock_body["code"], "migration_recovery_required");
+
+    let (lock_status, lock_body) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(principal),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(lock_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(lock_body["code"], "migration_recovery_required");
+    assert!(matches!(
+        state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .entry(&store_id)
+            .unwrap()
+            .state,
+        StoreState::RecoveryRequired
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rotate_key_refuses_locked_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));

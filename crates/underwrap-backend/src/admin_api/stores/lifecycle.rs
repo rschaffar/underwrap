@@ -522,23 +522,21 @@ async fn rotate_key_with_hooks(
             audit_rotation_publish_failure(&principal, &name);
             return Err(AdminError::rotation_recovery_required());
         }
-        let canonical = match &entry.record.storage {
-            underwrap_protocol::config::StorageConfig::Plain { .. } => {
-                return Err(AdminError::conflict(
-                    "not_encrypted",
-                    "store is not encrypted; rotate-key only applies to encrypted backends",
-                ));
-            }
-            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.to_path_buf(),
-        };
-        let backend = match &entry.state {
-            StoreState::Unlocked(backend) => Arc::clone(backend),
-            StoreState::Locked => return Err(AdminError::store_locked(&name)),
-            StoreState::Busy => return Err(AdminError::store_busy()),
-            StoreState::RecoveryRequired => {
+        let (canonical, backend) = match (&entry.record.storage, &entry.state) {
+            (_, StoreState::Busy) => return Err(AdminError::store_busy()),
+            (_, StoreState::RecoveryRequired) => {
                 return Err(AdminError::migration_recovery_required());
             }
-            StoreState::Ready(_) => {
+            (
+                underwrap_protocol::config::StorageConfig::Encrypted { dir },
+                StoreState::Unlocked(backend),
+            ) => (dir.to_path_buf(), Arc::clone(backend)),
+            (underwrap_protocol::config::StorageConfig::Encrypted { .. }, StoreState::Locked) => {
+                return Err(AdminError::store_locked(&name));
+            }
+            (underwrap_protocol::config::StorageConfig::Plain { .. }, _)
+            | (underwrap_protocol::config::StorageConfig::Encrypted { .. }, StoreState::Ready(_)) =>
+            {
                 return Err(AdminError::conflict(
                     "not_encrypted",
                     "store is not encrypted; rotate-key only applies to encrypted backends",
@@ -649,34 +647,32 @@ pub(crate) async fn handle_admin_store_unlock(
         let entry = reg
             .entry(&name)
             .map_err(|_| AdminError::store_not_found())?;
-        let dir = match &entry.record.storage {
-            underwrap_protocol::config::StorageConfig::Plain { .. } => {
-                return Err(AdminError::bad_request(
-                    "store_not_encrypted",
-                    "plain stores are never locked",
-                ));
+        let dir = match (&entry.record.storage, &entry.state) {
+            (_, StoreState::Busy) => return Err(AdminError::store_busy()),
+            (_, StoreState::RecoveryRequired) => {
+                return Err(AdminError::migration_recovery_required());
             }
-            underwrap_protocol::config::StorageConfig::Encrypted { dir } => dir.to_path_buf(),
-        };
-        match &entry.state {
-            StoreState::Unlocked(_) => {
+            (underwrap_protocol::config::StorageConfig::Encrypted { dir }, StoreState::Locked) => {
+                dir.to_path_buf()
+            }
+            (
+                underwrap_protocol::config::StorageConfig::Encrypted { .. },
+                StoreState::Unlocked(_),
+            ) => {
                 return Err(AdminError::conflict(
                     "already_unlocked",
                     "store is already unlocked",
                 ));
             }
-            StoreState::Locked => {}
-            StoreState::Busy => return Err(AdminError::store_busy()),
-            StoreState::RecoveryRequired => {
-                return Err(AdminError::migration_recovery_required());
-            }
-            StoreState::Ready(_) => {
+            (underwrap_protocol::config::StorageConfig::Plain { .. }, _)
+            | (underwrap_protocol::config::StorageConfig::Encrypted { .. }, StoreState::Ready(_)) =>
+            {
                 return Err(AdminError::bad_request(
                     "store_not_encrypted",
                     "plain stores are never locked",
                 ));
             }
-        }
+        };
         (
             dir,
             Arc::clone(&entry.identity),
@@ -866,23 +862,17 @@ pub(crate) async fn handle_admin_store_lock(
     let entry = reg
         .entry(&name)
         .map_err(|_| AdminError::store_not_found())?;
-    if matches!(
-        entry.record.storage,
-        underwrap_protocol::config::StorageConfig::Plain { .. }
-    ) {
-        return Err(AdminError::bad_request(
-            "store_not_encrypted",
-            "plain stores are never locked",
-        ));
-    }
-    let was_locked = match entry.state {
-        StoreState::Locked => true,
-        StoreState::Unlocked(_) => false,
-        StoreState::Busy => return Err(AdminError::store_busy()),
-        StoreState::RecoveryRequired => {
+    let was_locked = match (&entry.record.storage, &entry.state) {
+        (_, StoreState::Busy) => return Err(AdminError::store_busy()),
+        (_, StoreState::RecoveryRequired) => {
             return Err(AdminError::migration_recovery_required());
         }
-        StoreState::Ready(_) => {
+        (underwrap_protocol::config::StorageConfig::Encrypted { .. }, StoreState::Locked) => true,
+        (underwrap_protocol::config::StorageConfig::Encrypted { .. }, StoreState::Unlocked(_)) => {
+            false
+        }
+        (underwrap_protocol::config::StorageConfig::Plain { .. }, _)
+        | (underwrap_protocol::config::StorageConfig::Encrypted { .. }, StoreState::Ready(_)) => {
             return Err(AdminError::bad_request(
                 "store_not_encrypted",
                 "plain stores are never locked",
