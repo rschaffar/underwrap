@@ -57,6 +57,22 @@ impl RuntimeError {
         )
     }
 
+    pub(crate) fn store_busy() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store_busy",
+            "the store is busy with a lifecycle operation",
+        )
+    }
+
+    pub(crate) fn migration_recovery_required() -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "migration_recovery_required",
+            "the store requires trusted-host migration recovery",
+        )
+    }
+
     pub(crate) fn internal(context: &'static str, error: impl fmt::Display) -> Self {
         tracing::error!(
             response_code = "internal",

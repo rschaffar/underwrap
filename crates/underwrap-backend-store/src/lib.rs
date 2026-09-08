@@ -73,15 +73,31 @@ pub fn open(config: &StorageConfig) -> Result<Box<dyn StorageBackend>> {
 /// rotate-key flows to convert an operator-supplied hex string into
 /// the byte form consumed by [`EncryptedBackend::open_existing_with_key`].
 pub fn parse_hex_key(s: &str) -> Result<[u8; 32]> {
-    let trimmed = s.trim();
+    parse_hex_key_bytes(s.trim(), false)
+}
+
+/// Parse the create/migrate key contract without trimming or normalization.
+/// Only one 64-character lowercase hexadecimal string is accepted.
+pub fn parse_hex_key_strict(s: &str) -> Result<[u8; 32]> {
+    parse_hex_key_bytes(s, true)
+}
+
+fn parse_hex_key_bytes(value: &str, lowercase_only: bool) -> Result<[u8; 32]> {
     anyhow::ensure!(
-        trimmed.len() == 64,
+        value.len() == 64,
         "master key must be exactly 64 hex characters (got {} characters)",
-        trimmed.chars().count(),
+        value.chars().count(),
+    );
+    anyhow::ensure!(
+        value.bytes().all(|byte| byte.is_ascii_digit()
+            || (!lowercase_only && byte.is_ascii_hexdigit())
+            || (b'a'..=b'f').contains(&byte)),
+        "master key must contain only {}hexadecimal characters",
+        if lowercase_only { "lowercase " } else { "" },
     );
     let mut key = [0u8; 32];
     for (i, byte) in key.iter_mut().enumerate() {
-        let slice = trimmed
+        let slice = value
             .get(i * 2..i * 2 + 2)
             .with_context(|| format!("master key hex truncated at position {}", i * 2))?;
         *byte = u8::from_str_radix(slice, 16)

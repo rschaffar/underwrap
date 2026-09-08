@@ -70,6 +70,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let other_id = create_store_for_test(
@@ -79,6 +80,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
             name: "other".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
 
@@ -163,6 +165,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
 
@@ -295,6 +298,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
             name: "old".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let new_store_id = create_store_for_test(
@@ -304,6 +308,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
             name: "new".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let instance_id = "to-remap".to_string();
@@ -381,6 +386,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
 
@@ -467,6 +473,7 @@ fn f015_client_create_blocked_registry_publishes_no_candidate_and_retries_cleanl
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let request = AdminClientInstanceCreateRequest {
@@ -543,6 +550,7 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
             name: "old".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let new_store_id = create_store_for_test(
@@ -552,6 +560,7 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
             name: "new".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (create_status, created) = run_handler(handle_admin_client_instance_create(
@@ -727,6 +736,7 @@ fn f015_client_delete_blocked_registry_preserves_record_and_permission_until_ret
             name: "old".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (create_status, created) = run_handler(handle_admin_client_instance_create(

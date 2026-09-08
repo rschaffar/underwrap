@@ -9,8 +9,9 @@ use underwrap_backend_store::StorageBackend;
 use underwrap_protocol::config::StoreRecord;
 use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteCleanupHint, AdminStoreDeleteResponse, AdminStoreListItem,
-    AdminStoreUpdateRequest, AdminStoreUsageSummary, AdminStoresListResponse, ServiceErrorResponse,
+    AdminStoreDeleteCleanupHint, AdminStoreDeleteResponse, AdminStoreLifecycleState,
+    AdminStoreListItem, AdminStoreUpdateRequest, AdminStoreUsageSummary, AdminStoresListResponse,
+    ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -23,6 +24,26 @@ use crate::store_registry::{
     RegistryLookupError, StoreEntry, StoreState, delete_store_record, save_store_record,
 };
 
+type InitialStoreState = fn(Arc<dyn StorageBackend>) -> StoreState;
+
+struct SubmittedCreationKey([u8; 32]);
+
+impl SubmittedCreationKey {
+    fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    fn copy_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
+
+impl Drop for SubmittedCreationKey {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_admin_stores_list, handle_admin_store_create))
@@ -34,7 +55,7 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
 
 use super::{
     admin_store_actions, admin_store_list_item, admin_store_usage, admin_store_usage_for_locked,
-    create_data_dir_secure, generate_master_key_bytes, master_key_hex, resolve_store_dir,
+    create_data_dir_secure, lifecycle_state, resolve_store_dir,
 };
 use crate::admin_api::audit::{AuditEntity, log_admin_event};
 
@@ -50,24 +71,39 @@ use crate::admin_api::audit::{AuditEntity, log_admin_event};
 pub(crate) async fn handle_admin_stores_list(
     State(state): State<Arc<ListenerState>>,
 ) -> Result<Json<AdminStoresListResponse>, AdminError> {
-    #[allow(clippy::type_complexity)]
-    let visible: Vec<(StoreRecord, Option<Arc<dyn StorageBackend>>)> = state
+    let ids = state
         .shared
         .stores
         .read()
         .unwrap()
         .entries
-        .values()
-        .map(|entry| (entry.record.clone(), entry.state.backend().cloned()))
-        .collect();
-    let mut items = Vec::with_capacity(visible.len());
-    for (record, handle) in visible {
-        let (usage, locked) = match handle.as_deref() {
-            Some(b) => (admin_store_usage(&state, &record.id, b)?, false),
-            None => (admin_store_usage_for_locked(&state, &record.id), true),
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut items = Vec::with_capacity(ids.len());
+    for id in ids {
+        let (record, lifecycle, lease) = {
+            let registry = state.shared.stores.read().unwrap();
+            let entry = registry
+                .entry(&id)
+                .map_err(|_| AdminError::store_not_found())?;
+            let lifecycle = lifecycle_state(&entry.state);
+            let lease = match lifecycle {
+                AdminStoreLifecycleState::Ready | AdminStoreLifecycleState::Unlocked => {
+                    Some(registry.lease(&id).map_err(|_| AdminError::store_busy())?)
+                }
+                AdminStoreLifecycleState::Locked
+                | AdminStoreLifecycleState::Busy
+                | AdminStoreLifecycleState::RecoveryRequired => None,
+            };
+            (entry.record.clone(), lifecycle, lease)
         };
-        let actions = admin_store_actions(&record, &usage, locked);
-        items.push(admin_store_list_item(&record, locked, usage, actions));
+        let usage = match lease.as_ref() {
+            Some(lease) => admin_store_usage(&state, &record.id, lease.as_ref())?,
+            None => admin_store_usage_for_locked(&state, &record.id),
+        };
+        let actions = admin_store_actions(lifecycle, &usage);
+        items.push(admin_store_list_item(&record, lifecycle, usage, actions));
     }
     items.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     Ok(Json(AdminStoresListResponse { items }))
@@ -77,11 +113,12 @@ pub(crate) async fn handle_admin_stores_list(
     post,
     path = "/v1/admin/stores",
     tag = "stores",
+    description = "Create a store. Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; plain creation requires it to be omitted.",
     security(("session_cookie" = [], "csrf_header" = [])),
     request_body = AdminStoreCreateRequest,
     responses(
         (status = 200, description = "Store created and added to the registry.", body = AdminStoreCreateResponse),
-        (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
+        (status = 400, description = "Validation failed, including conditional key errors (`key_required`, `unexpected_key`, or `invalid_key_hex`).", body = ServiceErrorResponse),
         (status = 409, description = "Store name already exists.", body = ServiceErrorResponse),
         (status = 500, description = "Backend could not persist the registry.", body = ServiceErrorResponse),
     ),
@@ -100,6 +137,30 @@ pub(crate) async fn handle_admin_store_create(
     }
     let visible_name = visible_name.to_string();
 
+    let mut submitted_key = match (body.backend, body.key_hex.as_ref()) {
+        (AdminStoreBackendKind::Plain, Some(_)) => {
+            return Err(AdminError::bad_request(
+                "unexpected_key",
+                "plain store creation does not accept a key",
+            ));
+        }
+        (AdminStoreBackendKind::Plain, None) => None,
+        (AdminStoreBackendKind::Encrypted, None) => {
+            return Err(AdminError::bad_request(
+                "key_required",
+                "encrypted store creation requires a key",
+            ));
+        }
+        (AdminStoreBackendKind::Encrypted, Some(key)) => Some(SubmittedCreationKey::new(
+            underwrap_backend_store::parse_hex_key_strict(key.expose()).map_err(|_| {
+                AdminError::bad_request(
+                    "invalid_key_hex",
+                    "key must be exactly 64 lowercase hexadecimal characters",
+                )
+            })?,
+        )),
+    };
+
     let store_id = crate::ids::fresh_id("store", |candidate| {
         state
             .shared
@@ -113,6 +174,7 @@ pub(crate) async fn handle_admin_store_create(
     let validated_dir = resolve_store_dir(&state, &store_id)
         .map_err(|(code, msg)| AdminError::bad_request(code, msg))?;
 
+    let _store_collection_guard = state.admin().store_collection_lock.lock().unwrap();
     {
         let reg = state.shared.stores.read().unwrap();
         if reg
@@ -127,52 +189,47 @@ pub(crate) async fn handle_admin_store_create(
         }
     }
 
-    let (storage, opened, generated_key_hex): (
+    let parent = validated_dir.parent().ok_or_else(|| {
+        AdminError::internal_with_code("create_data_dir_failed", "store directory has no parent")
+    })?;
+    create_data_dir_secure(parent).map_err(|e| {
+        AdminError::internal_with_source(
+            "create_data_dir_failed",
+            "could not create store data directory",
+            "creating stores data root",
+            e,
+        )
+    })?;
+
+    let (storage, opened, initial_state): (
         underwrap_protocol::config::StorageConfig,
         Arc<dyn StorageBackend>,
-        Option<String>,
+        InitialStoreState,
     ) = match body.backend {
         AdminStoreBackendKind::Plain => {
-            let storage = underwrap_protocol::config::StorageConfig::Plain {
-                dir: validated_dir.clone(),
-            };
-            create_data_dir_secure(&validated_dir).map_err(|e| {
-                AdminError::internal_with_source(
-                    "create_data_dir_failed",
-                    "could not create store data directory",
-                    "creating plain store data directory",
-                    e,
-                )
-            })?;
-            let backend: Arc<dyn StorageBackend> = underwrap_backend_store::open(&storage)
-                .map(Arc::from)
-                .map_err(|e| {
+            let backend: Arc<dyn StorageBackend> = Arc::new(
+                underwrap_backend_store::PlainBackend::create(&validated_dir).map_err(|e| {
                     AdminError::internal_with_source(
                         "open_store_failed",
                         "could not open store",
-                        "opening plain store after creation",
+                        "creating plain store backend",
                         e,
                     )
-                })?;
-            (storage, backend, None)
+                })?,
+            );
+            (
+                underwrap_protocol::config::StorageConfig::Plain {
+                    dir: validated_dir.clone(),
+                },
+                backend,
+                StoreState::Ready,
+            )
         }
         AdminStoreBackendKind::Encrypted => {
-            let parent = validated_dir.parent().ok_or_else(|| {
-                AdminError::internal_with_code(
-                    "create_data_dir_failed",
-                    "encrypted store directory has no parent",
-                )
-            })?;
-            create_data_dir_secure(parent).map_err(|e| {
-                AdminError::internal_with_source(
-                    "create_data_dir_failed",
-                    "could not create store data directory",
-                    "creating encrypted stores data root",
-                    e,
-                )
-            })?;
-            let mut key_bytes = generate_master_key_bytes();
-            let key_hex = master_key_hex(&key_bytes);
+            let mut key_bytes = submitted_key
+                .take()
+                .expect("encrypted key was validated before filesystem mutation")
+                .copy_bytes();
             let backend_result = underwrap_backend_store::EncryptedBackend::create_with_key(
                 &validated_dir,
                 key_bytes,
@@ -199,11 +256,13 @@ pub(crate) async fn handle_admin_store_create(
                         e,
                     )
                 })?;
-            let backend: Arc<dyn StorageBackend> = Arc::new(backend);
-            let storage = underwrap_protocol::config::StorageConfig::Encrypted {
-                dir: validated_dir.clone(),
-            };
-            (storage, backend, Some(key_hex))
+            (
+                underwrap_protocol::config::StorageConfig::Encrypted {
+                    dir: validated_dir.clone(),
+                },
+                Arc::new(backend),
+                StoreState::Unlocked,
+            )
         }
     };
 
@@ -215,22 +274,18 @@ pub(crate) async fn handle_admin_store_create(
         storage,
     };
 
-    {
-        let mut reg = state.shared.stores.write().unwrap();
-        reg.entries.insert(
-            store_id.clone(),
-            StoreEntry::new(record.clone(), StoreState::Unlocked(opened)),
-        );
-        if let Err(e) = save_store_record(&state.admin().stores_dir, &record) {
-            reg.entries.remove(&store_id);
-            return Err(AdminError::internal_with_source(
-                "write_store_registry_failed",
-                "could not persist store registry",
-                "persisting created store registry record",
-                e,
-            ));
-        }
+    if let Err(e) = save_store_record(&state.admin().stores_dir, &record) {
+        return Err(AdminError::internal_with_source(
+            "write_store_registry_failed",
+            "could not persist store registry",
+            "persisting created store registry record",
+            e,
+        ));
     }
+    state.shared.stores.write().unwrap().entries.insert(
+        store_id.clone(),
+        StoreEntry::new(record.clone(), initial_state(opened)),
+    );
     log_admin_event(
         "store.create",
         &principal,
@@ -242,10 +297,13 @@ pub(crate) async fn handle_admin_store_create(
         mapped_client_instance_count: 0,
         has_secrets: false,
     };
-    let actions = admin_store_actions(&record, &usage, false);
+    let lifecycle = match body.backend {
+        AdminStoreBackendKind::Plain => AdminStoreLifecycleState::Ready,
+        AdminStoreBackendKind::Encrypted => AdminStoreLifecycleState::Unlocked,
+    };
+    let actions = admin_store_actions(lifecycle, &usage);
     Ok(Json(AdminStoreCreateResponse {
-        store: admin_store_list_item(&record, false, usage, actions),
-        key_hex: generated_key_hex,
+        store: admin_store_list_item(&record, lifecycle, usage, actions),
     }))
 }
 
@@ -260,6 +318,8 @@ pub(crate) async fn handle_admin_store_create(
         (status = 200, description = "Store updated.", body = AdminStoreListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is busy (`store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_store_update(
@@ -268,11 +328,32 @@ pub(crate) async fn handle_admin_store_update(
     AxumPath(name): AxumPath<String>,
     Body(body): Body<AdminStoreUpdateRequest>,
 ) -> Result<Json<AdminStoreListItem>, AdminError> {
-    let updated = {
-        let mut reg = state.shared.stores.write().unwrap();
-        let entry = reg
+    let lifecycle_lock = {
+        let registry = state.shared.stores.read().unwrap();
+        Arc::clone(
+            &registry
+                .entry(&name)
+                .map_err(|_| AdminError::store_not_found())?
+                .lifecycle_lock,
+        )
+    };
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+    let _collection_guard = state.admin().store_collection_lock.lock().unwrap();
+    let (updated, identity, generation, original) = {
+        let registry = state.shared.stores.read().unwrap();
+        let entry = registry
             .entry(&name)
             .map_err(|_| AdminError::store_not_found())?;
+        if !Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock) {
+            return Err(AdminError::store_busy());
+        }
+        match entry.state {
+            StoreState::Busy => return Err(AdminError::store_busy()),
+            StoreState::RecoveryRequired => {
+                return Err(AdminError::migration_recovery_required());
+            }
+            StoreState::Ready(_) | StoreState::Unlocked(_) | StoreState::Locked => {}
+        }
         let mut updated = entry.record.clone();
         if let Some(new_name) = &body.name {
             let new_name = new_name.trim();
@@ -283,7 +364,7 @@ pub(crate) async fn handle_admin_store_update(
                 ));
             }
             let new_name = new_name.to_string();
-            if reg.entries.iter().any(|(other_id, other)| {
+            if registry.entries.iter().any(|(other_id, other)| {
                 other_id != &name && other.record.name.eq_ignore_ascii_case(&new_name)
             }) {
                 return Err(AdminError::conflict(
@@ -300,22 +381,36 @@ pub(crate) async fn handle_admin_store_update(
                 Some(new_desc.clone())
             };
         }
-        let entry = reg
+        (
+            updated,
+            Arc::clone(&entry.identity),
+            entry.generation(),
+            entry.record.clone(),
+        )
+    };
+    if let Err(e) = save_store_record(&state.admin().stores_dir, &updated) {
+        return Err(AdminError::internal_with_source(
+            "write_store_registry_failed",
+            "could not persist store registry",
+            "persisting updated store registry record",
+            e,
+        ));
+    }
+    {
+        let mut registry = state.shared.stores.write().unwrap();
+        let entry = registry
             .entries
             .get_mut(&name)
             .ok_or_else(AdminError::store_not_found)?;
-        let published = updated.clone();
-        if let Err(e) = save_store_record(&state.admin().stores_dir, &updated) {
-            return Err(AdminError::internal_with_source(
-                "write_store_registry_failed",
-                "could not persist store registry",
-                "persisting updated store registry record",
-                e,
-            ));
+        if !Arc::ptr_eq(&entry.identity, &identity)
+            || !Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock)
+            || entry.generation() != generation
+            || entry.record != original
+        {
+            return Err(AdminError::migration_recovery_required());
         }
-        entry.record = published;
-        updated
-    };
+        entry.record = updated.clone();
+    }
     log_admin_event(
         "store.update",
         &principal,
@@ -323,25 +418,32 @@ pub(crate) async fn handle_admin_store_update(
         None,
         "success",
     );
-    let (handle, locked) = {
-        let reg = state.shared.stores.read().unwrap();
-        let entry = reg.entry(&name).map_err(|_| {
+    let (lifecycle, lease) = {
+        let registry = state.shared.stores.read().unwrap();
+        let entry = registry.entry(&name).map_err(|_| {
             AdminError::internal_with_code(
                 "internal",
                 "store vanished from registry between update and read-back",
             )
         })?;
-        let handle = entry.state.backend().cloned();
-        let locked = handle.is_none();
-        (handle, locked)
+        let lifecycle = lifecycle_state(&entry.state);
+        let lease = match lifecycle {
+            AdminStoreLifecycleState::Ready | AdminStoreLifecycleState::Unlocked => Some(
+                registry
+                    .lease(&name)
+                    .map_err(|_| AdminError::store_busy())?,
+            ),
+            _ => None,
+        };
+        (lifecycle, lease)
     };
-    let usage = match handle.as_deref() {
-        Some(b) => admin_store_usage(&state, &name, b)?,
+    let usage = match lease.as_ref() {
+        Some(lease) => admin_store_usage(&state, &name, lease.as_ref())?,
         None => admin_store_usage_for_locked(&state, &name),
     };
-    let actions = admin_store_actions(&updated, &usage, locked);
+    let actions = admin_store_actions(lifecycle, &usage);
     Ok(Json(admin_store_list_item(
-        &updated, locked, usage, actions,
+        &updated, lifecycle, usage, actions,
     )))
 }
 
@@ -364,6 +466,8 @@ pub(crate) struct DeleteQuery {
         (status = 200, description = "Store removed.", body = AdminStoreDeleteResponse),
         (status = 400, description = "Store is non-empty and `force` was not set.", body = ServiceErrorResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is busy (`store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_store_delete(
@@ -373,17 +477,50 @@ pub(crate) async fn handle_admin_store_delete(
     Query(query): Query<DeleteQuery>,
 ) -> Result<Json<AdminStoreDeleteResponse>, AdminError> {
     let force = query.force;
+    let lifecycle_lock = {
+        let registry = state.shared.stores.read().unwrap();
+        Arc::clone(
+            &registry
+                .entry(&name)
+                .map_err(|_| AdminError::store_not_found())?
+                .lifecycle_lock,
+        )
+    };
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+    let _collection_guard = state.admin().store_collection_lock.lock().unwrap();
 
-    let (store_handle, dir_for_hint, locked) = {
-        let reg = state.shared.stores.read().unwrap();
-        let entry = reg.entry(&name).map_err(|e| match e {
-            RegistryLookupError::NotFound => AdminError::store_not_found(),
-            RegistryLookupError::Locked => AdminError::store_locked(&name),
-        })?;
-        let dir = entry.record.storage.dir().to_path_buf();
-        let store_handle = entry.state.backend().cloned();
-        let locked = store_handle.is_none();
-        (store_handle, dir, locked)
+    let (store_lease, dir_for_hint, lifecycle, identity) = {
+        let registry = state.shared.stores.read().unwrap();
+        let entry = registry
+            .entry(&name)
+            .map_err(|_| AdminError::store_not_found())?;
+        if !Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock) {
+            return Err(AdminError::store_busy());
+        }
+        let lifecycle = lifecycle_state(&entry.state);
+        let lease = match lifecycle {
+            AdminStoreLifecycleState::Ready | AdminStoreLifecycleState::Unlocked => {
+                Some(registry.lease(&name).map_err(|error| match error {
+                    RegistryLookupError::NotFound => AdminError::store_not_found(),
+                    RegistryLookupError::Locked => AdminError::store_locked(&name),
+                    RegistryLookupError::Busy => AdminError::store_busy(),
+                    RegistryLookupError::RecoveryRequired => {
+                        AdminError::migration_recovery_required()
+                    }
+                })?)
+            }
+            AdminStoreLifecycleState::Locked => None,
+            AdminStoreLifecycleState::Busy => return Err(AdminError::store_busy()),
+            AdminStoreLifecycleState::RecoveryRequired => {
+                return Err(AdminError::migration_recovery_required());
+            }
+        };
+        (
+            lease,
+            entry.record.storage.dir().to_path_buf(),
+            lifecycle,
+            Arc::clone(&entry.identity),
+        )
     };
     if state
         .shared
@@ -399,8 +536,8 @@ pub(crate) async fn handle_admin_store_delete(
         ));
     }
 
-    let non_empty = match store_handle.as_deref() {
-        Some(h) => h
+    let non_empty = match store_lease.as_ref() {
+        Some(lease) => lease
             .list("")
             .map_err(|e| {
                 AdminError::internal_with_source(
@@ -419,7 +556,7 @@ pub(crate) async fn handle_admin_store_delete(
         None => true,
     };
     if non_empty && !force {
-        let (code, message) = if locked {
+        let (code, message) = if lifecycle == AdminStoreLifecycleState::Locked {
             (
                 "store_locked_use_force",
                 "store is locked; contents cannot be inspected. re-issue with `?force=true` to delete the record anyway",
@@ -434,17 +571,32 @@ pub(crate) async fn handle_admin_store_delete(
     }
 
     {
-        let mut reg = state.shared.stores.write().unwrap();
-        if let Err(e) = delete_store_record(&state.admin().stores_dir, &name) {
-            return Err(AdminError::internal_with_source(
-                "write_store_registry_failed",
-                "could not persist store registry",
-                "deleting store registry record",
-                e,
-            ));
+        let registry = state.shared.stores.read().unwrap();
+        let entry = registry
+            .entry(&name)
+            .map_err(|_| AdminError::store_not_found())?;
+        if !Arc::ptr_eq(&entry.identity, &identity)
+            || !Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock)
+        {
+            return Err(AdminError::store_busy());
         }
-        reg.entries.remove(&name);
+        match entry.state {
+            StoreState::Busy => return Err(AdminError::store_busy()),
+            StoreState::RecoveryRequired => {
+                return Err(AdminError::migration_recovery_required());
+            }
+            StoreState::Ready(_) | StoreState::Unlocked(_) | StoreState::Locked => {}
+        }
     }
+    if let Err(e) = delete_store_record(&state.admin().stores_dir, &name) {
+        return Err(AdminError::internal_with_source(
+            "write_store_registry_failed",
+            "could not persist store registry",
+            "deleting store registry record",
+            e,
+        ));
+    }
+    state.shared.stores.write().unwrap().entries.remove(&name);
     let cleanup_hint = if non_empty {
         let data_dir = dir_for_hint.display().to_string();
         Some(AdminStoreDeleteCleanupHint {

@@ -253,3 +253,132 @@ fn non_json_files_are_ignored() {
     assert_eq!(map.len(), 1);
     assert!(map.contains_key("store_x"));
 }
+
+#[tokio::test]
+async fn migration_lease_counts_complete_scopes_and_notifies_drain() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let backend: Arc<dyn StorageBackend> =
+        Arc::new(underwrap_backend_store::PlainBackend::create(&tmp.path().join("data")).unwrap());
+    let entry = StoreEntry::new(
+        plain_record("store_x", "X", &tmp.path().join("data")),
+        StoreState::Ready(backend),
+    );
+    let tracker = Arc::clone(&entry.leases);
+    let registry = StoreRegistry {
+        entries: HashMap::from([("store_x".into(), entry)]),
+    };
+    let first = registry.lease("store_x").unwrap();
+    let second = registry.lease("store_x").unwrap();
+    assert_eq!(tracker.count(), 2);
+    let waiter = tokio::spawn({
+        let tracker = Arc::clone(&tracker);
+        async move { tracker.wait_for_zero(Duration::from_secs(1)).await }
+    });
+    tokio::task::yield_now().await;
+    drop(first);
+    assert_eq!(tracker.count(), 1);
+    drop(second);
+    assert!(waiter.await.unwrap());
+    assert_eq!(tracker.count(), 0);
+}
+
+#[test]
+fn migration_state_rejects_busy_and_recovery_required_leases() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    for (state, expected) in [
+        (StoreState::Busy, RegistryLookupError::Busy),
+        (
+            StoreState::RecoveryRequired,
+            RegistryLookupError::RecoveryRequired,
+        ),
+        (StoreState::Locked, RegistryLookupError::Locked),
+    ] {
+        let registry = StoreRegistry {
+            entries: HashMap::from([(
+                "store_x".into(),
+                StoreEntry::new(plain_record("store_x", "X", tmp.path()), state),
+            )]),
+        };
+        assert!(matches!(registry.lease("store_x"), Err(error) if error == expected));
+    }
+}
+
+#[test]
+fn migration_workspace_detection_is_exact_and_storage_neutral() {
+    fn assert_recovery(tmp: &tempfile::TempDir, record: StoreRecord) {
+        let before = tree_snapshot(tmp.path());
+        let entries = open_initial_stores(HashMap::from([("store_x".into(), record)])).unwrap();
+        assert!(matches!(
+            entries["store_x"].state,
+            StoreState::RecoveryRequired
+        ));
+        assert_eq!(tree_snapshot(tmp.path()), before);
+    }
+
+    for layout in ["pre-swap", "backup", "promoted", "malformed", "multiple"] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let canonical = tmp.path().join("store_x");
+        if layout != "backup" {
+            underwrap_backend_store::PlainBackend::create(&canonical).unwrap();
+            std::fs::write(canonical.join("marker"), b"canonical").unwrap();
+        }
+        let workspace = tmp
+            .path()
+            .join(".store_x.underwrap-migration-1111111111111111");
+        create_private_directory(&workspace);
+        match layout {
+            "pre-swap" => create_private_directory(&workspace.join("stage")),
+            "backup" => create_private_directory(&workspace.join("backup")),
+            "promoted" => create_private_directory(&workspace.join("backup")),
+            "malformed" => {
+                std::fs::write(workspace.join("manifest.json"), b"malformed").unwrap();
+            }
+            "multiple" => create_private_directory(
+                &tmp.path()
+                    .join(".store_x.underwrap-migration-abcdef0123456789"),
+            ),
+            _ => unreachable!(),
+        }
+        assert_recovery(&tmp, plain_record("store_x", "X", &canonical));
+    }
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let canonical = tmp.path().join("store_x");
+    underwrap_backend_store::PlainBackend::create(&canonical).unwrap();
+    create_private_directory(
+        &tmp.path()
+            .join(".store_x.underwrap-migration-2222222222222222"),
+    );
+    assert_recovery(&tmp, encrypted_record("store_x", &canonical));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let canonical = tmp.path().join("store_x");
+        underwrap_backend_store::PlainBackend::create(&canonical).unwrap();
+        let residue = tmp.path().join("residue");
+        create_private_directory(&residue);
+        symlink(
+            &residue,
+            tmp.path()
+                .join(".store_x.underwrap-migration-3333333333333333"),
+        )
+        .unwrap();
+        assert_recovery(&tmp, plain_record("store_x", "X", &canonical));
+    }
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let canonical = tmp.path().join("store_x");
+    underwrap_backend_store::PlainBackend::create(&canonical).unwrap();
+    create_private_directory(
+        &tmp.path()
+            .join(".store_x.underwrap-migration-ABCDEF0123456789"),
+    );
+    let entries = open_initial_stores(HashMap::from([(
+        "store_x".into(),
+        plain_record("store_x", "X", &canonical),
+    )]))
+    .unwrap();
+    assert!(matches!(entries["store_x"].state, StoreState::Ready(_)));
+}

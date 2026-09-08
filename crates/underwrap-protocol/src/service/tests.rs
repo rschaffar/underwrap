@@ -74,3 +74,40 @@ fn rotate_key_response_shape_remains_key_and_warning_only() {
 fn error_code_store_locked_is_pinned() {
     assert_eq!(ERROR_CODE_STORE_LOCKED, "store_locked");
 }
+
+#[test]
+fn admin_store_migration_contract() {
+    let key = AdminKeyHex::new("a".repeat(64));
+    assert_eq!(format!("{key:?}"), "AdminKeyHex(<redacted>)");
+    assert_eq!(
+        serde_json::to_value(&key).unwrap(),
+        serde_json::json!("a".repeat(64))
+    );
+
+    let create = AdminStoreCreateRequest {
+        name: "vault".into(),
+        backend: AdminStoreBackendKind::Encrypted,
+        description: None,
+        key_hex: Some(key.clone()),
+    };
+    assert_eq!(
+        serde_json::to_value(create).unwrap(),
+        serde_json::json!({
+            "name": "vault",
+            "backend": "encrypted",
+            "key_hex": "a".repeat(64),
+        })
+    );
+
+    let migrate: AdminStoreMigrateRequest = serde_json::from_value(serde_json::json!({
+        "backend": "plain"
+    }))
+    .unwrap();
+    assert_eq!(migrate.backend, AdminStoreBackendKind::Plain);
+    assert!(migrate.key_hex.is_none());
+
+    assert_eq!(
+        serde_json::to_value(AdminStoreLifecycleState::RecoveryRequired).unwrap(),
+        serde_json::json!("recovery-required")
+    );
+}

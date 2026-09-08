@@ -97,7 +97,8 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     responses(
         (status = 200, description = "Per-slot entries in the store (optionally filtered by resource id).", body = AdminSecretListResponse),
         (status = 404, description = "Store or filtered resource not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_secrets_list(
@@ -128,7 +129,8 @@ pub(crate) async fn handle_admin_secrets_list(
     responses(
         (status = 200, description = "Secret value, base64-encoded.", body = AdminSecretReadResponse),
         (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_secret_read(
@@ -162,7 +164,8 @@ pub(crate) async fn handle_admin_secret_read(
         (status = 200, description = "Secret written.", body = AdminOkResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store / resource not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_secret_write(
@@ -211,7 +214,8 @@ pub(crate) async fn handle_admin_secret_write(
     responses(
         (status = 200, description = "Secret removed.", body = AdminSecretDeleteResponse),
         (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_secret_delete(
@@ -264,7 +268,8 @@ pub(crate) async fn handle_admin_secret_delete(
         (status = 200, description = "Secret renamed.", body = AdminOkResponse),
         (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
         (status = 409, description = "Target key already exists.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_secret_rename(

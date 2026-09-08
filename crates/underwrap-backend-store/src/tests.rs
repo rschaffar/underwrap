@@ -57,3 +57,12 @@ fn parse_hex_key_rejects_non_hex() {
     let bad = "z".repeat(64);
     assert!(parse_hex_key(&bad).is_err());
 }
+
+#[test]
+fn strict_key_parser_accepts_only_unpadded_lowercase_hex() {
+    let canonical = "ab".repeat(32);
+    assert!(parse_hex_key_strict(&canonical).is_ok());
+    assert!(parse_hex_key_strict(&canonical.to_ascii_uppercase()).is_err());
+    assert!(parse_hex_key_strict(&format!(" {canonical}")).is_err());
+    assert!(parse_hex_key_strict(&format!("{canonical}\n")).is_err());
+}

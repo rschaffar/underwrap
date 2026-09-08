@@ -30,11 +30,14 @@ fn create_encrypted_store(
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(underwrap_protocol::service::AdminKeyHex::new(
+                "11".repeat(32),
+            )),
         }),
     ));
     assert_eq!(status, StatusCode::OK, "store create failed: {body}");
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
-    let key_hex = body["key_hex"].as_str().unwrap().to_string();
+    let key_hex = "11".repeat(32);
     let canonical = match &state
         .shared
         .stores

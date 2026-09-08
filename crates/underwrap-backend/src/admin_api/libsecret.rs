@@ -152,7 +152,8 @@ fn with_blob<R>(
     responses(
         (status = 200, description = "Whole libsecret tree (item secrets omitted).", body = AdminLibsecretTreeResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_get_tree(
@@ -206,7 +207,8 @@ pub(crate) async fn handle_get_tree(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 409, description = "Collection id already exists.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_post_collection(
@@ -274,7 +276,8 @@ pub(crate) async fn handle_post_collection(
     responses(
         (status = 200, description = "Collection deleted; any aliases pointing at it are scrubbed.", body = AdminLibsecretCollectionDeleteResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_delete_collection(
@@ -338,7 +341,8 @@ pub(crate) async fn handle_delete_collection(
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
         (status = 409, description = "Item id already exists.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_post_item(
@@ -417,7 +421,8 @@ pub(crate) async fn handle_post_item(
     responses(
         (status = 200, description = "Item removed (existed flag in body).", body = AdminLibsecretItemDeleteResponse),
         (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_delete_item(
@@ -467,7 +472,8 @@ pub(crate) async fn handle_delete_item(
     responses(
         (status = 200, description = "Item secret material, base64-encoded.", body = AdminLibsecretItemSecretResponse),
         (status = 404, description = "Store, resource, collection, or item not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_get_item_secret(
@@ -504,7 +510,8 @@ pub(crate) async fn handle_get_item_secret(
         (status = 200, description = "Alias set.", body = AdminOkResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store, resource, or collection not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_put_alias(
@@ -555,7 +562,8 @@ pub(crate) async fn handle_put_alias(
     responses(
         (status = 200, description = "Alias removed (existed flag in body).", body = AdminLibsecretAliasDeleteResponse),
         (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_delete_alias(

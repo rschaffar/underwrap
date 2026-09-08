@@ -24,11 +24,14 @@ fn create_fixture(state: Arc<ListenerState>, principal: &Principal) -> (String, 
             name: "audit vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(underwrap_protocol::service::AdminKeyHex::new(
+                "11".repeat(32),
+            )),
         }),
     ));
     assert_eq!(status, StatusCode::OK);
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
-    let old_key_hex = body["key_hex"].as_str().unwrap().to_string();
+    let old_key_hex = "11".repeat(32);
     let canonical = match &state
         .shared
         .stores

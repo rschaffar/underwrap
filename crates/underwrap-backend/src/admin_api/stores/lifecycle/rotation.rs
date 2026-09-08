@@ -8,6 +8,8 @@ use underwrap_backend_store::{EncryptedBackend, StorageBackend};
 use crate::admin_api::AdminError;
 use crate::admin_api::stores::{generate_master_key_bytes, master_key_hex};
 
+use super::workspace::{checked_rename, create_private_directory};
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum RotationPhase {
     ReserveWorkspace,
@@ -38,7 +40,7 @@ pub(super) trait RotationHooks: Sync {
 
     fn rename(&self, phase: RotationPhase, from: &Path, to: &Path) -> io::Result<()> {
         self.checkpoint(phase)?;
-        std::fs::rename(from, to)
+        checked_rename(from, to)
     }
 
     fn before_rotation_lock(&self) {}
@@ -145,38 +147,6 @@ fn recovery_required(reason: &'static str) -> RotationFailure {
         error: AdminError::rotation_recovery_required(),
         disposition: FailureDisposition::Lock,
         audit_reason: reason,
-    }
-}
-
-fn create_private_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-
-        std::fs::DirBuilder::new().mode(0o700).create(path)?;
-        let secured = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .and_then(|()| {
-                let metadata = std::fs::symlink_metadata(path)?;
-                if metadata.file_type().is_dir()
-                    && !metadata.file_type().is_symlink()
-                    && metadata.permissions().mode() & 0o777 == 0o700
-                {
-                    Ok(())
-                } else {
-                    Err(io::Error::other(
-                        "rotation workspace is not an exact mode-0700 directory",
-                    ))
-                }
-            });
-        if let Err(error) = secured {
-            let _ = std::fs::remove_dir(path);
-            return Err(error);
-        }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir(path)
     }
 }
 

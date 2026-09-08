@@ -19,6 +19,7 @@ use crate::admin_api::csrf::Principal;
 /// may also surface a `wrapper:` field where the entity carries that
 /// information (pairs, permissions).
 pub(crate) enum AuditEntity<'a> {
+    StoreKey,
     User {
         username: &'a str,
     },
@@ -84,6 +85,7 @@ impl AuditEntity<'_> {
     /// so the shape is load-bearing.
     fn resource_field(&self) -> String {
         match self {
+            AuditEntity::StoreKey => "store-key".to_string(),
             AuditEntity::User { username } => format!("user:{username}"),
             AuditEntity::Store { store } => format!("store:{store}"),
             AuditEntity::ClientInstance { id } => format!("client-instance:{id}"),
@@ -118,7 +120,8 @@ impl AuditEntity<'_> {
         match self {
             AuditEntity::Pair { wrapper, .. } => Some(wrapper),
             AuditEntity::Permission { permission, .. } => Some(permission.wrapper.as_str()),
-            AuditEntity::User { .. }
+            AuditEntity::StoreKey
+            | AuditEntity::User { .. }
             | AuditEntity::Store { .. }
             | AuditEntity::ClientInstance { .. }
             | AuditEntity::Resource { .. }

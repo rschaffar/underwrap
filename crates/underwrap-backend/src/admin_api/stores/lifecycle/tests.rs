@@ -53,16 +53,24 @@ fn create_store(
     backend: AdminStoreBackendKind,
     name: &str,
 ) -> serde_json::Value {
-    let (status, body) = run_handler(handle_admin_store_create(
+    let submitted_key = "11".repeat(32);
+    let (status, mut body) = run_handler(handle_admin_store_create(
         State(state),
         Extension(p.clone()),
         Body(AdminStoreCreateRequest {
             name: name.into(),
             backend,
             description: None,
+            key_hex: (backend == AdminStoreBackendKind::Encrypted)
+                .then(|| underwrap_protocol::service::AdminKeyHex::new(submitted_key.clone())),
         }),
     ));
     assert_eq!(status, StatusCode::OK, "store create failed: {body}");
+    if backend == AdminStoreBackendKind::Encrypted {
+        body.as_object_mut()
+            .unwrap()
+            .insert("key_hex".into(), submitted_key.into());
+    }
     body
 }
 
@@ -247,6 +255,7 @@ async fn rotate_key_refuses_plain_store() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (status, body) = run_handler(handle_admin_store_rotate_key(
@@ -270,6 +279,9 @@ async fn rotate_key_refuses_locked_store() {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(underwrap_protocol::service::AdminKeyHex::new(
+                "11".repeat(32),
+            )),
         },
     );
     // Lock the store and confirm rotation refuses.
@@ -415,6 +427,7 @@ fn unlock_refuses_plain_store() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (status, body) = run_handler(handle_admin_store_unlock(
@@ -485,6 +498,7 @@ fn lock_refuses_plain_store() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (status, body) = run_handler(handle_admin_store_lock(

@@ -1,25 +1,21 @@
 //! Store admin CRUD + lifecycle: `/v1/admin/stores/*`.
 //!
-//! Covers `list`, `create`, `update`, `delete` plus the three
-//! lifecycle operations `unlock`, `lock`, and `rotate-key`. CRUD
-//! and lifecycle share `admin_store`, the registry helpers, the audit
-//! shim, the data-dir helpers, the key-material helpers, and the
-//! usage / actions projections; they sit in this module so the two
-//! halves can each `use super::*;`.
+//! Covers store CRUD, generated keys, backend migration, unlocking, locking,
+//! and key rotation.
+//! These handlers share registry, audit, data-directory, key-material, usage,
+//! and action-projection helpers.
 //!
-//! All five CRUD handlers operate on the runtime `state.shared.stores`
-//! registry plus the per-store JSON files under `state.admin().stores_dir`.
-//! Atomicity comes from `tempfile::NamedTempFile` `persist()` on the
-//! per-record write side and a brief held `write()` lock on the
-//! in-memory registry update.
+//! Store-record writes use atomic replacement and a collection mutation lock.
+//! The live registry lock is held only for admission, revalidation, and
+//! publication, never for storage or record I/O.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use underwrap_backend_store::StorageBackend;
 use underwrap_protocol::service::{
-    AdminStoreActionState, AdminStoreBackendKind, AdminStoreListItem, AdminStoreUsageSummary,
+    AdminStoreActionState, AdminStoreBackendKind, AdminStoreLifecycleState, AdminStoreListItem,
+    AdminStoreUsageSummary,
 };
 
 use crate::admin_api::AdminError;
@@ -38,10 +34,14 @@ pub(crate) mod lifecycle;
 pub(crate) fn admin_store(
     state: &ListenerState,
     store: &str,
-) -> std::result::Result<Arc<dyn StorageBackend>, AdminError> {
-    match state.shared.stores.read().unwrap().unlocked_backend(store) {
-        Ok(s) => Ok(s),
+) -> std::result::Result<crate::store_registry::StoreLease, AdminError> {
+    match state.shared.stores.read().unwrap().lease(store) {
+        Ok(lease) => Ok(lease),
         Err(RegistryLookupError::Locked) => Err(AdminError::store_locked(store)),
+        Err(RegistryLookupError::Busy) => Err(AdminError::store_busy()),
+        Err(RegistryLookupError::RecoveryRequired) => {
+            Err(AdminError::migration_recovery_required())
+        }
         Err(RegistryLookupError::NotFound) => Err(AdminError::store_not_found()),
     }
 }
@@ -95,33 +95,55 @@ pub(super) fn admin_store_usage(
 }
 
 pub(super) fn admin_store_actions(
-    record: &StoreRecord,
+    lifecycle: AdminStoreLifecycleState,
     usage: &AdminStoreUsageSummary,
-    locked: bool,
 ) -> AdminStoreActionState {
-    let is_encrypted = matches!(
-        &record.storage,
-        underwrap_protocol::config::StorageConfig::Encrypted { .. }
-    );
-    // Delete works for both locked and unlocked stores — we use the
-    // `has_secrets` flag only to choose between plain DELETE and
-    // force-DELETE. For locked stores we cannot inspect contents, so
-    // we conservatively offer force-DELETE only.
-    let can_delete_without_force =
-        usage.mapped_client_instance_count == 0 && !usage.has_secrets && !locked;
-    let can_force_delete = usage.mapped_client_instance_count == 0 && (usage.has_secrets || locked);
-    AdminStoreActionState {
-        can_rotate_key: is_encrypted && !locked,
-        can_unlock: is_encrypted && locked,
-        can_lock: is_encrypted && !locked,
-        can_delete_now: can_delete_without_force,
-        can_force_delete,
+    let unmapped = usage.mapped_client_instance_count == 0;
+    match lifecycle {
+        AdminStoreLifecycleState::Ready => AdminStoreActionState {
+            can_update: true,
+            can_migrate: true,
+            can_rotate_key: false,
+            can_unlock: false,
+            can_lock: false,
+            can_delete_now: unmapped && !usage.has_secrets,
+            can_force_delete: unmapped && usage.has_secrets,
+        },
+        AdminStoreLifecycleState::Unlocked => AdminStoreActionState {
+            can_update: true,
+            can_migrate: true,
+            can_rotate_key: true,
+            can_unlock: false,
+            can_lock: true,
+            can_delete_now: unmapped && !usage.has_secrets,
+            can_force_delete: unmapped && usage.has_secrets,
+        },
+        AdminStoreLifecycleState::Locked => AdminStoreActionState {
+            can_update: true,
+            can_migrate: false,
+            can_rotate_key: false,
+            can_unlock: true,
+            can_lock: false,
+            can_delete_now: false,
+            can_force_delete: unmapped,
+        },
+        AdminStoreLifecycleState::Busy | AdminStoreLifecycleState::RecoveryRequired => {
+            AdminStoreActionState {
+                can_update: false,
+                can_migrate: false,
+                can_rotate_key: false,
+                can_unlock: false,
+                can_lock: false,
+                can_delete_now: false,
+                can_force_delete: false,
+            }
+        }
     }
 }
 
 pub(super) fn admin_store_list_item(
     record: &StoreRecord,
-    locked: bool,
+    lifecycle_state: AdminStoreLifecycleState,
     usage: AdminStoreUsageSummary,
     actions: AdminStoreActionState,
 ) -> AdminStoreListItem {
@@ -129,11 +151,25 @@ pub(super) fn admin_store_list_item(
         id: record.id.clone(),
         name: record.name.clone(),
         backend: backend_kind(&record.storage),
+        lifecycle_state,
         description: record.description.clone(),
         created_at: record.created_at,
-        locked,
         usage,
         actions,
+    }
+}
+
+pub(super) fn lifecycle_state(
+    state: &crate::store_registry::StoreState,
+) -> AdminStoreLifecycleState {
+    match state {
+        crate::store_registry::StoreState::Ready(_) => AdminStoreLifecycleState::Ready,
+        crate::store_registry::StoreState::Unlocked(_) => AdminStoreLifecycleState::Unlocked,
+        crate::store_registry::StoreState::Locked => AdminStoreLifecycleState::Locked,
+        crate::store_registry::StoreState::Busy => AdminStoreLifecycleState::Busy,
+        crate::store_registry::StoreState::RecoveryRequired => {
+            AdminStoreLifecycleState::RecoveryRequired
+        }
     }
 }
 

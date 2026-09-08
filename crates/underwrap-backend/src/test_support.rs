@@ -267,6 +267,7 @@ pub(crate) fn default_admin_runtime_state() -> ListenerState {
             stores_dir: PathBuf::new(),
             clients_dir: PathBuf::new(),
             stores_data_root: None,
+            store_collection_lock: std::sync::Mutex::new(()),
             allowed_origins: Vec::new(),
             users_dir: users_dir.clone(),
             bootstrap_file,
@@ -304,7 +305,7 @@ pub(crate) fn test_admin_state(stores: HashMap<String, Arc<dyn StorageBackend>>)
                     dir: PathBuf::from("/dev/null"),
                 },
             };
-            (id, StoreEntry::new(record, StoreState::Unlocked(b)))
+            (id, StoreEntry::new(record, StoreState::Ready(b)))
         })
         .collect();
     let mut s = default_admin_runtime_state();
@@ -365,7 +366,7 @@ pub(crate) fn service_state_with_runtime_client(
     };
     let entries = HashMap::from([(
         store_id.to_string(),
-        StoreEntry::new(record, StoreState::Unlocked(Arc::new(TestStore::new()))),
+        StoreEntry::new(record, StoreState::Ready(Arc::new(TestStore::new()))),
     )]);
     let client_instances = HashMap::from([(
         "inst_local".to_string(),
@@ -582,6 +583,7 @@ pub(crate) fn entity_test_state_with_store(tmp: &std::path::Path) -> (Arc<Listen
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     (state, id)
@@ -684,6 +686,7 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
 

@@ -37,6 +37,7 @@ fn drop_client_instance_permissions_on_locked_store_warns_and_audits() {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
 
