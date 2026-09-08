@@ -461,7 +461,7 @@
         "tags": [
           "stores"
         ],
-        "description": "Create a store. Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; plain creation requires it to be omitted.",
+        "description": "Create a store. Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; plain creation requires it to be omitted. Explicit JSON `null` is invalid for every backend kind.",
         "operationId": "handle_admin_store_create",
         "requestBody": {
           "content": {
@@ -485,7 +485,7 @@
             }
           },
           "400": {
-            "description": "Validation failed, including conditional key errors (`key_required`, `unexpected_key`, or `invalid_key_hex`).",
+            "description": "Validation failed, including an explicit null `key_hex` (`invalid_request`) or conditional key errors (`key_required`, `unexpected_key`, or `invalid_key_hex`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -777,7 +777,7 @@
         "tags": [
           "stores"
         ],
-        "description": "Migrate a store backend without changing its id. Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted.",
+        "description": "Migrate a store backend without changing its id. Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted. Explicit JSON `null` is invalid for every migration direction.",
         "operationId": "handle_admin_store_migrate",
         "parameters": [
           {
@@ -812,7 +812,7 @@
             }
           },
           "400": {
-            "description": "Direction-specific key validation failed (`key_required`, `unexpected_key`, or `invalid_key_hex`).",
+            "description": "Request extraction or direction-specific key validation failed (`invalid_request`, `key_required`, `unexpected_key`, or `invalid_key_hex`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4503,7 +4503,7 @@
       },
       "AdminStoreCreateRequest": {
         "type": "object",
-        "description": "Store creation request.\n\nEncrypted creation requires `key_hex` to be exactly 64 lowercase\nhexadecimal characters without trimming or normalization.\nPlain creation requires `key_hex` to be omitted.",
+        "description": "Store creation request.\n\nEncrypted creation requires `key_hex` to be exactly 64 lowercase\nhexadecimal characters without trimming or normalization.\nPlain creation requires `key_hex` to be omitted; explicit JSON `null` is\ninvalid for every backend kind.",
         "required": [
           "name",
           "backend"
@@ -4519,15 +4519,8 @@
             ]
           },
           "key_hex": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AdminKeyHex",
-                "description": "Required exactly when `backend` is `encrypted`; otherwise omitted.\nThe accepted value is exactly 64 lowercase hexadecimal characters."
-              }
-            ]
+            "type": "string",
+            "description": "Required exactly when `backend` is `encrypted`; otherwise omitted.\nThe accepted value is exactly 64 lowercase hexadecimal characters."
           },
           "name": {
             "type": "string"
@@ -4669,7 +4662,7 @@
       },
       "AdminStoreMigrateRequest": {
         "type": "object",
-        "description": "Store backend migration request.\n\nMigration to encrypted requires `key_hex` to be exactly 64 lowercase\nhexadecimal characters without trimming or normalization.\nMigration to plain requires `key_hex` to be omitted.",
+        "description": "Store backend migration request.\n\nMigration to encrypted requires `key_hex` to be exactly 64 lowercase\nhexadecimal characters without trimming or normalization.\nMigration to plain requires `key_hex` to be omitted; explicit JSON `null`\nis invalid for every migration direction.",
         "required": [
           "backend"
         ],
@@ -4678,15 +4671,8 @@
             "$ref": "#/components/schemas/AdminStoreBackendKind"
           },
           "key_hex": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AdminKeyHex",
-                "description": "Required exactly when `backend` is `encrypted`; otherwise omitted.\nThe accepted value is exactly 64 lowercase hexadecimal characters."
-              }
-            ]
+            "type": "string",
+            "description": "Required exactly when `backend` is `encrypted`; otherwise omitted.\nThe accepted value is exactly 64 lowercase hexadecimal characters."
           }
         }
       },

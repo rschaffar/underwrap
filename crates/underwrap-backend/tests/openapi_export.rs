@@ -168,7 +168,7 @@ const MIGRATE_RESPONSES: [(&str, &str); 5] = [
     ("200", "Store migrated at its stable id."),
     (
         "400",
-        "Direction-specific key validation failed (`key_required`, `unexpected_key`, or `invalid_key_hex`).",
+        "Request extraction or direction-specific key validation failed (`invalid_request`, `key_required`, `unexpected_key`, or `invalid_key_hex`).",
     ),
     ("404", "Store not found (`not_found`)."),
     (
@@ -443,11 +443,11 @@ fn store_key_and_lifecycle_schemas_match_the_admin_contract() {
     for (id, operation_text) in [
         (
             "POST /v1/admin/stores",
-            "Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; plain creation requires it to be omitted.",
+            "Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; plain creation requires it to be omitted. Explicit JSON `null` is invalid for every backend kind.",
         ),
         (
             "POST /v1/admin/stores/{id}/migrate",
-            "Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted.",
+            "Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted. Explicit JSON `null` is invalid for every migration direction.",
         ),
     ] {
         assert!(
@@ -464,13 +464,16 @@ fn store_key_and_lifecycle_schemas_match_the_admin_contract() {
                 .as_str()
                 .is_some_and(|description| description.contains("requires `key_hex`"))
         );
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("key_hex"))
+        );
         let key_hex = &schema["properties"]["key_hex"];
-        let key_description = key_hex["description"].as_str().or_else(|| {
-            key_hex
-                .pointer("/oneOf/1/description")
-                .and_then(Value::as_str)
-        });
-        assert!(key_description.is_some_and(|description| {
+        assert_eq!(key_hex["type"], "string");
+        assert!(key_hex.get("oneOf").is_none());
+        assert!(key_hex["description"].as_str().is_some_and(|description| {
             description
                 .contains("Required exactly when `backend` is `encrypted`; otherwise omitted.")
         }));

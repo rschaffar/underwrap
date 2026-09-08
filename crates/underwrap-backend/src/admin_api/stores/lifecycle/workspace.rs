@@ -34,7 +34,7 @@ pub(super) fn require_directory(path: &Path, exact_private_mode: bool) -> io::Re
     #[cfg(unix)]
     if exact_private_mode {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o777 != 0o700 {
+        if metadata.permissions().mode() & 0o7777 != 0o0700 {
             return Err(io::Error::other(
                 "workspace path is not an exact mode-0700 directory",
             ));
@@ -61,3 +61,6 @@ pub(super) fn checked_rename(from: &Path, to: &Path) -> io::Result<()> {
     require_absent(to)?;
     std::fs::rename(from, to)
 }
+
+#[cfg(all(test, unix))]
+mod tests;

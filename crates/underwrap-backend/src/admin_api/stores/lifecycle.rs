@@ -77,13 +77,13 @@ pub(crate) async fn handle_admin_store_key_generate(
     post,
     path = "/v1/admin/stores/{id}/migrate",
     tag = "stores",
-    description = "Migrate a store backend without changing its id. Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted.",
+    description = "Migrate a store backend without changing its id. Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted. Explicit JSON `null` is invalid for every migration direction.",
     security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     request_body = AdminStoreMigrateRequest,
     responses(
         (status = 200, description = "Store migrated at its stable id.", body = AdminStoreMigrateResponse),
-        (status = 400, description = "Direction-specific key validation failed (`key_required`, `unexpected_key`, or `invalid_key_hex`).", body = ServiceErrorResponse),
+        (status = 400, description = "Request extraction or direction-specific key validation failed (`invalid_request`, `key_required`, `unexpected_key`, or `invalid_key_hex`).", body = ServiceErrorResponse),
         (status = 404, description = "Store not found (`not_found`).", body = ServiceErrorResponse),
         (status = 409, description = "Requested backend matches the current backend (`same_backend`).", body = ServiceErrorResponse),
         (status = 500, description = "Migration failed (`migrate_stage_failed`, `migrate_list_failed`, `migrate_canary_failed`, `migrate_read_failed`, `migrate_write_failed`, `migrate_verify_failed`, `migrate_swap_failed`, `migrate_reopen_failed`, `write_store_registry_failed`, or `migration_recovery_required`).", body = ServiceErrorResponse),
@@ -146,6 +146,27 @@ impl Drop for BusyCancellationGuard {
     }
 }
 
+/// Run the synchronous post-drain migration as one non-cancellable section.
+///
+/// Production uses Tokio's multi-thread runtime, where `block_in_place` moves
+/// other async work away from the worker that performs filesystem and crypto
+/// operations. Current-thread test runtimes cannot use `block_in_place`, so the
+/// same synchronous section runs inline there. Neither path introduces an
+/// `.await` after the request flow disarms the drained store.
+fn run_post_drain_migration<T>(operation: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(operation)
+        }
+        _ => operation(),
+    }
+}
+
 async fn migrate_with_hooks(
     state: Arc<ListenerState>,
     principal: Principal,
@@ -158,6 +179,9 @@ async fn migrate_with_hooks(
         let entry = registry
             .entry(&name)
             .map_err(|_| AdminError::store_not_found())?;
+        if matches!(entry.state, StoreState::RecoveryRequired) {
+            return Err(AdminError::migration_recovery_required());
+        }
         (
             Arc::clone(&entry.lifecycle_lock),
             Arc::clone(&entry.identity),
@@ -196,6 +220,8 @@ async fn migrate_with_hooks(
         (underwrap_protocol::service::AdminStoreBackendKind::Plain, None) => None,
     };
 
+    #[cfg(test)]
+    hooks.before_lifecycle_lock();
     let _lifecycle_guard = lifecycle_lock.lock().await;
     let (source_record, target_record, source_backend, source_generation, leases) = {
         let mut registry = state.shared.stores.write().unwrap();
@@ -205,8 +231,20 @@ async fn migrate_with_hooks(
             .ok_or_else(AdminError::store_not_found)?;
         if !Arc::ptr_eq(&entry.identity, &identity)
             || !Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock)
-            || super::backend_kind(&entry.record.storage) != source_kind
         {
+            return Err(AdminError::store_busy());
+        }
+        if matches!(entry.state, StoreState::RecoveryRequired) {
+            return Err(AdminError::migration_recovery_required());
+        }
+        let current_kind = super::backend_kind(&entry.record.storage);
+        if current_kind == body.backend {
+            return Err(AdminError::conflict(
+                "same_backend",
+                "the store already uses the requested backend",
+            ));
+        }
+        if current_kind != source_kind {
             return Err(AdminError::store_busy());
         }
         let source_backend = match &entry.state {
@@ -278,114 +316,120 @@ async fn migrate_with_hooks(
     }
     cancellation.disarm();
 
-    let stores_dir = state.admin().stores_dir.clone();
-    let migration = migration::migrate_generation(
-        &name,
-        source_record.storage.dir(),
-        source_backend.as_ref(),
-        source_kind,
-        body.backend,
-        target_key.as_ref(),
-        hooks,
-        || {
-            let _guard = state.admin().store_collection_lock.lock().unwrap();
-            crate::store_registry::save_store_record(&stores_dir, &target_record)
-        },
-        || {
-            let _guard = state.admin().store_collection_lock.lock().unwrap();
-            crate::store_registry::save_store_record(&stores_dir, &source_record)
-        },
-    );
-    let migrated = match migration {
-        Ok(success) => success,
-        Err(failure) => {
-            let mut registry = state.shared.stores.write().unwrap();
-            let publishable = registry.entries.get_mut(&name).filter(|entry| {
-                Arc::ptr_eq(&entry.identity, &identity)
-                    && Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock)
-                    && entry.generation() == source_generation
-                    && matches!(entry.state, StoreState::Busy)
-            });
-            if let Some(entry) = publishable {
-                if failure.target_record_persisted {
-                    entry.record = target_record.clone();
+    run_post_drain_migration(|| {
+        let stores_dir = state.admin().stores_dir.clone();
+        let migration = migration::migrate_generation(
+            &name,
+            source_record.storage.dir(),
+            source_backend.as_ref(),
+            source_kind,
+            body.backend,
+            target_key.as_ref(),
+            hooks,
+            || {
+                let _guard = state.admin().store_collection_lock.lock().unwrap();
+                crate::store_registry::save_store_record(&stores_dir, &target_record)
+            },
+            || {
+                let _guard = state.admin().store_collection_lock.lock().unwrap();
+                crate::store_registry::save_store_record(&stores_dir, &source_record)
+            },
+        );
+        let migrated = match migration {
+            Ok(success) => success,
+            Err(failure) => {
+                let mut registry = state.shared.stores.write().unwrap();
+                let publishable = registry.entries.get_mut(&name).filter(|entry| {
+                    Arc::ptr_eq(&entry.identity, &identity)
+                        && Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock)
+                        && entry.generation() == source_generation
+                        && matches!(entry.state, StoreState::Busy)
+                });
+                if let Some(entry) = publishable {
+                    if failure.target_record_persisted {
+                        entry.record = target_record.clone();
+                    }
+                    entry.state = match failure.disposition {
+                        migration::FailureDisposition::RestoreSource => match source_kind {
+                            underwrap_protocol::service::AdminStoreBackendKind::Plain => {
+                                StoreState::Ready(Arc::clone(&source_backend))
+                            }
+                            underwrap_protocol::service::AdminStoreBackendKind::Encrypted => {
+                                StoreState::Unlocked(Arc::clone(&source_backend))
+                            }
+                        },
+                        migration::FailureDisposition::RecoveryRequired => {
+                            StoreState::RecoveryRequired
+                        }
+                    };
+                    entry.advance_generation();
+                } else {
+                    return Err(AdminError::migration_recovery_required());
                 }
-                entry.state = match failure.disposition {
-                    migration::FailureDisposition::RestoreSource => match source_kind {
-                        underwrap_protocol::service::AdminStoreBackendKind::Plain => {
-                            StoreState::Ready(Arc::clone(&source_backend))
-                        }
-                        underwrap_protocol::service::AdminStoreBackendKind::Encrypted => {
-                            StoreState::Unlocked(Arc::clone(&source_backend))
-                        }
-                    },
-                    migration::FailureDisposition::RecoveryRequired => StoreState::RecoveryRequired,
-                };
-                entry.advance_generation();
-            } else {
+                drop(registry);
+                log_admin_event(
+                    "store.migrate",
+                    &principal,
+                    AuditEntity::Store { store: &name },
+                    Some(failure.audit_reason),
+                    "failure",
+                );
+                return Err(failure.error);
+            }
+        };
+
+        {
+            let mut registry = state.shared.stores.write().unwrap();
+            let Some(entry) = registry.entries.get_mut(&name) else {
+                return Err(AdminError::migration_recovery_required());
+            };
+            if !Arc::ptr_eq(&entry.identity, &identity)
+                || !Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock)
+                || entry.generation() != source_generation
+                || !matches!(entry.state, StoreState::Busy)
+            {
                 return Err(AdminError::migration_recovery_required());
             }
-            drop(registry);
-            log_admin_event(
-                "store.migrate",
-                &principal,
-                AuditEntity::Store { store: &name },
-                Some(failure.audit_reason),
-                "failure",
-            );
-            return Err(failure.error);
+            entry.record = target_record.clone();
+            entry.state = match body.backend {
+                underwrap_protocol::service::AdminStoreBackendKind::Plain => {
+                    StoreState::Ready(Arc::clone(&migrated.backend))
+                }
+                underwrap_protocol::service::AdminStoreBackendKind::Encrypted => {
+                    StoreState::Unlocked(Arc::clone(&migrated.backend))
+                }
+            };
+            entry.advance_generation();
         }
-    };
-
-    {
-        let mut registry = state.shared.stores.write().unwrap();
-        let Some(entry) = registry.entries.get_mut(&name) else {
-            return Err(AdminError::migration_recovery_required());
+        let usage = underwrap_protocol::service::AdminStoreUsageSummary {
+            mapped_client_instance_count: super::mapped_client_instance_count(&state, &name),
+            has_secrets: migrated.has_secrets,
         };
-        if !Arc::ptr_eq(&entry.identity, &identity)
-            || !Arc::ptr_eq(&entry.lifecycle_lock, &lifecycle_lock)
-            || entry.generation() != source_generation
-            || !matches!(entry.state, StoreState::Busy)
-        {
-            return Err(AdminError::migration_recovery_required());
-        }
-        entry.record = target_record.clone();
-        entry.state = match body.backend {
+        let lifecycle = match body.backend {
             underwrap_protocol::service::AdminStoreBackendKind::Plain => {
-                StoreState::Ready(Arc::clone(&migrated.backend))
+                underwrap_protocol::service::AdminStoreLifecycleState::Ready
             }
             underwrap_protocol::service::AdminStoreBackendKind::Encrypted => {
-                StoreState::Unlocked(Arc::clone(&migrated.backend))
+                underwrap_protocol::service::AdminStoreLifecycleState::Unlocked
             }
         };
-        entry.advance_generation();
-    }
-    let usage = underwrap_protocol::service::AdminStoreUsageSummary {
-        mapped_client_instance_count: super::mapped_client_instance_count(&state, &name),
-        has_secrets: migrated.has_secrets,
-    };
-    let lifecycle = match body.backend {
-        underwrap_protocol::service::AdminStoreBackendKind::Plain => {
-            underwrap_protocol::service::AdminStoreLifecycleState::Ready
-        }
-        underwrap_protocol::service::AdminStoreBackendKind::Encrypted => {
-            underwrap_protocol::service::AdminStoreLifecycleState::Unlocked
-        }
-    };
-    let actions = super::admin_store_actions(lifecycle, &usage);
-    log_admin_event(
-        "store.migrate",
-        &principal,
-        AuditEntity::Store { store: &name },
-        Some(match body.backend {
-            underwrap_protocol::service::AdminStoreBackendKind::Plain => "encrypted-to-plain",
-            underwrap_protocol::service::AdminStoreBackendKind::Encrypted => "plain-to-encrypted",
-        }),
-        "success",
-    );
-    Ok(Json(AdminStoreMigrateResponse {
-        store: super::admin_store_list_item(&target_record, lifecycle, usage, actions),
-    }))
+        let actions = super::admin_store_actions(lifecycle, &usage);
+        log_admin_event(
+            "store.migrate",
+            &principal,
+            AuditEntity::Store { store: &name },
+            Some(match body.backend {
+                underwrap_protocol::service::AdminStoreBackendKind::Plain => "encrypted-to-plain",
+                underwrap_protocol::service::AdminStoreBackendKind::Encrypted => {
+                    "plain-to-encrypted"
+                }
+            }),
+            "success",
+        );
+        Ok(Json(AdminStoreMigrateResponse {
+            store: super::admin_store_list_item(&target_record, lifecycle, usage, actions),
+        }))
+    })
 }
 
 /// `POST /v1/admin/stores/{id}/rotate-key` — mint a fresh in-memory

@@ -938,7 +938,7 @@ service account.
 
 - the authenticated and CSRF-protected key endpoint generates a fresh key in backend memory without mutating storage for encrypted creation or plain-to-encrypted migration;
 - the endpoint returns the key with `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`;
-- encrypted creation and plain-to-encrypted migration accept only one exact untrimmed 64-character lowercase hexadecimal key before their first storage mutation;
+- encrypted creation and plain-to-encrypted migration accept only one exact untrimmed 64-character lowercase hexadecimal key before their first storage mutation, while explicit JSON `key_hex: null` is rejected as `400 invalid_request` before either direction mutates state;
 - encrypted-to-plain migration generates and accepts no key;
 - create and migration success responses do not return the key again;
 - no key file is written by underwrap;
@@ -971,10 +971,16 @@ The entry-owned lifecycle mutex serializes migration with rotation and the other
 Migration publishes `busy` while holding the registry lock, rejects later normal storage leases, and waits up to 30 seconds for already admitted leases on that exact entry to drain before storage or filesystem mutation.
 No registry lock is held across asynchronous waiting, storage I/O, filesystem mutation, or store-record persistence.
 A lease timeout restores the unchanged source and returns `503 store_busy`.
-After drainage, migration has no asynchronous cancellation point through copy and publication.
+After drainage, migration runs its synchronous copy, verification, filesystem, persistence, cleanup, and publication path inside a runtime-aware `block_in_place` boundary on the production multi-thread runtime and has no asynchronous cancellation point.
 An invocation opened before migration can still finalize later because runtime open/finalize is stateless, so operators must quiesce wrapper traffic and admin mutations before migration.
 
-Migration copies and verifies the complete storage-id set and every logical value before source displacement.
+Migration retains identifiers rather than a whole-store plaintext snapshot, copies and drops one logical source value at a time, and verifies and drops one source/target value pair at a time.
+It verifies both complete storage-id sets, every logical value, and both backend-specific canary rules before source displacement.
+While the original source is live, migration retains a fixed domain-separated SHA-256 fingerprint over source kind, canary treatment, and the complete sorted length-delimited id/value sequence alongside the id inventory, without retaining complete values.
+This bounded in-memory rollback-integrity evidence does not claim collision impossibility and does not protect against malicious backend-host root, which remains trusted.
+After displacement it reopens `backup/` through the source `StorageBackend` without exporting encrypted key bytes and requires an exact source fingerprint before promotion, before and after moving a promoted target aside, and after restoring the source at the canonical path.
+A fingerprint mismatch, unreadable source, or source id mismatch preserves the workspace and returns `migration_recovery_required` rather than a target-verification error.
+Direct one-pair-at-a-time source-to-target byte comparison remains required before and after promotion.
 After promotion it reopens and re-verifies the target, persists the existing record with only its backend kind changed, removes the displaced source and workspace, publishes the target live entry, and only then returns success.
 A phase-specific failure is returned only when a verified source and source record are authoritative and all secret-bearing migration state has been removed.
 Failed rollback, failed secret-bearing cleanup, an ambiguous split state, or an exact migration workspace found at startup produces `migration_recovery_required` and preserves remaining artifacts for the [stopped-backend recovery procedure](backend.md#backend-migration-recovery).

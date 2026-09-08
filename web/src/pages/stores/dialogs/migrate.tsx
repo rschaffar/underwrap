@@ -25,11 +25,11 @@ function migrationUnavailableReason(
   if (!store) {
     return "The selected store is missing from the current Stores list. Retry is disabled until it reappears in the original source state.";
   }
-  if (store.backend !== sourceBackend) {
-    return "The refreshed Stores list shows that this store already uses the target backend. Retry is disabled; retain the key until you have reconciled the backend outcome or explicitly discard it.";
-  }
   if (store.lifecycle_state === "recovery-required") {
     return "Trusted-host recovery is required. Retry is disabled; retain the key because it may protect recoverable data.";
+  }
+  if (store.backend !== sourceBackend) {
+    return "The refreshed Stores list shows that this store already uses the target backend. Retry is disabled; retain the key until you have reconciled the backend outcome or explicitly discard it.";
   }
   if (store.lifecycle_state === "busy") {
     return "A lifecycle operation is busy. Retry is disabled until the source becomes available again.";

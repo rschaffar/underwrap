@@ -302,7 +302,7 @@ Workspace tests cover:
   and freshly loaded records after helper failure, absence of failed success
   audit/cascade effects, successful retry publication, and store backend/state/
   lifecycle-lock or complete client-record identity where applicable;
-- store key-generation, encrypted-create, and backend-migration unit matrices covering exact no-cache headers, storage-neutral generation, strict pre-mutation key validation, lifecycle states and action projections, lease admission and drainage, both conversion directions, stable metadata and logical bytes, exact mode `0700`, complete phase-failure mappings, rollback, cleanup, restart detection, and recovery-required disposition;
+- store key-generation, encrypted-create, and backend-migration unit matrices covering exact no-cache headers, storage-neutral generation, strict pre-mutation key validation including explicit-null extraction, lifecycle states and action projections, lease admission and drainage, both conversion directions, stable metadata and logical bytes, exact mode `0700` including special-bit rejection, streaming value release, displaced-source reopen and revalidation, runtime responsiveness, complete phase-failure mappings, rollback, cleanup, restart detection, and recovery-required disposition;
 - resource deletion blocker aggregation, malformed-blob fail-before behavior,
   blob-delete-before-catalog ordering, storage-failure state re-read, and
   absence of reconstruction or false success;
@@ -621,7 +621,7 @@ The backend admin API is generated from `utoipa` annotations. Semantic tests in
 - the exact 32 operations advertising `500 migration_recovery_required`;
 - the exact lock, migrate, rotate-key, and unlock response sets and every canonical lifecycle code in their descriptions;
 - the store-key endpoint's session-plus-CSRF protection and exact non-cache response headers;
-- strict conditional create and migration key descriptions plus the explicit `ready`, `unlocked`, `locked`, `busy`, and `recovery-required` lifecycle schema.
+- strict conditional create and migration key descriptions, optional non-null string `key_hex` request properties, and the explicit `ready`, `unlocked`, `locked`, `busy`, and `recovery-required` lifecycle schema.
 
 Live lifecycle handler tests pin statuses and codes actually emitted. The
 semantic OpenAPI tests pin generated meaning. The byte-drift test separately
@@ -652,12 +652,13 @@ cargo test -p underwrap-backend store_registry::tests::migration
 cd web && npm test -- src/pages/stores.test.tsx
 ```
 
-The backend tests use real temporary directories and both storage implementations to cover complete id and byte preservation, canary rules, exact mode `0700`, publication order, registry state, and restart detection.
-Injected phase hooks make migration-phase failure, rollback, cleanup, and corruption cases deterministic, so those cases are simulated failures rather than observations of process crashes, kernel interruption, power loss, or arbitrary production filesystems.
-Handler and registry tests directly cover exact no-cache headers, storage-neutral key generation, strict pre-mutation key validation, lifecycle action projection, blocking of new leases, drainage of admitted leases, fixed public codes, and recovery-required publication.
+The backend tests use real temporary directories and both storage implementations to cover complete id and byte preservation, canary rules, exact mode `0700` including special-bit rejection, one-value copy and one-pair verification release order, bounded source fingerprint revalidation, publication order, registry state, and restart detection.
+Injected phase hooks make migration-phase failure, rollback, cleanup, displaced-source disappearance or unreadability, same-id readable source-byte mutation after displacement and both rollback renames, and target corruption deterministic in both source kinds where applicable.
+Those cases are simulated failures rather than observations of process crashes, kernel interruption, power loss, arbitrary production filesystems, SHA-256 collision resistance, or malicious backend-host root.
+Handler and registry tests directly cover exact no-cache headers, storage-neutral key generation, strict pre-mutation key validation and explicit-null rejection, lifecycle action projection, blocking of new leases, drainage of admitted leases, a responsive multi-thread runtime and non-cancellable synchronous post-drain section, fixed public codes, recovery precedence over a matching target backend, and recovery-required publication.
 They do not prove external key custody, browser behavior, secure erasure, filesystem durability, or operator quiescence.
 
-The Stores-page Vitest matrix covers generated-key ordering, exact untrimmed comparison, no request on mismatch or pre-request cancellation, no generated key for encrypted-to-plain migration, lifecycle rendering, same-key retry after ambiguous failure, reconciliation-based retry disabling, explicit warned discard, and absence from application query and mutation cache data.
+The Stores-page Vitest matrix covers generated-key ordering, exact untrimmed comparison, no request on mismatch or pre-request cancellation, no generated key for encrypted-to-plain migration, lifecycle rendering, same-key retry after ambiguous failure, recovery precedence when the refreshed record already names the target backend, reconciliation-based retry disabling with key retention, explicit warned discard, and absence from application query and mutation cache data.
 Vitest runs in jsdom and does not establish real HTTP caching, browser process-memory handling, clipboard erasure, network response loss, or behavior in an actual browser engine.
 
 Run the real authenticated HTTPS migration scenario with:

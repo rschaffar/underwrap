@@ -17,6 +17,12 @@ use underwrap_protocol::message::SecretBytes;
 #[derive(Zeroize, ZeroizeOnDrop)]
 struct MasterKey([u8; 32]);
 
+impl MasterKey {
+    fn duplicate(&self) -> Self {
+        Self(self.0)
+    }
+}
+
 /// Files encrypted with ChaCha20-Poly1305 using a master key.
 ///
 /// Wire format per file: `[12-byte nonce][ciphertext + 16-byte tag]`
@@ -158,6 +164,13 @@ impl StorageBackend for EncryptedBackend {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e).with_context(|| format!("deleting secret {secret_id}")),
         }
+    }
+
+    fn reopen_at(&self, dir: &Path) -> Result<Box<dyn StorageBackend>> {
+        // The duplicate is constructed and consumed entirely inside the
+        // encrypted implementation. `MasterKey` wipes it if opening fails and
+        // when the returned backend is eventually dropped.
+        Ok(Box::new(Self::open_existing(dir, self.key.duplicate())?))
     }
 }
 

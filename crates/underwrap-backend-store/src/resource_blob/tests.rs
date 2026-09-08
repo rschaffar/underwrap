@@ -53,6 +53,10 @@ impl StorageBackend for MemStore {
     fn delete(&self, secret_id: &str) -> Result<bool> {
         Ok(self.data.lock().unwrap().remove(secret_id).is_some())
     }
+
+    fn reopen_at(&self, _dir: &std::path::Path) -> Result<Box<dyn StorageBackend>> {
+        anyhow::bail!("in-memory resource store has no filesystem generation")
+    }
 }
 
 #[test]

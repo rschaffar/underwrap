@@ -99,6 +99,10 @@ impl StorageBackend for PlainBackend {
             Err(e) => Err(e).with_context(|| format!("deleting secret {secret_id}")),
         }
     }
+
+    fn reopen_at(&self, dir: &Path) -> Result<Box<dyn StorageBackend>> {
+        Ok(Box::new(Self::open_existing(dir)?))
+    }
 }
 
 #[cfg(test)]

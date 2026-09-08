@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use axum::response::IntoResponse;
@@ -6,17 +6,50 @@ use axum::response::IntoResponse;
 use super::*;
 use crate::test_support::{response_body_json, tree_snapshot};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Failpoint {
+    phase: MigrationPhase,
+    occurrence: usize,
+}
+
+impl Failpoint {
+    const fn new(phase: MigrationPhase, occurrence: usize) -> Self {
+        Self { phase, occurrence }
+    }
+}
+
 struct TestHooks {
     id: &'static str,
-    failures: HashSet<MigrationPhase>,
+    failpoints: Vec<Failpoint>,
+    occurrences: Mutex<HashMap<MigrationPhase, usize>>,
+    renames: Mutex<Vec<MigrationPhase>>,
 }
 
 impl TestHooks {
-    fn new(failures: &[MigrationPhase]) -> Self {
+    fn new(failpoints: &[Failpoint]) -> Self {
+        Self::with_id("1234567890abcdef", failpoints)
+    }
+
+    fn with_id(id: &'static str, failpoints: &[Failpoint]) -> Self {
         Self {
-            id: "1234567890abcdef",
-            failures: failures.iter().copied().collect(),
+            id,
+            failpoints: failpoints.to_vec(),
+            occurrences: Mutex::new(HashMap::new()),
+            renames: Mutex::new(Vec::new()),
         }
+    }
+
+    fn occurrence_count(&self, phase: MigrationPhase) -> usize {
+        self.occurrences
+            .lock()
+            .unwrap()
+            .get(&phase)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn rename_trace(&self) -> Vec<MigrationPhase> {
+        self.renames.lock().unwrap().clone()
     }
 }
 
@@ -26,11 +59,23 @@ impl MigrationHooks for TestHooks {
     }
 
     fn checkpoint(&self, phase: MigrationPhase) -> io::Result<()> {
-        if self.failures.contains(&phase) {
+        let occurrence = {
+            let mut occurrences = self.occurrences.lock().unwrap();
+            let occurrence = occurrences.entry(phase).or_insert(0);
+            *occurrence += 1;
+            *occurrence
+        };
+        if self.failpoints.contains(&Failpoint::new(phase, occurrence)) {
             Err(io::Error::other("injected migration failure"))
         } else {
             Ok(())
         }
+    }
+
+    fn rename(&self, phase: MigrationPhase, from: &Path, to: &Path) -> io::Result<()> {
+        self.renames.lock().unwrap().push(phase);
+        self.checkpoint(phase)?;
+        checked_rename(from, to)
     }
 }
 
@@ -49,7 +94,7 @@ struct CorruptingHooks {
     target_key: Option<[u8; 32]>,
     canonical: PathBuf,
     workspace: PathBuf,
-    failures: HashSet<MigrationPhase>,
+    failpoints: TestHooks,
 }
 
 impl MigrationHooks for CorruptingHooks {
@@ -58,9 +103,7 @@ impl MigrationHooks for CorruptingHooks {
     }
 
     fn checkpoint(&self, phase: MigrationPhase) -> io::Result<()> {
-        if self.failures.contains(&phase) {
-            return Err(io::Error::other("injected migration failure"));
-        }
+        self.failpoints.checkpoint(phase)?;
         if phase != self.phase {
             return Ok(());
         }
@@ -266,23 +309,25 @@ fn both_directions_preserve_ids_and_logical_bytes() {
     assert!(!*source_restored.lock().unwrap());
     assert!(encrypted.has_secrets);
     assert!(workspaces(tmp.path()).is_empty());
-    assert_eq!(
+    assert!(
         encrypted
             .backend
             .read("resources/nested/item")
             .unwrap()
             .unwrap()
-            .as_ref(),
-        b"resource bytes"
+            .as_ref()
+            == b"resource bytes",
+        "encrypted target resource bytes changed"
     );
-    assert_eq!(
+    assert!(
         encrypted
             .backend
             .read("control/policy")
             .unwrap()
             .unwrap()
-            .as_ref(),
-        b"control bytes"
+            .as_ref()
+            == b"control bytes",
+        "encrypted target control bytes changed"
     );
     assert!(
         encrypted
@@ -299,10 +344,7 @@ fn both_directions_preserve_ids_and_logical_bytes() {
         AdminStoreBackendKind::Encrypted,
         AdminStoreBackendKind::Plain,
         None,
-        &TestHooks {
-            id: "fedcba0987654321",
-            failures: HashSet::new(),
-        },
+        &TestHooks::with_id("fedcba0987654321", &[]),
         || Ok(()),
         || Ok(()),
     )
@@ -313,59 +355,16 @@ fn both_directions_preserve_ids_and_logical_bytes() {
         plain_again.backend.list("").unwrap(),
         vec!["control/policy", "resources/nested/item"]
     );
-    assert_eq!(
+    assert!(
         plain_again
             .backend
             .read("resources/nested/item")
             .unwrap()
             .unwrap()
-            .as_ref(),
-        b"resource bytes"
+            .as_ref()
+            == b"resource bytes",
+        "round-trip resource bytes changed"
     );
-}
-
-#[test]
-fn every_phase_failure_has_fixed_mapping_and_restores_or_requires_recovery() {
-    let cases = [
-        (MigrationPhase::ReserveWorkspace, "migrate_stage_failed"),
-        (MigrationPhase::WriteManifest, "migrate_stage_failed"),
-        (MigrationPhase::OpenStage, "migrate_stage_failed"),
-        (MigrationPhase::ListSource, "migrate_list_failed"),
-        (MigrationPhase::ValidateCanary, "migrate_canary_failed"),
-        (MigrationPhase::ReadSource, "migrate_read_failed"),
-        (MigrationPhase::WriteDestination, "migrate_write_failed"),
-        (MigrationPhase::VerifyStage, "migrate_verify_failed"),
-        (MigrationPhase::DisplaceLive, "migrate_swap_failed"),
-        (MigrationPhase::PromoteStage, "migrate_swap_failed"),
-        (MigrationPhase::OpenPromoted, "migrate_reopen_failed"),
-        (MigrationPhase::VerifyPromoted, "migrate_verify_failed"),
-        (MigrationPhase::PersistRecord, "write_store_registry_failed"),
-        (MigrationPhase::Cleanup, "migration_recovery_required"),
-    ];
-    for (phase, expected_code) in cases {
-        let (tmp, canonical, plain) = plain_fixture();
-        let before = tree_snapshot(&canonical);
-        let key = MigrationKey::new([8; 32]);
-        let failure = migrate_generation(
-            "store_a",
-            &canonical,
-            &plain,
-            AdminStoreBackendKind::Plain,
-            AdminStoreBackendKind::Encrypted,
-            Some(&key),
-            &TestHooks::new(&[phase]),
-            || Ok(()),
-            || Ok(()),
-        )
-        .expect_err("injected phase must fail");
-        assert_eq!(error_code(failure), expected_code, "phase {phase:?}");
-        if phase != MigrationPhase::Cleanup {
-            assert_eq!(tree_snapshot(&canonical), before, "phase {phase:?}");
-            assert!(workspaces(tmp.path()).is_empty(), "phase {phase:?}");
-        } else {
-            assert!(!workspaces(tmp.path()).is_empty());
-        }
-    }
 }
 
 #[test]
@@ -395,7 +394,7 @@ fn staged_and_promoted_verification_detect_real_corruption_in_both_directions() 
                     target_key: fixture.target_key_bytes,
                     canonical: fixture.canonical.clone(),
                     workspace,
-                    failures: HashSet::new(),
+                    failpoints: TestHooks::new(&[]),
                 };
                 let failure = migrate_generation(
                     "store_a",
@@ -414,10 +413,9 @@ fn staged_and_promoted_verification_detect_real_corruption_in_both_directions() 
                     "migrate_verify_failed",
                     "{source_kind:?} {phase:?} {corruption:?}"
                 );
-                assert_eq!(
-                    tree_snapshot(&fixture.canonical),
-                    before,
-                    "{source_kind:?} {phase:?} {corruption:?}"
+                assert!(
+                    tree_snapshot(&fixture.canonical) == before,
+                    "{source_kind:?} {phase:?} {corruption:?}: source generation bytes changed"
                 );
                 assert!(
                     workspaces(fixture.canonical.parent().unwrap()).is_empty(),
@@ -448,7 +446,7 @@ fn promoted_corruption_with_failed_rollback_is_recovery_required_after_restart()
             target_key: fixture.target_key_bytes,
             canonical: fixture.canonical.clone(),
             workspace,
-            failures: HashSet::from([MigrationPhase::MovePromotedAside]),
+            failpoints: TestHooks::new(&[Failpoint::new(MigrationPhase::MovePromotedAside, 1)]),
         };
         let failure = migrate_generation(
             "store_a",
@@ -465,102 +463,6 @@ fn promoted_corruption_with_failed_rollback_is_recovery_required_after_restart()
         assert_eq!(error_code(failure), "migration_recovery_required");
         assert_eq!(workspaces(fixture.canonical.parent().unwrap()).len(), 1);
         assert_restart_state(&fixture, true);
-    }
-}
-
-#[test]
-fn persist_and_restore_record_failures_preserve_marker_and_generations_for_restart() {
-    for callback_failures in [false, true] {
-        let fixture = direction_fixture(AdminStoreBackendKind::Plain);
-        let workspace = fixture
-            .canonical
-            .parent()
-            .unwrap()
-            .join(".store_a.underwrap-migration-1234567890abcdef");
-        let hooks = TestHooks::new(if callback_failures {
-            &[]
-        } else {
-            &[MigrationPhase::PersistRecord, MigrationPhase::RestoreRecord]
-        });
-        let failure = migrate_generation(
-            "store_a",
-            &fixture.canonical,
-            fixture.source.as_ref(),
-            fixture.source_kind,
-            fixture.target_kind,
-            fixture.target_key.as_ref(),
-            &hooks,
-            || {
-                if callback_failures {
-                    anyhow::bail!("injected target-record persistence failure");
-                }
-                Ok(())
-            },
-            || {
-                if callback_failures {
-                    anyhow::bail!("injected source-record restoration failure");
-                }
-                Ok(())
-            },
-        )
-        .expect_err("record persistence and restoration failures must fail closed");
-        assert_eq!(error_code(failure), "migration_recovery_required");
-        assert!(workspace.join("manifest.json").is_file());
-        assert!(workspace.join("stage").is_dir());
-        assert!(fixture.canonical.is_dir());
-        assert_eq!(
-            fixture
-                .source
-                .read("resources/nested/item")
-                .unwrap()
-                .unwrap()
-                .as_ref(),
-            b"resource bytes"
-        );
-        let retained_target = open_generation(
-            &workspace.join("stage"),
-            fixture.target_kind,
-            fixture.target_key_bytes,
-        )
-        .unwrap();
-        assert_eq!(
-            retained_target
-                .read("resources/nested/item")
-                .unwrap()
-                .unwrap()
-                .as_ref(),
-            b"resource bytes"
-        );
-        assert_restart_state(&fixture, true);
-    }
-}
-
-#[test]
-fn failed_rollback_or_cleanup_is_recovery_required_and_preserves_remaining_paths() {
-    for failures in [
-        vec![
-            MigrationPhase::OpenPromoted,
-            MigrationPhase::MovePromotedAside,
-        ],
-        vec![MigrationPhase::OpenPromoted, MigrationPhase::RestoreBackup],
-        vec![MigrationPhase::ListSource, MigrationPhase::Cleanup],
-    ] {
-        let (tmp, canonical, plain) = plain_fixture();
-        let key = MigrationKey::new([9; 32]);
-        let failure = migrate_generation(
-            "store_a",
-            &canonical,
-            &plain,
-            AdminStoreBackendKind::Plain,
-            AdminStoreBackendKind::Encrypted,
-            Some(&key),
-            &TestHooks::new(&failures),
-            || Ok(()),
-            || Ok(()),
-        )
-        .expect_err("injected recovery failure must fail");
-        assert_eq!(error_code(failure), "migration_recovery_required");
-        assert!(canonical.exists() || !workspaces(tmp.path()).is_empty());
     }
 }
 
@@ -585,7 +487,7 @@ fn permissive_umask_target_and_workspace_modes_are_exact() {
     unsafe { libc::umask(0) };
     let (tmp, canonical, plain) = plain_fixture();
     let key = MigrationKey::new([10; 32]);
-    let hooks = TestHooks::new(&[MigrationPhase::ListSource]);
+    let hooks = TestHooks::new(&[Failpoint::new(MigrationPhase::ListSource, 1)]);
     let failure = migrate_generation(
         "store_a",
         &canonical,
@@ -605,7 +507,12 @@ fn permissive_umask_target_and_workspace_modes_are_exact() {
             .unwrap()
             .permissions()
             .mode()
-            & 0o777,
-        0o700
+            & 0o7777,
+        0o0700
     );
 }
+
+#[path = "tests/failure_matrix.rs"]
+mod failure_matrix;
+#[path = "tests/hardening.rs"]
+mod hardening;

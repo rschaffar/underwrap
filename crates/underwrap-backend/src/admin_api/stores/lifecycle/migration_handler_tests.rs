@@ -359,3 +359,6 @@ fn migration_direction_validation_is_fixed_and_pre_mutation() {
         assert_eq!(tree_snapshot(tmp.path()), before);
     }
 }
+
+#[path = "migration_handler_tests/hardening.rs"]
+mod hardening;

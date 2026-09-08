@@ -422,10 +422,17 @@ Encrypted-to-plain migration generates and submits no key.
 Migration preserves the stable store id, metadata, canonical directory, runtime client mappings, control documents, resource ids, and logical bytes while changing the backend kind and backend-specific canary presence.
 The backend publishes `busy` under the registry lock to block new complete-operation leases and waits up to 30 seconds for leases already admitted to that exact store entry to drain.
 No registry lock spans the wait, storage I/O, filesystem mutation, or record persistence.
+After drainage, the synchronous copy, verification, filesystem, persistence, cleanup, and publication path runs inside a runtime-aware `block_in_place` boundary on the production multi-thread runtime and contains no asynchronous cancellation point.
 Operators still quiesce wrapper traffic and admin mutations because an invocation opened before migration can finalize later under the stateless last-writer-wins contract.
 
 Migration uses one collision-safe mode-`0700` sibling workspace containing a non-secret manifest plus `stage/` and, after source displacement, `backup/`.
-It copies through the source and target `StorageBackend` implementations, verifies the complete id set and every logical byte, displaces the source, promotes and reopens the target, atomically records only the backend-kind change, removes the displaced source and workspace, publishes the target entry, and then returns success.
+It retains the source id inventory but copies one logical value at a time and drops that value before loading the next.
+While the original source is live, it retains only a fixed domain-separated SHA-256 fingerprint over source-kind and canary treatment plus the complete sorted length-delimited id/value sequence.
+That bounded in-memory rollback evidence does not claim collision impossibility or protection from malicious backend-host root.
+Verification loads only one source/target logical-value pair at a time, compares it byte-for-byte, and drops the pair before continuing while also checking complete id sets and backend-specific canaries.
+After source displacement, migration reopens `backup/` through the source backend's internal same-kind capability so encrypted key bytes never leave that implementation, and it requires the source fingerprint before target promotion, before and after moving a target aside for rollback, and after restoring the source.
+A source fingerprint mismatch, unreadable source, or source id mismatch preserves the workspace as recovery-required rather than becoming a target-verification error.
+It promotes and reopens the target, atomically records only the backend-kind change, removes the displaced source and workspace, publishes the target entry, and then returns success.
 Successful plain-to-encrypted migration leaves no intentional plaintext migration pathname, but path removal is not secure media erasure.
 Any failed rollback, secret-bearing cleanup failure, ambiguous split state, or exact migration workspace found at startup produces `recovery-required` without automatic deletion or selection.
 Plain-to-encrypted failure can leave plaintext under `backup/`, while encrypted-to-plain failure can leave plaintext under `stage/` or the canonical path.

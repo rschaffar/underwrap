@@ -394,6 +394,7 @@ test.
 - Migration preserves the stable store id, metadata, runtime client mappings, storage ids, and logical bytes while changing only the backend kind and backend-specific canary presence.
 - Successful plain-to-encrypted migration removes every intentional plaintext migration pathname before success but makes no secure-media-erasure claim.
 - Preserve fixed migration failure disposition: return a phase-specific error only after a verified source and record are restored and secret-bearing workspace cleanup succeeds; otherwise publish `recovery-required` and preserve remaining artifacts.
+- Keep migration source rollback evidence bounded to the sorted id inventory plus a domain-separated SHA-256 fingerprint covering source kind, canary treatment, lengths, ids, and every logical value byte; continue direct one-pair byte comparison before and after promotion, and treat any later source mismatch as recovery-required without claiming collision impossibility or protection from malicious backend-host root.
 - Never remove or weaken security assertions merely to make a test pass.
 
 ## Test layout

@@ -187,6 +187,19 @@ impl utoipa::PartialSchema for AdminKeyHex {
 #[cfg(feature = "full")]
 impl utoipa::ToSchema for AdminKeyHex {}
 
+fn deserialize_present_admin_key_hex<'de, D>(
+    deserializer: D,
+) -> Result<Option<AdminKeyHex>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<AdminKeyHex>::deserialize(deserializer)?
+        .map(Some)
+        .ok_or_else(|| {
+            <D::Error as serde::de::Error>::custom("key_hex must be omitted instead of set to null")
+        })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreKeyResponse {
     pub key_hex: AdminKeyHex,
@@ -196,7 +209,8 @@ pub struct AdminStoreKeyResponse {
 ///
 /// Encrypted creation requires `key_hex` to be exactly 64 lowercase
 /// hexadecimal characters without trimming or normalization.
-/// Plain creation requires `key_hex` to be omitted.
+/// Plain creation requires `key_hex` to be omitted; explicit JSON `null` is
+/// invalid for every backend kind.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreCreateRequest {
     pub name: String,
@@ -205,7 +219,12 @@ pub struct AdminStoreCreateRequest {
     pub description: Option<String>,
     /// Required exactly when `backend` is `encrypted`; otherwise omitted.
     /// The accepted value is exactly 64 lowercase hexadecimal characters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_admin_key_hex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = String, nullable = false)]
     pub key_hex: Option<AdminKeyHex>,
 }
 
@@ -218,13 +237,19 @@ pub struct AdminStoreCreateResponse {
 ///
 /// Migration to encrypted requires `key_hex` to be exactly 64 lowercase
 /// hexadecimal characters without trimming or normalization.
-/// Migration to plain requires `key_hex` to be omitted.
+/// Migration to plain requires `key_hex` to be omitted; explicit JSON `null`
+/// is invalid for every migration direction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreMigrateRequest {
     pub backend: AdminStoreBackendKind,
     /// Required exactly when `backend` is `encrypted`; otherwise omitted.
     /// The accepted value is exactly 64 lowercase hexadecimal characters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_admin_key_hex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = String, nullable = false)]
     pub key_hex: Option<AdminKeyHex>,
 }
 

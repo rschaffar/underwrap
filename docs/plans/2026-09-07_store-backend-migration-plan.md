@@ -129,7 +129,7 @@ Migration waits for that exact entry's admitted leases to drain before reading t
 
 A cancellation guard restores the source only if the same entry identity, lifecycle mutex, source generation, and busy admission still match.
 
-After drainage, the copy and publication window contains no asynchronous cancellation point.
+After drainage, the synchronous copy, verification, filesystem, persistence, cleanup, and publication window runs inside a runtime-aware `block_in_place` boundary on the production multi-thread runtime and contains no asynchronous cancellation point.
 
 Rotation acquires the shared lifecycle mutex but preserves its current non-draining behavior for ordinary reads and writes.
 
@@ -147,17 +147,23 @@ Use a collision-safe exclusive mode-`0700` sibling workspace named `.<store-id>.
 
 The workspace contains `stage/`, later `backup/`, and a non-secret versioned manifest containing only the stable store id and source and target backend kinds.
 
-Create both encrypted and plain target roots exclusively as regular non-symlink directories with exact mode `0700`, including under a permissive umask.
+Create both encrypted and plain target roots exclusively as regular non-symlink directories with exact mode `0700`, including under a permissive umask, and reject every setuid, setgid, sticky, or other extra mode bit.
 
 Require every canonical, stage, backup, rollback, and cleanup path to satisfy checked occupancy, directory, and symlink rules before a rename or removal.
 
-Copy every source storage id through the source and target `StorageBackend` implementations and verify the complete target id set and every logical value byte-for-byte.
+Retain the source id inventory without a whole-store plaintext map, copy and drop one logical value at a time through the source and target `StorageBackend` implementations, and verify and drop one source/target pair at a time while checking complete id sets and every logical value byte-for-byte.
+
+While the original source remains live, retain only a bounded domain-separated SHA-256 fingerprint over its kind, canary treatment, and complete sorted length-delimited id/value sequence alongside that id inventory.
+
+Treat the digest as rollback-integrity evidence without claiming collision impossibility or protection from malicious backend-host root.
 
 Plain-to-encrypted migration rejects an unexpected source `control/canary` and writes and verifies the canonical encrypted canary in the target.
 
-Encrypted-to-plain migration verifies but omits the source canary from the plain target.
+Encrypted-to-plain migration fingerprints and verifies but omits the source canary from the plain target.
 
-After target verification, move the source to `backup/`, promote `stage/` at the unchanged canonical path, reopen and reverify the target, atomically persist the same store record with only its backend kind changed, remove the displaced source and workspace, publish the target live entry, and return success.
+After target verification, move the source to `backup/`, securely reopen and require that displaced generation's fingerprint through the same `StorageBackend` kind, promote `stage/` at the unchanged canonical path, require the fingerprint before and after moving a target aside and after restoring the source, reopen and reverify the target, atomically persist the same store record with only its backend kind changed, remove the displaced source and workspace, publish the target live entry, and return success.
+
+Any source fingerprint mismatch, unreadable source, or source id mismatch requires recovery and preserves the workspace rather than being reported as target verification failure.
 
 A reported successful plain-to-encrypted migration retains no intentional plaintext source or stage pathname.
 

@@ -476,14 +476,16 @@ Locked, busy, and recovery-required list items do not inspect store contents and
 - `POST   /v1/admin/stores` — create a store.
   Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization, writes the encrypted canary, leaves the store `unlocked`, and returns only the store projection.
   Plain creation rejects a supplied key and leaves the store `ready`.
-  Conditional key failures are `400 key_required`, `unexpected_key`, or `invalid_key_hex`.
+  Omitted `key_hex` remains valid input where the direction permits it, while explicit JSON `key_hex: null` is `400 invalid_request` before mutation for every backend kind.
+  Other conditional key failures are `400 key_required`, `unexpected_key`, or `invalid_key_hex`.
 - `PUT    /v1/admin/stores/{id}` — update operator-facing metadata without changing the stable id or backend kind.
 - `DELETE /v1/admin/stores/{id}` — delete the store record when mapping and content rules allow it.
   Locked stores require `?force=true` because their contents cannot be inspected.
 - `POST   /v1/admin/stores/{id}/migrate` — convert the backend at the unchanged canonical path while preserving the stable id, metadata, runtime client mappings, control documents, resource ids, and logical bytes.
   Plain-to-encrypted migration requires the same exact key contract as encrypted creation and leaves the store `unlocked`.
   Encrypted-to-plain migration requires an unlocked source, accepts no key, and leaves the store `ready`.
-  The endpoint returns `400 key_required`, `unexpected_key`, or `invalid_key_hex`; `404 not_found`; `409 same_backend`; `503 store_locked` or `store_busy`; or one fixed `500` failure from the table below.
+  The endpoint returns `400 invalid_request`, `key_required`, `unexpected_key`, or `invalid_key_hex`; `404 not_found`; `409 same_backend`; `503 store_locked` or `store_busy`; or one fixed `500` failure from the table below.
+  `500 migration_recovery_required` takes precedence over `409 same_backend`, including when recovery publication has already persisted the requested target backend kind.
 - `POST   /v1/admin/stores/{id}/unlock` — body `{key_hex}` decrypts the canary to verify the key and installs the `unlocked` backend.
   Surrounding key whitespace remains tolerated only for unlock.
   The exact response set is `{200, 400, 403, 404, 409, 500, 503}`: 400 carries `invalid_key_hex` or `store_not_encrypted`; a syntactically valid wrong key is `403 key_mismatch`; 404 carries `not_found`; 409 carries `already_unlocked`; 500 carries `open_store_failed`, `rotation_recovery_required`, or `migration_recovery_required`; and 503 carries `store_busy`.
@@ -519,7 +521,7 @@ Migration acquires the exact entry-owned lifecycle mutex, re-resolves the entry,
 The busy publication blocks later runtime and admin storage leases, while leases admitted earlier retain an entry-owned count until their complete handler operation ends.
 Migration waits up to 30 seconds for that count to reach zero before reading the source or changing the filesystem.
 No registry lock is held across lifecycle-mutex waiting, lease drainage, storage I/O, filesystem mutation, or store-record persistence.
-After drainage, the copy and publication window contains no asynchronous cancellation point.
+After drainage, the synchronous copy, verification, filesystem, persistence, cleanup, and publication window runs inside a runtime-aware `block_in_place` boundary on the production multi-thread runtime and contains no asynchronous cancellation point.
 An invocation opened before migration can still finalize afterward under the existing stateless last-writer-wins contract, so the operator must quiesce wrapper traffic and admin mutations before starting migration.
 
 For canonical store directory `<parent>/<store-id>`, migration exclusively creates:
@@ -528,15 +530,22 @@ For canonical store directory `<parent>/<store-id>`, migration exclusively creat
 <parent>/.<store-id>.underwrap-migration-<16-lowercase-hex-id>/
 ```
 
-The workspace and newly created `stage/` target are regular non-symlink directories with exact mode `0700`.
+The workspace and newly created `stage/` target are regular non-symlink directories with exact mode `0700`; setuid, setgid, sticky, or any other mode bit causes validation to fail.
 The renamed `backup/` inherits the canonical source mode while remaining beneath the private workspace, and mode drift prevents cleanup and requires trusted-host recovery.
 Its versioned `manifest.json` contains only the stable store id and source and target backend kinds.
 Every canonical, stage, backup, rollback, and cleanup path receives checked occupancy, directory, and symlink validation before rename or removal.
 
-The backend copies every source id through the source and target `StorageBackend` implementations and verifies the complete target id set and every logical value byte-for-byte.
+The backend retains the source id inventory but never a whole-store plaintext value map.
+It reads, copies, and drops one logical source value at a time, then verifies and drops one source/target logical-value pair at a time while checking complete id sets.
+While the original source is live, migration also computes a domain-separated SHA-256 fingerprint over the source backend kind, explicit canary treatment, complete sorted storage-id sequence, unambiguous lengths, ids, and every logical value byte.
+Only that fixed-size digest and the id inventory remain in memory as bounded rollback-integrity evidence; this does not claim collision impossibility or protection from malicious backend-host root.
 Plain-to-encrypted migration rejects a source canary and writes and verifies the canonical encrypted canary in the target.
-Encrypted-to-plain migration verifies the source canary and omits it from the plain target.
-After target verification, publication moves the source to `backup/`, promotes `stage/` to the unchanged canonical path, reopens and re-verifies the target, atomically persists the same store record with only its backend kind changed, removes the displaced source and workspace, publishes the target live entry, and returns success.
+Encrypted-to-plain migration verifies and fingerprints the source canary and omits it from the plain target.
+After target verification, publication moves the source to `backup/` and reopens that displaced generation through the same `StorageBackend` kind without exporting encrypted key bytes.
+The backend requires the reopened source to match the captured fingerprint before trusting it, immediately before and after moving a failed promoted target aside, and after restoring the source at the canonical path.
+A source fingerprint mismatch, unreadable value, or id mismatch requires recovery and preserves the workspace rather than being reported as target-verification failure.
+Direct source-to-target comparison still checks one pair at a time before and after promotion.
+It promotes `stage/` to the unchanged canonical path, reopens and re-verifies the target, atomically persists the same store record with only its backend kind changed, removes the displaced source and workspace, publishes the target live entry, and returns success.
 
 | Direction | Plaintext recovery residue after failure or interruption |
 | --- | --- |

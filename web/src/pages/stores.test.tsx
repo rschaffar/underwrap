@@ -713,6 +713,7 @@ describe("StoresPage", () => {
     const user = userEvent.setup();
     const recoveryStore = {
       ...sampleList.items[1],
+      backend: "encrypted" as const,
       lifecycle_state: "recovery-required" as const,
       actions: {
         can_update: false,

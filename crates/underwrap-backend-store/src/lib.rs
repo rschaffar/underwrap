@@ -6,8 +6,10 @@
 //!
 //! Only `underwrap-backend` owns a `StorageBackend`. The frontend daemon uses
 //! the resource-oriented HTTPS runtime API and never receives this storage
-//! interface. Backend migration copies every logical id and value through this
-//! trait so a backend-kind change does not change the stored logical bytes.
+//! interface. Backend migration inventories logical ids and streams one value
+//! or verification pair at a time through this trait so a backend-kind change
+//! does not change the stored logical bytes or retain a whole-store plaintext
+//! snapshot.
 
 mod encrypted;
 mod path;
@@ -20,6 +22,8 @@ pub use resource_blob::{
     delete_resource_blob, expand_blob_to_entries, load_resource_blob, save_resource_blob,
 };
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use underwrap_protocol::config::StorageConfig;
 use underwrap_protocol::message::SecretBytes;
@@ -30,6 +34,13 @@ use underwrap_protocol::message::SecretBytes;
 /// because the backend serves concurrent connections. The trait provides no
 /// transaction, lease, migration, publication, or secure-erasure guarantee;
 /// `underwrap-backend` owns those lifecycle rules.
+///
+/// [`StorageBackend::reopen_at`] is the sole path-aware lifecycle capability.
+/// It reopens an already-existing generation with the same backend kind after
+/// a checked rename, without creating or repairing storage.
+/// An encrypted implementation may copy only its own installed in-memory key
+/// into the returned backend, must keep that copy internal, and must zeroize it
+/// when opening fails or the returned backend is dropped.
 pub trait StorageBackend: Send + Sync {
     /// Read secret material by id. Returns `Ok(None)` if the secret
     /// does not exist yet.
@@ -48,6 +59,14 @@ pub trait StorageBackend: Send + Sync {
     /// Delete a secret by id. Returns `Ok(true)` if the secret existed
     /// and was deleted, `Ok(false)` if it did not exist.
     fn delete(&self, secret_id: &str) -> Result<bool>;
+
+    /// Reopen this backend kind over an already-existing generation root.
+    ///
+    /// This narrow capability exists so lifecycle code can keep a renamed
+    /// source generation authoritative without receiving backend-specific key
+    /// bytes. Implementations must reject missing, symlink, or non-directory
+    /// roots and must not create, repair, convert, or otherwise mutate them.
+    fn reopen_at(&self, dir: &Path) -> Result<Box<dyn StorageBackend>>;
 }
 
 /// Open a [`StorageBackend`] that does not require additional unlock

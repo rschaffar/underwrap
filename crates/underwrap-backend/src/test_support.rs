@@ -181,6 +181,10 @@ impl StorageBackend for TestStore {
         self.before_operation("delete", secret_id)?;
         Ok(self.data.lock().unwrap().remove(secret_id).is_some())
     }
+
+    fn reopen_at(&self, _dir: &std::path::Path) -> anyhow::Result<Box<dyn StorageBackend>> {
+        anyhow::bail!("in-memory test store has no filesystem generation")
+    }
 }
 
 /// Mixed resource fixture used by flat-mutation regression tests.

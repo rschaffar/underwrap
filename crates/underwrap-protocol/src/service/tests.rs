@@ -99,12 +99,37 @@ fn admin_store_migration_contract() {
         })
     );
 
+    let create_without_key: AdminStoreCreateRequest = serde_json::from_value(serde_json::json!({
+        "name": "plain store",
+        "backend": "plain"
+    }))
+    .unwrap();
+    assert!(create_without_key.key_hex.is_none());
+
     let migrate: AdminStoreMigrateRequest = serde_json::from_value(serde_json::json!({
         "backend": "plain"
     }))
     .unwrap();
     assert_eq!(migrate.backend, AdminStoreBackendKind::Plain);
     assert!(migrate.key_hex.is_none());
+
+    for backend in ["plain", "encrypted"] {
+        assert!(
+            serde_json::from_value::<AdminStoreCreateRequest>(serde_json::json!({
+                "name": "store",
+                "backend": backend,
+                "key_hex": null
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<AdminStoreMigrateRequest>(serde_json::json!({
+                "backend": backend,
+                "key_hex": null
+            }))
+            .is_err()
+        );
+    }
 
     assert_eq!(
         serde_json::to_value(AdminStoreLifecycleState::RecoveryRequired).unwrap(),
