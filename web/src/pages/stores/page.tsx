@@ -3,7 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { type AdminStoreListItem, type AdminStoresListResponse, fetchStores } from "@/api/client";
+import {
+  type AdminStoresListResponse,
+  fetchStores,
+} from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { describeApiError } from "@/lib/error-message";
 
@@ -14,6 +17,7 @@ import { DeleteStoreDialog } from "./dialogs/delete";
 import { UnlockStoreDialog } from "./dialogs/unlock";
 import { LockStoreDialog } from "./dialogs/lock";
 import { RotateStoreKeyDialog } from "./dialogs/rotate-key";
+import { MigrateStoreDialog } from "./dialogs/migrate";
 
 export function StoresPage() {
   useDocumentTitle("underwrap — stores");
@@ -24,19 +28,20 @@ export function StoresPage() {
   });
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<AdminStoreListItem | null>(null);
-  const [deleting, setDeleting] = useState<AdminStoreListItem | null>(
-    null,
-  );
-  const [unlocking, setUnlocking] = useState<AdminStoreListItem | null>(
-    null,
-  );
-  const [locking, setLocking] = useState<AdminStoreListItem | null>(
-    null,
-  );
-  const [rotating, setRotating] = useState<AdminStoreListItem | null>(
-    null,
-  );
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [unlockingId, setUnlockingId] = useState<string | null>(null);
+  const [lockingId, setLockingId] = useState<string | null>(null);
+  const [rotatingId, setRotatingId] = useState<string | null>(null);
+  const [migratingId, setMigratingId] = useState<string | null>(null);
+
+  const items = data?.items ?? [];
+  const editing = items.find((item) => item.id === editingId) ?? null;
+  const deleting = items.find((item) => item.id === deletingId) ?? null;
+  const unlocking = items.find((item) => item.id === unlockingId) ?? null;
+  const locking = items.find((item) => item.id === lockingId) ?? null;
+  const rotating = items.find((item) => item.id === rotatingId) ?? null;
+  const migrating = items.find((item) => item.id === migratingId) ?? null;
 
   return (
     <div className="space-y-6">
@@ -57,12 +62,13 @@ export function StoresPage() {
         <Alert>{describeApiError(error)}</Alert>
       ) : (
         <StoresTable
-          items={data?.items ?? []}
-          onEdit={(item) => setEditing(item)}
-          onDelete={(item) => setDeleting(item)}
-          onUnlock={(item) => setUnlocking(item)}
-          onLock={(item) => setLocking(item)}
-          onRotateKey={(item) => setRotating(item)}
+          items={items}
+          onEdit={setEditingId}
+          onDelete={setDeletingId}
+          onUnlock={setUnlockingId}
+          onLock={setLockingId}
+          onRotateKey={setRotatingId}
+          onMigrate={setMigratingId}
         />
       )}
 
@@ -72,31 +78,39 @@ export function StoresPage() {
       {editing ? (
         <EditStoreDialog
           store={editing}
-          onClose={() => setEditing(null)}
+          onClose={() => setEditingId(null)}
         />
       ) : null}
       {deleting ? (
         <DeleteStoreDialog
           store={deleting}
-          onClose={() => setDeleting(null)}
+          onClose={() => setDeletingId(null)}
         />
       ) : null}
       {unlocking ? (
         <UnlockStoreDialog
           store={unlocking}
-          onClose={() => setUnlocking(null)}
+          onClose={() => setUnlockingId(null)}
         />
       ) : null}
       {locking ? (
         <LockStoreDialog
           store={locking}
-          onClose={() => setLocking(null)}
+          onClose={() => setLockingId(null)}
         />
       ) : null}
-      {rotating ? (
+      {rotatingId ? (
         <RotateStoreKeyDialog
-          store={rotating}
-          onClose={() => setRotating(null)}
+          storeId={rotatingId}
+          currentStore={rotating}
+          onClose={() => setRotatingId(null)}
+        />
+      ) : null}
+      {migratingId ? (
+        <MigrateStoreDialog
+          storeId={migratingId}
+          currentStore={migrating}
+          onClose={() => setMigratingId(null)}
         />
       ) : null}
     </div>

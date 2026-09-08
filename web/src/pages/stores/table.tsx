@@ -1,10 +1,10 @@
 import { Button } from "@/components/ui/button";
-import { StatusChip } from "@/components/ui/status-chip";
+import { StatusChip, type ChipTone } from "@/components/ui/status-chip";
 import type { AdminStoresListResponse } from "@/api/client";
 
-function storeDeleteTitle(
-  item: AdminStoresListResponse["items"][number],
-): string | undefined {
+type StoreItem = AdminStoresListResponse["items"][number];
+
+function storeDeleteTitle(item: StoreItem): string | undefined {
   if (item.actions.can_delete_now) return undefined;
   if (item.actions.can_force_delete) {
     return "Store contains secrets — a force delete confirmation is required.";
@@ -16,13 +16,47 @@ function storeDeleteTitle(
   return "Store cannot currently be deleted.";
 }
 
+function lifecycleTone(item: StoreItem): ChipTone {
+  switch (item.lifecycle_state) {
+    case "ready":
+    case "unlocked":
+      return "emerald";
+    case "locked":
+    case "busy":
+      return "amber";
+    case "recovery-required":
+      return "neutral";
+  }
+}
+
+function migrationLabel(item: StoreItem): string {
+  if (item.lifecycle_state === "ready") return "Migrate to encrypted";
+  if (item.lifecycle_state === "unlocked") return "Migrate to plain";
+  return "Migrate";
+}
+
+function migrationTitle(item: StoreItem): string | undefined {
+  if (item.lifecycle_state === "locked") {
+    return "Unlock this encrypted store before migration.";
+  }
+  if (item.lifecycle_state === "busy") {
+    return "Migration is disabled while a lifecycle operation is busy.";
+  }
+  if (item.lifecycle_state === "recovery-required") {
+    return "Trusted-host recovery is required before migration.";
+  }
+  if (!item.actions.can_migrate) return "Store cannot currently be migrated.";
+  return undefined;
+}
+
 export interface StoresTableProps {
   items: AdminStoresListResponse["items"];
-  onEdit: (item: AdminStoresListResponse["items"][number]) => void;
-  onDelete: (item: AdminStoresListResponse["items"][number]) => void;
-  onUnlock: (item: AdminStoresListResponse["items"][number]) => void;
-  onLock: (item: AdminStoresListResponse["items"][number]) => void;
-  onRotateKey: (item: AdminStoresListResponse["items"][number]) => void;
+  onEdit: (storeId: string) => void;
+  onDelete: (storeId: string) => void;
+  onUnlock: (storeId: string) => void;
+  onLock: (storeId: string) => void;
+  onRotateKey: (storeId: string) => void;
+  onMigrate: (storeId: string) => void;
 }
 
 export function StoresTable({
@@ -32,11 +66,10 @@ export function StoresTable({
   onUnlock,
   onLock,
   onRotateKey,
+  onMigrate,
 }: StoresTableProps) {
   if (items.length === 0) {
-    return (
-      <p className="text-sm text-(--color-muted)">No stores configured.</p>
-    );
+    return <p className="text-sm text-(--color-muted)">No stores configured.</p>;
   }
   return (
     <div className="overflow-x-auto rounded-xl border border-(--color-line)">
@@ -55,9 +88,12 @@ export function StoresTable({
           {items.map((item) => {
             const canDelete =
               item.actions.can_delete_now || item.actions.can_force_delete;
-            const canUnlock = item.actions.can_unlock;
-            const canLock = item.actions.can_lock;
-            const canRotate = item.actions.can_rotate_key;
+            const migrationGuidance = item.lifecycle_state === "locked";
+            const migrationDisabled =
+              !item.actions.can_migrate && !migrationGuidance;
+            const contentsKnown =
+              item.lifecycle_state === "ready" ||
+              item.lifecycle_state === "unlocked";
             return (
               <tr
                 key={item.id}
@@ -71,28 +107,12 @@ export function StoresTable({
                   {item.backend}
                 </td>
                 <td className="px-4 py-3">
-                  {item.locked ? (
-                    <StatusChip
-                      tone="amber"
-                      data-testid={`store-status-${item.id}`}
-                    >
-                      locked
-                    </StatusChip>
-                  ) : item.backend === "encrypted" ? (
-                    <StatusChip
-                      tone="emerald"
-                      data-testid={`store-status-${item.id}`}
-                    >
-                      unlocked
-                    </StatusChip>
-                  ) : (
-                    <span
-                      data-testid={`store-status-${item.id}`}
-                      className="text-xs text-(--color-muted)"
-                    >
-                      —
-                    </span>
-                  )}
+                  <StatusChip
+                    tone={lifecycleTone(item)}
+                    data-testid={`store-status-${item.id}`}
+                  >
+                    {item.lifecycle_state}
+                  </StatusChip>
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
                   <div>
@@ -100,8 +120,8 @@ export function StoresTable({
                     {item.usage.mapped_client_instance_count === 1 ? "" : "s"}
                   </div>
                   <div className="text-xs">
-                    {item.locked
-                      ? "contents unknown while locked"
+                    {!contentsKnown
+                      ? `contents unknown while ${item.lifecycle_state}`
                       : item.usage.has_secrets
                         ? "contains secrets"
                         : "empty"}
@@ -111,23 +131,23 @@ export function StoresTable({
                   {item.description ?? "—"}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <div className="inline-flex gap-2">
-                    {canUnlock ? (
+                  <div className="inline-flex flex-wrap justify-end gap-2">
+                    {item.actions.can_unlock ? (
                       <Button
                         variant="default"
                         size="sm"
                         data-testid={`store-unlock-${item.id}`}
-                        onClick={() => onUnlock(item)}
+                        onClick={() => onUnlock(item.id)}
                       >
                         Unlock
                       </Button>
                     ) : null}
-                    {canLock ? (
+                    {item.actions.can_lock ? (
                       <Button
                         variant="ghost"
                         size="sm"
                         data-testid={`store-lock-${item.id}`}
-                        onClick={() => onLock(item)}
+                        onClick={() => onLock(item.id)}
                       >
                         Lock
                       </Button>
@@ -135,25 +155,35 @@ export function StoresTable({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => onEdit(item)}
+                      disabled={!item.actions.can_update}
+                      onClick={() => onEdit(item.id)}
                     >
                       Edit
                     </Button>
-                    {canRotate ? (
+                    {item.actions.can_rotate_key ? (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => onRotateKey(item)}
+                        onClick={() => onRotateKey(item.id)}
                       >
                         Rotate key
                       </Button>
                     ) : null}
                     <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={migrationDisabled}
+                      title={migrationTitle(item)}
+                      onClick={() => onMigrate(item.id)}
+                    >
+                      {migrationLabel(item)}
+                    </Button>
+                    <Button
                       variant="destructive"
                       size="sm"
                       disabled={!canDelete}
                       title={storeDeleteTitle(item)}
-                      onClick={() => onDelete(item)}
+                      onClick={() => onDelete(item.id)}
                     >
                       Delete
                     </Button>

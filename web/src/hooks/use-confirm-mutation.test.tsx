@@ -298,7 +298,6 @@ describe("confirmation mutation production inventory", () => {
         "pages/secrets/libsecret/dialogs/delete-item.tsx",
         "pages/stores/dialogs/delete.tsx",
         "pages/stores/dialogs/lock.tsx",
-        "pages/stores/dialogs/rotate-key.tsx",
         "pages/users/dialogs/delete.tsx",
       ],
     );
@@ -333,11 +332,18 @@ describe("confirmation mutation production inventory", () => {
     expectOneOccurrenceInEach(
       sources,
       /const outcome = await confirm\([\s\S]*?if \(outcome\.status === "error"\) return;[\s\S]*?const result = outcome\.result;/,
-      [
-        "pages/stores/dialogs/delete.tsx",
-        "pages/stores/dialogs/rotate-key.tsx",
-      ],
+      ["pages/stores/dialogs/delete.tsx"],
     );
+
+    expectOneOccurrenceInEach(
+      sources,
+      /const result = await postStoreRotateKey\(/,
+      ["pages/stores/dialogs/rotate-key.tsx"],
+    );
+    const rotateSource = sources.find(
+      ([path]) => path === "pages/stores/dialogs/rotate-key.tsx",
+    )![1];
+    expect(rotateSource).not.toMatch(/\buseMutation\b|\buseConfirmMutation\b/);
 
     const narrowCatchPattern =
       /try \{\s*result = await [^;]+\.mutateAsync\([^;]*\);\s*\} catch \{\s*return;\s*\}/;

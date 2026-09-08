@@ -53,9 +53,11 @@ describe("SecretsPage", () => {
         name: "default",
         backend: "plain" as const,
         created_at: 0,
-        locked: false,
+        lifecycle_state: "ready" as const,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
+          can_update: true,
+          can_migrate: true,
           can_rotate_key: false,
           can_unlock: false,
           can_lock: false,

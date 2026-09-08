@@ -23,6 +23,9 @@ import {
   postPasswordChange,
   postResourceCreate,
   postSecretRename,
+  postStoreCreate,
+  postStoreKeyGenerate,
+  postStoreMigrate,
   postUserCreate,
   postUserResetPassword,
   putClientInstanceUpdate,
@@ -263,6 +266,26 @@ const endpointCases: EndpointCase[] = [
     pathname:
       "/v1/admin/stores/store-a/secrets/resource-a/env/OLD_NAME/rename",
     body: { material_b64: null, to_key: "NEW_NAME" },
+  },
+  {
+    name: "generates a storage-neutral store key",
+    invoke: postStoreKeyGenerate,
+    method: "POST",
+    pathname: "/v1/admin/store-keys",
+  },
+  {
+    name: "creates a plain store without a key",
+    invoke: () => postStoreCreate({ backend: "plain", name: "Store A" }),
+    method: "POST",
+    pathname: "/v1/admin/stores",
+    body: { backend: "plain", name: "Store A" },
+  },
+  {
+    name: "migrates a store to plain without a key",
+    invoke: () => postStoreMigrate("store-a", { backend: "plain" }),
+    method: "POST",
+    pathname: "/v1/admin/stores/store-a/migrate",
+    body: { backend: "plain" },
   },
   {
     name: "updates a store",
