@@ -29,7 +29,9 @@ export function StoresPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<
+    AdminStoresListResponse["items"][number] | null
+  >(null);
   const [unlockingId, setUnlockingId] = useState<string | null>(null);
   const [lockingId, setLockingId] = useState<string | null>(null);
   const [rotatingId, setRotatingId] = useState<string | null>(null);
@@ -37,7 +39,6 @@ export function StoresPage() {
 
   const items = data?.items ?? [];
   const editing = items.find((item) => item.id === editingId) ?? null;
-  const deleting = items.find((item) => item.id === deletingId) ?? null;
   const unlocking = items.find((item) => item.id === unlockingId) ?? null;
   const locking = items.find((item) => item.id === lockingId) ?? null;
   const rotating = items.find((item) => item.id === rotatingId) ?? null;
@@ -64,7 +65,9 @@ export function StoresPage() {
         <StoresTable
           items={items}
           onEdit={setEditingId}
-          onDelete={setDeletingId}
+          onDelete={(storeId) =>
+            setDeleting(items.find((item) => item.id === storeId) ?? null)
+          }
           onUnlock={setUnlockingId}
           onLock={setLockingId}
           onRotateKey={setRotatingId}
@@ -84,7 +87,7 @@ export function StoresPage() {
       {deleting ? (
         <DeleteStoreDialog
           store={deleting}
-          onClose={() => setDeletingId(null)}
+          onClose={() => setDeleting(null)}
         />
       ) : null}
       {unlocking ? (

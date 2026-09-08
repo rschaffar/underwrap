@@ -230,7 +230,7 @@ export async function startBackend(
     writeFileSync(keyPath, pems.private);
 
     const storeDir = join(tmpDir, "store");
-    mkdirSync(storeDir);
+    mkdirSync(storeDir, { mode: 0o700 });
 
     // Pre-seed a single "default" store in the backend's stores
     // registry. The registry is a directory of `<id>.json` files keyed
