@@ -1,56 +1,118 @@
-//! Backend-managed store registry.
-//!
-//! The on-disk registry at `BackendConfig::stores_dir` holds one
-//! `<id>.json` file per store this backend instance owns. At startup
-//! every file is loaded and each entry is turned into a [`StoreEntry`]
-//! — plain stores boot `Unlocked`, encrypted stores boot `Locked`
-//! until an operator submits the master key. The live `StoreRegistry`
-//! is shared (under an `RwLock`) with every admin / runtime handler so
-//! lock-state transitions take effect immediately.
-//!
-//! Writes go through per-record tempfile + atomic rename; deletes are
-//! a single unlink. The id lives only in the filename, so renaming a
-//! store on disk is one `mv`, not a rewrite of a master document.
+//! Backend-managed store registry and scoped normal-storage leases.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::sync::Notify;
 use tracing::info;
 
 use underwrap_backend_store::StorageBackend;
 use underwrap_protocol::config::StoreRecord;
 
-/// Live lock-state of one store. Plain stores are constructed as
-/// [`StoreState::Unlocked`] at startup and stay there for the
-/// lifetime of the process. Encrypted stores boot as
-/// [`StoreState::Locked`] and only transition to `Unlocked` after an
-/// operator submits the master key via `POST .../unlock`. Dropping the
-/// `Arc<dyn StorageBackend>` zeroizes the held `MasterKey`.
+/// Live lifecycle state of one store.
 pub enum StoreState {
+    Ready(Arc<dyn StorageBackend>),
     Unlocked(Arc<dyn StorageBackend>),
     Locked,
+    Busy,
+    RecoveryRequired,
 }
 
 impl StoreState {
-    pub fn backend(&self) -> Option<&Arc<dyn StorageBackend>> {
+    #[cfg(test)]
+    pub(crate) fn backend(&self) -> Option<&Arc<dyn StorageBackend>> {
         match self {
-            StoreState::Unlocked(b) => Some(b),
-            StoreState::Locked => None,
+            Self::Ready(backend) | Self::Unlocked(backend) => Some(backend),
+            Self::Locked | Self::Busy | Self::RecoveryRequired => None,
         }
     }
 }
 
-/// One store as held by the live registry: persisted record, current
-/// lock state, and a mutex that serializes rotation requests with one
-/// another. Ordinary reads and writes do not acquire this mutex; operators
-/// must quiesce store access during rotation. The lock lives on the entry so
-/// it dies with the store on delete instead of leaking into an unbounded map
-/// on `ListenerState`.
+/// Entry-owned admission count for complete normal storage operations.
+pub(crate) struct LeaseTracker {
+    count: AtomicUsize,
+    notify: Notify,
+}
+
+impl LeaseTracker {
+    fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            notify: Notify::new(),
+        }
+    }
+
+    fn admit(&self) {
+        self.count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn release(&self) {
+        let previous = self.count.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "lease count underflow");
+        if previous == 1 {
+            // One lifecycle mutex owner can wait for this entry at a time.
+            // `notify_one` retains a permit if release races waiter registration.
+            self.notify.notify_one();
+        }
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn wait_for_zero(&self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            loop {
+                let notified = self.notify.notified();
+                if self.count() == 0 {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+}
+
+/// A backend handle whose lifetime covers one complete handler storage operation.
+pub(crate) struct StoreLease {
+    backend: Arc<dyn StorageBackend>,
+    tracker: Arc<LeaseTracker>,
+}
+
+impl Deref for StoreLease {
+    type Target = dyn StorageBackend;
+
+    fn deref(&self) -> &Self::Target {
+        self.backend.as_ref()
+    }
+}
+
+impl AsRef<dyn StorageBackend> for StoreLease {
+    fn as_ref(&self) -> &(dyn StorageBackend + 'static) {
+        self.backend.as_ref()
+    }
+}
+
+impl Drop for StoreLease {
+    fn drop(&mut self) {
+        self.tracker.release();
+    }
+}
+
+/// One store as held by the live registry.
 pub struct StoreEntry {
     pub record: StoreRecord,
     pub state: StoreState,
-    pub rotation_lock: Arc<tokio::sync::Mutex<()>>,
+    pub lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) identity: Arc<()>,
+    pub(crate) generation: AtomicU64,
+    pub(crate) leases: Arc<LeaseTracker>,
 }
 
 impl StoreEntry {
@@ -58,114 +120,148 @@ impl StoreEntry {
         Self {
             record,
             state,
-            rotation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            identity: Arc::new(()),
+            generation: AtomicU64::new(0),
+            leases: Arc::new(LeaseTracker::new()),
         }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn advance_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 }
 
-/// Reason a `StoreRegistry` lookup failed. Translated to HTTP at the
-/// handler boundary: `NotFound → 404`, `Locked → 503 / store_locked`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryLookupError {
     NotFound,
     Locked,
+    Busy,
+    RecoveryRequired,
 }
 
-/// Open backends + provenance metadata + per-store rotation mutexes for every
-/// store visible to the admin API. Wrapped in an `RwLock` inside
-/// `ListenerState` so the CRUD handlers
-/// can mutate it without rebooting the daemon. Readers consult
-/// [`StoreRegistry::unlocked_backend`] to fetch the live
-/// `Arc<dyn StorageBackend>` for a store and surface
-/// [`RegistryLookupError::Locked`] when the store hasn't been
-/// unlocked yet.
 #[derive(Default)]
 pub struct StoreRegistry {
     pub entries: HashMap<String, StoreEntry>,
 }
 
 impl StoreRegistry {
-    /// Borrow the live entry for `store_id`, or surface
-    /// [`RegistryLookupError::NotFound`] when no such store is
-    /// registered. Callers needing to distinguish Locked vs Unlocked
-    /// match on the returned entry's `state` field.
     pub fn entry(&self, store_id: &str) -> std::result::Result<&StoreEntry, RegistryLookupError> {
         self.entries
             .get(store_id)
             .ok_or(RegistryLookupError::NotFound)
     }
 
-    /// Return the live backend for `store_id` if it is unlocked, or a
-    /// structured error otherwise. Used by every service / admin
-    /// handler that needs to touch backing storage.
-    pub fn unlocked_backend(
+    /// Admit one complete normal storage operation while the registry lock is held.
+    pub(crate) fn lease(
         &self,
         store_id: &str,
-    ) -> std::result::Result<Arc<dyn StorageBackend>, RegistryLookupError> {
-        match &self.entry(store_id)?.state {
-            StoreState::Unlocked(b) => Ok(Arc::clone(b)),
-            StoreState::Locked => Err(RegistryLookupError::Locked),
-        }
+    ) -> std::result::Result<StoreLease, RegistryLookupError> {
+        let entry = self.entry(store_id)?;
+        let backend = match &entry.state {
+            StoreState::Ready(backend) | StoreState::Unlocked(backend) => Arc::clone(backend),
+            StoreState::Locked => return Err(RegistryLookupError::Locked),
+            StoreState::Busy => return Err(RegistryLookupError::Busy),
+            StoreState::RecoveryRequired => return Err(RegistryLookupError::RecoveryRequired),
+        };
+        entry.leases.admit();
+        Ok(StoreLease {
+            backend,
+            tracker: Arc::clone(&entry.leases),
+        })
     }
 
-    /// Install an unlocked backend for `store_id`. Used after a
-    /// successful unlock. The entry must already exist.
     pub fn unlock(&mut self, store_id: &str, backend: Arc<dyn StorageBackend>) {
         if let Some(entry) = self.entries.get_mut(store_id) {
             entry.state = StoreState::Unlocked(backend);
+            entry.advance_generation();
         }
     }
 
-    /// Transition `store_id` to the locked state, dropping any held
-    /// backend. Returns `true` when the store existed in the registry.
     pub fn lock(&mut self, store_id: &str) -> bool {
         if let Some(entry) = self.entries.get_mut(store_id) {
             entry.state = StoreState::Locked;
+            entry.advance_generation();
             true
         } else {
             false
         }
     }
 
-    /// Test-only: return the unlocked backend for `store_id`,
-    /// panicking with a helpful message if the store is locked or
-    /// unknown. Cuts down on noise in tests that already know the
-    /// store is unlocked because they just created it.
     #[cfg(test)]
     pub fn expect_unlocked(&self, store_id: &str) -> Arc<dyn StorageBackend> {
         match self.entries.get(store_id) {
             Some(entry) => match &entry.state {
-                StoreState::Unlocked(b) => Arc::clone(b),
-                StoreState::Locked => panic!("expected '{store_id}' to be unlocked"),
+                StoreState::Ready(backend) | StoreState::Unlocked(backend) => Arc::clone(backend),
+                StoreState::Locked | StoreState::Busy | StoreState::RecoveryRequired => {
+                    panic!("expected '{store_id}' to be available")
+                }
             },
             None => panic!("expected '{store_id}' in registry"),
         }
     }
 }
 
-/// Build the initial [`StoreEntry`] map for the on-disk store
-/// registry. Plain stores are opened immediately and inserted as
-/// [`StoreState::Unlocked`]. Encrypted stores are inserted as
-/// [`StoreState::Locked`] — the backend does not hold their master
-/// key, so they stay locked until an operator submits the key via
-/// `POST /v1/admin/stores/{id}/unlock`.
+fn has_exact_migration_workspace(store_id: &str, canonical: &Path) -> Result<bool> {
+    let Some(parent) = canonical.parent() else {
+        return Ok(false);
+    };
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("listing store data parent {}", parent.display()));
+        }
+    };
+    let prefix = format!(".{store_id}.underwrap-migration-");
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(suffix) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if suffix.len() == 16
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Build initial entries without mutating any store that has durable migration state.
 pub(crate) fn open_initial_stores(
     definitions: HashMap<String, StoreRecord>,
 ) -> Result<HashMap<String, StoreEntry>> {
     let mut entries = HashMap::new();
     for (id, record) in definitions {
-        let state = match &record.storage {
-            underwrap_protocol::config::StorageConfig::Plain { .. } => {
-                let backend: Arc<dyn StorageBackend> =
-                    Arc::from(underwrap_backend_store::open(&record.storage)?);
-                StoreState::Unlocked(backend)
-            }
-            underwrap_protocol::config::StorageConfig::Encrypted { .. } => {
-                info!(
-                    store = %id,
-                    "encrypted store starts locked; awaiting POST /v1/admin/stores/{{id}}/unlock",
-                );
-                StoreState::Locked
+        let state = if has_exact_migration_workspace(&id, record.storage.dir())? {
+            info!(store = %id, "store has migration workspace; trusted-host recovery required");
+            StoreState::RecoveryRequired
+        } else {
+            match &record.storage {
+                underwrap_protocol::config::StorageConfig::Plain { .. } => {
+                    let backend: Arc<dyn StorageBackend> =
+                        Arc::from(underwrap_backend_store::open(&record.storage)?);
+                    StoreState::Ready(backend)
+                }
+                underwrap_protocol::config::StorageConfig::Encrypted { .. } => {
+                    info!(
+                        store = %id,
+                        "encrypted store starts locked; awaiting POST /v1/admin/stores/{{id}}/unlock",
+                    );
+                    StoreState::Locked
+                }
             }
         };
         entries.insert(id, StoreEntry::new(record, state));
@@ -200,21 +296,18 @@ impl crate::storage::json_dir_store::DirRecord for StoreRecord {
     }
 }
 
-/// Load every store record found under `dir`. A missing directory is
-/// treated as an empty registry so a fresh backend can still boot.
 pub fn load_store_records(dir: &Path) -> Result<HashMap<String, StoreRecord>> {
     let records: Vec<StoreRecord> = crate::storage::json_dir_store::load_dir(dir)?;
-    Ok(records.into_iter().map(|r| (r.id.clone(), r)).collect())
+    Ok(records
+        .into_iter()
+        .map(|record| (record.id.clone(), record))
+        .collect())
 }
 
-/// Persist one store record to `<dir>/<id>.json` via the usual
-/// tempfile + atomic rename.
 pub fn save_store_record(dir: &Path, record: &StoreRecord) -> Result<()> {
     crate::storage::json_dir_store::save(dir, record)
 }
 
-/// Remove `<dir>/<id>.json`. Missing files are tolerated so the admin
-/// delete path remains idempotent under retry.
 pub fn delete_store_record(dir: &Path, store_id: &str) -> Result<()> {
     crate::storage::json_dir_store::delete(dir, "store", store_id)
 }

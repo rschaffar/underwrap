@@ -1,11 +1,13 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { AdminDialog } from "@/components/admin-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
-import { useConfirmMutation } from "@/hooks/use-confirm-mutation";
 import { type AdminStoreListItem, postStoreRotateKey } from "@/api/client";
+import { describeApiError } from "@/lib/error-message";
+import { invalidateAllInBackground } from "@/lib/query";
 
 import { KeyRevealDialog } from "./key-reveal";
 
@@ -16,34 +18,49 @@ import { KeyRevealDialog } from "./key-reveal";
  * follow-up that requires explicit acknowledgement before close.
  */
 export function RotateStoreKeyDialog({
-  store,
+  storeId,
+  currentStore,
   onClose,
 }: {
-  store: AdminStoreListItem;
+  storeId: string;
+  currentStore: AdminStoreListItem | null;
   onClose: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const [initialName] = useState(() => currentStore?.name ?? storeId);
   const [ack, setAck] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [revealKey, setRevealKey] = useState<{
     keyHex: string;
     warning: string;
   } | null>(null);
 
-  const { confirm, pending, submitError } = useConfirmMutation({
-    mutationFn: () => postStoreRotateKey(store.id),
-    invalidate: [["admin", "stores"]],
-  });
+  const storeName = currentStore?.name ?? initialName;
+  const locked = currentStore?.lifecycle_state === "locked";
+  const canRotate =
+    currentStore?.lifecycle_state === "unlocked" &&
+    currentStore.actions.can_rotate_key;
 
   async function handleRotate() {
-    const outcome = await confirm();
-    if (outcome.status === "error") return;
-    const result = outcome.result;
-    setRevealKey({ keyHex: result.key_hex, warning: result.warning });
+    if (!canRotate) return;
+    setPending(true);
+    setSubmitError(null);
+    try {
+      const result = await postStoreRotateKey(storeId);
+      setRevealKey({ keyHex: result.key_hex, warning: result.warning });
+      invalidateAllInBackground(queryClient, [["admin", "stores"]]);
+    } catch (error) {
+      setSubmitError(describeApiError(error));
+    } finally {
+      setPending(false);
+    }
   }
 
   if (revealKey) {
     return (
       <KeyRevealDialog
-        title={`New encryption key for ${store.name}`}
+        title={`New encryption key for ${storeName}`}
         description={
           <>
             <strong>Heads up:</strong> {revealKey.warning} This is the only time
@@ -80,19 +97,25 @@ export function RotateStoreKeyDialog({
     <AdminDialog
       open
       onClose={onClose}
-      title={`Rotate master key: ${store.name}`}
+      title={`Rotate master key: ${storeName}`}
       description="Quiesce wrapper traffic and other admin access to this store first: rotation is serialized only against another rotation, so concurrent reads may fail and concurrent writes may be lost. The operation mints a fresh 32-byte key, re-encrypts the store, and shows the new key once. Every displaced ciphertext generation remains on the backend host, consumes disk, and stays decryptable with its old key until a trusted host operator removes that selected generation after independently verifying a later key."
     >
-      {store.locked ? (
+      {locked ? (
         <Alert variant="warning">
           The store is locked. Unlock it first; rotation needs the current key
           to read existing ciphertext.
         </Alert>
       ) : null}
+      {!currentStore || (!locked && !canRotate) ? (
+        <Alert variant="warning">
+          Rotation is not currently available for this store. Reconcile the
+          current Stores list before trying again.
+        </Alert>
+      ) : null}
       <label className="flex items-start gap-2 text-xs text-(--color-muted)">
         <input
           type="checkbox"
-          disabled={store.locked}
+          disabled={!canRotate}
           checked={ack}
           onChange={(e) => setAck(e.target.checked)}
         />
@@ -110,7 +133,7 @@ export function RotateStoreKeyDialog({
         <Button
           type="button"
           variant="destructive"
-          disabled={store.locked || !ack || pending}
+          disabled={!canRotate || !ack || pending}
           onClick={() => void handleRotate()}
         >
           {pending ? "Rotating…" : "Rotate key"}

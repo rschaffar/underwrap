@@ -90,6 +90,7 @@ fn admin_can_create_get_update_delete_a_dynamic_plain_store() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: Some("the work store".into()),
+            key_hex: None,
         },
     );
     assert_eq!(status, StatusCode::OK);
@@ -181,6 +182,7 @@ fn create_refuses_when_stores_data_root_unconfigured() {
             name: "stray".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -196,6 +198,7 @@ fn create_refuses_duplicate_name() {
         name: "work".into(),
         backend: AdminStoreBackendKind::Plain,
         description: None,
+        key_hex: None,
     };
     let (first_status, _) = create_store(state.clone(), &p, &req);
     assert_eq!(first_status, StatusCode::OK);
@@ -216,6 +219,7 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let expected_dir = tmp.path().join("data").join(&store_id);
@@ -256,6 +260,7 @@ fn create_plain_store_returns_no_key_hex() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     assert_eq!(status, StatusCode::OK);
@@ -268,12 +273,13 @@ fn create_plain_store_returns_no_key_hex() {
 }
 
 #[test]
-fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
+fn create_encrypted_store_uses_submitted_key_and_returns_no_key() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));
     let data_root = state.admin().stores_data_root.clone().unwrap();
     std::fs::remove_dir(&data_root).unwrap();
     let p = admin_principal();
+    let key_hex = "11".repeat(32);
     let (status, body) = create_store(
         state.clone(),
         &p,
@@ -281,19 +287,14 @@ fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(underwrap_protocol::service::AdminKeyHex::new(
+                key_hex.clone(),
+            )),
         },
     );
     assert_eq!(status, StatusCode::OK);
+    assert!(!body.as_object().unwrap().contains_key("key_hex"));
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
-    let key_hex = body["key_hex"]
-        .as_str()
-        .expect("encrypted create must include key_hex")
-        .to_string();
-    assert_eq!(key_hex.len(), 64, "key_hex must be 32 bytes hex-encoded");
-    assert!(
-        key_hex.chars().all(|c| c.is_ascii_hexdigit()),
-        "key_hex must be lowercase hex",
-    );
 
     // No file under the test root survives the call with a
     // `.key` suffix — the master key never touched disk. We walk
@@ -335,11 +336,11 @@ fn create_encrypted_store_generates_key_in_memory_and_returns_it_once() {
         underwrap_backend_store::ENCRYPTED_CANARY_PLAINTEXT
     );
 
-    // The detail response carries the data dir and `locked=false`
-    // but never echoes the key value.
+    // The detail response projects the explicit lifecycle state and never
+    // echoes the submitted key value.
     let (_, body) = store_detail(state, &store_id);
     assert_eq!(body["backend"], "encrypted");
-    assert_eq!(body["locked"], false);
+    assert_eq!(body["lifecycle_state"], "unlocked");
     let body_str = serde_json::to_string(&body).unwrap();
     assert!(
         !body_str.contains(&key_hex),
@@ -359,6 +360,9 @@ fn canary_is_hidden_from_admin_has_secrets_view() {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(underwrap_protocol::service::AdminKeyHex::new(
+                "11".repeat(32),
+            )),
         },
     );
     let store_id = body["store"]["id"].as_str().unwrap().to_string();
@@ -380,6 +384,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let encrypted_id = create_store_for_test(
@@ -389,6 +394,9 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(underwrap_protocol::service::AdminKeyHex::new(
+                "11".repeat(32),
+            )),
         },
     );
     {
@@ -452,6 +460,7 @@ fn f015_store_create_blocked_registry_publishes_no_candidate_and_retries_cleanly
         name: "candidate".into(),
         backend: AdminStoreBackendKind::Plain,
         description: Some("candidate-description".into()),
+        key_hex: None,
     };
 
     let ((status, body), audit) = capture_tracing_output(|| {
@@ -509,16 +518,17 @@ fn f015_store_update_persists_before_publishing_live_record() {
             name: "before".into(),
             backend: AdminStoreBackendKind::Plain,
             description: Some("before-description".into()),
+            key_hex: None,
         },
     );
-    let (before, entry_address, backend, rotation_lock) = {
+    let (before, entry_address, backend, lifecycle_lock) = {
         let stores = state.shared.stores.read().unwrap();
         let entry = stores.entries.get(&store_id).unwrap();
         (
             entry.record.clone(),
             std::ptr::from_ref(entry),
             entry.state.backend().unwrap().clone(),
-            entry.rotation_lock.clone(),
+            entry.lifecycle_lock.clone(),
         )
     };
     let mut candidate = before.clone();
@@ -558,7 +568,7 @@ fn f015_store_update_persists_before_publishing_live_record() {
             std::ptr::eq(live.state.backend().unwrap().as_ref(), backend.as_ref()),
             "failed update replaced the live backend/state",
         );
-        assert!(Arc::ptr_eq(&live.rotation_lock, &rotation_lock));
+        assert!(Arc::ptr_eq(&live.lifecycle_lock, &lifecycle_lock));
     }
     let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();
     assert_eq!(reloaded.len(), 1);
@@ -580,7 +590,7 @@ fn f015_store_update_persists_before_publishing_live_record() {
             live.state.backend().unwrap().as_ref(),
             backend.as_ref(),
         ));
-        assert!(Arc::ptr_eq(&live.rotation_lock, &rotation_lock));
+        assert!(Arc::ptr_eq(&live.lifecycle_lock, &lifecycle_lock));
     }
     let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();
     assert_eq!(reloaded.len(), 1);
@@ -599,17 +609,18 @@ fn f015_store_delete_persists_before_removing_live_entry() {
             name: "keep".into(),
             backend: AdminStoreBackendKind::Plain,
             description: Some("keep-description".into()),
+            key_hex: None,
         },
     );
     let record_path = state.admin().stores_dir.join(format!("{store_id}.json"));
-    let (before, entry_address, backend, rotation_lock) = {
+    let (before, entry_address, backend, lifecycle_lock) = {
         let stores = state.shared.stores.read().unwrap();
         let entry = stores.entries.get(&store_id).unwrap();
         (
             entry.record.clone(),
             std::ptr::from_ref(entry),
             entry.state.backend().unwrap().clone(),
-            entry.rotation_lock.clone(),
+            entry.lifecycle_lock.clone(),
         )
     };
 
@@ -637,7 +648,7 @@ fn f015_store_delete_persists_before_removing_live_entry() {
             std::ptr::eq(live.state.backend().unwrap().as_ref(), backend.as_ref()),
             "failed delete replaced the live backend/state",
         );
-        assert!(Arc::ptr_eq(&live.rotation_lock, &rotation_lock));
+        assert!(Arc::ptr_eq(&live.lifecycle_lock, &lifecycle_lock));
     }
     assert!(record_path.exists());
     let reloaded = crate::store_registry::load_store_records(&state.admin().stores_dir).unwrap();

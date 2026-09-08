@@ -46,7 +46,7 @@ export function EditStoreDialog({
       open
       onClose={onClose}
       title={`Edit store: ${store.name}`}
-      description="Backend type and data directory are immutable. Use the dedicated rotate-key action on encrypted stores."
+      description="Edit operator-facing metadata here. Use the dedicated migration and rotate-key actions for storage lifecycle changes."
     >
       <Form {...form}>
         <form onSubmit={onSubmit} className="space-y-4" noValidate>

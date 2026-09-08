@@ -67,12 +67,9 @@ pub(crate) fn resolve_runtime_client(
         "runtime client instance '{}' is not active",
         instance.id
     );
-    // We deliberately don't fetch the backend Arc here — a store can
-    // legitimately be `Locked` for this principal, and the caller has
-    // to surface that as `store_locked`. The caller's downstream
-    // `unlocked_backend(store_id)` call will already return
-    // `NotFound` for an unknown id, so re-checking existence here
-    // would be a redundant lock acquisition.
+    // We deliberately don't acquire a storage lease here — the caller must
+    // map locked, busy, recovery-required, and missing stores distinctly.
+    // The downstream lease admission performs that state check.
     Ok(RuntimeRequestPrincipal {
         instance_id: instance.id.clone(),
         store_id: instance.current_store_id.clone(),

@@ -12,9 +12,11 @@ Tasks use checkboxes and record the exact acceptance evidence required before th
 
 ## Active plans
 
-There are no active plans.
+No active plans are recorded.
 
 ## Completed plans
+
+The completed store backend migration and pre-mutation key confirmation work is recorded in [`archived/2026-09-07_store-backend-migration-plan.md`](archived/2026-09-07_store-backend-migration-plan.md).
 
 The completed test-fixture lifecycle hardening work is recorded in [`archived/2026-09-07_test-fixture-lifecycle-plan.md`](archived/2026-09-07_test-fixture-lifecycle-plan.md).
 

@@ -301,7 +301,8 @@ Workspace tests cover:
   rename/regular-file blockers. They pin the exact 500 codes, unchanged live
   and freshly loaded records after helper failure, absence of failed success
   audit/cascade effects, successful retry publication, and store backend/state/
-  rotation-lock or complete client-record identity where applicable;
+  lifecycle-lock or complete client-record identity where applicable;
+- store key-generation, encrypted-create, and backend-migration unit matrices covering exact no-cache headers, storage-neutral generation, strict pre-mutation key validation including explicit-null extraction, lifecycle states and action projections, lease admission and drainage, both conversion directions, stable metadata and logical bytes, exact mode `0700` including special-bit rejection, streaming value release, displaced-source reopen and revalidation, runtime responsiveness, complete phase-failure mappings, rollback, cleanup, restart detection, and recovery-required disposition;
 - resource deletion blocker aggregation, malformed-blob fail-before behavior,
   blob-delete-before-catalog ordering, storage-failure state re-read, and
   absence of reconstruction or false success;
@@ -612,15 +613,15 @@ The backend admin API is generated from `utoipa` annotations. Semantic tests in
   absent operation security inherits the root, while an explicit empty array
   is public;
 - the exact three effectively public operations, session-only protected reads,
-  and one session-and-CSRF Security Requirement Object on each of the exact 32
+  and one session-and-CSRF Security Requirement Object on each of the exact 34
   protected mutations (never two OR-shaped objects);
 - the exact `apiKey` definitions for the `__Host-underwrap-session` cookie and
   `X-CSRF-Token` header schemes;
-- zero 423 responses and the exact total set of 27 operations carrying any 503
-  response, followed by exact `store_locked` descriptions and
-  `ServiceErrorResponse` schemas;
-- the exact lock, rotate-key, and unlock response sets and every canonical
-  lifecycle code in their descriptions.
+- zero 423 responses and the exact total set of 32 operations carrying any 503 response, followed by exact `store_locked` and/or `store_busy` descriptions and `ServiceErrorResponse` schemas;
+- the exact 32 operations advertising `500 migration_recovery_required`;
+- the exact lock, migrate, rotate-key, and unlock response sets and every canonical lifecycle code in their descriptions;
+- the store-key endpoint's session-plus-CSRF protection and exact non-cache response headers;
+- strict conditional create and migration key descriptions, optional non-null string `key_hex` request properties, and the explicit `ready`, `unlocked`, `locked`, `busy`, and `recovery-required` lifecycle schema.
 
 Live lifecycle handler tests pin statuses and codes actually emitted. The
 semantic OpenAPI tests pin generated meaning. The byte-drift test separately
@@ -640,6 +641,47 @@ cd web && npm run generate:api && npm run build
 The drift test rewrites `openapi.json` in place when needed; review and commit
 that change with the implementation. The generated TypeScript schema under
 `web/src/api/schema.ts` is local build output and is not committed.
+
+## Store backend migration evidence
+
+Run the focused direct backend and SPA suites with:
+
+```bash
+cargo test -p underwrap-backend admin_api::stores::lifecycle
+cargo test -p underwrap-backend store_registry::tests::migration
+cd web && npm test -- src/pages/stores.test.tsx
+```
+
+The backend tests use real temporary directories and both storage implementations to cover complete id and byte preservation, canary rules, exact mode `0700` including special-bit rejection, one-value copy and one-pair verification release order, bounded source fingerprint revalidation, publication order, registry state, and restart detection.
+Injected phase hooks make migration-phase failure, rollback, cleanup, displaced-source disappearance or unreadability, same-id readable source-byte mutation after displacement and both rollback renames, and target corruption deterministic in both source kinds where applicable.
+Those cases are simulated failures rather than observations of process crashes, kernel interruption, power loss, arbitrary production filesystems, SHA-256 collision resistance, or malicious backend-host root.
+Handler and registry tests directly cover exact no-cache headers, storage-neutral key generation, strict pre-mutation key validation and explicit-null rejection, lifecycle action projection, blocking of new leases, drainage of admitted leases, a responsive multi-thread runtime and non-cancellable synchronous post-drain section, fixed public codes, recovery precedence over a matching target backend, and recovery-required publication.
+They do not prove external key custody, browser behavior, secure erasure, filesystem durability, or operator quiescence.
+
+The Stores-page Vitest matrix covers generated-key ordering, exact untrimmed comparison, no request on mismatch or pre-request cancellation, no generated key for encrypted-to-plain migration, lifecycle rendering, same-key retry after ambiguous failure, recovery precedence when the refreshed record already names the target backend, reconciliation-based retry disabling with key retention, explicit warned discard, and absence from application query and mutation cache data.
+Vitest runs in jsdom and does not establish real HTTP caching, browser process-memory handling, clipboard erasure, network response loss, or behavior in an actual browser engine.
+
+Run the real authenticated HTTPS migration scenario with:
+
+```bash
+./crates/integration-tests/run tests::store_migration -- --nocapture
+```
+
+That scenario exercises the packaged backend over authenticated HTTPS in both directions and checks the stable store id, metadata, runtime client mapping, control documents, nested storage ids, logical bytes, exact mode-`0700` target roots, and absence of an intentional plaintext migration pathname after successful plain-to-encrypted migration.
+Host-tree inspection after success establishes only the inspected path state on that test filesystem and does not prove secure media erasure, absence of stale blocks or snapshots, crash recovery, every failure disposition, or other filesystem behavior.
+
+Before Playwright, build the backend and SPA from the same changed tree:
+
+```bash
+system=$(nix eval --impure --raw --expr builtins.currentSystem)
+web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build")
+UNDERWRAP_WEB_DIST="$web_dist" cargo build -p underwrap-backend
+nix develop -c bash -lc 'cd web && npm run build && UNDERWRAP_BACKENDD_BINARY="$PWD/../target/debug/underwrap-backend" npx playwright test e2e/stores.spec.ts'
+```
+
+The configured Playwright project exercises real encrypted creation and both migration directions through the SPA and real backend, while a simulated lost-response route checks retained-key reconciliation behavior without claiming an actual transport failure.
+Browser storage and cache assertions are bounded to the explicitly inspected web APIs and application caches and do not establish absence from browser internals, HTTP intermediaries, screenshots, traces, clipboard remnants, allocator memory, or other browser engines.
+Neither integration nor browser success proves operator quiescence, external key custody, independent recoverability, recovery after media loss or missing encrypted keys, power-loss durability, or secure erasure.
 
 ## SPA secret-text unit tests
 
@@ -699,10 +741,12 @@ The configured `tablet-768` WebKit scenario runs against one real backend with t
 At exactly 768 CSS pixels, it observes the Stores desktop sidebar and hidden menu trigger, a visible table whose local overflow container computes to `overflow-x: auto` with `scrollWidth > clientWidth`, and no document-level horizontal overflow.
 After resizing the same page to 767×1024, it observes the desktop sidebar hidden, the menu trigger and navigation sheet usable, Profile navigation closing the sheet, the Profile page rendering, and no document-level horizontal overflow.
 This bounded scenario does not establish behavior at other widths, orientations, device scale factors, browser engines, operating systems, physical tablets, zoom or font settings, pages, tables, navigation paths, or backend data shapes.
-The real-backend encrypted-store creation scenario observes the generated master key returned once, while its fixture supplies no master-key directory or configuration field.
+The real-backend encrypted-store creation scenario obtains a fresh key before mutation, exactly re-enters it, and observes one successful creation without a second key response.
 The corresponding backend unit test recursively scans its temporary test root for `.key` files after encrypted-store creation.
-The browser assertion checks only `localStorage`, `sessionStorage`, script-visible `document.cookie`, and the current URL for the returned key value.
-It does not inspect HttpOnly cookies, IndexedDB, Cache Storage, history, network or cache data, process or browser memory, backend-host state, or transient Playwright failure artifacts.
+The browser assertion checks local and session storage names and values, document text and script-visible cookies, the current and performance-resource URLs, Cache Storage names, request URLs, and response bodies, IndexedDB database names, and browser-context cookie names, values, and paths for the displayed key.
+The separate Vitest matrix inspects application query and mutation cache data.
+These checks do not inspect IndexedDB object-store contents, history entries, HTTP cache internals, network buffers, process or browser memory, clipboard remnants, backend-host blocks, or transient Playwright failure artifacts.
+The response headers instruct conforming caches not to retain the key, but this bounded scenario is not proof of every browser, proxy, or cache implementation.
 Because Playwright retains traces and screenshots on failure, those transient artifacts may contain rendered key material until removed.
 Authentication coverage includes hard-navigation sign-out with a freshly primed CSRF token, backend session destruction, stale-cookie rejection, and a failed first logout that remains visible and authenticated until a successful retry.
 The first Profile scenario authenticates one operator in two independent browser contexts against one real backend.

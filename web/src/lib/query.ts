@@ -7,3 +7,13 @@ export async function invalidateAll(
 ): Promise<void> {
   await Promise.all(keys.map((key) => qc.invalidateQueries({ queryKey: key })));
 }
+
+/** Launch invalidation without extending a mutation's pending/error lifecycle. */
+export function invalidateAllInBackground(
+  qc: QueryClient,
+  keys: ReadonlyArray<readonly unknown[]>,
+): void {
+  void invalidateAll(qc, keys).catch(() => {
+    // A later query refresh can reconcile the current server state.
+  });
+}

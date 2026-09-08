@@ -54,6 +54,8 @@ pub(crate) struct AdminState {
     /// store's display name. `None` disables creation (returns
     /// `data_root_not_configured`).
     pub(crate) stores_data_root: Option<PathBuf>,
+    /// Serializes store-record persistence without holding the live registry lock.
+    pub(crate) store_collection_lock: std::sync::Mutex<()>,
     /// Allowlist of `Origin` (or `Referer`) values for state-changing
     /// requests. Empty means no allowlist enforcement.
     pub(crate) allowed_origins: Vec<String>,

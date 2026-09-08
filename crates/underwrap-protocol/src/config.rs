@@ -301,11 +301,13 @@ pub enum StorageConfig {
         dir: PathBuf,
     },
     /// Encrypted directory: secrets encrypted at rest with a 32-byte
-    /// master key. The master key lives in process memory only — it is
-    /// generated once at store creation, returned to the operator once,
-    /// and never written to disk. Restarting the backend leaves every
-    /// encrypted store locked until an operator unlocks it via the
-    /// admin API.
+    /// master key. Before encrypted creation or plain-to-encrypted migration,
+    /// the authenticated admin API generates and returns a fresh key without
+    /// mutating storage, and the operator submits that exact untrimmed key to
+    /// the later mutation request. The key remains in process memory and is
+    /// never written to disk by underwrap. Key rotation retains its separate
+    /// post-mutation one-time key response. Restarting the backend leaves every
+    /// encrypted store locked until an operator unlocks it via the admin API.
     #[serde(rename = "encrypted")]
     Encrypted {
         #[serde(default = "default_storage_dir")]
@@ -333,7 +335,9 @@ impl StorageConfig {
 /// One backend-managed store record. Persisted as one
 /// `<stores_dir>/<id>.json` file per store; the id is the file stem
 /// (not the JSON body) and `name` is the editable operator-facing
-/// label. The loader backfills `id` from the filename.
+/// label. The loader backfills `id` from the filename. Backend migration
+/// preserves the id, metadata, and canonical directory while changing only
+/// the flattened storage backend kind after the promoted generation verifies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoreRecord {
     /// Stable internal identifier for this store.

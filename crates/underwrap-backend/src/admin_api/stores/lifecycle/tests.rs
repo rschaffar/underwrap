@@ -53,16 +53,24 @@ fn create_store(
     backend: AdminStoreBackendKind,
     name: &str,
 ) -> serde_json::Value {
-    let (status, body) = run_handler(handle_admin_store_create(
+    let submitted_key = "11".repeat(32);
+    let (status, mut body) = run_handler(handle_admin_store_create(
         State(state),
         Extension(p.clone()),
         Body(AdminStoreCreateRequest {
             name: name.into(),
             backend,
             description: None,
+            key_hex: (backend == AdminStoreBackendKind::Encrypted)
+                .then(|| underwrap_protocol::service::AdminKeyHex::new(submitted_key.clone())),
         }),
     ));
     assert_eq!(status, StatusCode::OK, "store create failed: {body}");
+    if backend == AdminStoreBackendKind::Encrypted {
+        body.as_object_mut()
+            .unwrap()
+            .insert("key_hex".into(), submitted_key.into());
+    }
     body
 }
 
@@ -247,6 +255,7 @@ async fn rotate_key_refuses_plain_store() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (status, body) = run_handler(handle_admin_store_rotate_key(
@@ -256,6 +265,70 @@ async fn rotate_key_refuses_plain_store() {
     ));
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "not_encrypted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_required_precedes_plain_backend_errors_for_lifecycle_actions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = Arc::new(crud_state(tmp.path()));
+    let principal = admin_principal();
+    let store_id = create_store_for_test(
+        state.clone(),
+        &principal,
+        &AdminStoreCreateRequest {
+            name: "work".into(),
+            backend: AdminStoreBackendKind::Plain,
+            description: None,
+            key_hex: None,
+        },
+    );
+    state
+        .shared
+        .stores
+        .write()
+        .unwrap()
+        .entries
+        .get_mut(&store_id)
+        .unwrap()
+        .state = StoreState::RecoveryRequired;
+
+    let (rotate_status, rotate_body) = run_handler(handle_admin_store_rotate_key(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(rotate_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(rotate_body["code"], "migration_recovery_required");
+
+    let (unlock_status, unlock_body) = run_handler(handle_admin_store_unlock(
+        State(state.clone()),
+        Extension(principal.clone()),
+        Path(store_id.clone()),
+        Body(underwrap_protocol::service::AdminStoreUnlockRequest {
+            key_hex: "0".repeat(64),
+        }),
+    ));
+    assert_eq!(unlock_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(unlock_body["code"], "migration_recovery_required");
+
+    let (lock_status, lock_body) = run_handler(handle_admin_store_lock(
+        State(state.clone()),
+        Extension(principal),
+        Path(store_id.clone()),
+    ));
+    assert_eq!(lock_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(lock_body["code"], "migration_recovery_required");
+    assert!(matches!(
+        state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .entry(&store_id)
+            .unwrap()
+            .state,
+        StoreState::RecoveryRequired
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -270,6 +343,9 @@ async fn rotate_key_refuses_locked_store() {
             name: "vault".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(underwrap_protocol::service::AdminKeyHex::new(
+                "11".repeat(32),
+            )),
         },
     );
     // Lock the store and confirm rotation refuses.
@@ -415,6 +491,7 @@ fn unlock_refuses_plain_store() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (status, body) = run_handler(handle_admin_store_unlock(
@@ -485,6 +562,7 @@ fn lock_refuses_plain_store() {
             name: "work".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         },
     );
     let (status, body) = run_handler(handle_admin_store_lock(

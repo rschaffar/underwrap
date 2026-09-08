@@ -20,7 +20,8 @@ const HTTP_METHODS: [&str; 8] = [
     "get", "put", "post", "delete", "options", "head", "patch", "trace",
 ];
 const SERVICE_ERROR_SCHEMA: &str = "#/components/schemas/ServiceErrorResponse";
-const STORE_LOCKED_DESCRIPTION: &str = "Store is locked (`store_locked`).";
+const STORE_LOCKED_DESCRIPTION: &str = "Store is unavailable (`store_locked` or `store_busy`).";
+const STORE_BUSY_DESCRIPTION: &str = "Store is busy (`store_busy`).";
 
 const PUBLIC_OPERATIONS: [&str; 3] = [
     "GET /v1/admin/auth/bootstrap/status",
@@ -28,16 +29,18 @@ const PUBLIC_OPERATIONS: [&str; 3] = [
     "POST /v1/admin/auth/login",
 ];
 
-const PROTECTED_MUTATIONS: [&str; 32] = [
+const PROTECTED_MUTATIONS: [&str; 34] = [
     "POST /v1/admin/auth/logout",
     "POST /v1/admin/auth/password",
     "POST /v1/admin/client-instances",
+    "POST /v1/admin/store-keys",
     "PUT /v1/admin/client-instances/{id}",
     "DELETE /v1/admin/client-instances/{id}",
     "POST /v1/admin/stores",
     "PUT /v1/admin/stores/{id}",
     "DELETE /v1/admin/stores/{id}",
     "POST /v1/admin/stores/{id}/lock",
+    "POST /v1/admin/stores/{id}/migrate",
     "POST /v1/admin/stores/{id}/rotate-key",
     "POST /v1/admin/stores/{id}/unlock",
     "POST /v1/admin/stores/{id}/pairs",
@@ -63,7 +66,7 @@ const PROTECTED_MUTATIONS: [&str; 32] = [
     "POST /v1/admin/users/{id}/password",
 ];
 
-const STORE_LOCKED_OPERATIONS: [&str; 27] = [
+const STORE_LOCKED_OPERATIONS: [&str; 28] = [
     "GET /v1/admin/stores/{id}/pairs",
     "POST /v1/admin/stores/{id}/pairs",
     "POST /v1/admin/stores/{id}/pairs/with-new-resource",
@@ -72,6 +75,7 @@ const STORE_LOCKED_OPERATIONS: [&str; 27] = [
     "POST /v1/admin/stores/{id}/resources",
     "PUT /v1/admin/stores/{id}/resources/{rid}",
     "DELETE /v1/admin/stores/{id}/resources/{rid}",
+    "POST /v1/admin/stores/{id}/migrate",
     "POST /v1/admin/stores/{id}/rotate-key",
     "GET /v1/admin/stores/{id}/secrets",
     "GET /v1/admin/stores/{id}/secrets-view",
@@ -93,10 +97,57 @@ const STORE_LOCKED_OPERATIONS: [&str; 27] = [
     "GET /v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}/secret",
 ];
 
-const LOCK_RESPONSES: [(&str, &str); 3] = [
+const STORE_BUSY_ONLY_OPERATIONS: [&str; 4] = [
+    "PUT /v1/admin/stores/{id}",
+    "DELETE /v1/admin/stores/{id}",
+    "POST /v1/admin/stores/{id}/lock",
+    "POST /v1/admin/stores/{id}/unlock",
+];
+
+const MIGRATION_RECOVERY_OPERATIONS: [&str; 32] = [
+    "PUT /v1/admin/stores/{id}",
+    "DELETE /v1/admin/stores/{id}",
+    "POST /v1/admin/stores/{id}/lock",
+    "POST /v1/admin/stores/{id}/migrate",
+    "POST /v1/admin/stores/{id}/rotate-key",
+    "POST /v1/admin/stores/{id}/unlock",
+    "GET /v1/admin/stores/{id}/pairs",
+    "POST /v1/admin/stores/{id}/pairs",
+    "POST /v1/admin/stores/{id}/pairs/with-new-resource",
+    "DELETE /v1/admin/stores/{id}/pairs/{wrapper}/{rid}",
+    "GET /v1/admin/stores/{id}/resources",
+    "POST /v1/admin/stores/{id}/resources",
+    "PUT /v1/admin/stores/{id}/resources/{rid}",
+    "DELETE /v1/admin/stores/{id}/resources/{rid}",
+    "GET /v1/admin/stores/{id}/secrets",
+    "GET /v1/admin/stores/{id}/secrets-view",
+    "GET /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}",
+    "PUT /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}",
+    "DELETE /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}",
+    "POST /v1/admin/stores/{id}/secrets/{rid}/{slot}/{key}/rename",
+    "GET /v1/admin/stores/{id}/wrapper-permissions",
+    "GET /v1/admin/stores/{id}/wrapper-permissions-view",
+    "PUT /v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
+    "DELETE /v1/admin/stores/{id}/wrapper-permissions/{client_instance}/{wrapper}/{rid}",
+    "GET /v1/admin/stores/{sid}/resources/{rid}/libsecret",
+    "PUT /v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}",
+    "DELETE /v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}",
+    "POST /v1/admin/stores/{sid}/resources/{rid}/libsecret/collections",
+    "DELETE /v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}",
+    "POST /v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items",
+    "DELETE /v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}",
+    "GET /v1/admin/stores/{sid}/resources/{rid}/libsecret/collections/{cid}/items/{iid}/secret",
+];
+
+const LOCK_RESPONSES: [(&str, &str); 5] = [
     ("200", "Store locked; in-memory key material wiped."),
     ("400", "Store is not encrypted (`store_not_encrypted`)."),
     ("404", "Store not found (`not_found`)."),
+    (
+        "500",
+        "Trusted-host migration recovery is required (`migration_recovery_required`).",
+    ),
+    ("503", STORE_BUSY_DESCRIPTION),
 ];
 
 const ROTATE_RESPONSES: [(&str, &str); 5] = [
@@ -108,12 +159,29 @@ const ROTATE_RESPONSES: [(&str, &str); 5] = [
     ("409", "Store is not encrypted (`not_encrypted`)."),
     (
         "500",
-        "Rotation failed (`rotate_stage_failed`, `rotate_list_failed`, `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`, `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, or `rotation_recovery_required`).",
+        "Rotation failed (`rotate_stage_failed`, `rotate_list_failed`, `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`, `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, `rotation_recovery_required`, or `migration_recovery_required`).",
     ),
     ("503", STORE_LOCKED_DESCRIPTION),
 ];
 
-const UNLOCK_RESPONSES: [(&str, &str); 6] = [
+const MIGRATE_RESPONSES: [(&str, &str); 5] = [
+    ("200", "Store migrated at its stable id."),
+    (
+        "400",
+        "Request extraction or direction-specific key validation failed (`invalid_request`, `key_required`, `unexpected_key`, or `invalid_key_hex`).",
+    ),
+    ("404", "Store not found (`not_found`)."),
+    (
+        "409",
+        "Requested backend matches the current backend (`same_backend`).",
+    ),
+    (
+        "500",
+        "Migration failed (`migrate_stage_failed`, `migrate_list_failed`, `migrate_canary_failed`, `migrate_read_failed`, `migrate_write_failed`, `migrate_verify_failed`, `migrate_swap_failed`, `migrate_reopen_failed`, `write_store_registry_failed`, or `migration_recovery_required`).",
+    ),
+];
+
+const UNLOCK_RESPONSES: [(&str, &str); 7] = [
     ("200", "Store unlocked."),
     (
         "400",
@@ -127,8 +195,9 @@ const UNLOCK_RESPONSES: [(&str, &str); 6] = [
     ("409", "Store is already unlocked (`already_unlocked`)."),
     (
         "500",
-        "Opening the store failed (`open_store_failed`) or trusted-host rotation recovery is required (`rotation_recovery_required`).",
+        "Opening the store failed (`open_store_failed`), or trusted-host rotation or migration recovery is required (`rotation_recovery_required` or `migration_recovery_required`).",
     ),
+    ("503", STORE_BUSY_DESCRIPTION),
 ];
 
 fn openapi_path() -> PathBuf {
@@ -232,7 +301,7 @@ fn security_requirements_match_the_live_router_contract() {
         .map(|(method, path, _)| operation_id(method, path))
         .collect::<BTreeSet<_>>();
     assert_eq!(actual_protected, expected_protected);
-    assert_eq!(actual_protected.len(), 32);
+    assert_eq!(actual_protected.len(), 34);
 
     let session_and_csrf = json!([{"session_cookie": [], "csrf_header": []}]);
     for id in &expected_protected {
@@ -263,9 +332,14 @@ fn security_scheme_definitions_are_exact() {
 }
 
 #[test]
-fn store_locked_responses_are_exact_and_use_503() {
+fn store_unavailable_responses_are_exact_and_use_503() {
     let spec = spec_json();
     let expected_locked = expected_set(&STORE_LOCKED_OPERATIONS);
+    let expected_busy = expected_set(&STORE_BUSY_ONLY_OPERATIONS);
+    let expected_unavailable = expected_locked
+        .union(&expected_busy)
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let mut operations_with_503 = BTreeSet::new();
 
     for (method, path, operation) in operations(&spec) {
@@ -282,13 +356,44 @@ fn store_locked_responses_are_exact_and_use_503() {
         }
     }
 
-    assert_eq!(operations_with_503, expected_locked);
-    assert_eq!(operations_with_503.len(), 27);
-    for id in &expected_locked {
-        let response = &operation(&spec, id)["responses"]["503"];
-        assert_eq!(response["description"], STORE_LOCKED_DESCRIPTION, "{id}");
+    assert_eq!(operations_with_503, expected_unavailable);
+    assert_eq!(operations_with_503.len(), 32);
+    for (operations, description) in [
+        (&expected_locked, STORE_LOCKED_DESCRIPTION),
+        (&expected_busy, STORE_BUSY_DESCRIPTION),
+    ] {
+        for id in operations {
+            let response = &operation(&spec, id)["responses"]["503"];
+            assert_eq!(response["description"], description, "{id}");
+            assert_eq!(
+                response_schema(response),
+                Some(SERVICE_ERROR_SCHEMA),
+                "{id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn migration_recovery_response_inventory_is_exact() {
+    let spec = spec_json();
+    let expected = expected_set(&MIGRATION_RECOVERY_OPERATIONS);
+    let actual = operations(&spec)
+        .into_iter()
+        .filter(|(_, _, operation)| {
+            operation["responses"]
+                .as_object()
+                .and_then(|responses| responses.get("500"))
+                .and_then(|response| response["description"].as_str())
+                .is_some_and(|description| description.contains("migration_recovery_required"))
+        })
+        .map(|(method, path, _)| operation_id(method, path))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), 32);
+    for id in expected {
         assert_eq!(
-            response_schema(response),
+            response_schema(&operation(&spec, &id)["responses"]["500"]),
             Some(SERVICE_ERROR_SCHEMA),
             "{id}"
         );
@@ -304,10 +409,100 @@ fn lifecycle_response_contracts_are_exact() {
         "POST /v1/admin/stores/{id}/rotate-key",
         &ROTATE_RESPONSES,
     );
+    let migrate = operation(&spec, "POST /v1/admin/stores/{id}/migrate");
+    let migrate_without_503 = MIGRATE_RESPONSES;
+    for (status, description) in migrate_without_503 {
+        assert_eq!(migrate["responses"][status]["description"], description);
+    }
+    assert_eq!(
+        migrate["responses"]["503"]["description"],
+        STORE_LOCKED_DESCRIPTION
+    );
     assert_response_contract(
         &spec,
         "POST /v1/admin/stores/{id}/unlock",
         &UNLOCK_RESPONSES,
+    );
+}
+
+#[test]
+fn store_key_and_lifecycle_schemas_match_the_admin_contract() {
+    let spec = spec_json();
+    let key_operation = operation(&spec, "POST /v1/admin/store-keys");
+    assert_eq!(
+        key_operation["responses"]["200"]["description"],
+        "Fresh key generated without mutating storage; response carries exact no-cache headers."
+    );
+    let headers = key_operation["responses"]["200"]["headers"]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        headers.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["Cache-Control".into(), "Expires".into(), "Pragma".into()])
+    );
+    for (id, operation_text) in [
+        (
+            "POST /v1/admin/stores",
+            "Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; plain creation requires it to be omitted. Explicit JSON `null` is invalid for every backend kind.",
+        ),
+        (
+            "POST /v1/admin/stores/{id}/migrate",
+            "Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted. Explicit JSON `null` is invalid for every migration direction.",
+        ),
+    ] {
+        assert!(
+            operation(&spec, id)["description"]
+                .as_str()
+                .is_some_and(|description| description.contains(operation_text)),
+            "{id}"
+        );
+    }
+    for schema in ["AdminStoreCreateRequest", "AdminStoreMigrateRequest"] {
+        let schema = &spec["components"]["schemas"][schema];
+        assert!(
+            schema["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("requires `key_hex`"))
+        );
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("key_hex"))
+        );
+        let key_hex = &schema["properties"]["key_hex"];
+        assert_eq!(key_hex["type"], "string");
+        assert!(key_hex.get("oneOf").is_none());
+        assert!(key_hex["description"].as_str().is_some_and(|description| {
+            description
+                .contains("Required exactly when `backend` is `encrypted`; otherwise omitted.")
+        }));
+    }
+    let lifecycle = &spec["components"]["schemas"]["AdminStoreLifecycleState"]["enum"];
+    assert_eq!(
+        lifecycle,
+        &json!(["ready", "unlocked", "locked", "busy", "recovery-required"])
+    );
+    let item = &spec["components"]["schemas"]["AdminStoreListItem"];
+    assert!(
+        item["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("lifecycle_state"))
+    );
+    assert!(item["properties"].get("locked").is_none());
+    let actions = &spec["components"]["schemas"]["AdminStoreActionState"];
+    assert!(
+        actions["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("can_update"))
+    );
+    assert!(
+        actions["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("can_migrate"))
     );
 }
 

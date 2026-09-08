@@ -52,6 +52,10 @@ impl StorageBackend for CountingStore {
     fn delete(&self, id: &str) -> anyhow::Result<bool> {
         Ok(self.data.lock().unwrap().remove(id).is_some())
     }
+
+    fn reopen_at(&self, _dir: &std::path::Path) -> anyhow::Result<Box<dyn StorageBackend>> {
+        anyhow::bail!("in-memory counting store has no filesystem generation")
+    }
 }
 
 fn seeded_store() -> (CountingStore, ResourceBlob) {

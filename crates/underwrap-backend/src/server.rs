@@ -56,6 +56,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
                 stores_dir: stores_dir.clone(),
                 clients_dir: clients_dir.clone(),
                 stores_data_root: cfg.stores_data_root.clone(),
+                store_collection_lock: std::sync::Mutex::new(()),
                 allowed_origins: cfg.allowed_origins.clone(),
                 users_dir: users_dir.clone(),
                 bootstrap_file: bootstrap_file.clone(),

@@ -84,7 +84,7 @@ pub(crate) fn runtime_router() -> Router<Arc<ListenerState>> {
 fn resolve_runtime_request(
     state: &ListenerState,
     peer_certs: &PeerCertificates,
-) -> Result<(String, Arc<dyn underwrap_backend_store::StorageBackend>), RuntimeError> {
+) -> Result<(String, crate::store_registry::StoreLease), RuntimeError> {
     let resolved = resolve_runtime_client(state, peer_certs.0.as_ref()).map_err(|e| {
         warn!(err = format!("{e:#}"), "rejecting runtime client request");
         RuntimeError::unauthorized("unauthorized", "runtime client is not currently authorized")
@@ -94,11 +94,15 @@ fn resolve_runtime_request(
         .stores
         .read()
         .unwrap()
-        .unlocked_backend(&resolved.store_id)
+        .lease(&resolved.store_id)
     {
         Ok(b) => b,
         Err(RegistryLookupError::Locked) => {
             return Err(RuntimeError::store_locked(&resolved.store_id));
+        }
+        Err(RegistryLookupError::Busy) => return Err(RuntimeError::store_busy()),
+        Err(RegistryLookupError::RecoveryRequired) => {
+            return Err(RuntimeError::migration_recovery_required());
         }
         Err(RegistryLookupError::NotFound) => {
             return Err(RuntimeError::internal(

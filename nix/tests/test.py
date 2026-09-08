@@ -3913,10 +3913,9 @@ def encrypted_store_in_memory_keys():
     local backend's admin API.
 
     Phases:
-      1. Create a fresh encrypted store via the admin API and capture
-         the one-shot hex key from the create response. The store
-         must not leave a `.key` file anywhere under the backend's
-         state directory.
+      1. Generate a fresh key without storage mutation, submit it to
+         create an encrypted store, and verify that no `.key` file is
+         left anywhere under the backend's state directory.
       2. Seed a known plaintext through the admin secret-write
          endpoint and verify it round-trips through admin secret-read.
       3. Restart `underwrap-backend-local`. After the restart the
@@ -3936,15 +3935,21 @@ def encrypted_store_in_memory_keys():
     machine.log("encrypted_store_in_memory_keys: starting")
 
     # ---- 1. create the store --------------------------------------
+    key_resp = admin_api(ADMIN_LOCAL, "/v1/admin/store-keys")
+    key_hex_original = key_resp["key_hex"]
+    assert isinstance(key_hex_original, str) and len(key_hex_original) == 64
     create_resp = admin_api(
         ADMIN_LOCAL,
         "/v1/admin/stores",
-        {"name": "vault", "backend": "encrypted"},
+        {
+            "name": "vault",
+            "backend": "encrypted",
+            "key_hex": key_hex_original,
+        },
     )
     store_id = create_resp["store"]["id"]
-    key_hex_original = create_resp["key_hex"]
-    assert isinstance(key_hex_original, str) and len(key_hex_original) == 64
-    assert create_resp["store"]["locked"] is False
+    assert "key_hex" not in create_resp
+    assert create_resp["store"]["lifecycle_state"] == "unlocked"
     assert create_resp["store"]["backend"] == "encrypted"
 
     # No master-key file lands on disk anywhere under the backend's
@@ -4006,7 +4011,7 @@ def encrypted_store_in_memory_keys():
         ADMIN_LOCAL, "/v1/admin/stores", None, method="GET"
     )["items"]
     locked_item = next(s for s in stores_after_restart if s["id"] == store_id)
-    assert locked_item["locked"] is True, (
+    assert locked_item["lifecycle_state"] == "locked", (
         f"store must boot locked: {locked_item}"
     )
     assert locked_item["actions"]["can_unlock"] is True
@@ -4022,10 +4027,13 @@ def encrypted_store_in_memory_keys():
     assert locked_read["code"] == "store_locked", locked_read
 
     # ---- 4. unlock with wrong hex → key_mismatch ------------------
+    wrong_key = (
+        "1" if key_hex_original[0] == "0" else "0"
+    ) + key_hex_original[1:]
     wrong_unlock = admin_api_expect_status(
         ADMIN_LOCAL,
         f"/v1/admin/stores/{store_id}/unlock",
-        {"key_hex": "0" * 64},
+        {"key_hex": wrong_key},
         status=403,
     )
     assert wrong_unlock["code"] == "key_mismatch", wrong_unlock
@@ -4033,8 +4041,8 @@ def encrypted_store_in_memory_keys():
         ADMIN_LOCAL, "/v1/admin/stores", None, method="GET"
     )["items"]
     assert next(s for s in stores_still_locked if s["id"] == store_id)[
-        "locked"
-    ] is True, "wrong-hex unlock must not transition the registry"
+        "lifecycle_state"
+    ] == "locked", "wrong-hex unlock must not transition the registry"
 
     # ---- 5. unlock with right hex → succeeds ----------------------
     admin_api(

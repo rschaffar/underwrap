@@ -39,7 +39,8 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     responses(
         (status = 200, description = "Permissions, pairs, and resources for the store, in one round trip.", body = AdminWrapperPermissionsView),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permissions_view(
@@ -73,7 +74,8 @@ pub(crate) async fn handle_admin_wrapper_permissions_view(
     responses(
         (status = 200, description = "Secret entries and resources for the store, in one round trip.", body = AdminSecretsView),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_secrets_view(

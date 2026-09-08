@@ -5,8 +5,10 @@
 //! carries no role or per-store grant.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zeroize::Zeroizing;
 
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
 use crate::policy::WrapperPermission;
@@ -92,21 +94,24 @@ pub struct AdminStoreUsageSummary {
     pub has_secrets: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdminStoreLifecycleState {
+    Ready,
+    Unlocked,
+    Locked,
+    Busy,
+    RecoveryRequired,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreActionState {
-    /// Whether this principal may rotate the store's master key.
-    /// Rotation requires the store to be encrypted **and** currently
-    /// unlocked.
+    pub can_update: bool,
+    pub can_migrate: bool,
     pub can_rotate_key: bool,
-    /// Whether this principal may unlock the store. True only for
-    /// encrypted stores that are currently locked.
     pub can_unlock: bool,
-    /// Whether this principal may lock the store. True only for
-    /// encrypted stores that are currently unlocked.
     pub can_lock: bool,
-    /// Whether a plain DELETE is currently allowed.
     pub can_delete_now: bool,
-    /// Whether a force delete is currently allowed.
     pub can_force_delete: bool,
 }
 
@@ -117,13 +122,11 @@ pub struct AdminStoreListItem {
     /// Editable operator-facing display name.
     pub name: String,
     pub backend: AdminStoreBackendKind,
+    pub lifecycle_state: AdminStoreLifecycleState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<u64>,
-    /// `true` if this is an encrypted store with no master key loaded.
-    /// Plain stores are never locked.
-    pub locked: bool,
     pub usage: AdminStoreUsageSummary,
     pub actions: AdminStoreActionState,
 }
@@ -133,24 +136,126 @@ pub struct AdminStoresListResponse {
     pub items: Vec<AdminStoreListItem>,
 }
 
+/// Owned admin key material.
+///
+/// Its wire and OpenAPI projections are ordinary strings, while formatting is
+/// redacted and the owned allocation is zeroized when dropped.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AdminKeyHex(Zeroizing<String>);
+
+impl AdminKeyHex {
+    pub fn new(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+
+    pub fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for AdminKeyHex {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AdminKeyHex(<redacted>)")
+    }
+}
+
+impl Serialize for AdminKeyHex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.expose())
+    }
+}
+
+impl<'de> Deserialize<'de> for AdminKeyHex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(Self::new)
+    }
+}
+
+#[cfg(feature = "full")]
+impl utoipa::PartialSchema for AdminKeyHex {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::Object::with_type(utoipa::openapi::schema::Type::String).into()
+    }
+}
+
+#[cfg(feature = "full")]
+impl utoipa::ToSchema for AdminKeyHex {}
+
+fn deserialize_present_admin_key_hex<'de, D>(
+    deserializer: D,
+) -> Result<Option<AdminKeyHex>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<AdminKeyHex>::deserialize(deserializer)?
+        .map(Some)
+        .ok_or_else(|| {
+            <D::Error as serde::de::Error>::custom("key_hex must be omitted instead of set to null")
+        })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminStoreKeyResponse {
+    pub key_hex: AdminKeyHex,
+}
+
+/// Store creation request.
+///
+/// Encrypted creation requires `key_hex` to be exactly 64 lowercase
+/// hexadecimal characters without trimming or normalization.
+/// Plain creation requires `key_hex` to be omitted; explicit JSON `null` is
+/// invalid for every backend kind.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreCreateRequest {
     pub name: String,
     pub backend: AdminStoreBackendKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Required exactly when `backend` is `encrypted`; otherwise omitted.
+    /// The accepted value is exactly 64 lowercase hexadecimal characters.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_admin_key_hex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = String, nullable = false)]
+    pub key_hex: Option<AdminKeyHex>,
 }
 
-/// Response from `POST /v1/admin/stores`. When the new store is
-/// encrypted, `key_hex` carries the freshly generated 32-byte master
-/// key (hex-encoded) and is returned **exactly once** — subsequent GETs
-/// of the store never expose the key value. Plain stores have
-/// `key_hex == None`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminStoreCreateResponse {
     pub store: AdminStoreListItem,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_hex: Option<String>,
+}
+
+/// Store backend migration request.
+///
+/// Migration to encrypted requires `key_hex` to be exactly 64 lowercase
+/// hexadecimal characters without trimming or normalization.
+/// Migration to plain requires `key_hex` to be omitted; explicit JSON `null`
+/// is invalid for every migration direction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminStoreMigrateRequest {
+    pub backend: AdminStoreBackendKind,
+    /// Required exactly when `backend` is `encrypted`; otherwise omitted.
+    /// The accepted value is exactly 64 lowercase hexadecimal characters.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_admin_key_hex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = String, nullable = false)]
+    pub key_hex: Option<AdminKeyHex>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct AdminStoreMigrateResponse {
+    pub store: AdminStoreListItem,
 }
 
 /// Response from `POST /v1/admin/stores/{name}/rotate-key`. The new

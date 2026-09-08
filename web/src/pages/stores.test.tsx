@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -12,15 +12,28 @@ function mockJson(status: number, body: unknown): Response {
   });
 }
 
-function withQuery(node: React.ReactElement) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+function withQuery(node: React.ReactElement, qc = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+})) {
   return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+}
+
+function containsString(value: unknown, expected: string): boolean {
+  if (typeof value === "string") return value.includes(expected);
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsString(entry, expected));
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value).some((entry) => containsString(entry, expected));
+  }
+  return false;
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
+  window.history.replaceState({}, "", "/");
 });
 
 describe("StoresPage", () => {
@@ -32,9 +45,11 @@ describe("StoresPage", () => {
         backend: "encrypted" as const,
         description: "Primary store",
         created_at: undefined,
-        locked: false,
+        lifecycle_state: "unlocked" as const,
         usage: { mapped_client_instance_count: 0, has_secrets: false },
         actions: {
+          can_update: true,
+          can_migrate: true,
           can_rotate_key: true,
           can_unlock: false,
           can_lock: true,
@@ -48,9 +63,11 @@ describe("StoresPage", () => {
         backend: "plain" as const,
         description: undefined,
         created_at: 100,
-        locked: false,
+        lifecycle_state: "ready" as const,
         usage: { mapped_client_instance_count: 0, has_secrets: true },
         actions: {
+          can_update: true,
+          can_migrate: true,
           can_rotate_key: false,
           can_unlock: false,
           can_lock: false,
@@ -64,9 +81,11 @@ describe("StoresPage", () => {
         backend: "encrypted" as const,
         description: "In use",
         created_at: 200,
-        locked: true,
+        lifecycle_state: "locked" as const,
         usage: { mapped_client_instance_count: 2, has_secrets: true },
         actions: {
+          can_update: true,
+          can_migrate: false,
           can_rotate_key: false,
           can_unlock: true,
           can_lock: false,
@@ -233,17 +252,110 @@ describe("StoresPage", () => {
     return { url: req.url, method: req.method.toUpperCase() };
   }
 
-  it("reveals the master key once after creating an encrypted store, gated by the ack checkbox", async () => {
+  it("generates, exactly confirms, and creates encrypted stores without caching the key", async () => {
+    const generatedKey = "a".repeat(64);
+    const requests: Request[] = [];
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores") && method === "POST") {
+        return mockJson(200, {
+          store: { ...sampleList.items[0], id: "store_new", name: "vault" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />, queryClient));
+    await screen.findByText("work");
+    await user.click(screen.getByRole("button", { name: /create store/i }));
+    const createDialog = await screen.findByRole("dialog", {
+      name: /create store/i,
+    });
+    await user.type(within(createDialog).getByLabelText(/^name$/i), "vault");
+    await user.selectOptions(
+      within(createDialog).getByLabelText(/backend/i),
+      "encrypted",
+    );
+    await user.click(
+      within(createDialog).getByRole("button", {
+        name: /generate and review key/i,
+      }),
+    );
+
+    const confirmation = await screen.findByTestId("key-confirmation-dialog");
+    expect(within(confirmation).getByTestId("generated-store-key")).toHaveTextContent(
+      generatedKey,
+    );
+    expect(
+      requests.filter((request) =>
+        request.url.endsWith("/v1/admin/stores"),
+      ),
+    ).toHaveLength(1);
+
+    const reentry = within(confirmation).getByLabelText(/re-enter the exact/i);
+    await user.type(reentry, ` ${generatedKey}`);
+    await user.click(
+      screen.getByRole("button", { name: /^create encrypted store$/i }),
+    );
+    expect(
+      await within(confirmation).findByText(/does not exactly match/i),
+    ).toBeVisible();
+    expect(
+      requests.filter(
+        (request) =>
+          request.method === "POST" &&
+          request.url.endsWith("/v1/admin/stores"),
+      ),
+    ).toHaveLength(0);
+
+    await user.clear(reentry);
+    await user.type(reentry, generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^create encrypted store$/i }),
+    );
+
+    const createRequests = requests.filter(
+      (request) =>
+        request.method === "POST" && request.url.endsWith("/v1/admin/stores"),
+    );
+    expect(createRequests).toHaveLength(1);
+    expect(JSON.parse(await createRequests[0]!.text())).toEqual({
+      name: "vault",
+      backend: "encrypted",
+      key_hex: generatedKey,
+    });
+    expect(screen.queryByTestId("generated-store-key")).not.toBeInTheDocument();
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
+    expect(window.location.href).not.toContain(generatedKey);
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+    expect(queryClient.getQueryData(["admin", "stores"])).toEqual(sampleList);
+  });
+
+  it("creates a plain store without generating or sending a key", async () => {
+    const requests: Request[] = [];
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const { url, method } = reqInfo(input);
+      const request = input as Request;
+      requests.push(request);
+      const { url, method } = reqInfo(request);
       if (url.endsWith("/v1/admin/stores") && method === "GET") {
         return mockJson(200, sampleList);
       }
       if (url.endsWith("/v1/admin/stores") && method === "POST") {
         return mockJson(200, {
-          store: { ...sampleList.items[0], id: "store_new", name: "vault" },
-          key_hex: "a".repeat(64),
+          store: { ...sampleList.items[1], id: "store_new", name: "plain" },
         });
       }
       throw new Error(`unexpected fetch: ${method} ${url}`);
@@ -252,24 +364,731 @@ describe("StoresPage", () => {
     await screen.findByText("work");
     await user.click(screen.getByRole("button", { name: /create store/i }));
     const dialog = await screen.findByRole("dialog", { name: /create store/i });
-    await user.type(within(dialog).getByLabelText(/name/i), "vault");
-    await user.selectOptions(
-      within(dialog).getByLabelText(/backend/i),
-      "encrypted",
-    );
+    await user.type(within(dialog).getByLabelText(/^name$/i), "plain");
     await user.click(within(dialog).getByRole("button", { name: /^create$/i }));
 
-    const reveal = await screen.findByTestId("key-reveal-dialog");
-    expect(within(reveal).getByTestId("key-reveal-value")).toHaveTextContent(
-      "a".repeat(64),
+    const createRequest = requests.find(
+      (request) =>
+        request.method === "POST" && request.url.endsWith("/v1/admin/stores"),
     );
-    // The key must stay until the operator confirms they saved it.
-    expect(screen.getByTestId("key-reveal-confirm")).toBeDisabled();
-    await user.click(screen.getByTestId("key-reveal-ack"));
-    expect(screen.getByTestId("key-reveal-confirm")).toBeEnabled();
+    expect(createRequest).toBeDefined();
+    expect(JSON.parse(await createRequest!.text())).toEqual({
+      name: "plain",
+      backend: "plain",
+    });
+    expect(
+      requests.some((request) => request.url.endsWith("/v1/admin/store-keys")),
+    ).toBe(false);
   });
 
-  it("reveals the new key after rotating an encrypted store's key", async () => {
+  it("clears an encrypted-creation key on pre-request cancellation", async () => {
+    const generatedKey = "c".repeat(64);
+    const requests: Request[] = [];
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    await screen.findByText("work");
+    await user.click(screen.getByRole("button", { name: /create store/i }));
+    const dialog = await screen.findByRole("dialog", { name: /create store/i });
+    await user.type(within(dialog).getByLabelText(/^name$/i), "cancelled");
+    await user.selectOptions(within(dialog).getByLabelText(/backend/i), "encrypted");
+    await user.click(
+      within(dialog).getByRole("button", { name: /generate and review key/i }),
+    );
+    expect(await screen.findByTestId("generated-store-key")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    expect(screen.queryByTestId("generated-store-key")).not.toBeInTheDocument();
+    expect(
+      requests.filter(
+        (request) =>
+          request.method === "POST" && request.url.endsWith("/v1/admin/stores"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("retains a key after an ambiguous create failure and retries with the same key", async () => {
+    const generatedKey = "d".repeat(64);
+    const submittedKeys: string[] = [];
+    let createAttempts = 0;
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores") && method === "POST") {
+        createAttempts += 1;
+        submittedKeys.push((await request.clone().json()).key_hex);
+        if (createAttempts === 1) {
+          return mockJson(500, {
+            code: "synthetic_ambiguous_failure",
+            message: "Synthetic ambiguous failure.",
+          });
+        }
+        return mockJson(200, {
+          store: { ...sampleList.items[0], id: "store_new", name: "retry" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    await screen.findByText("work");
+    await user.click(screen.getByRole("button", { name: /create store/i }));
+    const dialog = await screen.findByRole("dialog", { name: /create store/i });
+    await user.type(within(dialog).getByLabelText(/^name$/i), "retry");
+    await user.selectOptions(within(dialog).getByLabelText(/backend/i), "encrypted");
+    await user.click(
+      within(dialog).getByRole("button", { name: /generate and review key/i }),
+    );
+    const reentry = await screen.findByTestId("store-key-reentry");
+    await user.type(reentry, generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^create encrypted store$/i }),
+    );
+
+    expect(await screen.findByText("Synthetic ambiguous failure.")).toBeVisible();
+    expect(screen.getByTestId("generated-store-key")).toHaveTextContent(generatedKey);
+    expect(screen.getByTestId("store-key-reentry")).toHaveValue("");
+    expect(screen.getByText(/cannot prove that no data changed/i)).toBeVisible();
+
+    await user.type(screen.getByTestId("store-key-reentry"), generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /retry create encrypted store/i }),
+    );
+    expect(submittedKeys).toEqual([generatedKey, generatedKey]);
+    expect(screen.queryByTestId("generated-store-key")).not.toBeInTheDocument();
+  });
+
+  it("requires an explicit warning acknowledgement before discarding an ambiguous key", async () => {
+    const generatedKey = "e".repeat(64);
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const { url, method } = reqInfo(input);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores") && method === "POST") {
+        return mockJson(500, {
+          code: "synthetic_ambiguous_failure",
+          message: "Synthetic ambiguous failure.",
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    await screen.findByText("work");
+    await user.click(screen.getByRole("button", { name: /create store/i }));
+    const dialog = await screen.findByRole("dialog", { name: /create store/i });
+    await user.type(within(dialog).getByLabelText(/^name$/i), "discard");
+    await user.selectOptions(within(dialog).getByLabelText(/backend/i), "encrypted");
+    await user.click(
+      within(dialog).getByRole("button", { name: /generate and review key/i }),
+    );
+    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^create encrypted store$/i }),
+    );
+    await screen.findByText("Synthetic ambiguous failure.");
+    await user.click(screen.getByRole("button", { name: /discard retained key/i }));
+
+    expect(screen.getByText(/may already protect committed or recoverable data/i)).toBeVisible();
+    const discard = screen.getByRole("button", { name: /^discard key$/i });
+    expect(discard).toBeDisabled();
+    await user.click(screen.getByLabelText(/retained key may still be required/i));
+    expect(discard).toBeEnabled();
+    await user.click(discard);
+    expect(screen.queryByTestId("generated-store-key")).not.toBeInTheDocument();
+  });
+
+  it("renders lifecycle states and disables backend-denied busy and recovery actions", async () => {
+    const unavailableList = {
+      items: [
+        {
+          ...sampleList.items[1],
+          id: "store_busy",
+          name: "busy-store",
+          lifecycle_state: "busy" as const,
+          actions: {
+            can_update: false,
+            can_migrate: false,
+            can_rotate_key: false,
+            can_unlock: false,
+            can_lock: false,
+            can_delete_now: false,
+            can_force_delete: false,
+          },
+        },
+        {
+          ...sampleList.items[1],
+          id: "store_recovery",
+          name: "recovery-store",
+          lifecycle_state: "recovery-required" as const,
+          actions: {
+            can_update: false,
+            can_migrate: false,
+            can_rotate_key: false,
+            can_unlock: false,
+            can_lock: false,
+            can_delete_now: false,
+            can_force_delete: false,
+          },
+        },
+      ],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockJson(200, unavailableList));
+    render(withQuery(<StoresPage />));
+
+    for (const name of ["busy-store", "recovery-store"]) {
+      const row = (await screen.findByText(name)).closest("tr") as HTMLElement;
+      expect(within(row).getByRole("button", { name: /^edit$/i })).toBeDisabled();
+      expect(within(row).getByRole("button", { name: /^migrate$/i })).toBeDisabled();
+      expect(within(row).getByRole("button", { name: /^delete$/i })).toBeDisabled();
+      expect(row).toHaveTextContent(/contents unknown/i);
+    }
+    expect(screen.getByTestId("store-status-store_busy")).toHaveTextContent("busy");
+    expect(screen.getByTestId("store-status-store_recovery")).toHaveTextContent(
+      "recovery-required",
+    );
+  });
+
+  it("shows unlock-first migration guidance for a locked store without sending migration", async () => {
+    const requests: Request[] = [];
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      requests.push(input as Request);
+      return mockJson(200, sampleList);
+    });
+    render(withQuery(<StoresPage />));
+    const row = (await screen.findByText("shared")).closest("tr") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /^migrate$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /migrate store: shared/i });
+    expect(dialog).toHaveTextContent(/unlock this store first/i);
+    expect(
+      requests.some((request) => request.url.includes("/migrate")),
+    ).toBe(false);
+  });
+
+  it("migrates plain to encrypted only after generation and exact re-entry", async () => {
+    const generatedKey = "f".repeat(64);
+    const requests: Request[] = [];
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/stores?store=store_scratch&keep=yes");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+        return mockJson(200, {
+          store: {
+            ...sampleList.items[1],
+            backend: "encrypted",
+            lifecycle_state: "unlocked",
+          },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to encrypted/i }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /migrate to encrypted: scratch/i,
+    });
+    expect(dialog).toHaveTextContent(/quiesce wrapper traffic/i);
+    expect(dialog).toHaveTextContent(/plaintext source data under a private backup/i);
+    await user.click(
+      within(dialog).getByRole("button", { name: /generate and review key/i }),
+    );
+    expect(
+      requests.some((request) => request.url.includes("/migrate")),
+    ).toBe(false);
+    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^migrate to encrypted$/i }),
+    );
+
+    const migration = requests.find((request) => request.url.includes("/migrate"));
+    expect(migration).toBeDefined();
+    expect(JSON.parse(await migration!.text())).toEqual({
+      backend: "encrypted",
+      key_hex: generatedKey,
+    });
+    expect(window.location.pathname + window.location.search).toBe(
+      "/stores?store=store_scratch&keep=yes",
+    );
+    expect(screen.queryByTestId("generated-store-key")).not.toBeInTheDocument();
+  });
+
+  it("retains and reuses the same key when reconciliation keeps the source unchanged", async () => {
+    const generatedKey = "1".repeat(64);
+    const submittedKeys: string[] = [];
+    let attempts = 0;
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+        attempts += 1;
+        submittedKeys.push((await request.clone().json()).key_hex);
+        if (attempts === 1) {
+          return mockJson(500, {
+            code: "synthetic_ambiguous_failure",
+            message: "Synthetic ambiguous failure.",
+          });
+        }
+        return mockJson(200, {
+          store: {
+            ...sampleList.items[1],
+            backend: "encrypted",
+            lifecycle_state: "unlocked",
+          },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to encrypted/i }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: /migrate to encrypted: scratch/i,
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: /generate and review key/i }),
+    );
+    fireEvent.change(await screen.findByTestId("store-key-reentry"), {
+      target: { value: generatedKey },
+    });
+    await user.click(
+      screen.getByRole("button", { name: /^migrate to encrypted$/i }),
+    );
+    expect(await screen.findByText(/synthetic ambiguous failure/i)).toBeVisible();
+    expect(screen.getByTestId("generated-store-key")).toHaveTextContent(generatedKey);
+    expect(screen.getByTestId("store-key-reentry")).toHaveValue("");
+
+    fireEvent.change(screen.getByTestId("store-key-reentry"), {
+      target: { value: generatedKey },
+    });
+    await user.click(
+      screen.getByRole("button", { name: /retry migrate to encrypted/i }),
+    );
+    expect(submittedKeys).toEqual([generatedKey, generatedKey]);
+    expect(screen.queryByTestId("generated-store-key")).not.toBeInTheDocument();
+  });
+
+  it("retains the key but disables retry after recovery-required reconciliation", async () => {
+    const generatedKey = "2".repeat(64);
+    let listRequests = 0;
+    let migrationAttempts = 0;
+    const user = userEvent.setup();
+    const recoveryStore = {
+      ...sampleList.items[1],
+      backend: "encrypted" as const,
+      lifecycle_state: "recovery-required" as const,
+      actions: {
+        can_update: false,
+        can_migrate: false,
+        can_rotate_key: false,
+        can_unlock: false,
+        can_lock: false,
+        can_delete_now: false,
+        can_force_delete: false,
+      },
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        listRequests += 1;
+        return mockJson(200, {
+          items:
+            listRequests === 1
+              ? sampleList.items
+              : sampleList.items.map((item) =>
+                  item.id === recoveryStore.id ? recoveryStore : item,
+                ),
+        });
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+        migrationAttempts += 1;
+        return mockJson(500, {
+          code: "migration_recovery_required",
+          message: "Trusted-host recovery is required.",
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+
+    render(withQuery(<StoresPage />));
+    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to encrypted/i }),
+    );
+    await user.click(
+      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
+        .getByRole("button", { name: /generate and review key/i }),
+    );
+    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^migrate to encrypted$/i }),
+    );
+
+    const retry = screen.getByRole("button", {
+      name: /retry migrate to encrypted/i,
+    });
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(screen.getByTestId("generated-store-key")).toBeVisible();
+    expect(screen.getByText(/retain the key because it may protect recoverable data/i)).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /discard retained key/i }),
+    ).toBeEnabled();
+    expect(migrationAttempts).toBe(1);
+  });
+
+  it("retains the key but disables retry after already-committed reconciliation", async () => {
+    const generatedKey = "3".repeat(64);
+    let listRequests = 0;
+    let migrationAttempts = 0;
+    const user = userEvent.setup();
+    const migratedStore = {
+      ...sampleList.items[1],
+      backend: "encrypted" as const,
+      lifecycle_state: "unlocked" as const,
+      actions: {
+        ...sampleList.items[1].actions,
+        can_migrate: true,
+        can_rotate_key: true,
+        can_lock: true,
+      },
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        listRequests += 1;
+        return mockJson(200, {
+          items:
+            listRequests === 1
+              ? sampleList.items
+              : sampleList.items.map((item) =>
+                  item.id === migratedStore.id ? migratedStore : item,
+                ),
+        });
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+        migrationAttempts += 1;
+        return mockJson(500, {
+          code: "synthetic_lost_response",
+          message: "Synthetic lost response.",
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+
+    render(withQuery(<StoresPage />));
+    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to encrypted/i }),
+    );
+    await user.click(
+      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
+        .getByRole("button", { name: /generate and review key/i }),
+    );
+    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^migrate to encrypted$/i }),
+    );
+
+    const retry = screen.getByRole("button", {
+      name: /retry migrate to encrypted/i,
+    });
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(screen.getByTestId("generated-store-key")).toBeVisible();
+    expect(screen.getByText(/already uses the target backend/i)).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /discard retained key/i }),
+    ).toBeEnabled();
+    expect(migrationAttempts).toBe(1);
+  });
+
+  it("re-enables retained-key controls while reconciliation remains stalled", async () => {
+    const generatedKey = "4".repeat(64);
+    let listRequests = 0;
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        listRequests += 1;
+        if (listRequests === 1) return mockJson(200, sampleList);
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+        return mockJson(500, {
+          code: "synthetic_lost_response",
+          message: "Synthetic lost response.",
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+
+    render(withQuery(<StoresPage />));
+    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to encrypted/i }),
+    );
+    await user.click(
+      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
+        .getByRole("button", { name: /generate and review key/i }),
+    );
+    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^migrate to encrypted$/i }),
+    );
+
+    expect(await screen.findByText("Synthetic lost response.")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /retry migrate to encrypted/i }),
+    ).toBeEnabled();
+    const discard = screen.getByRole("button", {
+      name: /discard retained key/i,
+    });
+    expect(discard).toBeEnabled();
+    await user.click(discard);
+    expect(
+      screen.getByText(/may already protect committed or recoverable data/i),
+    ).toBeVisible();
+  });
+
+  it("keeps migration confirmation state across unrelated store-list refreshes", async () => {
+    const generatedKey = "5".repeat(64);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const { url, method } = reqInfo(input);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+
+    render(withQuery(<StoresPage />, queryClient));
+    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to encrypted/i }),
+    );
+    await user.click(
+      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
+        .getByRole("button", { name: /generate and review key/i }),
+    );
+    const reentry = await screen.findByTestId("store-key-reentry");
+    await user.type(reentry, generatedKey.slice(0, 8));
+
+    act(() => {
+      queryClient.setQueryData(["admin", "stores"], {
+        items: sampleList.items.map((item) =>
+          item.id === "store_work"
+            ? { ...item, description: "Refreshed unrelated row" }
+            : item,
+        ),
+      });
+    });
+
+    expect(screen.getByTestId("key-confirmation-dialog")).toBeVisible();
+    expect(screen.getByTestId("store-key-reentry")).toHaveValue(
+      generatedKey.slice(0, 8),
+    );
+    expect(screen.getByTestId("generated-store-key")).toBeVisible();
+  });
+
+  it("disables retained-key retry for missing, busy, and locked source states", async () => {
+    const generatedKey = "6".repeat(64);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    let listRequests = 0;
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        listRequests += 1;
+        if (listRequests === 1) return mockJson(200, sampleList);
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
+        return mockJson(200, { key_hex: generatedKey });
+      }
+      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+        return mockJson(500, {
+          code: "synthetic_lost_response",
+          message: "Synthetic lost response.",
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+
+    render(withQuery(<StoresPage />, queryClient));
+    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to encrypted/i }),
+    );
+    await user.click(
+      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
+        .getByRole("button", { name: /generate and review key/i }),
+    );
+    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.click(
+      screen.getByRole("button", { name: /^migrate to encrypted$/i }),
+    );
+    await screen.findByText("Synthetic lost response.");
+
+    const retry = screen.getByRole("button", {
+      name: /retry migrate to encrypted/i,
+    });
+    expect(retry).toBeEnabled();
+
+    act(() => {
+      queryClient.setQueryData(["admin", "stores"], {
+        items: sampleList.items.filter((item) => item.id !== "store_scratch"),
+      });
+    });
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(screen.getByText(/missing from the current Stores list/i)).toBeVisible();
+    expect(screen.getByTestId("generated-store-key")).toBeVisible();
+
+    act(() => {
+      queryClient.setQueryData(["admin", "stores"], {
+        items: sampleList.items.map((item) =>
+          item.id === "store_scratch"
+            ? {
+                ...item,
+                lifecycle_state: "busy" as const,
+                actions: { ...item.actions, can_migrate: false },
+              }
+            : item,
+        ),
+      });
+    });
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(screen.getByText(/lifecycle operation is busy/i)).toBeVisible();
+
+    act(() => {
+      queryClient.setQueryData(["admin", "stores"], {
+        items: sampleList.items.map((item) =>
+          item.id === "store_scratch"
+            ? {
+                ...item,
+                lifecycle_state: "locked" as const,
+                actions: { ...item.actions, can_migrate: false },
+              }
+            : item,
+        ),
+      });
+    });
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(screen.getByText(/source is locked/i)).toBeVisible();
+
+    act(() => {
+      queryClient.setQueryData(["admin", "stores"], sampleList);
+    });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(screen.getByTestId("generated-store-key")).toBeVisible();
+  });
+
+  it("migrates unlocked encrypted to plain without generating or sending a key", async () => {
+    const requests: Request[] = [];
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      const { url, method } = reqInfo(request);
+      if (url.endsWith("/v1/admin/stores") && method === "GET") {
+        return mockJson(200, sampleList);
+      }
+      if (url.endsWith("/v1/admin/stores/store_work/migrate") && method === "POST") {
+        return mockJson(200, {
+          store: {
+            ...sampleList.items[0],
+            backend: "plain",
+            lifecycle_state: "ready",
+          },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    });
+    render(withQuery(<StoresPage />));
+    const row = (await screen.findByText("work")).closest("tr") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /migrate to plain/i }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /migrate to plain: work/i,
+    });
+    expect(dialog).toHaveTextContent(/plaintext target data under a private stage/i);
+    await user.click(
+      within(dialog).getByRole("button", { name: /^migrate to plain$/i }),
+    );
+
+    const migration = requests.find((request) => request.url.includes("/migrate"));
+    expect(migration).toBeDefined();
+    expect(JSON.parse(await migration!.text())).toEqual({ backend: "plain" });
+    expect(
+      requests.some((request) => request.url.endsWith("/v1/admin/store-keys")),
+    ).toBe(false);
+  });
+
+  it("reveals the new key without placing it in mutation-cache data", async () => {
+    const rotationKey = "b".repeat(64);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const { url, method } = reqInfo(input);
@@ -278,13 +1097,13 @@ describe("StoresPage", () => {
       }
       if (url.includes("/rotate-key") && method === "POST") {
         return mockJson(200, {
-          key_hex: "b".repeat(64),
+          key_hex: rotationKey,
           warning: "Re-encrypted 3 resources.",
         });
       }
       throw new Error(`unexpected fetch: ${method} ${url}`);
     });
-    render(withQuery(<StoresPage />));
+    render(withQuery(<StoresPage />, queryClient));
     const workRow = (await screen.findByText("work")).closest("tr")!;
     await user.click(
       within(workRow as HTMLElement).getByRole("button", {
@@ -305,8 +1124,14 @@ describe("StoresPage", () => {
 
     const reveal = await screen.findByTestId("key-reveal-dialog");
     expect(within(reveal).getByTestId("key-reveal-value")).toHaveTextContent(
-      "b".repeat(64),
+      rotationKey,
     );
+    expect(
+      queryClient
+        .getMutationCache()
+        .getAll()
+        .some((mutation) => containsString(mutation.state.data, rotationKey)),
+    ).toBe(false);
     expect(reveal).toHaveTextContent(/retained old ciphertext consumes backend-host disk/i);
     expect(reveal).toHaveTextContent(/remains decryptable with the old key/i);
     expect(reveal).toHaveTextContent(/closing this dialog discards the one-time local display/i);

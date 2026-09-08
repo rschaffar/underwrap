@@ -158,6 +158,7 @@ fn production_internal_constructor_inventory_is_static_and_complete() {
         include_str!("../stores/crud.rs"),
         include_str!("../client_instances.rs"),
         include_str!("../stores/lifecycle/rotation.rs"),
+        include_str!("../stores/lifecycle/migration.rs"),
         include_str!("../users.rs"),
         include_str!("../auth/mod.rs"),
     ];
@@ -179,7 +180,7 @@ fn production_internal_constructor_inventory_is_static_and_complete() {
     );
     assert_eq!(
         occurrences(&migrated_sources, "AdminError::internal_with_source("),
-        13,
+        12,
     );
 
     let list_mappings = [
@@ -194,23 +195,16 @@ fn production_internal_constructor_inventory_is_static_and_complete() {
             "checking store contents before delete",
         ),
     ];
-    let create_dir_mappings = [
-        (
-            "create_data_dir_failed",
-            "could not create store data directory",
-            "creating plain store data directory",
-        ),
-        (
-            "create_data_dir_failed",
-            "could not create store data directory",
-            "creating encrypted stores data root",
-        ),
-    ];
+    let create_dir_mappings = [(
+        "create_data_dir_failed",
+        "could not create store data directory",
+        "creating stores data root",
+    )];
     let open_mappings = [
         (
             "open_store_failed",
             "could not open store",
-            "opening plain store after creation",
+            "creating plain store backend",
         ),
         (
             "open_store_failed",
@@ -259,7 +253,7 @@ fn production_internal_constructor_inventory_is_static_and_complete() {
     ];
     let categories = [
         ("list", list_mappings.as_slice(), 2),
-        ("create-dir", create_dir_mappings.as_slice(), 2),
+        ("create-dir", create_dir_mappings.as_slice(), 1),
         ("open", open_mappings.as_slice(), 2),
         ("canary", canary_mappings.as_slice(), 1),
         ("store-registry", store_registry_mappings.as_slice(), 3),
@@ -285,11 +279,11 @@ fn production_internal_constructor_inventory_is_static_and_complete() {
             );
         }
     }
-    assert_eq!(exact_calls.len(), 13);
+    assert_eq!(exact_calls.len(), 12);
 
     assert_eq!(
         occurrences(&source_less_sources, "AdminError::internal_with_code("),
-        17,
+        18,
     );
 
     assert!(error_source.contains("code: &'static str"));

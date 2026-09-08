@@ -78,6 +78,22 @@ fn write_then_read() {
 }
 
 #[test]
+fn reopens_a_renamed_generation_without_exporting_or_persisting_the_key() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let canonical = tmp.path().join("canonical");
+    let backup = tmp.path().join("backup");
+    let backend = EncryptedBackend::create_with_key(&canonical, [7; 32]).unwrap();
+    backend.write("resource/item", b"value").unwrap();
+    std::fs::rename(&canonical, &backup).unwrap();
+
+    let reopened = backend.reopen_at(&backup).unwrap();
+    assert!(reopened.read("resource/item").unwrap().is_some());
+    assert!(!canonical.exists());
+    assert!(backend.reopen_at(&canonical).is_err());
+    assert!(!canonical.exists());
+}
+
+#[test]
 fn file_is_not_plaintext() {
     let (dir, b) = test_backend();
     b.write("tok", b"my_secret_data").unwrap();

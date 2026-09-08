@@ -387,6 +387,52 @@
         ]
       }
     },
+    "/v1/admin/store-keys": {
+      "post": {
+        "tags": [
+          "stores"
+        ],
+        "operationId": "handle_admin_store_key_generate",
+        "responses": {
+          "200": {
+            "description": "Fresh key generated without mutating storage; response carries exact no-cache headers.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `no-store, no-cache, must-revalidate`."
+              },
+              "Expires": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `0`."
+              },
+              "Pragma": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `no-cache`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoreKeyResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf_header": [],
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/admin/stores": {
       "get": {
         "tags": [
@@ -415,6 +461,7 @@
         "tags": [
           "stores"
         ],
+        "description": "Create a store. Encrypted creation requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; plain creation requires it to be omitted. Explicit JSON `null` is invalid for every backend kind.",
         "operationId": "handle_admin_store_create",
         "requestBody": {
           "content": {
@@ -438,7 +485,7 @@
             }
           },
           "400": {
-            "description": "Validation failed.",
+            "description": "Validation failed, including an explicit null `key_hex` (`invalid_request`) or conditional key errors (`key_required`, `unexpected_key`, or `invalid_key_hex`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -533,6 +580,26 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store is busy (`store_busy`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -590,6 +657,26 @@
           },
           "404": {
             "description": "Store not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store is busy (`store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -655,6 +742,124 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store is busy (`store_busy`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrf_header": [],
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/stores/{id}/migrate": {
+      "post": {
+        "tags": [
+          "stores"
+        ],
+        "description": "Migrate a store backend without changing its id. Migration to encrypted requires `key_hex` as exactly 64 lowercase hexadecimal characters without trimming or normalization; migration to plain requires it to be omitted. Explicit JSON `null` is invalid for every migration direction.",
+        "operationId": "handle_admin_store_migrate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Store id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminStoreMigrateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Store migrated at its stable id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStoreMigrateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request extraction or direction-specific key validation failed (`invalid_request`, `key_required`, `unexpected_key`, or `invalid_key_hex`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Store not found (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Requested backend matches the current backend (`same_backend`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Migration failed (`migrate_stage_failed`, `migrate_list_failed`, `migrate_canary_failed`, `migrate_read_failed`, `migrate_write_failed`, `migrate_verify_failed`, `migrate_swap_failed`, `migrate_reopen_failed`, `write_store_registry_failed`, or `migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -703,8 +908,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -787,8 +1002,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -874,8 +1099,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -949,8 +1184,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1006,8 +1251,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1090,8 +1345,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1186,8 +1451,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1250,8 +1525,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1319,7 +1604,7 @@
             }
           },
           "500": {
-            "description": "Rotation failed (`rotate_stage_failed`, `rotate_list_failed`, `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`, `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, or `rotation_recovery_required`).",
+            "description": "Rotation failed (`rotate_stage_failed`, `rotate_list_failed`, `rotate_canary_failed`, `rotate_read_failed`, `rotate_write_failed`, `rotate_verify_failed`, `rotate_swap_failed`, `rotate_reopen_failed`, `rotation_recovery_required`, or `migration_recovery_required`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1329,7 +1614,7 @@
             }
           },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1394,8 +1679,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1450,8 +1745,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1533,8 +1838,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1634,8 +1949,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1716,8 +2041,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1821,8 +2156,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1920,7 +2265,17 @@
             }
           },
           "500": {
-            "description": "Opening the store failed (`open_store_failed`) or trusted-host rotation recovery is required (`rotation_recovery_required`).",
+            "description": "Opening the store failed (`open_store_failed`), or trusted-host rotation or migration recovery is required (`rotation_recovery_required` or `migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Store is busy (`store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1976,8 +2331,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2032,8 +2397,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2135,8 +2510,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2217,8 +2602,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2283,8 +2678,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2377,8 +2782,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2450,8 +2865,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2546,8 +2971,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2621,8 +3056,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2726,8 +3171,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2810,8 +3265,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2894,8 +3359,18 @@
               }
             }
           },
+          "500": {
+            "description": "Trusted-host migration recovery is required (`migration_recovery_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Store is locked (`store_locked`).",
+            "description": "Store is unavailable (`store_locked` or `store_busy`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3358,6 +3833,9 @@
             }
           }
         }
+      },
+      "AdminKeyHex": {
+        "type": "string"
       },
       "AdminLibsecretAliasDeleteResponse": {
         "type": "object",
@@ -3983,6 +4461,8 @@
       "AdminStoreActionState": {
         "type": "object",
         "required": [
+          "can_update",
+          "can_migrate",
           "can_rotate_key",
           "can_unlock",
           "can_lock",
@@ -3991,24 +4471,25 @@
         ],
         "properties": {
           "can_delete_now": {
-            "type": "boolean",
-            "description": "Whether a plain DELETE is currently allowed."
+            "type": "boolean"
           },
           "can_force_delete": {
-            "type": "boolean",
-            "description": "Whether a force delete is currently allowed."
+            "type": "boolean"
           },
           "can_lock": {
-            "type": "boolean",
-            "description": "Whether this principal may lock the store. True only for\nencrypted stores that are currently unlocked."
+            "type": "boolean"
+          },
+          "can_migrate": {
+            "type": "boolean"
           },
           "can_rotate_key": {
-            "type": "boolean",
-            "description": "Whether this principal may rotate the store's master key.\nRotation requires the store to be encrypted **and** currently\nunlocked."
+            "type": "boolean"
           },
           "can_unlock": {
-            "type": "boolean",
-            "description": "Whether this principal may unlock the store. True only for\nencrypted stores that are currently locked."
+            "type": "boolean"
+          },
+          "can_update": {
+            "type": "boolean"
           }
         }
       },
@@ -4022,6 +4503,7 @@
       },
       "AdminStoreCreateRequest": {
         "type": "object",
+        "description": "Store creation request.\n\nEncrypted creation requires `key_hex` to be exactly 64 lowercase\nhexadecimal characters without trimming or normalization.\nPlain creation requires `key_hex` to be omitted; explicit JSON `null` is\ninvalid for every backend kind.",
         "required": [
           "name",
           "backend"
@@ -4036,6 +4518,10 @@
               "null"
             ]
           },
+          "key_hex": {
+            "type": "string",
+            "description": "Required exactly when `backend` is `encrypted`; otherwise omitted.\nThe accepted value is exactly 64 lowercase hexadecimal characters."
+          },
           "name": {
             "type": "string"
           }
@@ -4043,17 +4529,10 @@
       },
       "AdminStoreCreateResponse": {
         "type": "object",
-        "description": "Response from `POST /v1/admin/stores`. When the new store is\nencrypted, `key_hex` carries the freshly generated 32-byte master\nkey (hex-encoded) and is returned **exactly once** — subsequent GETs\nof the store never expose the key value. Plain stores have\n`key_hex == None`.",
         "required": [
           "store"
         ],
         "properties": {
-          "key_hex": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "store": {
             "$ref": "#/components/schemas/AdminStoreListItem"
           }
@@ -4097,13 +4576,34 @@
           }
         }
       },
+      "AdminStoreKeyResponse": {
+        "type": "object",
+        "required": [
+          "key_hex"
+        ],
+        "properties": {
+          "key_hex": {
+            "$ref": "#/components/schemas/AdminKeyHex"
+          }
+        }
+      },
+      "AdminStoreLifecycleState": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "unlocked",
+          "locked",
+          "busy",
+          "recovery-required"
+        ]
+      },
       "AdminStoreListItem": {
         "type": "object",
         "required": [
           "id",
           "name",
           "backend",
-          "locked",
+          "lifecycle_state",
           "usage",
           "actions"
         ],
@@ -4132,9 +4632,8 @@
             "type": "string",
             "description": "Stable internal identifier used for routing and runtime mapping."
           },
-          "locked": {
-            "type": "boolean",
-            "description": "`true` if this is an encrypted store with no master key loaded.\nPlain stores are never locked."
+          "lifecycle_state": {
+            "$ref": "#/components/schemas/AdminStoreLifecycleState"
           },
           "name": {
             "type": "string",
@@ -4158,6 +4657,33 @@
           },
           "was_locked": {
             "type": "boolean"
+          }
+        }
+      },
+      "AdminStoreMigrateRequest": {
+        "type": "object",
+        "description": "Store backend migration request.\n\nMigration to encrypted requires `key_hex` to be exactly 64 lowercase\nhexadecimal characters without trimming or normalization.\nMigration to plain requires `key_hex` to be omitted; explicit JSON `null`\nis invalid for every migration direction.",
+        "required": [
+          "backend"
+        ],
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/AdminStoreBackendKind"
+          },
+          "key_hex": {
+            "type": "string",
+            "description": "Required exactly when `backend` is `encrypted`; otherwise omitted.\nThe accepted value is exactly 64 lowercase hexadecimal characters."
+          }
+        }
+      },
+      "AdminStoreMigrateResponse": {
+        "type": "object",
+        "required": [
+          "store"
+        ],
+        "properties": {
+          "store": {
+            "$ref": "#/components/schemas/AdminStoreListItem"
           }
         }
       },

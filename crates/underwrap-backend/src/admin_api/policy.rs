@@ -60,15 +60,13 @@ pub(crate) fn drop_client_instance_permissions(
     client_instance_id: &str,
 ) -> Result<()> {
     use crate::store_registry::RegistryLookupError;
-    let store = match state
-        .shared
-        .stores
-        .read()
-        .unwrap()
-        .unlocked_backend(store_id)
-    {
+    let store = match state.shared.stores.read().unwrap().lease(store_id) {
         Ok(s) => s,
-        Err(RegistryLookupError::Locked) => {
+        Err(
+            RegistryLookupError::Locked
+            | RegistryLookupError::Busy
+            | RegistryLookupError::RecoveryRequired,
+        ) => {
             tracing::warn!(
                 store = %store_id,
                 client_instance = %client_instance_id,
@@ -122,7 +120,8 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     responses(
         (status = 200, description = "List of wrapper permissions for the store.", body = AdminWrapperPermissionsListResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permissions_list(
@@ -152,7 +151,8 @@ pub(crate) async fn handle_admin_wrapper_permissions_list(
         (status = 200, description = "Permission upserted.", body = AdminOkResponse),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Store, client instance, resource, or pair not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permission_upsert(
@@ -233,7 +233,8 @@ pub(crate) async fn handle_admin_wrapper_permission_upsert(
     responses(
         (status = 200, description = "Permission removed.", body = AdminOkResponse),
         (status = 404, description = "Store / permission not found.", body = ServiceErrorResponse),
-        (status = 503, description = "Store is locked (`store_locked`).", body = ServiceErrorResponse),
+        (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
+        (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
 )]
 pub(crate) async fn handle_admin_wrapper_permission_delete(
