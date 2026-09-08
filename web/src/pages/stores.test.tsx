@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -690,7 +690,9 @@ describe("StoresPage", () => {
     await user.click(
       within(dialog).getByRole("button", { name: /generate and review key/i }),
     );
-    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    fireEvent.change(await screen.findByTestId("store-key-reentry"), {
+      target: { value: generatedKey },
+    });
     await user.click(
       screen.getByRole("button", { name: /^migrate to encrypted$/i }),
     );
@@ -698,7 +700,9 @@ describe("StoresPage", () => {
     expect(screen.getByTestId("generated-store-key")).toHaveTextContent(generatedKey);
     expect(screen.getByTestId("store-key-reentry")).toHaveValue("");
 
-    await user.type(screen.getByTestId("store-key-reentry"), generatedKey);
+    fireEvent.change(screen.getByTestId("store-key-reentry"), {
+      target: { value: generatedKey },
+    });
     await user.click(
       screen.getByRole("button", { name: /retry migrate to encrypted/i }),
     );
