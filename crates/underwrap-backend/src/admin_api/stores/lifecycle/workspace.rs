@@ -24,6 +24,11 @@ pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+fn is_exact_private_mode(mode: u32) -> bool {
+    mode & 0o7777 == 0o0700
+}
+
 pub(super) fn require_directory(path: &Path, exact_private_mode: bool) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
@@ -34,7 +39,7 @@ pub(super) fn require_directory(path: &Path, exact_private_mode: bool) -> io::Re
     #[cfg(unix)]
     if exact_private_mode {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o7777 != 0o0700 {
+        if !is_exact_private_mode(metadata.permissions().mode()) {
             return Err(io::Error::other(
                 "workspace path is not an exact mode-0700 directory",
             ));
