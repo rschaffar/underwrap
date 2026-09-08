@@ -179,6 +179,7 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
             name: "other".into(),
             backend: AdminStoreBackendKind::Plain,
             description: None,
+            key_hex: None,
         })
         .await
         .unwrap();

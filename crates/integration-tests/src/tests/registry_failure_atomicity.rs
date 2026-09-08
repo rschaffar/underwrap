@@ -184,6 +184,7 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
             name: "replacement store".into(),
             backend: AdminStoreBackendKind::Plain,
             description: Some("runtime remap target".into()),
+            key_hex: None,
         })
         .await?
         .store;
@@ -192,6 +193,7 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
             name: "delete candidate".into(),
             backend: AdminStoreBackendKind::Plain,
             description: Some("registry deletion evidence".into()),
+            key_hex: None,
         })
         .await?
         .store;

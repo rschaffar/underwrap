@@ -356,6 +356,7 @@ mod registry_failure_atomicity;
 mod rotation;
 mod runtime_api;
 mod service_transport;
+mod store_migration;
 mod store_read;
 mod wrapper_permissions;
 mod wrapper_writeback;

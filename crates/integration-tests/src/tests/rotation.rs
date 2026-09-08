@@ -5,23 +5,31 @@ use underwrap_protocol::entities::{
     PAIRS_DOCUMENT_SECRET_ID, PairsDocument, RESOURCES_DOCUMENT_SECRET_ID, ResourcesDocument,
 };
 use underwrap_protocol::service::{
-    AdminSecretReadResponse, AdminSecretWriteRequest, AdminStoreBackendKind,
-    AdminStoreCreateRequest,
+    AdminKeyHex, AdminSecretReadResponse, AdminSecretWriteRequest, AdminStoreBackendKind,
+    AdminStoreCreateRequest, AdminStoreKeyResponse,
 };
 
 #[tokio::test]
 async fn rotation_response_discard_retains_old_key_generation() {
     let daemon = TestDaemon::start(one_wrapper_config()).await.unwrap();
+    let generated = daemon
+        .admin_request(reqwest::Method::POST, "/v1/admin/store-keys")
+        .send()
+        .await
+        .unwrap();
+    assert!(generated.status().is_success());
+    let generated: AdminStoreKeyResponse = generated.json().await.unwrap();
+    let old_key_hex = generated.key_hex.expose().to_owned();
     let created = daemon
         .create_store(&AdminStoreCreateRequest {
             name: "rotation recovery".into(),
             backend: AdminStoreBackendKind::Encrypted,
             description: None,
+            key_hex: Some(AdminKeyHex::new(old_key_hex.clone())),
         })
         .await
         .unwrap();
     let store_id = created.store.id;
-    let old_key_hex = created.key_hex.unwrap();
     let old_key = underwrap_backend_store::parse_hex_key(&old_key_hex).unwrap();
     let canonical = daemon.store_dir_for(&store_id);
 
