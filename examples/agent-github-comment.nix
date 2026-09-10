@@ -1,12 +1,17 @@
-# Example NixOS configuration for an agent-facing GitHub comment wrapper.
+# Agent-facing GitHub comment wrapper with a fixed repository and verb.
+# underwrap delivers the credential; the trusted helper narrows the operation.
 #
-# Goal:
-# - the agent can already read local files
-# - the agent may comment on PRs in one fixed repo
-# - the agent should NOT receive the reusable GitHub token itself
+# Prerequisites:
+# - pass the flake input as module argument `underwrap`
+# - create the local user `automation` and configure the backend URL/CA
+# - replace `myorg/myrepo` with the one allowed repository
+# - enroll the instance identity, then restart `underwrapd-agent.service`
+# - put a least-privilege GitHub token in resource `github/agent-comment` as
+#   env key GH_TOKEN, never in Nix configuration, and unlock the permission row
 #
-# underwrap provides the hardened secret delivery.
-# The custom target wrapper provides the narrow policy surface.
+# Follow docs/operations.md for enrollment and docs/wrappers.md for target review.
+# Recheck the pinned gh build, configuration and proxy behavior before relying
+# on the helper's downstream scope. Nix evaluation is not a live GitHub test.
 
 { pkgs, underwrap, ... }:
 

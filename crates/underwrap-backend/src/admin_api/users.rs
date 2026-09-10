@@ -332,8 +332,8 @@ pub(crate) async fn handle_admin_user_reset_password(
     security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Operator id.")),
     responses(
-        (status = 200, description = "Operator deleted; all sessions held by the deleted user are invalidated automatically.", body = AdminOkUserResponse),
-        (status = 400, description = "Cannot delete the last operator.", body = ServiceErrorResponse),
+        (status = 200, description = "Operator deleted; each affected session is rejected on its next authenticated admin request.", body = AdminOkUserResponse),
+        (status = 409, description = "Cannot delete the last operator (`last_user_protected`).", body = ServiceErrorResponse),
         (status = 404, description = "Operator not found.", body = ServiceErrorResponse),
     ),
 )]

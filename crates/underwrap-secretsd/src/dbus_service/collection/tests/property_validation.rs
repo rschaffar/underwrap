@@ -4,7 +4,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 const LABEL_ERROR: &str = "org.freedesktop.Secret.Item.Label must have D-Bus type s";
 const ATTRIBUTES_ERROR: &str = "org.freedesktop.Secret.Item.Attributes must have D-Bus type a{ss}";
-const CONTROL_TRACE_EVENT: &str = "f046_trace_capture_control";
+const CONTROL_TRACE_EVENT: &str = "property_trace_capture_control";
 
 fn invalid_args_message<T>(result: fdo::Result<T>) -> String {
     match result {
@@ -37,7 +37,10 @@ impl<'a> MakeWriter<'a> for TracingWriter {
 }
 
 fn assert_trace_capture_active(writer: &TracingWriter) {
-    tracing::info!(control = CONTROL_TRACE_EVENT, "F-046 trace capture control");
+    tracing::info!(
+        control = CONTROL_TRACE_EVENT,
+        "property-validation trace capture control"
+    );
     let captured = String::from_utf8_lossy(&writer.0.lock().unwrap()).into_owned();
     assert!(captured.contains(CONTROL_TRACE_EVENT));
 }

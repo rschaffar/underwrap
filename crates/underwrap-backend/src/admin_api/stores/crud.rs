@@ -460,12 +460,12 @@ pub(crate) struct DeleteQuery {
     security(("session_cookie" = [], "csrf_header" = [])),
     params(
         ("id" = String, Path, description = "Store id."),
-        ("force" = bool, Query, description = "Pass `?force=true` to bypass the empty-store guard."),
+        ("force" = Option<bool>, Query, description = "Optional; defaults to false. Pass `?force=true` to remove a nonempty or locked store record. Mapped runtime clients still block deletion; data directories are retained."),
     ),
     responses(
-        (status = 200, description = "Store removed.", body = AdminStoreDeleteResponse),
-        (status = 400, description = "Store is non-empty and `force` was not set.", body = ServiceErrorResponse),
+        (status = 200, description = "Store record removed; the data directory and retained generations are not deleted.", body = AdminStoreDeleteResponse),
         (status = 404, description = "Store not found.", body = ServiceErrorResponse),
+        (status = 409, description = "Store has mapped runtime clients (`store_in_use`), or force was omitted for a nonempty (`store_not_empty`) or locked (`store_locked_use_force`) store.", body = ServiceErrorResponse),
         (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
         (status = 503, description = "Store is busy (`store_busy`).", body = ServiceErrorResponse),
     ),

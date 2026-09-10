@@ -1,509 +1,118 @@
 # Architecture
 
-underwrap separates backend authority for durable brokered resource material from local process execution.
-The backend owns resources and policy, while the NixOS frontend turns one authorized resource into a short-lived target process.
+underwrap separates durable resource and policy authority from local target execution.
+The backend runs on Linux; the privileged frontend is supported through the NixOS module.
+For the claim and its preconditions, read [Security](security.md).
 
-## Components
+## Components and identities
 
 | Component | Responsibility |
 | --- | --- |
-| `underwrap-backend` | HTTPS runtime API, admin API, embedded SPA, policy, resources, and durable brokered-resource storage |
-| `underwrapd` | Per-instance local broker; authenticates wrapper peers and relays the three runtime API calls |
-| `underwrap-exec` | Setgid entry stage; requests an invocation, drops the instance-group identity, and hands execution state to `underwrap-ns` |
-| `underwrap-ns` | Namespace supervisor; authenticates the fixed daemon channel, checks out the resource, switches target identity, projects slots, executes the target, and finalizes usage/writeback |
-| `underwrap-secretsd` | Private Secret Service provider used inside a libsecret-enabled invocation |
-| `underwrap-debug-tool` | Explicitly unsafe target selected only for an authorized debug variant |
-| Admin SPA | Vite/React operator interface embedded in `underwrap-backend` |
+| `underwrap-backend` | Resources, policy, selected storage backends, runtime and admin HTTPS APIs, and embedded admin SPA |
+| `underwrapd` | One broker per frontend instance; authenticates entry-stage peers and forwards runtime requests |
+| `underwrap-exec` | Setgid entry stage; obtains the daemon-selected execution plan and transfers the authenticated resource channel |
+| `underwrap-ns` | Authenticates the handoff, resolves target identity, supervises namespaces, projects the resource, and attempts finalization |
+| `underwrap-secretsd` | Invocation-private, in-memory Secret Service for libsecret-enabled targets |
+| `underwrap-debug-tool` | Deliberately unsafe target available only through backend-authorized debug mode |
+| `underwrap-keygen` | Installs a frontend runtime identity and outputs its public certificate for enrollment |
 
-The frontend wrapper chain is supported on NixOS. The backend is an ordinary
-Linux HTTPS service.
+A **frontend instance** has its own daemon account, instance group, socket, setgid entry point, service, and private combined mTLS identity file.
+A **runtime client instance** is the backend principal selected by an active enrolled leaf-certificate fingerprint and mapped to exactly one store.
+A **wrapper/resource pair** binds a wrapper name to a resource; a **permission row** authorizes that pair for one runtime client instance.
+Every local `(instance, wrapper)` pair has a dedicated target UID/GID, shared by its real and debug variants but not by other wrappers.
 
-## Identities and authorization units
+The local Unix caller is not a backend principal.
+`allowedUsers` installs convenient PATH shims; any local user can invoke the system-wide instance entry point.
+The caller is untrusted with respect to the resource, while the configured target is trusted with its entire selected projection.
+Target-controlled protocol input is nevertheless validated for robustness and stored-state integrity.
 
-Several identities serve different purposes:
-
-- **Frontend instance:** one `underwrapd`, one Unix socket, one setgid entry
-  point, one instance group, and one private combined mTLS identity PEM.
-- **Runtime client instance:** the backend principal resolved from the presented
-  client certificate fingerprint. It maps to exactly one store.
-- **Wrapper/resource pair:** a configured wrapper name bound to one backend
-  resource.
-- **Permission row:** backend authorization keyed by
-  `(runtime client instance, wrapper, resource)`.
-- **Target UID:** one dedicated system UID/GID per `(frontend instance,
-  wrapper)` pair.
-- **Local Unix user:** the caller that starts the wrapper. This identity is not
-  part of backend policy.
-
-`allowedUsers` only installs per-user PATH shims. It does not restrict direct
-execution of `/run/wrappers/bin/underwrap-<instance>`.
-
-## Deployment shape
+## One invocation
 
 ```text
-operator browser
-      │ HTTPS + session cookie + CSRF
-      ▼
-underwrap-backend ◄──────── HTTPS + mTLS ──────── underwrapd
-      │                                                ▲
-      │ resources + policy                             │ Unix socket
-      │                                                │ effective-GID check
-      ▼                                                │
-StorageBackend                                   underwrap-exec
-                                                       │ fd 3 + fd 20
-                                                       ▼
-                                                underwrap-ns
-                                                       │
-                                                       ▼
-                                                    target
+operator browser ── HTTPS/session/CSRF ──► underwrap-backend
+                                               ▲
+                                               │ HTTPS/mTLS
+                                               ▼
+caller ──► underwrap-exec ── instance socket ──► underwrapd
+                 │                             │
+                 │ execution metadata          │ scoped resource channel
+                 ▼                             ▼
+              host underwrap-ns ──► namespace PID 1 relay
+                                           └─► PID 2 target
+                                               ├─ private dbus-daemon
+                                               └─ underwrap-secretsd
+                                                   (when enabled)
+underwrap-backend ──► selected StorageBackend
 ```
 
-Runtime, admin API, and SPA routes share one configured HTTPS listener. TLS
-accepts browser connections without a client certificate and runtime connections
-with a presented client certificate; runtime handlers resolve and enforce the
-mTLS principal.
-
-## End-to-end invocation
-
-For a normal wrapper invocation:
-
-```text
-caller runs <wrapper> [args]
-  → per-user shim (when installed)
-  → /run/wrappers/bin/underwrap-<instance> <wrapper> [args]
-  → /run/underwrap-<instance>/wrapper.sock
-  → underwrapd
-  → POST /v1/wrapper-invocations
-  → underwrap-exec
-  → underwrap-ns
-  → configured target
-  → POST /v1/wrapper-invocations/finalize
-```
-
-The private wrapper request carries only the caller-selected wrapper name and invocation variant.
-Mixed `underwrap-exec` and `underwrapd` binaries are intentionally wire-incompatible and must be deployed together through one package and module generation.
-
-The detailed sequence is:
-
-1. The setgid instance entry point gives `underwrap-exec` the instance-group
-   effective GID.
-2. `underwrap-exec` loads the socket and helper paths from the root-generated strict instance sidecar, connects to the instance's `0660` socket, and sends only the caller-selected wrapper name and invocation variant.
-3. `underwrapd` reads the peer's effective GID, validates the wrapper name
-   against root-owned config, resolves that wrapper's resource, and asks the
-   backend to open the invocation.
-4. The backend derives the runtime client instance from mTLS, resolves the wrapper/resource pair and permission row, evaluates the permission mode, and returns the resource as an owned HTTP JSON/base64 response plus its current writable flag.
-5. `underwrapd` buffers and deserializes the complete success body without an application-level HTTP cap, decodes the outer base64 before applying the decoded 2-MiB limit, fully parses the typed resource including inner `SecretBytes` and safe timestamps before checking schema version 1, and conditionally validates env names only when env projection is enabled.
-   While assembling the scoped channel context, it moves the original decoded bytes into the channel cache; the temporary typed resource remains live until `open_invocation` returns.
-   It then chooses the configured target for `Real` or `underwrap-debug-tool` for an authorized `Debug` invocation, creates one scoped resource socketpair, and sends the wrapper end with `SCM_RIGHTS`.
-6. `underwrap-exec` permanently drops its setgid identity, relocates every
-   child-carried descriptor above the fixed slots, maps the resource channel to
-   fd 20 and a private parent-liveness reader to fd 21, and sends the
-   descriptor-free execution bundle over fd 3. Its waiting parent is the sole
-   fd-21 pipe writer until `underwrap-ns` is reaped.
-7. Because the capability-bearing `underwrap-ns` entry point is system-wide, it
-   first resolves the selected instance's root-provisioned daemon account and
-   requires fd 20 to be an `AF_UNIX` stream socket whose immutable
-   `SO_PEERCRED` UID/GID matches that account. Only after this authority check it
-   validates fd 21, arms parent-death `SIGKILL`, and checks for an already-dead
-   parent. It retains that reader for one checked rearm immediately before the
-   namespace fork, then closes it. It rejects before reading fd 3 or trusting the
-   wrapper selector and target argv on any mismatch.
-8. `underwrap-ns` resolves the dedicated target UID/GID from the root-owned
-   `(instance, wrapper)` table. The UID/GID never comes from IPC or the daemon.
-9. After the secret-free idmap helper has been reaped, `underwrap-ns` creates a
-   private CLOEXEC authorization gate while fd 3 and fd 20 remain occupied. It
-   reads fd 3, checks out and decodes the resource, and purely plans the complete
-   files projection before namespace preparation, idmapped mounts, PID fork,
-   staging, target-UID switching, or target-facing helpers.
-10. The host supervisor unshares PID, mount, IPC, and UTS namespaces, makes
-    mount propagation private, realizes idmapped caller-directory mounts, and
-    forks a trusted namespace PID-1 relay. A second private sole-writer
-    liveness pipe links the relay to the host. The relay also arms parent-death
-    `SIGKILL` and rearms it immediately after the dedicated-UID switch because
-    credential changes clear the setting. It keeps the reader through
-    staging/setup, performs a final arm/check after capability/credential
-    transitions, and actively polls it while waiting for PID 2; parent-death
-    signals remain defense in depth.
-11. The non-execing, zero-active-capability relay closes fd 20 and forks the
-    configured target as namespace PID 2. PID 2 creates its own session, starts
-    private helpers, owns the gate writer, and reports `Armed` immediately before
-    exec; controlled returns report `Failed`. PID 1 reaps that direct child,
-    writes one exact private target-status frame, and exits so the kernel
-    terminates helpers and detached descendants.
-12. The host observes the gate, cleanly reaps the relay, and only then parses one
-    nonblocking status frame followed by EOF. Accepted gate, valid target status,
-    and clean relay reap are all required for collection and one `UsageSignal`
-    or `Checkin`. A valid controlled pre-exec status remains eligible for exact
-    propagation when the gate suppresses resources.
-13. `underwrapd` translates that request into the finalize API. The backend
-    re-evaluates policy and, for a writeback, re-checks writability and env
-    immutability before persisting.
-
-The daemon's complete typed parse is not a daemon-side proof of exact JCS bytes because accepted noncanonical forms, ignored fields, defaulted omissions, and duplicate map keys remain in the original-byte cache.
-Daemon open adds conditional env-name validation but no files projectability semantics and no strict libsecret publication semantics beyond safe timestamp integers; namespace planning and the later independent 1-MiB generation publication/readiness boundary remain authoritative for those concerns.
-The temporary typed resource remains live through scoped channel-context assembly and drops only when `open_invocation` returns, at which point its parsed `SecretBytes` zeroize, while the HTTP/base64 storage, original-byte cache, Checkout/frame copies, and receiver buffers are ordinary non-zeroizing allocations.
-
-The runtime API is stateless: finalize does not rely on backend-side open-session state.
-
-### Daemon runtime-client concurrency
-
-Each daemon owns one shared async reqwest client and calls register, invocation
-open, and invocation finalize directly from its Tokio runtime. There is no
-global FIFO request worker. At most 32 of these calls are admitted per daemon at
-once. Admission is fail-fast: open/finalize DTO construction and finalize
-base64 encoding may already be complete when all 32 permits are occupied, but
-admission failure does not invoke the request closure, build a reqwest
-`RequestBuilder`, or start or send a network request. There is no pending client
-queue. Saturation follows the existing call-site handling: startup registration
-warns, invocation open returns the existing internal wrapper error, Checkin
-returns `ResourceErrorCode::Internal` with `backend finalize failed`, and
-UsageSignal returns `ResourceErrorCode::Internal` with `usage signal failed`.
-
-A 30-second product deadline starts only after admission. It covers sending the
-request and completely decoding either the success response or the error
-response. Timeout and caller cancellation drop the local future and release its
-permit, but they do not establish the remote outcome. Registration auto-create,
-invocation-open `last_used_at`, or finalize writeback may already have occurred.
-The daemon does not retry, roll back, or provide exactly-once delivery.
-
-One scoped wrapper-resource channel still processes Checkout and its terminal Checkin or UsageSignal sequentially.
-Independent channels and registration, open, and finalize calls may complete out of order.
-This adds neither write ordering nor a transaction: the backend remains the policy and brokered-resource persistence authority, with the existing whole-value last-writer-wins limitations.
-
-The concurrency limit prevents an unbounded local pending queue, but it does not make the daemon available when 32 calls are stalled or the backend path is down.
-HTTPS-only transport, mTLS identity, CA selection, hostname verification, base-path handling, disabled idle pooling, and backend policy and brokered-resource persistence semantics are unchanged.
-
-## Local wrapper gate
-
-Each frontend instance has:
-
-- `/run/wrappers/bin/underwrap-<instance>` — system-wide setgid entry point;
-- `/run/underwrap-<instance>/wrapper.sock` — `0660`, owned by the instance
-  group;
-- `underwrap-<instance>` — the daemon's primary group and the socket gate.
-
-A non-root process reaches the daemon only by executing the setgid entry point.
-The daemon confirms the resulting effective GID using `SO_PEERPIDFD` on the
-default Linux 6.5+ hardened posture. The client-supplied wrapper name remains
-application data: the daemon validates it and chooses the target itself.
-
-This gate enforces traversal through the trusted wrapper chain. It does not
-identify the local user and does not distinguish users for backend policy.
-
-## Two wrapper stages
-
-The entry flow is split because the setgid identity hop and namespace
-capabilities have different privilege lifecycles.
-
-### `underwrap-exec`
-
-- starts through the per-instance setgid wrapper;
-- loads the socket and namespace, D-Bus, and Secret Service helper paths from the root-generated strict instance sidecar;
-- authenticates to the instance socket;
-- receives the daemon-chosen execution plan and resource channel;
-- attempts to clear supplementary groups (`EPERM` is tolerated because a
-  setgid-only process normally lacks `CAP_SETGID`) and permanently restores the
-  caller's real, effective, and saved UID/GID;
-- transfers the execution bundle through fd 3 and a private parent-liveness
-  reader through fixed fd 21 while its waiting process owns the sole writer;
-- executes and exactly reaps the capability-bearing namespace helper.
-
-### `underwrap-ns`
-
-The NixOS capability wrapper supplies `CAP_SYS_ADMIN`, `CAP_SETUID`, and
-`CAP_SETGID` for namespace, mount, idmap, and target-identity setup. The wrapper
-configuration also names `CAP_SETPCAP`, but the NixOS security-wrapper mechanism
-does not raise it into the ambient set.
-
-`underwrap-ns`:
-
-- makes itself non-dumpable before reading secret-bearing handoff state;
-- authenticates fixed fd 20 from its socket domain/type and creation-time
-  `SO_PEERCRED`, using the selected instance only to resolve the expected
-  root-provisioned daemon UID/GID;
-- after fd-20 authentication, validates fd 21 and race-closes the stage-1
-  parent-death link before reading fd 3, trusting the wrapper selector or target
-  argv, or performing namespace/mount/idmap work;
-- creates and reaps the optional secret-free idmap helper before reading fd 3
-  or Checkout bytes;
-- creates a private CLOEXEC authorization gate, reads fd 3, checks out the
-  resource, and completes semantic files planning before privileged projection
-  effects;
-- in the supervisor, unshares fresh PID, mount, IPC, and UTS namespaces, makes
-  mount propagation private, and realizes idmapped caller-directory mounts
-  before forking;
-- keeps trusted code as namespace PID 1, arms a private host-parent death link,
-  remounts `/proc`, switches to the resolved dedicated UID/GID, immediately
-  rearms after that credential change, and realizes the selected projections;
-- after projection setup, sets `PR_SET_NO_NEW_PRIVS`, clears and verifies the
-  relay's active capability sets, closes fd 20, and forks the configured target
-  as PID 2;
-- closes PID 2's inherited relay-only lifecycle descriptors first, restores its
-  target-visible `SIGCHLD` state, starts its separate session and private
-  helpers, and reports `Armed` after final fd protection;
-- has PID 1 poll the sole-writer host-liveness pipe while waiting for PID 2,
-  fail closed on any event, reap PID 2, frame its exact status only after a final
-  liveness check, and exit without exec, tearing down remaining namespace
-  processes before host collection.
-
-The host namespace supervisor observes the gate through EOF and then reaps PID
-1. Finalization requires exact `Armed` followed by EOF without `Failed`, one
-valid direct-target status frame followed by EOF, and a clean relay reap.
-Libsecret additionally requires terminal publication EOF and an ACK-written
-validated generation; a retained publication endpoint suppresses collection and
-both terminal verbs. Malformed, truncated, retained-writer, early-closed,
-failed-I/O, or failed-wait lifecycle states also suppress dispatch. The gate records an authorized lifecycle,
-not proof that exec succeeded. A normal successful exec may finalize changes
-made by the target. Only the false-positive case where the child dies after
-`Armed` but before either CLOEXEC exec closure or complete `Failed` observation
-is indistinguishable from closure; because no target ran, that narrow ambiguity
-can at most finalize the fully materialized unchanged state. Supervisors without
-files projection drop capabilities before waiting. Files supervisors retain
-`CAP_SYS_ADMIN`, `CAP_SETUID`, and `CAP_SETGID` through target execution and the
-post-run files-only fsuid read window, then drop them; the implementation does
-not selectively drop `CAP_SYS_ADMIN` before the wait. After an authorized lifecycle,
-finalization remains diagnostic-only and precedes exact propagation of target
-exit codes and signals. Supervisor termination cascades inward with `SIGKILL`;
-there is no graceful forwarding. Cancellation established before terminal
-dispatch sends no terminal verb, but a request completed before later stage-1
-death cannot be retracted without a backend transaction.
-
-## Target environment and host access
-
-The target starts with a cleared environment. `underwrap-ns` adds:
-
-- a fixed built-in passthrough set;
-- additional variables named by `envPassthrough`;
-- trusted fixed values from `envSet`;
-- selected env-slot entries from the resource.
-
-`HOME` defaults to the original caller's passwd home path, but the dedicated
-target UID does not automatically gain access to that home. `accessPaths`
-creates explicit idmapped bind mounts for caller-owned directories the target
-needs. The idmap maps only the caller's UID/GID to the target UID/GID; other
-owners remain unmapped.
-
-`XDG_RUNTIME_DIR` points to a dedicated `0700` directory provisioned for the
-target UID under `services.underwrap.targetRuntimeDirBase`. The caller's logind
-runtime tree is not mounted automatically.
-
-## Resource model
-
-Each wrapper projects exactly one backend resource. A resource is one
-JCS-canonical JSON blob with an inclusive 2,097,152-byte complete-resource cap
-and three slots:
-
-```text
-resource
-  ├── env
-  ├── files
-  └── libsecret
-```
-
-The wrapper opts into any non-empty combination of these slots. The backend
-keeps wrapper/resource pairs and permission rows separate so changing a
-frontend wrapper's resource name cannot silently redirect an existing
-permission to another secret.
-
-### Environment projection
-
-Selected env entries are carried only in the authenticated fd-20 Checkout blob
-and inserted into the final target environment; the small wrapper and fd-3
-control messages carry only the env-projection selector. Runtime finalize rejects a submitted env section that differs from the resource
-snapshot it loads, so the admin API/UI is the intended editor. The compare and
-whole-blob save are not a transaction: concurrent writers are last-writer-wins,
-and a stale runtime writeback can overwrite an admin edit that races between
-them.
-
-### Files projection
-
-`underwrap-ns` materializes the files slot in a namespace-private `noswap`
-tmpfs. Each configured `files.paths` entry becomes a bind mount rooted at the
-caller's passwd home path. Paths must be clean, relative, unique, and
-non-overlapping. Before projection effects, every clean files-slot key must
-route to exactly one strict configured path, must not equal that mount path, and
-must not be an ancestor or descendant of another regular-file key. Realization
-consumes only that completed plan.
-
-The target sees writable mounts. If the permission is read-only, changed bytes
-are discarded and an audit event plus optional stderr warning records the
-attempt. If the permission is writable, the complete canonical resource is
-submitted for backend validation and replacement.
-
-### Libsecret projection
-
-Libsecret mode runs a private `dbus-daemon` and `underwrap-secretsd` beside the
-target:
-
-```text
-host underwrap-ns
-  ├── fd 20 to underwrapd
-  └── sole publication receiver ◄══════════════════════════════╗
-      namespace PID-1 relay                                    ║
-        └── PID-2 setup process → configured target            ║
-            ├── dbus-daemon                                    ║
-            └── underwrap-secretsd ── sole publisher ═════════╝
-                  └── one-shot initial section from PID-2 setup
-```
-
-The CLOEXEC stream socketpair is created before the PID namespace fork. The
-host closes its publisher copy. PID 1 closes its copy immediately after forking
-PID 2, PID 2 closes its copy immediately after forking secretsd, and dbus-daemon
-explicitly closes it. Only the secretsd exec child temporarily clears CLOEXEC
-for that exact endpoint; secretsd restores CLOEXEC immediately. The target and
-other helpers retain neither endpoint.
-
-`underwrap-secretsd` has no daemon socket. PID 2 sends the initial section
-through a one-shot pipe. secretsd publishes generation 0 and waits for complete
-host ACK before readiness. For every later mutation, the handler retains the
-store write lock, clones the accepted store once, mutates that candidate,
-canonicalizes and publishes its complete next generation, observes the exact
-matching ACK or failure, and commits the candidate only after ACK. Preparation,
-canonicalization, rejection, EOF, response mismatch, and transport failure leave
-the accepted live store unchanged. Discarded candidate secret buffers are
-zeroized; after commit, secret buffers displaced from the previous live store
-are also zeroized. The host validates canonical bytes, identifiers, aliases,
-references, timestamps, the inclusive 1-MiB publication-body bound, and its
-composition with immutable Checkout env/files under the complete-resource cap
-before ACK.
-
-After the unchanged blocking gate observation, the host drains publication while
-polling relay `waitpid(WNOHANG)`. PID 1 independently polls liveness and reaps
-PID 2. Following clean reap, terminal EOF permits the latest validated generation
-whose ACK was completely written; final `EAGAIN` proves endpoint retention and
-fails closed without fallback. A completely written host ACK can therefore
-remain eligible even if secretsd dies or the D-Bus caller misses the success
-response. ACK proves only invocation-local host retention: it is not caller
-response delivery or backend durability, and a later Checkin can still fail.
-Resource Checkout/Checkin use a separate bulk bound of the complete resource
-plus their message envelope; other local control IPC remains limited to 64-KiB
-frames.
-
-The private helpers start as PID 2 descendants and can be adopted by namespace
-PID 1. PID 1 exit terminates every helper and descendant. The relay closes fd 20
-before forking PID 2, so target, dbus-daemon, and secretsd never inherit that
-resource channel. See [secretsd security](secretsd-security.md) for validation
-and failure semantics.
-
-## Backend
-
-The backend maps each active runtime client certificate fingerprint to one
-runtime client instance and one store. It exposes exactly three runtime routes:
-
-- `POST /v1/wrappers`
-- `POST /v1/wrapper-invocations`
-- `POST /v1/wrapper-invocations/finalize`
-
-The wire carries wrapper and resource names, never a storage key. See
-[Backend](backend.md) for the policy and data model.
-
-Stores use either:
-
-- `PlainBackend` — atomic plaintext files under the configured store directory;
-- `EncryptedBackend` — ChaCha20-Poly1305 with an operator-held 32-byte key kept only in backend process memory.
-
-The store list exposes a lifecycle state and server-derived action fields instead of requiring clients to infer availability from backend kind.
-
-| Lifecycle state | Meaning | Mutating actions |
-| --- | --- | --- |
-| `ready` | Plain backend available | Edit, migrate to encrypted, and usage-dependent delete |
-| `unlocked` | Encrypted backend and key available | Edit, migrate to plain, rotate, lock, and usage-dependent delete |
-| `locked` | Encrypted backend without an installed key | Edit, unlock, and conservative force-delete |
-| `busy` | Migration owns lifecycle publication | None |
-| `recovery-required` | Durable migration state needs trusted-host recovery | None |
-
-Encrypted stores start locked after a backend restart.
-An operator supplies the key through the admin UI/API, and a canary verifies it before the backend installs the unlocked store.
-Before encrypted creation or plain-to-encrypted migration, the browser requests a fresh key from the authenticated and CSRF-protected `POST /v1/admin/store-keys` endpoint without mutating storage.
-The key response carries `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`, while the SPA keeps the key in transient component state outside TanStack query and mutation caches.
-The browser requires exact untrimmed re-entry before sending the later create or migration request, but that comparison and the response headers do not prove response delivery, external custody, independent recoverability, zeroization, or absence from all browser internals.
-Encrypted-to-plain migration generates and submits no key.
-
-Migration preserves the stable store id, metadata, canonical directory, runtime client mappings, control documents, resource ids, and logical bytes while changing the backend kind and backend-specific canary presence.
-The backend publishes `busy` under the registry lock to block new complete-operation leases and waits up to 30 seconds for leases already admitted to that exact store entry to drain.
-No registry lock spans the wait, storage I/O, filesystem mutation, or record persistence.
-After drainage, the synchronous copy, verification, filesystem, persistence, cleanup, and publication path runs inside a runtime-aware `block_in_place` boundary on the production multi-thread runtime and contains no asynchronous cancellation point.
-Operators still quiesce wrapper traffic and admin mutations because an invocation opened before migration can finalize later under the stateless last-writer-wins contract.
-
-Migration uses one collision-safe mode-`0700` sibling workspace containing a non-secret manifest plus `stage/` and, after source displacement, `backup/`.
-It retains the source id inventory but copies one logical value at a time and drops that value before loading the next.
-While the original source is live, it retains only a fixed domain-separated SHA-256 fingerprint over source-kind and canary treatment plus the complete sorted length-delimited id/value sequence.
-That bounded in-memory rollback evidence does not claim collision impossibility or protection from malicious backend-host root.
-Verification loads only one source/target logical-value pair at a time, compares it byte-for-byte, and drops the pair before continuing while also checking complete id sets and backend-specific canaries.
-After source displacement, migration reopens `backup/` through the source backend's internal same-kind capability so encrypted key bytes never leave that implementation, and it requires the source fingerprint before target promotion, before and after moving a target aside for rollback, and after restoring the source.
-A source fingerprint mismatch, unreadable source, or source id mismatch preserves the workspace as recovery-required rather than becoming a target-verification error.
-It promotes and reopens the target, atomically records only the backend-kind change, removes the displaced source and workspace, publishes the target entry, and then returns success.
-Successful plain-to-encrypted migration leaves no intentional plaintext migration pathname, but path removal is not secure media erasure.
-Any failed rollback, secret-bearing cleanup failure, ambiguous split state, or exact migration workspace found at startup produces `recovery-required` without automatic deletion or selection.
-Plain-to-encrypted failure can leave plaintext under `backup/`, while encrypted-to-plain failure can leave plaintext under `stage/` or the canonical path.
-See [Backend migration recovery](backend.md#backend-migration-recovery) for the stopped-backend trusted-host procedure and limits.
-
-Key rotation shares the entry-owned lifecycle mutex but retains its existing non-draining behavior and one-time post-mutation replacement-key response.
-Rotation stages and verifies a complete fresh encrypted generation, activates it, and retains displaced ciphertext in backend-host sibling workspaces outside the active store path and APIs.
-Migration workspaces are cleaned before success or force `recovery-required`, whereas retained rotation workspaces remain discoverable only through trusted backend-host inspection until deliberate cleanup.
-Startup does not select or reconcile retained rotation workspaces, and trusted offline recovery and selective cleanup follow the [retained rotation generations procedure](backend.md#retained-rotation-generations).
-
-## NixOS module responsibilities
-
-`nix/modules/underwrap.nix` provisions:
-
-- per-instance daemon users/groups, state directories, runtime directories,
-  sockets, and systemd services;
-- one setgid entry point per instance;
-- per-user convenience shims;
-- one dedicated target user/group per `(instance, wrapper)`;
-- the root-owned target-UID table;
-- one runtime directory per target UID;
-- the capability-bearing `underwrap-ns` wrapper;
-- daemon and entry-stage configuration;
-- target-host Yama, kernel, ordinary-swap encryption, and zram swap-writeback
-  assertions under the hardened posture.
-
-The strongest posture admits no swap, ordinary swap admitted by the existing
-random-key/LUKS assertion, or pure RAM-only zram. It rejects enabled typed
-zram-generator swap sections with disk writeback because encryption cannot be
-established from a backing-device path. The predicate permits writeback for
-canonical mounted zram filesystem sections and ignores canonical non-zram
-sections because neither is classified as memory swap. When zram-generator is
-enabled, all final typed section and directive names must nevertheless be
-canonical tokens and all string values, including those in mounted and non-zram
-sections, must be single-line. The module evaluates declared NixOS configuration,
-not arbitrary external `/etc` drop-ins or live runtime device state.
-
-The module is part of the security architecture, not packaging convenience.
-
-## Crate layout
-
-```text
-underwrap-protocol        canonical domain/local ABI; full config, policy, service, and schema profile
-underwrap-backend-store   brokered-resource storage implementations
-underwrap-secretsd-store  in-memory Secret Service data model
-underwrapd                local broker and runtime HTTPS client
-underwrap-exec            setgid entry stage
-underwrap-ns              namespace supervisor and target execution
-underwrap-secretsd        private Secret Service provider
-underwrap-debug-tool      unsafe debug target
-underwrap-keygen          runtime client credential generator
-underwrap-backend         runtime/admin HTTPS service and embedded SPA
-integration-tests         real daemon/backend integration harness
-web                       admin SPA
-```
-
-### Protocol profiles
-
-`underwrap-protocol` defaults to its `full` feature profile for every consumer except `underwrap-ns`.
-The `full` profile adds configuration, control, entities, policy, service, SCM_RIGHTS, asynchronous IPC, and Utoipa schema support to the always-compiled access, execution, synchronous IPC, publication, message, resource, resource-blob, target-environment, and variant modules.
-The explicit `local-abi` profile adds no dependencies or modules and lets `underwrap-ns` select only that always-compiled surface with protocol default features disabled.
-An isolated `underwrap-ns` package build therefore excludes the protocol-owned Tokio, Utoipa, and libc edges, while `underwrap-ns` retains its own direct libc dependency.
-Serde YAML is a protocol test dependency because only full-profile configuration tests parse YAML.
-This profile boundary narrows the source and normal dependency graph compiled and reviewed for an isolated namespace-wrapper package build.
-It does not establish a smaller runtime trusted computing base, linked binary, attack surface, or vulnerability set.
-Cargo may unify `underwrap-protocol` features when a workspace build includes another consumer of the default `full` profile, so workspace-wide builds are not isolation evidence for `underwrap-ns`.
-
-## Further reading
-
-- [Security](security.md)
-- [Backend](backend.md)
-- [Configuration](configuration.md)
-- [Deploying the backend](remote-backend.md)
-- [Testing](testing.md)
+1. The setgid `underwrap-exec` entry stage—not the target—connects to the instance socket and supplies the wrapper selector and invocation variant.
+2. The daemon verifies peer effective GID, resolves the wrapper's configured resource, and asks the backend to open the invocation.
+3. The backend derives principal and store from mTLS, evaluates the pair's permission, and returns the resource and writable flag.
+4. The daemon completely parses the decoded resource, conditionally validates env names, chooses the configured real target or authorized debug tool, and caches the original decoded bytes for one scoped channel.
+5. The entry stage drops its instance-group privilege and hands the namespace stage execution metadata, the authenticated channel, and a separate parent-liveness pipe.
+6. The namespace stage authenticates the channel before trusting metadata, reads target identity only from the root-owned table, and plans projections before their filesystem effects.
+7. A trusted namespace PID 1 relay supervises the dedicated-UID PID 2 target and tears down its descendants before host collection.
+8. With valid lifecycle evidence, the host compares the resulting canonical resource with Checkout and attempts usage reporting or writable Checkin.
+9. The backend re-evaluates policy and writability before accepting persistence.
+
+Finalization is diagnostic: valid target exit codes and signals remain the caller-visible result, not a persistence receipt.
+A refused Checkin can be followed by UsageSignal, so the channel is not a single-terminal-verb or exactly-once protocol.
+The [local protocol](local-protocol.md) owns descriptor, lifetime, parsing, projection, and publication details.
+The [backend reference](backend.md#runtime-api) owns policy and stateless finalization.
+
+## Why these boundaries exist
+
+**Two entry stages separate privilege lifetimes.**
+The setgid stage needs the instance group only to reach the daemon; the namespace stage needs capabilities for namespaces, mounts, and the dedicated identity switch.
+The world-executable namespace wrapper therefore authenticates its fixed resource descriptor before privileged setup rather than trusting argv or metadata alone.
+
+**Dedicated UIDs protect host-side process state.**
+Namespaces provide private views and process-tree teardown, but do not by themselves protect host-side `/proc` reads.
+One target UID per wrapper isolates resource trust domains even when wrappers execute the same binary.
+Yama supplies additional ATTACH-mode protection, not the READ-mode boundary.
+
+**One resource keeps related state together.**
+Env, files, and libsecret sections form one bounded canonical value.
+A wrapper selects projections rather than individual backend storage keys, and disabled sections survive writeback.
+Atomic replacement avoids partial-value visibility, but does not make concurrent load-modify-save operations transactional.
+
+**Writable staging is separate from write permission.**
+Applications can perform ordinary files and Secret Service mutations even under a read-only permission.
+The writable flag controls persistence, not target behavior or disclosure.
+
+**Private publication avoids pathname authority.**
+Secret Service state stays in memory and reaches the host through a bounded validated stream, not a target-owned final-state file.
+Local acknowledgement permits candidate state to become live; it does not acknowledge backend durability or delivery to the D-Bus caller.
+
+**Strict configuration rejects ambiguity before privileged use.**
+Selectors and paths are validated rather than silently normalized.
+Resource names have a separate backend contract; lexical canonical paths are not a `realpath` or symlink-resolution guarantee.
+See [Configuration](configuration.md) for exact grammar, overlap domains, and shim collisions.
+
+## Runtime-client scheduling
+
+Each daemon shares one asynchronous reqwest client across registration, open, and finalize, with idle connection pooling disabled.
+A fail-fast semaphore admits at most 32 calls with no pending queue or global FIFO worker.
+DTO construction and finalize base64 encoding can precede admission, but rejection does not invoke the request closure, construct a RequestBuilder, or start network work.
+Saturation follows the call site's existing warning or internal-error path.
+
+One 30-second deadline starts after admission and includes sending and complete success or error decoding.
+Timeout or cancellation releases the local permit but cannot establish that the backend made no change.
+There is no automatic retry, rollback, deduplication, or exactly-once delivery.
+Each scoped channel processes requests sequentially; independent invocations may finish out of order.
+This bounds local queueing, not availability when all permits are occupied or the backend is unreachable.
+
+## Deployment and compile boundaries
+
+The NixOS module provisions root-owned configuration, users/groups, target identity and runtime directories, security wrappers, services, and host-posture assertions.
+It is part of the security architecture, not merely packaging.
+Deploy entry, daemon, and namespace binaries together through one package/module generation; mixed local protocol binaries are intentionally incompatible.
+
+`underwrap-protocol` defaults to `full`, which includes configuration, policy, service/schema, asynchronous IPC, and SCM_RIGHTS support.
+`underwrap-ns` disables defaults and selects `local-abi`, retaining the always-compiled resource, execution, publication, message, target-environment, and synchronous IPC surface.
+An isolated namespace package build excludes full-only protocol dependency edges while retaining the namespace crate's direct libc dependency.
+This narrows compile and review coupling, not demonstrably the linked binary, runtime trusted computing base, attack surface, or vulnerability set.
+Workspace feature unification can include `full`; use the isolated checks described in [Testing](testing.md).
+
+For deployment and maintenance, use [Operations](operations.md).
+For helper design and explicit host access, use [Wrappers](wrappers.md).

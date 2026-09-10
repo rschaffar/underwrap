@@ -348,7 +348,8 @@ let
       paths = lib.mkOption {
         type = lib.types.nonEmptyListOf lib.types.str;
         description = ''
-          Target-home-relative mount paths for the resource files slot.
+          Mount paths relative to the caller's passwd home for the resource files slot.
+          A fixed HOME override does not relocate these mounts.
           Each path gets its own staging directory inside the namespace,
           and every key in the resource's `files` section is routed to
           the mount whose path is a prefix of the key (e.g. a key
@@ -377,7 +378,9 @@ let
           The backend resolves this name to the stable generated resource id.
           Each wrapper projects exactly one resource.
           Opt into the projection slots with <option>env</option>, <option>files</option>, and <option>libsecret</option>.
-          Backend policy, not NixOS config, decides whether projected mutable slots are read-only or read-write for a particular invocation.
+          Backend policy, not NixOS config, decides whether files and libsecret
+          mutations may persist. The target's local projections remain writable
+          with either read-only or writable permission.
         '';
         example = "github/token";
       };
@@ -390,8 +393,8 @@ let
         type = lib.types.nullOr filesUseSubmodule;
         default = null;
         description = ''
-          Mount this resource's files slot at one or more target-home-relative
-          paths. See <option>files.paths</option>.
+          Mount this resource's files slot relative to the caller's passwd home.
+          See <option>files.paths</option>.
         '';
       };
       libsecret = lib.mkOption {
@@ -427,9 +430,10 @@ let
         default = [];
         description = ''
           Additional environment variables to pass through from the user's
-          environment to the target process. These are added to the default
-          safe whitelist for non-home, non-XDG-dir variables (USER, TERM,
-          LANG, etc.). HOME, XDG_RUNTIME_DIR, and the base XDG directory
+          environment to the target process. These are added to the fixed
+          built-in allowlist for non-home, non-XDG-dir variables (USER, TERM,
+          LANG, etc.); this option cannot subtract built-ins.
+          HOME, XDG_RUNTIME_DIR, and the base XDG directory
           variables are forced by underwrap and must not appear here. PATH is
           intentionally not inherited; set envSet.PATH explicitly if needed.
         '';
@@ -439,7 +443,8 @@ let
         type = lib.types.attrsOf lib.types.str;
         default = {};
         description = ''
-          Fixed environment variables to set on the target process.
+          Fixed non-secret environment variables to set on the target process.
+          Nix-generated configuration is not a secret store.
           These override any inherited values. HOME and the base XDG directory
           variables may be set here intentionally and must be canonical
           absolute paths; XDG_RUNTIME_DIR may not — it is managed by underwrap

@@ -6,10 +6,12 @@
 # - `/etc/underwrap/ca.pem` verifies the backend server certificate
 # - the backend is reachable at the configured URL
 #
-# After rebuilding, run `underwrap-keygen --instance-config
-# /etc/underwrap/daemon/demo.yaml`, enroll the printed certificate, enable
-# wrapper-asset auto-create (or create the assets manually), add env key
-# DEMO_TOKEN to resource demo/token, and unlock the permission row.
+# After rebuilding, run `sudo underwrap-keygen --instance-config
+# /etc/underwrap/daemon/demo.yaml` and enroll the printed public certificate.
+# Enable wrapper-asset auto-create (or create the assets manually), then run
+# `sudo systemctl restart underwrapd-demo.service` to register the wrappers.
+# Add env key DEMO_TOKEN to resource demo/token and unlock the permission row.
+# See docs/getting-started.md and docs/operations.md for the complete sequence.
 
 { pkgs, underwrap, ... }:
 

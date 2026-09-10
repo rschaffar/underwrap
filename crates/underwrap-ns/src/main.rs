@@ -746,8 +746,9 @@ fn run_parent(
         libsecret_generation: selected_libsecret,
     };
 
-    // Dispatch requires the F-006/F-007 conjunction plus valid terminal
-    // publication for libsecret. Suppression never replaces exact target status.
+    // Dispatch requires the authorized exec gate, valid direct-target status,
+    // clean relay reap, and valid terminal publication for libsecret.
+    // Suppression never replaces exact target status.
     let publication_authorized =
         !publication_enabled || (initial_publication.is_ok() && selected_generation.is_some());
     let effective_authorization = if publication_authorized {

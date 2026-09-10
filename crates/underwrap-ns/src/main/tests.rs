@@ -80,13 +80,13 @@ fn observed_gate(marker: &[u8]) -> GateAuthorization {
 
 fn test_resource_channel(fd: i32, original_canonical: Vec<u8>) -> ResourceChannel {
     ResourceChannel {
-        resource_id: "res_f006_unit".to_string(),
-        resource_name: "test/f006-unit".to_string(),
+        resource_id: "res_gate_unit".to_string(),
+        resource_name: "test/gate-unit".to_string(),
         channel_fd: fd,
         original_canonical,
         writable: true,
         libsecret: false,
-        files_target_paths: vec![".config/f006".to_string()],
+        files_target_paths: vec![".config/gate".to_string()],
     }
 }
 
@@ -98,11 +98,11 @@ fn changed_staging_fixture(
     std::fs::write(staging.path().join("token"), changed).unwrap();
     let mut blob = ResourceBlob::empty();
     blob.files.insert(
-        ".config/f006/token".to_string(),
+        ".config/gate/token".to_string(),
         SecretBytes::from(original.to_vec()),
     );
     let plans = [DirectoryMountPlan {
-        mount_path: ".config/f006".to_string(),
+        mount_path: ".config/gate".to_string(),
         staging_path: staging.path().to_path_buf(),
     }];
     (staging, blob, plans)
@@ -118,7 +118,7 @@ fn pre_exec_failure_skips_collection_and_terminal_verbs() {
         b"changed"
     );
     assert_eq!(
-        blob.files[".config/f006/token"].as_slice(),
+        blob.files[".config/gate/token"].as_slice(),
         b"original",
         "Checkout and staging must witness a real change"
     );
@@ -336,7 +336,7 @@ fn run_parent_wait_failure_after_armed_skips_collection_and_terminal_verbs() {
         b"changed"
     );
     assert_eq!(
-        blob.files[".config/f006/token"].as_slice(),
+        blob.files[".config/gate/token"].as_slice(),
         b"original",
         "Checkout and staging must witness a real change"
     );
@@ -373,7 +373,7 @@ fn accepted_combined_dispatch(
     let staging = tempfile::TempDir::new().unwrap();
     std::fs::write(staging.path().join("token"), staged_file).unwrap();
     let plans = [DirectoryMountPlan {
-        mount_path: ".config/f006".to_string(),
+        mount_path: ".config/gate".to_string(),
         staging_path: staging.path().to_path_buf(),
     }];
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
@@ -505,8 +505,8 @@ fn complete_combined_writeback_one_over_max_sends_no_terminal_verb() {
     assert_eq!(
         outcomes,
         vec![WritebackOutcome::RejectedTooLarge {
-            resource_id: "res_f006_unit".to_string(),
-            resource_name: "test/f006-unit".to_string(),
+            resource_id: "res_gate_unit".to_string(),
+            resource_name: "test/gate-unit".to_string(),
             attempted_len: underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES + 1,
             maximum_len: underwrap_protocol::resource_blob::MAX_CANONICAL_RESOURCE_BYTES,
         }]
@@ -524,11 +524,11 @@ fn complete_combined_writeback_one_over_max_sends_no_terminal_verb() {
 fn accepted_dispatch_preserves_combined_files_libsecret_and_env_semantics() {
     let mut original = ResourceBlob::empty();
     original.env.insert(
-        "F006_ENV".to_string(),
+        "GATE_ENV".to_string(),
         SecretBytes::from(b"preserved-env".to_vec()),
     );
     original.files.insert(
-        ".config/f006/token".to_string(),
+        ".config/gate/token".to_string(),
         SecretBytes::from(b"original-file".to_vec()),
     );
     original
@@ -564,7 +564,7 @@ fn accepted_dispatch_preserves_combined_files_libsecret_and_env_semantics() {
     let checked_in = ResourceBlob::from_canonical_bytes(&blob).unwrap();
     assert_eq!(checked_in.env, original.env);
     assert_eq!(
-        checked_in.files[".config/f006/token"].as_slice(),
+        checked_in.files[".config/gate/token"].as_slice(),
         b"changed-file"
     );
     assert_eq!(checked_in.libsecret, changed_libsecret);
@@ -580,8 +580,8 @@ fn accepted_dispatch_preserves_combined_files_libsecret_and_env_semantics() {
     assert_eq!(
         outcomes,
         Some(vec![WritebackOutcome::DroppedReadOnly {
-            resource_id: "res_f006_unit".to_string(),
-            resource_name: "test/f006-unit".to_string(),
+            resource_id: "res_gate_unit".to_string(),
+            resource_name: "test/gate-unit".to_string(),
         }])
     );
 }

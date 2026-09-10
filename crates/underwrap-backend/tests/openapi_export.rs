@@ -140,7 +140,10 @@ const MIGRATION_RECOVERY_OPERATIONS: [&str; 32] = [
 ];
 
 const LOCK_RESPONSES: [(&str, &str); 5] = [
-    ("200", "Store locked; in-memory key material wiped."),
+    (
+        "200",
+        "Store locked against new storage leases. Already admitted leases may retain the backend; its master key is zeroized when the final owner is dropped.",
+    ),
     ("400", "Store is not encrypted (`store_not_encrypted`)."),
     ("404", "Store not found (`not_found`)."),
     (

@@ -79,7 +79,7 @@
             hash = "sha256-cmWImDUbONd6V2cxQ057dbQkCCJhoN+LkntV3aGMqAM=";
           };
 
-          # Both npm scripts generate the API bindings before their main step.
+          # The build/test npm hooks generate API bindings before their main step.
           # The committed schema lives outside the `./web` source root, so stage
           # it at the relative path expected by `openapi-typescript`.
           webPreBuild = ''
@@ -209,9 +209,8 @@
               advisory-db = advisoryDb;
             };
 
-            # Supply-chain policy checks.
-            # Keep this lightweight and policy-free for now; audit handles
-            # advisories separately and license policy can be added later via deny.toml.
+            # Check dependency bans and sources.
+            # The separate audit check covers the pinned advisory database.
             workspace-deny = craneLib.cargoDeny {
               inherit src;
               pname = "underwrap";

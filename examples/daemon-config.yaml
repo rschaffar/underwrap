@@ -54,7 +54,9 @@ wrappers:
     # Expose specific caller-owned config/state directories with access_paths.
 
   # Multiple wrappers can share one libsecret resource while retaining distinct
-  # wrapper/resource pairs and permission rows.
+  # wrapper/resource pairs and permission rows. These gh-shaped paths illustrate
+  # the schema, not a self-contained gh login recipe: verify the selected build's
+  # Linux Secret Service support and required non-secret host/account config.
   gh-auth:
     target: /nix/store/...-gh/bin/gh
     resource: github/gh
@@ -66,7 +68,8 @@ wrappers:
     libsecret: true
 
   # Files projection routes each resource key to exactly one configured,
-  # target-home-relative mount path. Paths must be clean and non-overlapping.
+  # caller-passwd-home-relative mount path, even with an env_set.HOME override.
+  # Paths must be clean and non-overlapping.
   gws-auth:
     target: /nix/store/...-gws/bin/gws
     resource: gws/state

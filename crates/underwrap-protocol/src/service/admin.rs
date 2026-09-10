@@ -75,10 +75,9 @@ pub struct AdminPasswordChangeRequest {
     pub new_password: String,
 }
 
-/// Storage backend kind a store uses. Kept as a flat enum so the
-/// admin UI can switch on it without having to mirror the full
-/// `StorageConfig` discriminant logic; per-kind details (currently
-/// only `dir`) live on the detail response.
+/// Storage backend kind, independent of lifecycle state and action availability.
+/// The admin API does not expose a separate store-detail endpoint or the
+/// configured data directory in store list items.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AdminStoreBackendKind {
@@ -90,7 +89,10 @@ pub enum AdminStoreBackendKind {
 pub struct AdminStoreUsageSummary {
     /// How many runtime client instances currently map to this store.
     pub mapped_client_instance_count: u32,
-    /// Whether the store currently contains at least one secret.
+    /// Whether inspection found a non-control storage entry.
+    /// False also represents unavailable inspection for a locked, busy, or
+    /// recovery-required store; use lifecycle state and server-derived actions
+    /// rather than interpreting that value as proof of an empty store.
     pub has_secrets: bool,
 }
 
@@ -428,13 +430,14 @@ pub struct AdminSecretListResponse {
 
 /// Move an entry within a resource blob from the URL-addressed
 /// `(resource_id, slot, from_key)` to `to_key` under the same slot,
-/// optionally overwriting its material. The whole operation is one
-/// atomic load-modify-save of the resource blob — there is no
-/// intermediate "both entries exist" window.
+/// optionally overwriting its material. The modified blob is persisted with
+/// atomic replacement visibility, without an intermediate two-key state.
+/// Loading, modifying, and saving are not a transaction: concurrent whole-blob
+/// writers remain last-writer-wins.
 ///
 /// `material_b64 = None` means "keep the existing material"; `Some(_)`
-/// overwrites in the same step. Rename refuses when `to_key` already
-/// exists (callers must delete it explicitly).
+/// overwrites in the same replacement. A different existing destination is
+/// rejected; renaming to the same key is permitted and can replace its material.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminSecretRenameRequest {
     pub to_key: String,
@@ -451,8 +454,9 @@ pub struct AdminSecretDeleteResponse {
 //
 // Structured admin surface for the libsecret slot. Mirrors the Secret
 // Service spec hierarchy: a Service-level alias table plus a set of
-// Collections, each holding Items. Each handler is one atomic
-// load-modify-save against the resource blob.
+// Collections, each holding Items. Mutations replace a complete resource blob
+// atomically, but the load-modify-save sequence is not a transaction and remains
+// last-writer-wins under concurrent mutation.
 //
 // `created` is set on POST, `modified` is bumped server-side on every
 // mutation; clients never send either field. Item secret bytes are
@@ -669,9 +673,10 @@ pub struct AdminPairCreateResponse {
 }
 
 /// Body of `POST /v1/admin/stores/{id}/pairs/with-new-resource` —
-/// create a fresh resource and pair it with `wrapper` in one
-/// transactional step, removing the orphan-resource window the SPA
-/// otherwise has when sequencing two calls.
+/// create a fresh resource and pair it with `wrapper` in one request.
+/// The resource catalogue and pair document are saved separately.
+/// A failed pair save triggers best-effort resource rollback; the operation is
+/// not transactional, and failed rollback can leave an unpaired resource.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminPairWithNewResourceRequest {
     pub wrapper: String,

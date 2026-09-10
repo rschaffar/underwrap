@@ -3,9 +3,9 @@
 //!
 //! Client instances are the mTLS identities under which frontend
 //! daemons authenticate to the backend's runtime API. Each instance
-//! maps to one store; a remap drops the prior-store's wrapper
-//! permissions so authorizations don't silently survive across the
-//! reassignment.
+//! maps to one store. After a remap or deletion commits, cleanup of the
+//! prior store's permissions is best effort; a successful response does not
+//! certify that stale rows were removed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -251,7 +251,7 @@ pub(crate) async fn handle_admin_client_instance_create(
     params(("id" = String, Path, description = "Client instance id.")),
     request_body = AdminClientInstanceUpdateRequest,
     responses(
-        (status = 200, description = "Instance updated. Remapping to a new store drops the prior store's wrapper permissions for this instance.", body = AdminClientInstanceListItem),
+        (status = 200, description = "Instance updated. Cleanup of prior-store wrapper permissions after a remap is best effort; success does not certify their removal.", body = AdminClientInstanceListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Instance / target store not found.", body = ServiceErrorResponse),
     ),
@@ -374,7 +374,7 @@ pub(crate) async fn handle_admin_client_instance_update(
     security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Client instance id.")),
     responses(
-        (status = 200, description = "Instance removed; its wrapper permissions are dropped from the mapped store.", body = AdminOkResponse),
+        (status = 200, description = "Instance removed. Cleanup of its mapped-store wrapper permissions is best effort; success does not certify their removal.", body = AdminOkResponse),
         (status = 404, description = "Instance not found.", body = ServiceErrorResponse),
     ),
 )]

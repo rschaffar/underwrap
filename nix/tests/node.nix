@@ -152,22 +152,22 @@ let
     ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/underwrap-dir-a"
     exec ${pkgs.coreutils}/bin/ln -s /etc/passwd "$HOME/.config/underwrap-dir-a/evil"
   '';
-  f006MarkerScript = pkgs.writeShellScript "f006-marker-target" ''
-    ${pkgs.coreutils}/bin/touch /tmp/f006-unroutable-target-ran
+  unroutableTargetScript = pkgs.writeShellScript "gate-marker-target" ''
+    ${pkgs.coreutils}/bin/touch /tmp/gate-unroutable-target-ran
   '';
-  # F-009 env-only target: reports only the byte length and digest of its
+  # resource-size env-only target: reports only the byte length and digest of its
   # resource-projected value, never the value itself.
-  f009EnvScript = pkgs.writeShellScript "f009-env-target" ''
+  largeEnvScript = pkgs.writeShellScript "size-env-target" ''
     set -eu
-    length="$(${pkgs.coreutils}/bin/printf '%s' "$F009_ENV_BULK" | ${pkgs.coreutils}/bin/wc -c)"
-    digest="$(${pkgs.coreutils}/bin/printf '%s' "$F009_ENV_BULK" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)"
+    length="$(${pkgs.coreutils}/bin/printf '%s' "$SIZE_ENV_BULK" | ${pkgs.coreutils}/bin/wc -c)"
+    digest="$(${pkgs.coreutils}/bin/printf '%s' "$SIZE_ENV_BULK" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)"
     ${pkgs.coreutils}/bin/printf 'length=%s sha256=%s\n' "$length" "$digest"
   '';
-  # F-009 files-only target. It uses only absolute Nix-store tools because the
+  # resource-size files-only target. It uses only absolute Nix-store tools because the
   # target starts with env_clear(); mutation modes intentionally print nothing.
-  f009FilesScript = pkgs.writeShellScript "f009-files-target" ''
+  boundaryFilesScript = pkgs.writeShellScript "size-files-target" ''
     set -eu
-    file="$HOME/.config/f009-boundary/token"
+    file="$HOME/.config/size-boundary/token"
     case "''${1:-verify}" in
       verify)
         length="$(${pkgs.coreutils}/bin/wc -c < "$file")"
@@ -182,46 +182,46 @@ let
         ${pkgs.coreutils}/bin/printf x >> "$file"
         ;;
       *)
-        ${pkgs.coreutils}/bin/printf 'unknown f009 mode\n' >&2
+        ${pkgs.coreutils}/bin/printf 'unknown size mode\n' >&2
         exit 1
         ;;
     esac
   '';
-  f006Exit37Script = pkgs.writeShellScript "f006-exit-37-target" ''
+  nonzeroExitScript = pkgs.writeShellScript "gate-exit-37-target" ''
     set -eu
-    printf 'persisted-after-exit-37' > "$HOME/.config/f006-exit-37/token"
+    printf 'persisted-after-exit-37' > "$HOME/.config/gate-exit-37/token"
     exit 37
   '';
-  f006SigkillScript = pkgs.writeShellScript "f006-sigkill-target" ''
+  signalExitScript = pkgs.writeShellScript "gate-sigkill-target" ''
     set -eu
-    printf 'persisted-before-sigkill' > "$HOME/.config/f006-sigkill/token"
-    ${pkgs.coreutils}/bin/touch /tmp/f006-sigkill-ready
+    printf 'persisted-before-sigkill' > "$HOME/.config/gate-sigkill/token"
+    ${pkgs.coreutils}/bin/touch /tmp/gate-sigkill-ready
     exec ${pkgs.coreutils}/bin/sleep 6060
   '';
   # Combined files+libsecret lifecycle target. Secret Service mutation bytes
   # travel on stdin, never argv. Long-running modes keep a direct target and a
   # descendant live so the VM can terminate each trusted supervisor stage and
   # bind teardown assertions to exact process/namespace identities.
-  f007LifecycleScript = pkgs.writeShellScript "f007-lifecycle-target" ''
+  lifecycleScript = pkgs.writeShellScript "life-lifecycle-target" ''
     set -eu
     mode="''${1:-success}"
     case "$mode" in
-      f008-old-canonical)
+      publ-file-canonical)
         printf '%s' '{"aliases":{},"collections":{}}' \
           > /tmp/.underwrap-ns-bus/libsecret-state.jcs
         exit 0
         ;;
-      f008-old-noncanonical)
+      publ-file-noncanonical)
         printf '%s' ' { "aliases": {}, "collections": {} } ' \
           > /tmp/.underwrap-ns-bus/libsecret-state.jcs
         exit 0
         ;;
-      f008-old-semantic)
+      publ-file-semantic)
         printf '%s' '{"aliases":{"bad":"missing"},"collections":{}}' \
           > /tmp/.underwrap-ns-bus/libsecret-state.jcs
         exit 0
         ;;
-      f008-old-oversized)
+      publ-file-oversized)
         {
           printf '%s' '{"aliases":{"default":"default"},"collections":{"default":{"created":0,"items":{},"label":"'
           ${pkgs.coreutils}/bin/head -c 1048577 /dev/zero | ${pkgs.coreutils}/bin/tr '\0' x
@@ -229,33 +229,33 @@ let
         } > /tmp/.underwrap-ns-bus/libsecret-state.jcs
         exit 0
         ;;
-      f008-near-cap)
+      publ-near-cap)
         i=1
         while [ "$i" -le 170 ]; do
           {
-            printf '%s' 'f008-cap-secret-xx'
+            printf '%s' 'publ-cap-secret-xx'
             ${pkgs.coreutils}/bin/head -c 3982 /dev/zero | ${pkgs.coreutils}/bin/tr '\0' x
-          } | ${pkgs.libsecret}/bin/secret-tool store --label='F008 near cap' \
-            purpose f008 index "$i" >/dev/null
+          } | ${pkgs.libsecret}/bin/secret-tool store --label='PUBL near cap' \
+            purpose publ index "$i" >/dev/null
           i=$((i + 1))
         done
         exit 0
         ;;
-      f008-near-cap-readback)
-        expected="$(printf '%s' 'f008-cap-secret-xx'; ${pkgs.coreutils}/bin/head -c 3982 /dev/zero | ${pkgs.coreutils}/bin/tr '\0' x)"
-        actual="$(${pkgs.libsecret}/bin/secret-tool lookup purpose f008 index 170)"
+      publ-near-cap-readback)
+        expected="$(printf '%s' 'publ-cap-secret-xx'; ${pkgs.coreutils}/bin/head -c 3982 /dev/zero | ${pkgs.coreutils}/bin/tr '\0' x)"
+        actual="$(${pkgs.libsecret}/bin/secret-tool lookup purpose publ index 170)"
         test "$actual" = "$expected"
         exit 0
         ;;
     esac
     if [ "$mode" = unchanged ]; then
-      ${pkgs.coreutils}/bin/cat "$HOME/.config/f007/token" >/dev/null
+      ${pkgs.coreutils}/bin/cat "$HOME/.config/life/token" >/dev/null
       exit 0
     fi
-    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/f007"
-    printf 'f007-file-%s' "$mode" > "$HOME/.config/f007/token"
-    printf 'f007-libsecret-%s' "$mode" \
-      | ${pkgs.libsecret}/bin/secret-tool store --label='F007 lifecycle' purpose f007 \
+    ${pkgs.coreutils}/bin/mkdir -p "$HOME/.config/life"
+    printf 'life-file-%s' "$mode" > "$HOME/.config/life/token"
+    printf 'life-libsecret-%s' "$mode" \
+      | ${pkgs.libsecret}/bin/secret-tool store --label='LIFE lifecycle' purpose life \
       >/dev/null
     case "$mode" in
       seed|success) exit 0 ;;
@@ -263,7 +263,7 @@ let
       *)
         seconds="''${2:-6200}"
         ${pkgs.coreutils}/bin/sleep "$seconds" &
-        ${pkgs.coreutils}/bin/touch "/tmp/f007-ready-$mode"
+        ${pkgs.coreutils}/bin/touch "/tmp/life-ready-$mode"
         wait
         ;;
     esac
@@ -381,11 +381,9 @@ in {
 
   environment.systemPackages = [ underwrapPackage pkgs.libsecret pkgs.python3 pkgs.curl pkgs.jq ];
 
-  # Pre-seeded 32-byte session AEAD keys (one per daemon). The local
-  # CA cert at a stable path so the test driver's curl invocations can
-  # validate the daemon's HTTPS listeners. Backends already trust this
-  # CA for mTLS client cert validation; this exposes the cert itself
-  # for clients that want server-cert verification.
+  # Public test CA at a stable path for curl's backend-server verification.
+  # Runtime clients separately authenticate through proof of possession and
+  # the enrolled certificate fingerprint, not this CA's issuance policy.
   environment.etc."underwrap-test-ca.pem" = {
     text = builtins.readFile ../../testdata/pki/ca.pem;
     mode = "0644";
@@ -722,53 +720,53 @@ in {
               XDG_CONFIG_HOME = "/tmp/underwrap-config-override";
             };
           };
-          test-f006-unroutable = {
-            target = "${f006MarkerScript}";
-            resource = "test/f006-unroutable";
-            files.paths = [ ".config/f006-unroutable" ];
+          test-gate-unroutable = {
+            target = "${unroutableTargetScript}";
+            resource = "test/gate-unroutable";
+            files.paths = [ ".config/gate-unroutable" ];
             accessPaths = [ "~/.config" ];
           };
-          test-f009-env = {
-            target = "${f009EnvScript}";
-            resource = "test/f009-env";
+          test-size-env = {
+            target = "${largeEnvScript}";
+            resource = "test/size-env";
             env = true;
           };
-          test-f009-files = {
-            target = "${f009FilesScript}";
-            resource = "test/f009-files";
-            files.paths = [ ".config/f009-boundary" ];
+          test-size-files = {
+            target = "${boundaryFilesScript}";
+            resource = "test/size-files";
+            files.paths = [ ".config/size-boundary" ];
             accessPaths = [ "~/.config" ];
           };
-          test-f006-exec-missing = {
-            target = "/run/underwrap-f006-missing-target";
-            resource = "test/f006-exec-missing";
-            files.paths = [ ".config/f006-exec-missing" ];
+          test-gate-exec-missing = {
+            target = "/run/underwrap-gate-missing-target";
+            resource = "test/gate-exec-missing";
+            files.paths = [ ".config/gate-exec-missing" ];
             accessPaths = [ "~/.config" ];
           };
-          test-f006-exit-37 = {
-            target = "${f006Exit37Script}";
-            resource = "test/f006-exit-37";
-            files.paths = [ ".config/f006-exit-37" ];
+          test-gate-exit-37 = {
+            target = "${nonzeroExitScript}";
+            resource = "test/gate-exit-37";
+            files.paths = [ ".config/gate-exit-37" ];
             accessPaths = [ "~/.config" ];
           };
-          test-f006-sigkill = {
-            target = "${f006SigkillScript}";
-            resource = "test/f006-sigkill";
-            files.paths = [ ".config/f006-sigkill" ];
+          test-gate-sigkill = {
+            target = "${signalExitScript}";
+            resource = "test/gate-sigkill";
+            files.paths = [ ".config/gate-sigkill" ];
             accessPaths = [ "~/.config" ];
           };
-          test-f007-lifecycle = {
-            target = "${f007LifecycleScript}";
-            resource = "test/f007-lifecycle";
-            files.paths = [ ".config/f007" ];
+          test-life-lifecycle = {
+            target = "${lifecycleScript}";
+            resource = "test/life-lifecycle";
+            files.paths = [ ".config/life" ];
             libsecret = true;
             accessPaths = [ "~/.config" ];
           };
-          test-f007-filecap = {
+          test-life-filecap = {
             # The VM test installs a real copied sleep image and applies its
             # harmless file-capability xattr before invoking this target.
-            target = "/run/underwrap-f007-filecap/sleep";
-            resource = "test/f007-filecap";
+            target = "/run/underwrap-life-filecap/sleep";
+            resource = "test/life-filecap";
             env = true;
           };
         };

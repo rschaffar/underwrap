@@ -60,11 +60,11 @@ ADMIN_BOOTSTRAP_USER = "tester"
 # enters a Nix test command string, argv, environment, or configuration.
 ADMIN_PASSWORD_FIXTURE_MATERIAL = "underwrap-vm-admin-password-v1"
 MAX_CANONICAL_RESOURCE_BYTES = 2 * 1024 * 1024
-F009_ENV_VALUE = b"f009-env-value-" + b"e" * (96 * 1024)
-F009_FILES_INITIAL = b"f009-files-seed"
-F009_FILES_REPLACEMENT = b"r" * len(F009_FILES_INITIAL)
-F009_FILES_OVERSIZE = F009_FILES_INITIAL + b"x"
-F009_ADMIN_OVERSIZE = b"f009-admin-oversize"
+SIZE_ENV_VALUE = b"size-env-value-" + b"e" * (96 * 1024)
+SIZE_FILES_INITIAL = b"size-files-seed"
+SIZE_FILES_REPLACEMENT = b"r" * len(SIZE_FILES_INITIAL)
+SIZE_FILES_OVERSIZE = SIZE_FILES_INITIAL + b"x"
+SIZE_ADMIN_OVERSIZE = b"size-admin-oversize"
 
 # Per-admin session-cookie state, populated by `login_admin_session`
 # during boot. `_COOKIE_JAR[url]` is curl's cookie file on the VM
@@ -368,7 +368,7 @@ def install_local_plain_resource_blob(resource, canonical):
     resource_id = _resource_id_for(ADMIN_LOCAL, resource)
     resource_dir = f"{_storage_dir_for(ADMIN_LOCAL, 'local')}/resources"
     destination = f"{resource_dir}/{resource_id}"
-    transfer = f"{resource_dir}/.{resource_id}.f009-transfer-{uuid.uuid4().hex}"
+    transfer = f"{resource_dir}/.{resource_id}.size-transfer-{uuid.uuid4().hex}"
     with tempfile.NamedTemporaryFile(mode="wb", delete=False) as source:
         source.write(canonical)
         source.flush()
@@ -535,14 +535,14 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-dir-touch": "test/dir-a",
     "test-dir-env-probe": "test/dir-a",
     "test-dir-env-override-probe": "test/dir-a",
-    "test-f006-unroutable": "test/f006-unroutable",
-    "test-f009-env": "test/f009-env",
-    "test-f009-files": "test/f009-files",
-    "test-f006-exec-missing": "test/f006-exec-missing",
-    "test-f006-exit-37": "test/f006-exit-37",
-    "test-f006-sigkill": "test/f006-sigkill",
-    "test-f007-lifecycle": "test/f007-lifecycle",
-    "test-f007-filecap": "test/f007-filecap",
+    "test-gate-unroutable": "test/gate-unroutable",
+    "test-size-env": "test/size-env",
+    "test-size-files": "test/size-files",
+    "test-gate-exec-missing": "test/gate-exec-missing",
+    "test-gate-exit-37": "test/gate-exit-37",
+    "test-gate-sigkill": "test/gate-sigkill",
+    "test-life-lifecycle": "test/life-lifecycle",
+    "test-life-filecap": "test/life-filecap",
 }
 
 # Each wrapper now projects exactly one resource, so no secondary
@@ -2944,7 +2944,7 @@ def local_atomic_writeback():
     )
 
 
-def f006_pre_exec_writeback_gate():
+def pre_exec_writeback_gate():
     """Exercise pre-exec suppression and retained post-exec finalization."""
 
     machine.succeed("install -d -m 0700 -o testuser -g users /home/testuser/.config")
@@ -3023,26 +3023,26 @@ def f006_pre_exec_writeback_gate():
         "resource_usage_signal",
     )
     machine.log(
-        "PASS: F-006 unchanged successful target emits one exact UsageSignal audit record"
+        "PASS: exec-gate unchanged successful target emits one exact UsageSignal audit record"
     )
 
-    unroutable_resource = "test/f006-unroutable"
-    unroutable_wrapper = "test-f006-unroutable"
+    unroutable_resource = "test/gate-unroutable"
+    unroutable_wrapper = "test-gate-unroutable"
     set_local_unlocked_permission(unroutable_wrapper)
-    machine.succeed("rm -f /tmp/f006-unroutable-target-ran")
+    machine.succeed("rm -f /tmp/gate-unroutable-target-ran")
     before = seed(
         unroutable_resource,
         {
-            ".config/f006-unroutable/a-preserved": b"preserved-value",
-            ".config/z-f006-unroutable/missing": b"later-unroutable-value",
+            ".config/gate-unroutable/a-preserved": b"preserved-value",
+            ".config/z-gate-unroutable/missing": b"later-unroutable-value",
         },
     )
     before_value = decoded(before)
     assert base64.b64decode(
-        before_value["files"][".config/f006-unroutable/a-preserved"]
+        before_value["files"][".config/gate-unroutable/a-preserved"]
     ) == b"preserved-value"
     assert base64.b64decode(
-        before_value["files"][".config/z-f006-unroutable/missing"]
+        before_value["files"][".config/z-gate-unroutable/missing"]
     ) == b"later-unroutable-value"
     cursor = journal_cursor()
     status, output = machine.execute(
@@ -3050,22 +3050,22 @@ def f006_pre_exec_writeback_gate():
     )
     assert status != 0, "later-unroutable projection unexpectedly executed"
     assert "no configured mount path is a prefix" in output, output
-    machine.fail("test -e /tmp/f006-unroutable-target-ran")
+    machine.fail("test -e /tmp/gate-unroutable-target-ran")
     after = admin_get_blob(ADMIN_LOCAL, "local", unroutable_resource)
     assert after == before, "later-unroutable projection changed canonical blob bytes"
     after_value = decoded(after)
     assert after_value["files"] == before_value["files"]
     assert_no_terminal(cursor, unroutable_wrapper, unroutable_resource)
     machine.log(
-        "PASS: F-006 later-unroutable projection is prevalidated with no target or terminal verb"
+        "PASS: exec-gate later-unroutable projection is prevalidated with no target or terminal verb"
     )
 
-    missing_resource = "test/f006-exec-missing"
-    missing_wrapper = "test-f006-exec-missing"
+    missing_resource = "test/gate-exec-missing"
+    missing_wrapper = "test-gate-exec-missing"
     set_local_unlocked_permission(missing_wrapper)
     before = seed(
         missing_resource,
-        {".config/f006-exec-missing/token": b"exec-missing-original"},
+        {".config/gate-exec-missing/token": b"exec-missing-original"},
     )
     cursor = journal_cursor()
     status, output = machine.execute(
@@ -3079,19 +3079,19 @@ def f006_pre_exec_writeback_gate():
     assert decoded(after)["files"] == decoded(before)["files"]
     assert_no_terminal(cursor, missing_wrapper, missing_resource)
     machine.log(
-        "PASS: F-006 returned exec error reports failure with no collection or terminal verb"
+        "PASS: exec-gate returned exec error reports failure with no collection or terminal verb"
     )
 
-    exit_resource = "test/f006-exit-37"
-    exit_wrapper = "test-f006-exit-37"
+    exit_resource = "test/gate-exit-37"
+    exit_wrapper = "test-gate-exit-37"
     set_local_unlocked_permission(exit_wrapper)
     before = seed(
         exit_resource,
-        {".config/f006-exit-37/token": b"before-exit-37"},
+        {".config/gate-exit-37/token": b"before-exit-37"},
     )
     expected = expected_with_file(
         before,
-        ".config/f006-exit-37/token",
+        ".config/gate-exit-37/token",
         b"persisted-after-exit-37",
     )
     cursor = journal_cursor()
@@ -3107,70 +3107,70 @@ def f006_pre_exec_writeback_gate():
     after = admin_get_blob(ADMIN_LOCAL, "local", exit_resource)
     assert after == expected, "exit-37 target did not persist the exact expected blob"
     assert base64.b64decode(
-        decoded(after)["files"][".config/f006-exit-37/token"]
+        decoded(after)["files"][".config/gate-exit-37/token"]
     ) == b"persisted-after-exit-37"
     assert_single_terminal(
         cursor, exit_wrapper, exit_resource, "resource_checkin"
     )
-    machine.log("PASS: F-006 post-exec writeback persists before exact exit 37")
+    machine.log("PASS: exec-gate post-exec writeback persists before exact exit 37")
 
-    signal_resource = "test/f006-sigkill"
-    signal_wrapper = "test-f006-sigkill"
+    signal_resource = "test/gate-sigkill"
+    signal_wrapper = "test-gate-sigkill"
     set_local_unlocked_permission(signal_wrapper)
     before = seed(
         signal_resource,
-        {".config/f006-sigkill/token": b"before-sigkill"},
+        {".config/gate-sigkill/token": b"before-sigkill"},
     )
     expected = expected_with_file(
         before,
-        ".config/f006-sigkill/token",
+        ".config/gate-sigkill/token",
         b"persisted-before-sigkill",
     )
-    machine.succeed("rm -f /tmp/f006-sigkill-ready /tmp/f006-sigkill-status")
+    machine.succeed("rm -f /tmp/gate-sigkill-ready /tmp/gate-sigkill-status")
     cursor = journal_cursor()
     program = (
         "import subprocess;"
         f"r=subprocess.run({['/run/wrappers/bin/underwrap-local', signal_wrapper]!r});"
-        "open('/tmp/f006-sigkill-status','w').write(str(r.returncode))"
+        "open('/tmp/gate-sigkill-status','w').write(str(r.returncode))"
     )
     machine.succeed(
         f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)} "
-        ">/tmp/f006-sigkill-parent.log 2>&1 &"
+        ">/tmp/gate-sigkill-parent.log 2>&1 &"
     )
-    machine.wait_until_succeeds("test -e /tmp/f006-sigkill-ready")
+    machine.wait_until_succeeds("test -e /tmp/gate-sigkill-ready")
     target_pid = machine.succeed(
         "pgrep -f '^/nix/store/.*/bin/sleep 6060$' | head -n 1"
     ).strip()
     assert target_pid, "could not find the ready SIGKILL target"
     machine.succeed(f"kill -KILL {shlex.quote(target_pid)}")
-    machine.wait_until_succeeds("test -e /tmp/f006-sigkill-status")
-    direct_status = machine.succeed("cat /tmp/f006-sigkill-status").strip()
+    machine.wait_until_succeeds("test -e /tmp/gate-sigkill-status")
+    direct_status = machine.succeed("cat /tmp/gate-sigkill-status").strip()
     assert direct_status == str(-signal.SIGKILL), (
         f"direct parent observed {direct_status!r}, expected {-signal.SIGKILL}"
     )
     after = admin_get_blob(ADMIN_LOCAL, "local", signal_resource)
     assert after == expected, "SIGKILL target did not persist the exact expected blob"
     assert base64.b64decode(
-        decoded(after)["files"][".config/f006-sigkill/token"]
+        decoded(after)["files"][".config/gate-sigkill/token"]
     ) == b"persisted-before-sigkill"
     assert_single_terminal(
         cursor, signal_wrapper, signal_resource, "resource_checkin"
     )
-    machine.log("PASS: F-006 post-exec writeback persists before exact SIGKILL propagation")
+    machine.log("PASS: exec-gate post-exec writeback persists before exact SIGKILL propagation")
 
 
-def f007_supervisor_lifecycle():
+def supervisor_lifecycle():
     """Check relay topology, cancellation teardown, and healthy status/writeback."""
-    wrapper = "test-f007-lifecycle"
-    resource = "test/f007-lifecycle"
+    wrapper = "test-life-lifecycle"
+    resource = "test/life-lifecycle"
     set_local_unlocked_permission(wrapper)
     admin_write_resource_value(
         ADMIN_LOCAL,
         "local",
         resource,
         "files",
-        ".config/f007/token",
-        b"f007-before",
+        ".config/life/token",
+        b"life-before",
     )
     resource_id = LOCAL_RESOURCE_IDS[resource]
 
@@ -3211,7 +3211,7 @@ def f007_supervisor_lifecycle():
         descendant = machine.succeed(
             f"pgrep -f '^/nix/store/.*/bin/sleep {seconds}$' | head -n1"
         ).strip()
-        assert descendant, f"missing F-007 descendant sleep {seconds}"
+        assert descendant, f"missing lifecycle descendant sleep {seconds}"
         target = parent_of(descendant)
         relay = parent_of(target)
         host_ns = parent_of(relay)
@@ -3391,8 +3391,8 @@ def f007_supervisor_lifecycle():
             )
 
     def launch(mode, seconds):
-        marker = f"/tmp/f007-ready-{mode}"
-        status_path = f"/tmp/f007-status-{mode}"
+        marker = f"/tmp/life-ready-{mode}"
+        status_path = f"/tmp/life-status-{mode}"
         machine.succeed(f"rm -f {marker} {status_path}")
         argv = [
             "/run/current-system/sw/bin/env",
@@ -3410,7 +3410,7 @@ def f007_supervisor_lifecycle():
         )
         machine.succeed(
             f"runuser -u testuser -- {shlex.quote(PYTHON3)} -c {shlex.quote(program)} "
-            f">/tmp/f007-parent-{mode}.log 2>&1 &"
+            f">/tmp/life-parent-{mode}.log 2>&1 &"
         )
         machine.wait_until_succeeds(f"test -e {marker}")
         return status_path, chain_for_sleep(str(seconds))
@@ -3423,14 +3423,14 @@ def f007_supervisor_lifecycle():
     assert_one_terminal(cursor, "resource_checkin")
     baseline = admin_get_blob(ADMIN_LOCAL, "local", resource)
 
-    # The dedicated-UID target can still create the former predictable entry,
-    # but canonical, noncanonical, oversized, and semantically invalid bytes at
-    # that path are never an input to host selection.
+    # A target-owned state pathname carries no publication authority.
+    # Canonical, noncanonical, oversized, and semantically invalid bytes there
+    # are never an input to host selection.
     for mode in (
-        "f008-old-canonical",
-        "f008-old-noncanonical",
-        "f008-old-semantic",
-        "f008-old-oversized",
+        "publ-file-canonical",
+        "publ-file-noncanonical",
+        "publ-file-semantic",
+        "publ-file-oversized",
     ):
         cursor = journal_cursor()
         machine.succeed(su(f"/run/wrappers/bin/underwrap-local {wrapper} {mode}"))
@@ -3448,7 +3448,7 @@ def f007_supervisor_lifecycle():
     cursor = journal_cursor()
     program = (
         "import subprocess;"
-        f"r=subprocess.run({['/run/wrappers/bin/underwrap-local', wrapper, 'f008-near-cap']!r});"
+        f"r=subprocess.run({['/run/wrappers/bin/underwrap-local', wrapper, 'publ-near-cap']!r});"
         "print(r.returncode)"
     )
     near_cap_status = machine.succeed(
@@ -3475,7 +3475,7 @@ def f007_supervisor_lifecycle():
     # no value; this clean run must retain the persisted canonical bytes.
     cursor = journal_cursor()
     machine.succeed(
-        su(f"/run/wrappers/bin/underwrap-local {wrapper} f008-near-cap-readback")
+        su(f"/run/wrappers/bin/underwrap-local {wrapper} publ-near-cap-readback")
     )
     assert admin_get_blob(ADMIN_LOCAL, "local", resource) == baseline
     assert_one_terminal(cursor, "resource_usage_signal")
@@ -3507,7 +3507,7 @@ def f007_supervisor_lifecycle():
         wait_gone(chain, mode)
         assert_no_terminal(cursor, mode)
         assert admin_get_blob(ADMIN_LOCAL, "local", resource) == baseline
-        machine.log(f"PASS: F-007 {mode} tears down complete namespace without terminal verb")
+        machine.log(f"PASS: lifecycle {mode} tears down complete namespace without terminal verb")
 
     # A healthy unchanged projection emits exactly UsageSignal through the
     # gate/status/clean-relay conjunction.
@@ -3531,8 +3531,8 @@ def f007_supervisor_lifecycle():
         assert observed == str(expected_status), (mode, observed)
         assert_one_terminal(cursor, "resource_checkin")
         blob = json.loads(base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", resource)))
-        assert base64.b64decode(blob["files"][".config/f007/token"]) == f"f007-file-{mode}".encode()
-        encoded_secret = base64.b64encode(f"f007-libsecret-{mode}".encode()).decode()
+        assert base64.b64decode(blob["files"][".config/life/token"]) == f"life-file-{mode}".encode()
+        encoded_secret = base64.b64encode(f"life-libsecret-{mode}".encode()).decode()
         assert encoded_secret in json.dumps(blob["libsecret"]), blob["libsecret"]
 
     # Direct target signals retain writeback and exact observer status.
@@ -3562,8 +3562,8 @@ def f007_supervisor_lifecycle():
     machine.succeed(f"kill -TERM {chain['target']['pid']}")
     assert_one_terminal(cursor, "resource_checkin")
     late_blob = json.loads(base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", resource)))
-    assert base64.b64decode(late_blob["files"][".config/f007/token"]) == b"f007-file-late-dispatch"
-    encoded_secret = base64.b64encode(b"f007-libsecret-late-dispatch").decode()
+    assert base64.b64decode(late_blob["files"][".config/life/token"]) == b"life-file-late-dispatch"
+    encoded_secret = base64.b64encode(b"life-libsecret-late-dispatch").decode()
     assert encoded_secret in json.dumps(late_blob["libsecret"]), late_blob["libsecret"]
     assert identity_alive(chain["stage1"]), "stopped stage 1 exited before late cancellation"
     machine.succeed(f"kill -KILL {chain['stage1']['pid']}")
@@ -3575,11 +3575,11 @@ def f007_supervisor_lifecycle():
 
     # A configured file-capability image executes with zero capabilities under
     # no_new_privs and cannot outlive relay teardown.
-    filecap_wrapper = "test-f007-filecap"
-    filecap_resource = "test/f007-filecap"
-    filecap_target = "/run/underwrap-f007-filecap/sleep"
+    filecap_wrapper = "test-life-filecap"
+    filecap_resource = "test/life-filecap"
+    filecap_target = "/run/underwrap-life-filecap/sleep"
     machine.succeed(
-        "install -d -m 0755 /run/underwrap-f007-filecap && "
+        "install -d -m 0755 /run/underwrap-life-filecap && "
         f"install -m 0755 /run/current-system/sw/bin/sleep {filecap_target} && "
         f"setcap cap_net_bind_service+ep {filecap_target}"
     )
@@ -3589,7 +3589,7 @@ def f007_supervisor_lifecycle():
     cursor = journal_cursor()
     machine.succeed(
         "runuser -u testuser -- /run/wrappers/bin/underwrap-local "
-        "test-f007-filecap 6230 >/tmp/f007-filecap.log 2>&1 &"
+        "test-life-filecap 6230 >/tmp/life-filecap.log 2>&1 &"
     )
     machine.wait_until_succeeds(
         f"pgrep -f '^{filecap_target} 6230$' >/dev/null"
@@ -3624,12 +3624,12 @@ def f007_supervisor_lifecycle():
     )
 
 
-def f009_resource_size_contract():
+def resource_size_contract():
     """Exercise the deployed complete-resource boundary through fd 20."""
-    env_wrapper = "test-f009-env"
-    env_resource = "test/f009-env"
-    files_wrapper = "test-f009-files"
-    files_resource = "test/f009-files"
+    env_wrapper = "test-size-env"
+    env_resource = "test/size-env"
+    files_wrapper = "test-size-files"
+    files_resource = "test/size-files"
 
     def report_for(value):
         return (
@@ -3700,12 +3700,12 @@ def f009_resource_size_contract():
     # digest, never the value.
     set_local_unlocked_permission(env_wrapper)
     admin_write_resource_value(
-        ADMIN_LOCAL, "local", env_resource, "env", "F009_ENV_BULK", F009_ENV_VALUE
+        ADMIN_LOCAL, "local", env_resource, "env", "SIZE_ENV_BULK", SIZE_ENV_VALUE
     )
     env_output = machine.succeed(
         su(f"/run/wrappers/bin/underwrap-local {env_wrapper}")
     ).strip()
-    assert env_output == report_for(F009_ENV_VALUE), env_output
+    assert env_output == report_for(SIZE_ENV_VALUE), env_output
 
     # Build a real simple ResourceBlob shape with a small files value and a
     # valid padding collection. Tuning only an ASCII label makes Python's sorted
@@ -3713,7 +3713,7 @@ def f009_resource_size_contract():
     blob = {
         "env": {},
         "files": {
-            ".config/f009-boundary/token": base64.b64encode(F009_FILES_INITIAL).decode(),
+            ".config/size-boundary/token": base64.b64encode(SIZE_FILES_INITIAL).decode(),
         },
         "libsecret": {
             "aliases": {"default": "padding"},
@@ -3744,8 +3744,8 @@ def f009_resource_size_contract():
     assert len(canonical) == MAX_CANONICAL_RESOURCE_BYTES
     assert blob["libsecret"]["collections"]["padding"]["label"].isascii()
     append_candidate = json.loads(canonical)
-    append_candidate["files"][".config/f009-boundary/token"] = base64.b64encode(
-        F009_FILES_OVERSIZE
+    append_candidate["files"][".config/size-boundary/token"] = base64.b64encode(
+        SIZE_FILES_OVERSIZE
     ).decode()
     append_candidate_length = len(compact(append_candidate))
     assert append_candidate_length > MAX_CANONICAL_RESOURCE_BYTES
@@ -3762,7 +3762,7 @@ def f009_resource_size_contract():
     initial_output = machine.succeed(
         su(f"/run/wrappers/bin/underwrap-local {files_wrapper} verify")
     ).strip()
-    assert initial_output == report_for(F009_FILES_INITIAL), initial_output
+    assert initial_output == report_for(SIZE_FILES_INITIAL), initial_output
     assert_one_terminal(cursor, "resource_usage_signal")
 
     # One appended byte makes the complete canonical state oversized. Target
@@ -3778,13 +3778,13 @@ def f009_resource_size_contract():
     assert f"maximum of {MAX_CANONICAL_RESOURCE_BYTES} bytes" in diagnostic, diagnostic
     assert f"(got {append_candidate_length})" in diagnostic, diagnostic
     for fixture in (
-        F009_ENV_VALUE,
-        F009_FILES_INITIAL,
-        F009_FILES_REPLACEMENT,
-        F009_FILES_OVERSIZE,
-        F009_ADMIN_OVERSIZE,
+        SIZE_ENV_VALUE,
+        SIZE_FILES_INITIAL,
+        SIZE_FILES_REPLACEMENT,
+        SIZE_FILES_OVERSIZE,
+        SIZE_ADMIN_OVERSIZE,
     ):
-        assert fixture.decode() not in diagnostic, "F-009 diagnostic exposed fixture material"
+        assert fixture.decode() not in diagnostic, "resource-size diagnostic exposed fixture material"
     assert_no_terminal(cursor)
     assert_one_size_rejection(cursor, append_candidate_length)
     assert base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", files_resource)) == canonical
@@ -3795,8 +3795,8 @@ def f009_resource_size_contract():
     before_admin_attempt = admin_get_blob(ADMIN_LOCAL, "local", files_resource)
     admin_error = admin_api_expect_status(
         ADMIN_LOCAL,
-        f"/v1/admin/stores/local/secrets/{_seg(LOCAL_RESOURCE_IDS[files_resource])}/env/F009_OVERSIZE",
-        {"material_b64": base64.b64encode(F009_ADMIN_OVERSIZE).decode()},
+        f"/v1/admin/stores/local/secrets/{_seg(LOCAL_RESOURCE_IDS[files_resource])}/env/SIZE_OVERSIZE",
+        {"material_b64": base64.b64encode(SIZE_ADMIN_OVERSIZE).decode()},
         status=400,
         method="PUT",
     )
@@ -3816,18 +3816,18 @@ def f009_resource_size_contract():
     assert len(replaced) == MAX_CANONICAL_RESOURCE_BYTES
     replaced_blob = json.loads(replaced)
     assert base64.b64decode(
-        replaced_blob["files"][".config/f009-boundary/token"]
-    ) == F009_FILES_REPLACEMENT
+        replaced_blob["files"][".config/size-boundary/token"]
+    ) == SIZE_FILES_REPLACEMENT
 
     cursor = journal_cursor()
     readback_output = machine.succeed(
         su(f"/run/wrappers/bin/underwrap-local {files_wrapper} verify")
     ).strip()
-    assert readback_output == report_for(F009_FILES_REPLACEMENT), readback_output
+    assert readback_output == report_for(SIZE_FILES_REPLACEMENT), readback_output
     assert base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", files_resource)) == replaced
     assert_one_terminal(cursor, "resource_usage_signal")
     machine.log(
-        "PASS: F-009 exact-MAX resource crosses deployed Checkout/Checkin; "
+        "PASS: resource-size exact-MAX resource crosses deployed Checkout/Checkin; "
         "oversize mutations preserve target status and canonical storage"
     )
 
@@ -4877,8 +4877,8 @@ def audit_and_no_secret_leaks():
     # AUDIT + NO SECRET LEAKS
     # ============================================================
 
-    canary_key = "F054_LOG_CANARY"
-    canary = f"underwrap-f054-canary-{uuid.uuid4().hex}".encode("ascii")
+    canary_key = "AUDIT_LOG_CANARY"
+    canary = f"underwrap-audit-canary-{uuid.uuid4().hex}".encode("ascii")
     admin_write_resource_value(
         ADMIN_LOCAL, "local", "test/token", "env", canary_key, canary
     )
@@ -4895,13 +4895,13 @@ def audit_and_no_secret_leaks():
         f"{json.dumps(canary_b64, ensure_ascii=True)}"
     )
     assert env_entry_signature in canonical_text, (
-        "F054 canonical resource omitted the dedicated env-entry signature"
+        "AUDIT canonical resource omitted the dedicated env-entry signature"
     )
 
     needle_labels = {}
 
     def add_needle(label, needle):
-        assert len(needle) >= 16, f"F054 representation too short: {label}"
+        assert len(needle) >= 16, f"AUDIT representation too short: {label}"
         needle_labels.setdefault(needle, []).append(label)
 
     def add_binary_encodings(prefix, value):
@@ -4944,7 +4944,7 @@ def audit_and_no_secret_leaks():
         representation = "/".join(labels)
         for corpus_label, corpus in corpora.items():
             assert needle not in corpus, (
-                f"F054 log hygiene failure: {representation} in {corpus_label}"
+                f"AUDIT log hygiene failure: {representation} in {corpus_label}"
             )
     machine.log("PASS: dynamic canary absent from selected journal representations")
 
@@ -4974,27 +4974,27 @@ def audit_and_no_secret_leaks():
     assert "libsecret_two_slot_value" not in logs, "two-slot secret leaked!"
     assert "iso_files_secret_val" not in logs, "isolated files secret leaked!"
     assert "iso_libsecret_val" not in logs, "isolated libsecret secret leaked!"
-    f008_near_cap_prefix = b"f008-cap-secret-xx"
-    f008_near_cap_value = f008_near_cap_prefix + b"x" * 3982
-    assert f008_near_cap_prefix.decode() not in logs, "F008 near-cap fixture leaked in plaintext!"
-    assert base64.b64encode(f008_near_cap_value).decode() not in logs, (
-        "F008 complete near-cap item leaked in exact base64 form!"
+    publication_near_cap_prefix = b"publ-cap-secret-xx"
+    publication_near_cap_value = publication_near_cap_prefix + b"x" * 3982
+    assert publication_near_cap_prefix.decode() not in logs, "PUBL near-cap fixture leaked in plaintext!"
+    assert base64.b64encode(publication_near_cap_value).decode() not in logs, (
+        "PUBL complete near-cap item leaked in exact base64 form!"
     )
 
-    f009_values = {
-        "env": F009_ENV_VALUE,
-        "files-initial": F009_FILES_INITIAL,
-        "files-replacement": F009_FILES_REPLACEMENT,
-        "files-oversize": F009_FILES_OVERSIZE,
-        "admin-oversize": F009_ADMIN_OVERSIZE,
+    size_values = {
+        "env": SIZE_ENV_VALUE,
+        "files-initial": SIZE_FILES_INITIAL,
+        "files-replacement": SIZE_FILES_REPLACEMENT,
+        "files-oversize": SIZE_FILES_OVERSIZE,
+        "admin-oversize": SIZE_ADMIN_OVERSIZE,
     }
-    for label, value in f009_values.items():
-        assert value.decode() not in logs, f"F009 {label} fixture leaked in plaintext"
+    for label, value in size_values.items():
+        assert value.decode() not in logs, f"SIZE {label} fixture leaked in plaintext"
         assert base64.b64encode(value).decode() not in logs, (
-            f"F009 {label} fixture leaked in exact base64 form"
+            f"SIZE {label} fixture leaked in exact base64 form"
         )
 
-    f007_modes = (
+    life_modes = (
         "seed",
         "success",
         "exit37",
@@ -5009,21 +5009,21 @@ def audit_and_no_secret_leaks():
         "target-kill",
         "late-dispatch",
     )
-    f007_values = [("initial-files", b"f007-before")]
-    for mode in f007_modes:
-        f007_values.extend(
+    life_values = [("initial-files", b"life-before")]
+    for mode in life_modes:
+        life_values.extend(
             (
-                (f"files/{mode}", f"f007-file-{mode}".encode()),
-                (f"libsecret/{mode}", f"f007-libsecret-{mode}".encode()),
+                (f"files/{mode}", f"life-file-{mode}".encode()),
+                (f"libsecret/{mode}", f"life-libsecret-{mode}".encode()),
             )
         )
-    assert "f007-file-" not in logs, "F007 files fixture leaked in plaintext!"
-    assert "f007-libsecret-" not in logs, "F007 libsecret fixture leaked in plaintext!"
-    for label, value in f007_values:
+    assert "life-file-" not in logs, "LIFE files fixture leaked in plaintext!"
+    assert "life-libsecret-" not in logs, "LIFE libsecret fixture leaked in plaintext!"
+    for label, value in life_values:
         plaintext = value.decode()
         encoded = base64.b64encode(value).decode()
-        assert plaintext not in logs, f"F007 {label} fixture leaked in plaintext"
-        assert encoded not in logs, f"F007 {label} fixture leaked in base64 form"
+        assert plaintext not in logs, f"LIFE {label} fixture leaked in plaintext"
+        assert encoded not in logs, f"LIFE {label} fixture leaked in base64 form"
     machine.log("PASS: audit events present, no secrets in logs")
 
     machine.log("ALL TESTS PASSED")
@@ -5054,9 +5054,9 @@ local_libsecret_mode()
 local_libsecret_two_slot_compatibility()
 local_directory_credentials()
 local_atomic_writeback()
-f006_pre_exec_writeback_gate()
-f007_supervisor_lifecycle()
-f009_resource_size_contract()
+pre_exec_writeback_gate()
+supervisor_lifecycle()
+resource_size_contract()
 remote_service_lifecycle()
 instance_isolation()
 local_debug_subcommand()
