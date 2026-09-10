@@ -1,62 +1,60 @@
 # Getting started
 
-This tutorial builds the smallest deterministic underwrap deployment:
+Run one presence-only helper on one NixOS host, with a local backend and a plain store containing a disposable non-production value.
+The helper reports whether its env projection is nonempty without printing the value or putting it in the caller's shell.
+This is a first-deployment exercise, not a production service or an end-to-end security audit.
+Underwrap is pre-release security software without an independent end-to-end audit.
 
-- one `underwrap-backend` on the NixOS frontend host;
-- one frontend instance;
-- one plain store;
-- one stateless helper that verifies an env projection without printing it.
+## Before changing the host
 
-The tutorial uses a plain store to keep the first run focused. Use an encrypted
-store after the complete flow works.
+You need an existing flake-based NixOS configuration, root access, an existing local user, and a browser on this host.
+The examples use host configuration `demo-host`, system `x86_64-linux`, and user `alice`; substitute your existing names and system.
+Keep your existing hardware configuration, boot settings, user definitions, and NixOS state version.
 
-## Result
+The default hardened posture requires Linux 6.5 or newer and no swap, ordinary swap admitted by the module's random-key/LUKS assertion, or pure RAM-only zram.
+Typed zram-generator swap writeback is rejected; the exact typed configuration restrictions and their limits are in [Configuration](configuration.md#host-posture).
+The module defaults host-wide `kernel.yama.ptrace_scope` to `2`, which prevents ordinary unprivileged debugger and tracer attachment, including `gdb` and `strace` against other user processes.
+Check whether this is acceptable before rebuilding, and do not disable hardening just to finish the tutorial.
+Dedicated target UIDs protect READ-mode `/proc` access; Yama adds ATTACH-mode protection rather than protecting `environ` itself.
+Read [Security](security.md) before using production credentials.
 
-The caller runs:
+`allowedUsers` installs PATH shims, not a local-user ACL.
+Any local user can invoke the system-wide instance entry point when backend policy permits the runtime client instance and wrapper/resource pair.
+The configured target is trusted with its projection, so this tutorial deliberately uses a fixed helper rather than a general secret-printing CLI.
 
-```bash
-secret-check
+## 1. Wire the flake and frontend module
+
+Merge this enclosing structure into your existing `flake.nix` rather than replacing your host configuration.
+Keep your existing `nixpkgs` input and lock file; `specialArgs` is what supplies the `underwrap` argument to the module below.
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    underwrap.url = "github:rschaffar/underwrap";
+  };
+
+  outputs = { nixpkgs, underwrap, ... }: {
+    nixosConfigurations.demo-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      specialArgs = { inherit underwrap; };
+      modules = [
+        ./configuration.nix
+        ./underwrap-demo.nix
+      ];
+    };
+  };
+}
 ```
 
-The target prints:
-
-```text
-DEMO_TOKEN is available to the target
-```
-
-The caller's shell never receives `DEMO_TOKEN`, and the helper never prints its
-value.
-
-## Prerequisites
-
-- A flake-based NixOS configuration.
-- An existing local user; the examples use `alice`.
-- The underwrap flake input:
-
-  ```nix
-  inputs.underwrap.url = "github:rschaffar/underwrap";
-  ```
-
-- A server CA and server certificate for `127.0.0.1` or the hostname used by
-  the daemon and browser. [Deploying the backend](remote-backend.md#server-tls)
-  includes a `step` recipe.
-
-The browser must trust the server CA. Runtime client certificates use a
-separate model: `underwrap-keygen` creates a self-signed leaf and the operator
-registers its fingerprint through the admin UI.
-
-## 1. Configure the NixOS frontend
-
-Add the module and a stateless target helper:
+Create `underwrap-demo.nix` beside it:
 
 ```nix
 { pkgs, underwrap, ... }:
-
 let
   secretCheck = pkgs.writeShellApplication {
     name = "underwrap-secret-check";
     text = ''
-      set -euo pipefail
       if [[ -z "''${DEMO_TOKEN:-}" ]]; then
         echo "DEMO_TOKEN is missing" >&2
         exit 1
@@ -64,29 +62,32 @@ let
       echo "DEMO_TOKEN is available to the target"
     '';
   };
-in
-{
+in {
   imports = [ underwrap.nixosModules.default ];
 
-  # Installs the backend command used by this local tutorial.
   environment.systemPackages = [
     underwrap.packages.${pkgs.stdenv.hostPlatform.system}.underwrap-backend
+    pkgs.python3
+    pkgs.openssl
+    pkgs.step-cli
   ];
+
+  # Backend identity for this foreground-only tutorial.
+  users.groups.underwrap-backend = {};
+  users.users.underwrap-backend = {
+    isSystemUser = true;
+    group = "underwrap-backend";
+  };
 
   services.underwrap = {
     enable = true;
     package = underwrap.packages.${pkgs.stdenv.hostPlatform.system}.default;
-
     instances.demo = {
-      # Replace alice with an existing local user. This installs the
-      # `secret-check` and `debug-secret-check` PATH shims; it is not an ACL.
       allowedUsers = [ "alice" ];
-
       backend = {
         url = "https://127.0.0.1:18443";
         caFile = "/etc/underwrap/ca.pem";
       };
-
       wrappers.secret-check = {
         target = "${secretCheck}/bin/underwrap-secret-check";
         resource = "demo/token";
@@ -97,259 +98,137 @@ in
 }
 ```
 
-Rebuild:
+Ensure new configuration files are included in your flake source, then rebuild the selected existing host:
 
 ```bash
-sudo nixos-rebuild switch
+sudo nixos-rebuild switch --flake .#demo-host
 ```
 
-The module creates:
+The frontend module creates `underwrapd-demo.service`, daemon user/group `underwrap-demo`, `/run/wrappers/bin/underwrap-demo`, and `/run/underwrap-demo/wrapper.sock`.
+It also creates `/etc/underwrap/daemon/demo.yaml`, `/etc/underwrap/instances/demo.yaml`, the private `/var/lib/underwrap-demo/` state directory, and a dedicated target UID/GID and runtime directory for the wrapper.
+Alice receives `secret-check` and `debug-secret-check` shims.
+Missing backend credentials are expected at this stage; request-time initialization is not a substitute for the enrollment restart below.
 
-- `underwrapd-demo.service`;
-- `/run/wrappers/bin/underwrap-demo`;
-- `/run/underwrap-demo/wrapper.sock`;
-- `/etc/underwrap/daemon/demo.yaml`;
-- `/etc/underwrap/instances/demo.yaml`;
-- `/var/lib/underwrap-demo/` for the runtime client credential;
-- one dedicated target UID/GID and runtime directory for `secret-check`;
-- the `secret-check` and `debug-secret-check` shims in Alice's per-user
-  profile.
+## 2. Place TLS and backend configuration
 
-The daemon can start before its client credential or backend is available. It
-retries backend initialization on each wrapper request.
-
-## 2. Prepare the backend
-
-Create backend state directories:
+Obtain a server certificate with an IP SAN for `127.0.0.1`, its matching private key, and the issuing CA certificate.
+For a disposable local CA, follow [Server TLS](operations.md#server-tls), which produces `underwrap-pki/ca.pem`, `server.pem`, and `server.key`.
+Run the following from that directory's parent, adjusting source paths if you used your own PKI.
+Never put private keys in Nix expressions or copy them into the Nix store.
 
 ```bash
-sudo install -d -m 0700 \
+sudo install -d -m 0755 /etc/underwrap
+sudo install -d -m 0750 -o root -g underwrap-backend /etc/underwrap-backend
+sudo install -m 0644 underwrap-pki/ca.pem /etc/underwrap/ca.pem
+sudo install -m 0644 underwrap-pki/server.pem /etc/underwrap-backend/server.pem
+sudo install -m 0640 -o root -g underwrap-backend \
+  underwrap-pki/server.key /etc/underwrap-backend/server.key
+sudo install -d -m 0700 -o underwrap-backend -g underwrap-backend \
+  /var/lib/underwrap-backend \
   /var/lib/underwrap-backend/stores \
   /var/lib/underwrap-backend/clients \
   /var/lib/underwrap-backend/users \
   /var/lib/underwrap-backend/data
 ```
 
-Write `/etc/underwrap-backend/config.yaml`:
+Use a trusted editor to create `/etc/underwrap-backend/config.yaml` with the following non-secret settings.
+Make it root-owned, group `underwrap-backend`, mode `0640`.
 
 ```yaml
 stores_dir: /var/lib/underwrap-backend/stores
 clients_dir: /var/lib/underwrap-backend/clients
 users_dir: /var/lib/underwrap-backend/users
 bootstrap_file: /var/lib/underwrap-backend/bootstrap.json
-
 https:
   listen: 127.0.0.1:18443
   tls:
     cert_file: /etc/underwrap-backend/server.pem
     key_file: /etc/underwrap-backend/server.key
-
 admin:
   allowed_origins:
     - https://127.0.0.1:18443
   stores_data_root: /var/lib/underwrap-backend/data
 ```
 
-Before starting the listener, create the first operator through backend-host
-filesystem authority. Run the command as the identity that owns the backend
-state and supply the password through standard input from a trusted prompt or
-password manager:
+Trust `ca.pem` in the browser or its operating-system trust store before visiting this origin.
+The daemon's CA file does not configure browser trust.
+The CA signing key is not needed by the backend; keep it in separately controlled custody rather than beside backend data.
+
+## 3. Bootstrap and start the backend
+
+Keep the backend and every user-registry writer stopped.
+Run the non-echoed [offline bootstrap procedure](operations.md#first-operator-bootstrap) with service identity `underwrap-backend`, config `/etc/underwrap-backend/config.yaml`, and username `alice`.
+Its Python helper supplies exactly one password line on the CLI's stdin and refuses an echoing fallback; the backend CLI itself has no hidden-input prompt.
+Do not enter a password at a bare backend command or put it in argv, environment variables, configuration, or shell history.
+
+After bootstrap succeeds, start the backend in a dedicated terminal:
 
 ```bash
-sudo underwrap-backend \
-  --config /etc/underwrap-backend/config.yaml \
-  admin bootstrap-user --username alice
+sudo -u underwrap-backend sh -c \
+  'umask 077; exec underwrap-backend --config /etc/underwrap-backend/config.yaml'
 ```
 
-Do not place the password in argv, environment variables, configuration, or
-shell history. Then start the backend in a dedicated terminal:
+Leave that process running for the exercise.
+For persistent operation, replace the foreground launch with a reviewed [backend service deployment](operations.md#deploy-the-backend); this tutorial does not install one.
+
+## 4. Create a store and enroll the frontend
+
+Open `https://127.0.0.1:18443/` and sign in as the offline-provisioned operator.
+In **Stores**, create a **plain** store named `demo`.
+It persists plaintext, so use only a disposable demonstration value.
+A runtime client instance must select an existing store.
+
+On the frontend host, generate the identity:
 
 ```bash
-sudo underwrap-backend \
-  --config /etc/underwrap-backend/config.yaml
+sudo underwrap-keygen --instance-config /etc/underwrap/daemon/demo.yaml
 ```
 
-A production deployment should use a hardened service unit; see
-[Deploying the backend](remote-backend.md).
+A successful command installs a private combined identity at `/var/lib/underwrap-demo/client-demo.identity.pem` with mode `0400`, owned by `underwrap-demo`, and then prints only its public certificate.
+Do not open or copy the private identity file.
+If the command fails after installation, follow [identity failure handling](operations.md#runtime-client-identities) rather than assuming the previous identity remains installed.
 
-## 3. Sign in and create the store
-
-Open:
-
-```text
-https://127.0.0.1:18443/
-```
-
-Sign in with the offline-provisioned operator, then open **Stores** and create a
-**plain** store named `demo`.
-
-The store must exist before a runtime client instance can select it.
-
-## 4. Generate and enroll the runtime client
-
-Generate the per-instance credential on the frontend host:
-
-```bash
-sudo underwrap-keygen \
-  --instance-config /etc/underwrap/daemon/demo.yaml
-```
-
-On a successful run, the command installs one private combined certificate-
-chain-and-key identity at
-`/var/lib/underwrap-demo/client-demo.identity.pem` with mode `0400`, then prints
-only the public certificate PEM. See the normative
-[identity installation guarantees](security.md#runtime-client-identity-installation).
-
-In **Client instances**, choose **Create client instance** and set:
-
-- display name: `demo-host`;
-- target store: `demo`;
-- status: `Active`;
-- certificate PEM: the complete output certificate;
-- **Automatically create wrapper resources and pairs:** enabled.
-
-Auto-create is convenient for this tutorial. In a tightly controlled deployment,
-leave it disabled and create each resource and wrapper/resource pair manually.
-
-Restart the frontend daemon so it authenticates and registers its configured
-pair:
+In **Client instances**, create `demo-host`, select store `demo`, choose `Active`, paste the complete public certificate, and enable **Automatically create wrapper resources and pairs**.
+Then restart the daemon; registration runs at startup:
 
 ```bash
 sudo systemctl restart underwrapd-demo.service
 ```
 
-Registration creates the resource `demo/token`, the pair
-`secret-check → demo/token`, and a `Locked` permission row for this runtime
-client instance.
+Confirm resource `demo/token`, pair `secret-check → demo/token`, and a `Locked` permission row for `demo-host` now exist.
+If auto-create is disabled, create the resource and pair manually and use the same restart and verification step.
 
-For a later certificate replacement, follow the normative
-[ordered cutover](admin-ui.md#replace-a-runtime-client-certificate): successfully
-run keygen on the frontend, save its public certificate on the same backend
-instance, run `sudo systemctl restart underwrapd-<instance>.service`, and verify a
-representative wrapper. The old daemon identity remains cached until restart, so
-wrapper failure with enrollment guidance after **Save** and before restart is the
-expected interruption.
+## 5. Add the value and run the helper
 
-## 5. Add the env entry and unlock the wrapper
+In **Secrets**, select store `demo`, open `demo/token`, and add env entry `DEMO_TOKEN` with a nonempty non-production value.
+In **Wrapper permissions**, select the exact `demo-host`, `secret-check`, `demo/token` permission row, choose `Unlocked`, leave **writable** off, and select **Save**.
+Env is operator-owned and has no runtime edit path.
 
-In **Secrets**:
-
-1. select the `demo` store;
-2. open resource `demo/token`;
-3. add an **env** entry named `DEMO_TOKEN`;
-4. enter a non-production value for the tutorial.
-
-In **Wrapper permissions**:
-
-1. select the `demo` store;
-2. find wrapper `secret-check` and the `demo-host` client instance;
-3. change the permission mode from `Locked` to `Unlocked`;
-4. leave **writable** off; env entries have no runtime write path.
-
-The exact data model is:
-
-```text
-store: demo
-resource: demo/token
-slot/key: env/DEMO_TOKEN
-pair: secret-check → demo/token
-permission: (demo-host, secret-check, demo/token) = Unlocked, writable=false
-```
-
-## 6. Run the wrapper
-
-As Alice:
+As Alice, run:
 
 ```bash
 secret-check
 ```
 
-The explicit instance form is equivalent:
+Expected output:
 
-```bash
-underwrap-demo secret-check
+```text
+DEMO_TOKEN is available to the target
 ```
 
-Do not use `debug-secret-check` for routine verification. The debug variant is
-available only under a time-bounded `UnsafeDebugUntil` permission and exposes
-the projection to an incident-debug session.
+The explicit system-wide form is `/run/wrappers/bin/underwrap-demo secret-check`.
+Do not use the debug shim for this check: debug deliberately grants a secret-disclosing target.
+Presence-only success establishes this demonstration result, not comprehensive confidentiality or writeback durability.
 
-## Verify the deployment
+## 6. Stop or retain the demonstration deliberately
 
-Frontend daemon:
+Return the permission to `Locked` and save it when finished.
+Stop the foreground backend in its terminal; encrypted production stores and browser sessions would also need attention after a restart.
+The plain demonstration data remains on disk.
+Use [Decommissioning](operations.md#decommissioning) if you want to remove the demonstration rather than retain it for later exercises.
 
-```bash
-systemctl status underwrapd-demo.service
-```
+If the command is missing, verify `allowedUsers` and try the explicit entry point.
+For enrollment, TLS, missing-pair, or permission errors, follow [Connection and authorization diagnosis](operations.md#connection-and-authorization-diagnosis).
+Never bypass the setgid entry point, disable TLS verification, or weaken host hardening to make the exercise pass.
 
-Setgid entry point:
-
-```bash
-ls -l /run/wrappers/bin/underwrap-demo
-```
-
-Identity ownership and mode:
-
-```bash
-sudo ls -ld /var/lib/underwrap-demo
-sudo ls -l /var/lib/underwrap-demo/client-demo.identity.pem
-```
-
-The admin UI should show:
-
-- one active client instance mapped to `demo`;
-- resource `demo/token` with one env entry;
-- pair `secret-check → demo/token`;
-- one unlocked, non-writable permission row.
-
-## Troubleshooting
-
-### The `secret-check` command is missing
-
-Confirm that the local username appears in `allowedUsers`, then rebuild. This
-option installs shims only; the explicit `underwrap-demo secret-check` form is
-system-wide.
-
-### `peer egid ... does not match instance group gid`
-
-The request did not traverse the setgid entry point. Verify the mode and group
-of `/run/wrappers/bin/underwrap-demo` and do not connect directly to the socket.
-
-### The wrapper says the instance is not enrolled
-
-Check that the combined identity file exists with the expected owner and mode,
-and that its public certificate PEM was registered on an active client instance.
-A replaced or disabled identity produces the same enrollment guidance.
-
-### The resource or wrapper pair is missing
-
-Confirm that auto-create is enabled for the client instance and restart
-`underwrapd-demo`. Otherwise create resource `demo/token` and its
-`secret-check` pair manually in the admin UI.
-
-### The permission is locked or missing
-
-Registration seeds a locked permission. Open **Wrapper permissions** and set the
-cell for the correct client, wrapper, and resource to `Unlocked`.
-
-### TLS connection fails
-
-Check the backend process, URL, server certificate SAN, and CA file:
-
-```bash
-systemctl status underwrapd-demo.service
-openssl s_client -connect 127.0.0.1:18443 \
-  -CAfile /etc/underwrap/ca.pem
-```
-
-## Next steps
-
-- [Admin UI](admin-ui.md) for encrypted stores, manual pair creation, users,
-  and debug permissions.
-- [Configuration](configuration.md) for wrapper projections and host access.
-- [Agent-facing wrappers](agent-facing-wrappers.md) before exposing a wrapper to
-  automation.
-- [GitHub via libsecret](gh-libsecret.md) for mutable Secret Service state.
-- [Deploying the backend](remote-backend.md) to separate backend and target
-  hosts.
-- [Security](security.md) before using production credentials.
+Next, read [Wrappers](wrappers.md) before exposing a real capability, [Configuration](configuration.md) for options, and [Operations](operations.md) for encrypted stores and maintenance.

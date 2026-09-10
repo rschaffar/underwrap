@@ -1,202 +1,88 @@
 # underwrap
 
-underwrap brokers secrets to local CLI targets at invocation time, without
-handing the reusable secret directly to the caller.
+underwrap lets a caller invoke a configured CLI capability without handing that caller the reusable credential.
+A backend holds resources and policy; a NixOS frontend projects an authorized resource into a short-lived, trusted target process.
 
 > [!WARNING]
-> underwrap is pre-release security software. Its design is intentionally
-> defensive, but it has not received an independent end-to-end security audit.
+> underwrap is pre-release security software and has not received an independent end-to-end security audit.
 > Read the [security model](docs/security.md) before relying on its guarantees.
 
-**Frontend platform:** NixOS. The privileged wrapper chain depends on the NixOS
-module for setgid wrappers, file capabilities, dedicated users, systemd units,
-and host hardening. `underwrap-backend` can run on any Linux host. Flake package,
-check, and development-shell outputs support `x86_64-linux` and
-`aarch64-linux`.
+## When it fits
 
-## The problem
+Use underwrap when a local user, automation process, or AI agent needs a bounded operation rather than possession of a token.
+For example, a configured helper can accept a reviewed comment on stdin and post it to one fixed repository:
 
-Many CLIs expect a reusable token in an environment variable, config file, or
-user keyring. That makes the credential easy to spread through shell sessions,
-dotfiles, process environments, diagnostics, and automation frameworks.
-
-underwrap replaces “give the caller the token” with “let the caller invoke a
-configured capability.” Its most opinionated use case is an agent-facing narrow
-command:
-
-```text
-printf '%s\n' 'reviewed' | agent-gh-comment <pr-number>
+```sh
+printf '%s\n' 'reviewed' | agent-gh-comment 123
 ```
 
-The bounded comment body arrives on stdin; the helper does not accept a path it
-could be tricked into reading from its own secret-bearing process. This is a
-narrower surface than an unrestricted CLI with `GH_TOKEN` in the agent's
-environment.
+The helper receives the credential; the caller's shell does not.
+Prefer a narrow helper over an unrestricted CLI that can print credentials, execute plugins, or redirect requests.
+The [wrapper guide](docs/wrappers.md) explains how to review that boundary.
+
+A resource can contain environment variables, credential files, a private Secret Service keyring, or a combination of these projections.
+Files and keyring changes persist only when backend policy permits writeback.
+
+Use a simpler secret manager or ordinary environment injection when the caller is already trusted to possess the secret.
+Use application authorization or an OS-level gate such as sudo or polkit when you need per-user access decisions or a human prompt.
+Underwrap does not supply per-invocation approval.
 
 ## How it works
 
-A supported deployment has a central backend and one or more NixOS frontend
-instances:
-
 ```text
-caller
-  │
-  ▼
-underwrap-<instance>             setgid entry stage
-  │ Unix socket, effective-GID gate
-  ▼
-underwrapd                       local broker
-  │ HTTPS + mTLS
-  ▼
-underwrap-backend                resources, policy, admin SPA
+                backend
+        resources · policy · admin UI
+                   ▲
+                   │ HTTPS + mTLS
+                   ▼
+              local daemon
+                   ▲
+                   │ Unix socket
+caller ──► instance entry ──► namespace stage ──► trusted target
 ```
 
-For each invocation:
+The daemon authenticates the instance entry, requests backend authorization, and chooses the configured target.
+The wrapper chain authenticates its daemon handoff, creates private namespaces, switches to a dedicated target UID, projects the resource, and executes the target.
+The backend rechecks permission mode and writability before accepting changes.
+See [Architecture](docs/architecture.md) for identities, responsibilities, and design rationale.
 
-1. `underwrap-exec` enters through the instance's setgid binary and connects to
-   its `0660` Unix socket.
-2. `underwrapd` verifies the peer's effective GID, validates the requested
-   wrapper name, and asks the backend to authorize the
-   `(runtime client instance, wrapper, resource, variant)` tuple.
-3. The backend returns one canonical resource blob when the permission allows
-   the invocation.
-4. The daemon chooses the configured target. The caller never supplies a target
-   path.
-5. `underwrap-ns` verifies that fixed fd 20 is an `AF_UNIX` stream socket
-   created by the selected instance daemon, then reads the fd 3 bundle. It
-   creates PID, mount, IPC, and UTS namespaces; switches to the dedicated UID
-   for the `(instance, wrapper)` pair; projects the requested resource slots;
-   drops capabilities; and executes the target with a cleared environment.
-6. Files or libsecret changes are canonicalized and submitted for backend
-   writeback. The backend re-checks policy and writability before persisting
-   them.
+**The caller is untrusted with respect to the secret; the configured target is trusted with it.**
+Underwrap is not a behavioral sandbox: a target can print, persist, or transmit its own projection.
+Dedicated target UIDs protect the target's process state from caller-owned processes; root, kernel, backend, and target compromise are outside the claim.
 
-A resource can expose any combination of:
+Backend permissions identify the mTLS-authenticated runtime client instance, not the local Unix user.
+`allowedUsers` installs convenient PATH shims only; any local user can execute the system-wide instance entry point.
 
-- **env** — environment variables;
-- **files** — credential files in namespace-private tmpfs-backed mounts;
-- **libsecret** — a private Secret Service session for tools such as `gh`.
+## Platform and operating costs
 
-## Security boundaries
+- **Frontend:** NixOS, using the supplied module and privileged wrapper chain.
+- **Backend:** Linux, on the same machine or a separate host.
+- **Flake outputs:** `x86_64-linux` and `aarch64-linux`; the deployed VM check is available only on `x86_64-linux`.
+- **Default hardened posture:** Linux 6.5+, restricted swap options, and a host-wide Yama setting that restricts unprivileged debugging.
+  Read the [configuration requirements](docs/configuration.md) before rebuilding a host.
+- **Availability:** wrapper authorization depends on the backend network path.
+  Encrypted stores need external master-key custody and manual unlock after backend restart.
+- **Persistence:** concurrent content mutations are last-writer-wins, not transactional.
+  Maintenance and key operations require coordinated access; see [Operations](docs/operations.md).
 
-underwrap is a secret-delivery system, not a general sandbox.
+## Start here
 
-- The caller is untrusted with respect to the secret.
-- The configured target is trusted with the projection it receives. A target
-  that prints, logs, stores, or transmits its secret defeats confidentiality.
-- Every wrapper runs under a dedicated target UID. This is the primary boundary
-  against caller-owned processes reading the target's `/proc` state.
-- The default hardened posture requires Linux 6.5+, defaults Yama
-  `ptrace_scope=2` with `mkDefault`, and admits no swap, ordinary swap admitted
-  by the random-key/LUKS assertion, or pure RAM-only zram. Enabled zram swap
-  writeback configured through the typed NixOS options is rejected. Overriding
-  the Yama value downward or disabling the posture weakens the claim.
-- Root, kernel, backend-host, or target compromise is out of scope.
-- `allowedUsers` controls which users receive convenient PATH shims; it is not a
-  local access-control list. Backend policy identifies the mTLS runtime client
-  instance, not the local Unix user. Add sudo or polkit when local-user
-  authorization or a prompt is required.
+| Task | Guide |
+|---|---|
+| Complete a first local deployment | [Getting started](docs/getting-started.md) |
+| Deploy, enroll clients, manage access, or recover a store | [Operations](docs/operations.md) |
+| Configure NixOS and the backend | [Configuration](docs/configuration.md) |
+| Design and review a wrapper | [Wrappers](docs/wrappers.md) |
+| Understand trust and limitations | [Security](docs/security.md) |
+| Understand resource, policy, and API semantics | [Backend](docs/backend.md) |
+| Review privileged handoff and projection mechanisms | [Local protocol](docs/local-protocol.md) |
+| Build or contribute | [Contributing](CONTRIBUTING.md) |
+| Select validation commands and interpret their coverage | [Testing](docs/testing.md) |
 
-For agent-facing use, prefer:
-
-```text
-underwrap wrapper → narrow helper → real CLI
-```
-
-over:
-
-```text
-underwrap wrapper → unrestricted CLI
-```
-
-See [Agent-facing wrappers](docs/agent-facing-wrappers.md) and the
-[wrapper author checklist](docs/wrapper-author-checklist.md).
-
-## Example user experience
-
-A configured wrapper appears as a normal command through a per-user shim:
-
-```bash
-jira issue list
-```
-
-The shim invokes the instance entry point:
-
-```bash
-underwrap-work jira issue list
-```
-
-The target receives its configured projection for that invocation; the caller's
-shell never receives the token.
-
-## Permission model
-
-The backend stores one permission row per
-`(runtime client instance, wrapper, resource)`. Each row has:
-
-- a permission mode: `Locked`, `Unlocked`, `UnlockedUntil`, or
-  `UnsafeDebugUntil`;
-- a `writable` flag for files/libsecret writeback.
-
-`UnsafeDebugUntil` is the only mode that admits the debug variant. It launches
-an intentionally unsafe incident-debug tool with access to the projection, so
-it is time-bounded and requires explicit confirmation in the admin UI.
-
-Per-invocation approval is not part of underwrap. Use an OS-level mechanism
-when a human prompt is required.
-
-## Development
-
-Enter the development shell and run the focused checks you need:
-
-```bash
-nix develop
-cargo test --workspace
-cargo fmt -- --check
-cargo clippy --all-targets --workspace -- -D warnings
-cd web && npm test && npm run build
-```
-
-Run the deterministic flake gate for the current supported system with:
-
-```bash
-nix flake check
-```
-
-It covers Rust tests and static checks, the pinned Rust advisory snapshot, SPA
-Vitest and production builds, both complete NixOS examples, the focused NixOS
-module evaluators, and coverage generation. On `x86_64-linux` it also includes
-the NixOS VM test; that check is intentionally unavailable on `aarch64-linux`.
-Playwright browser tests and the live npm advisory query remain separate; see
-[Testing](docs/testing.md) for commands and exact boundaries.
-
-## Documentation
-
-Start with the [documentation index](docs/index.md).
-
-- [Getting started](docs/getting-started.md)
-- [Configuration](docs/configuration.md)
-- [Architecture](docs/architecture.md)
-- [Security](docs/security.md)
-- [Backend reference](docs/backend.md)
-- [Admin UI](docs/admin-ui.md)
-- [Testing](docs/testing.md)
-
-## Project status
-
-The wrapper chain, backend, admin SPA, environment projection, file projection,
-private Secret Service mode, multi-instance NixOS deployment, and end-to-end VM
-tests are implemented. The project remains pre-release while its interfaces,
-documentation, operational ergonomics, and security analysis are refined.
+For non-sensitive questions and bug reports, use [GitHub issues](https://github.com/rschaffar/underwrap/issues).
+For suspected vulnerabilities, follow the [private reporting procedure](SECURITY.md); do not put secrets or exploit details in a public issue.
 
 ## License
 
-Licensed under either:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)); or
-- MIT ([LICENSE-MIT](LICENSE-MIT)).
-
-at your option.
-
-Unless explicitly stated otherwise, contributions intentionally submitted for
-inclusion are dual-licensed on the same terms.
+Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
+Unless explicitly stated otherwise, contributions intentionally submitted for inclusion are dual-licensed on the same terms.

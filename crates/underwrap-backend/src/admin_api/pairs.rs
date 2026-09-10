@@ -207,10 +207,10 @@ pub(crate) async fn handle_admin_pair_with_new_resource(
     save_resources_document(store.as_ref(), &res_doc)
         .into_internal("persisting resources document")?;
     if let Err(e) = save_pairs_document(store.as_ref(), &pairs_doc) {
-        // Best-effort rollback so the resource doesn't dangle without
-        // its companion pair. If even the rollback fails, the operator
-        // sees the original error; the audit trail still has the
-        // success of the first save vs. the failure of the second.
+        // Best-effort rollback of the separately saved resource catalogue.
+        // A failed rollback leaves possible orphan state and logs a warning;
+        // the caller receives the original pair-save error, not a transaction
+        // outcome or a successful resource/pair audit event.
         if let Err(rollback_err) = save_resources_document(store.as_ref(), &original_resources) {
             tracing::warn!(
                 err = format!("{rollback_err:#}"),

@@ -1,6 +1,6 @@
 [package]
 name = "underwrap-exec"
-description = "Execution wrapper — obtains secret from daemon, injects, drops privilege, execs target"
+description = "Setgid entry stage — requests an invocation, drops identity, and hands off to underwrap-ns"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

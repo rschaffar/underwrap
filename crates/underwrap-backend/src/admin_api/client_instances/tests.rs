@@ -44,7 +44,7 @@ fn assert_registry_failure(
     assert!(log.contains(registry_path.as_ref()), "{log}");
 }
 
-fn f015_client_cert_pem(label: &str) -> String {
+fn registry_client_cert_pem(label: &str) -> String {
     let key = rcgen::KeyPair::generate().unwrap();
     let mut params = rcgen::CertificateParams::new(vec![label.to_string()]).unwrap();
     params
@@ -281,9 +281,8 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
 
 #[test]
 fn client_instance_update_returns_ok_when_remap_cascade_fails() {
-    // Regression for the post-commit ordering bug: the on-disk
-    // registry update lands before the cascade against the old
-    // store's policy document. If the cascade fails the response
+    // The on-disk registry update commits before the best-effort cascade
+    // against the old store's policy document. If the cascade fails the response
     // must still report success — returning 500 would leave the
     // caller assuming the remap did not take while the registry
     // already holds the new mapping.
@@ -462,7 +461,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
 }
 
 #[test]
-fn f015_client_create_blocked_registry_publishes_no_candidate_and_retries_cleanly() {
+fn registry_client_create_blocked_registry_publishes_no_candidate_and_retries_cleanly() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));
     let principal = admin_principal();
@@ -536,7 +535,7 @@ fn f015_client_create_blocked_registry_publishes_no_candidate_and_retries_cleanl
 }
 
 #[test]
-fn f015_client_update_persists_before_publishing_and_cascading() {
+fn registry_client_update_persists_before_publishing_and_cascading() {
     use underwrap_protocol::policy::WrapperApprovalMode;
     use underwrap_protocol::service::AdminWrapperPermissionUpsertRequest;
 
@@ -589,7 +588,7 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
         Extension(principal.clone()),
         Path(old_store_id.clone()),
         Body(AdminResourceCreateRequest {
-            name: "F-015 resource".into(),
+            name: "registry resource".into(),
         }),
     ));
     assert_eq!(resource_status, StatusCode::OK, "{resource}");
@@ -599,7 +598,7 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
         Extension(principal.clone()),
         Path(old_store_id.clone()),
         Body(AdminPairCreateRequest {
-            wrapper: "f015-wrapper".into(),
+            wrapper: "registry-wrapper".into(),
             resource_id: resource_id.clone(),
         }),
     ));
@@ -610,13 +609,13 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
         axum::extract::Path((
             old_store_id.clone(),
             client_id.clone(),
-            "f015-wrapper".into(),
+            "registry-wrapper".into(),
             resource_id,
         )),
         Body(AdminWrapperPermissionUpsertRequest {
             mode: WrapperApprovalMode::Unlocked,
             writable: false,
-            reason: Some("F-015 evidence".into()),
+            reason: Some("registry evidence".into()),
         }),
     ));
     assert_eq!(permission_status, StatusCode::OK, "{permission}");
@@ -629,7 +628,7 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
     let policy_before = load_policy_document(old_backend.as_ref()).unwrap();
     assert_eq!(policy_before.permissions.len(), 1);
 
-    let replacement_cert = f015_client_cert_pem("f015-replacement");
+    let replacement_cert = registry_client_cert_pem("registry-replacement");
     let mut candidate = before.clone();
     candidate.display_name = "after".into();
     candidate.current_store_id = new_store_id.clone();
@@ -722,7 +721,7 @@ fn f015_client_update_persists_before_publishing_and_cascading() {
 }
 
 #[test]
-fn f015_client_delete_blocked_registry_preserves_record_and_permission_until_retry() {
+fn registry_client_delete_blocked_registry_preserves_record_and_permission_until_retry() {
     use underwrap_protocol::policy::WrapperApprovalMode;
     use underwrap_protocol::service::AdminWrapperPermissionUpsertRequest;
 
@@ -767,7 +766,7 @@ fn f015_client_delete_blocked_registry_preserves_record_and_permission_until_ret
         Extension(principal.clone()),
         Path(old_store_id.clone()),
         Body(AdminResourceCreateRequest {
-            name: "F-015 delete resource".into(),
+            name: "registry delete resource".into(),
         }),
     ));
     assert_eq!(resource_status, StatusCode::OK, "{resource}");
@@ -777,7 +776,7 @@ fn f015_client_delete_blocked_registry_preserves_record_and_permission_until_ret
         Extension(principal.clone()),
         Path(old_store_id.clone()),
         Body(AdminPairCreateRequest {
-            wrapper: "f015-delete-wrapper".into(),
+            wrapper: "registry-delete-wrapper".into(),
             resource_id: resource_id.clone(),
         }),
     ));
@@ -788,13 +787,13 @@ fn f015_client_delete_blocked_registry_preserves_record_and_permission_until_ret
         axum::extract::Path((
             old_store_id.clone(),
             client_id.clone(),
-            "f015-delete-wrapper".into(),
+            "registry-delete-wrapper".into(),
             resource_id,
         )),
         Body(AdminWrapperPermissionUpsertRequest {
             mode: WrapperApprovalMode::Unlocked,
             writable: true,
-            reason: Some("F-015 delete evidence".into()),
+            reason: Some("registry delete evidence".into()),
         }),
     ));
     assert_eq!(permission_status, StatusCode::OK, "{permission}");

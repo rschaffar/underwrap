@@ -1,983 +1,348 @@
 # Testing
 
-underwrap uses four complementary validation layers:
+Use [CONTRIBUTING](../CONTRIBUTING.md#prepare-a-checkout) for fresh-checkout preparation.
+Run commands from the repository root inside `nix develop` unless a command explicitly enters another directory.
+Tests provide regression evidence, not a security proof or an independent end-to-end audit.
 
-1. Rust unit and integration tests;
-2. SPA unit/build/browser tests;
-3. workspace lint, formatting, audit, dependency-policy, and coverage checks;
-4. a NixOS VM test of the deployed privilege and namespace model.
+## Choose checks by change
 
-No layer is a security proof. Together they detect regressions in code paths,
-wire contracts, packaging, and the real NixOS wrapper chain.
+| Changed boundary | Checks before committing |
+| --- | --- |
+| One Rust crate | Crate tests, Rustfmt, denied-warning Clippy |
+| Runtime DTO, policy, or resource channel | Protocol, backend, and daemon tests; integration runner; namespace tests when affected |
+| Admin handler or DTO | Backend tests, OpenAPI drift and semantic checks, SPA tests/build |
+| SPA behavior | Vitest and build; selected coverage gate for API/library work; Playwright for user flows |
+| Storage or encryption | Store/backend tests and real daemon/backend integration |
+| NixOS module | Focused evaluators, shipped examples, relevant workspace Nix checks, VM |
+| Entry chain, peer auth, identities, namespaces, capabilities, mounts, or fd lifecycle | Relevant crate and integration tests plus VM |
+| Documentation or examples | Links, paths, example parser/evaluator checks, affected generated-contract checks |
 
-## Fast local loop
+Unavailable checks remain explicit gaps, not passes.
+Review security-sensitive changes against [Security](security.md) and the joint source-review requirements in [AGENTS.md](../AGENTS.md).
 
-For one Rust crate:
+## Rust and integration commands
+
+For a prepared checkout, use focused tests while iterating:
 
 ```bash
-cargo test -p <crate>
+cargo test --locked -p underwrap-protocol config
+cargo test --locked -p underwrap-protocol resource_blob::tests
+cargo fmt -- --check
+cargo clippy --locked --all-targets --workspace -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps
 ```
 
-`cargo test -p underwrap-protocol config` covers the full daemon configuration grammar at runtime-validation boundaries.
-It exercises exact instance and wrapper name lengths, reserved `debug`, the complete full-daemon path-field inventory, canonical relative files paths, canonical absolute and tilde access-path domains, same-domain duplicate and overlap rejection, forced path environment values, and retained unrestricted resource, URL, arbitrary environment, and `PATH` contracts.
-The namespace-helper path belongs to the separately tested strict entry-stage sidecar rather than `DaemonConfig`.
+The last two workspace commands need the populated `UNDERWRAP_WEB_DIST` from checkout preparation.
+The direct Rustdoc command explicitly supplies `--locked`; the pinned Crane `workspace-doc` check supplies it and `--no-deps` through its defaults.
 
-For cross-component daemon/backend behavior:
+The integration runner builds the exact current-system prerequisites without result links and forwards arguments after its fixed package selector:
 
 ```bash
 ./crates/integration-tests/run
+./crates/integration-tests/run harness::tests
+./crates/integration-tests/run tests::store_migration
 ```
 
-The runner supports `x86_64-linux` and `aarch64-linux`. It resolves the current
-system through Nix, builds exactly that system's `web-build` check,
-`packages.<system>.underwrapd`, and `packages.<system>.underwrap-backend` without
-creating result links, verifies `index.html` plus each package-specific
-`/bin/<name>` executable, and runs the crate in the pinned development shell. It
-supplies only those three prerequisite paths to the tests and preserves an
-explicitly set `CARGO_TARGET_DIR`; additional arguments are forwarded to
-`cargo test` after the fixed package selector.
-Host capability-dependent skips remain distinct from these mandatory build
-prerequisites.
+It accepts only `x86_64-linux` and `aarch64-linux`, verifies the SPA index and each package-specific executable, and preserves an explicitly set `CARGO_TARGET_DIR`.
+Host capability-dependent skips are separate from these mandatory prerequisites.
+A test-harness executable is not a substitute for either packaged service binary.
 
-The focused integration-harness lifecycle tests exercise immediate backend-thread ownership, daemon-task abort-on-drop, and eventual temporary-directory cleanup after fallback fixture drop.
+To run the raw workspace suite, prepare all three artifacts explicitly:
 
 ```bash
-./crates/integration-tests/run harness::tests -- --nocapture
+system=$(nix eval --impure --raw --expr builtins.currentSystem)
+web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build")
+daemon_package=$(nix build --no-link --print-out-paths ".#packages.${system}.underwrapd")
+backend_package=$(nix build --no-link --print-out-paths ".#packages.${system}.underwrap-backend")
+test -f "$web_dist/index.html"
+test -x "$daemon_package/bin/underwrapd"
+test -x "$backend_package/bin/underwrap-backend"
+env "UNDERWRAP_WEB_DIST=$web_dist" \
+  "CARGO_BIN_EXE_underwrapd=$daemon_package/bin/underwrapd" \
+  "CARGO_BIN_EXE_underwrap-backend=$backend_package/bin/underwrap-backend" \
+  cargo test --locked --workspace
 ```
 
-This is fixture failure-path evidence and does not establish production shutdown semantics or universal process cleanup after runtime termination.
+### Isolated local ABI
 
-For the SPA:
-
-```bash
-cd web
-npm ci                  # first run or after lockfile changes
-npm test                 # fast complete-suite loop
-npm run test:coverage    # selected API/library release gate
-npm run build
-```
-
-Run formatting and lint before committing Rust changes:
-
-```bash
-cargo fmt -- --check
-cargo clippy --all-targets --workspace -- -D warnings
-```
-
-### Protocol profile isolation
-
-The protocol's default test command exercises the unchanged `full` profile:
-
-```bash
-cargo test -p underwrap-protocol
-```
-
-The wrapper-request tests pin the exact request discriminant, `gh-authorized` selector bytes, and `Real` variant byte.
-They also append the retired encoded session field and require exact trailing-byte rejection, so no compatibility parser can silently restore it.
-
-The namespace wrapper selects the explicit `local-abi` profile, which can be checked independently with:
+The protocol default is `full`; `underwrap-ns` disables defaults and selects `local-abi`.
+Check that profile separately from a workspace build:
 
 ```bash
 cargo check --locked -p underwrap-protocol --no-default-features --features local-abi
 cargo test --locked -p underwrap-protocol --no-default-features --features local-abi
 cargo clippy --locked -p underwrap-protocol --no-default-features --features local-abi -- -D warnings
-cargo test -p underwrap-ns
-```
-
-Use a fresh target directory when module-compilation evidence must be independent of prior artifacts:
-
-```bash
-target_dir="$(mktemp -d)"
-CARGO_TARGET_DIR="$target_dir" cargo check --locked -p underwrap-ns
-rg -l 'src/(config|control|entities|policy|service|scm_rights)(/|\.rs)' \
-  "$target_dir"/debug/deps/underwrap_protocol-*.d
-rm -rf "$target_dir"
-```
-
-The `rg` command must print no dep-info path because the isolated protocol compilation includes only `access`, `exec`, `ipc`, `libsecret_publication`, `message`, `resource`, `resource_blob`, `target_env`, and `variant`.
-Inspect the isolated package feature and normal/build dependency trees with:
-
-```bash
+cargo test --locked -p underwrap-ns
 cargo tree --locked -p underwrap-ns -e features --depth 2
 cargo tree --locked -p underwrap-ns -e normal,build --depth 2
 ```
 
-The feature tree must show `local-abi` without protocol `default` or `full`.
-The normal/build tree must contain no protocol-owned Tokio, Utoipa, Serde YAML, or libc edge, while retaining `underwrap-ns`'s direct libc dependency.
-These commands establish isolated package compile and review coupling only.
-They do not establish a reduced runtime trusted computing base or workspace-wide feature isolation because Cargo can unify features when a build contains a full-profile consumer.
+The isolated feature tree must select `local-abi` without protocol `default` or `full`.
+Its protocol-owned Tokio, Utoipa, Serde YAML, and libc edges are absent; the namespace package retains its direct libc dependency.
+When inspecting dep-info for module-compilation evidence, use a fresh `CARGO_TARGET_DIR` and check that protocol `config`, `control`, `entities`, `policy`, `service`, and `scm_rights` sources are absent.
+This reduces isolated compile and review coupling, not the runtime trusted computing base, binary size, or exploitability set.
+Cargo can unify features when a build includes a full-profile consumer.
 
-## Deterministic repository checks
-
-Flake package, check, and development-shell outputs support exactly
-`x86_64-linux` and `aarch64-linux`. The flake declares these checks on both
-systems:
-
-```bash
-nix build .#checks.x86_64-linux.workspace-test
-nix build .#checks.x86_64-linux.workspace-nextest
-nix build .#checks.x86_64-linux.workspace-clippy
-nix build .#checks.x86_64-linux.workspace-doc
-nix build .#checks.x86_64-linux.workspace-fmt
-nix build .#checks.x86_64-linux.workspace-audit
-nix build .#checks.x86_64-linux.workspace-deny
-nix build .#checks.x86_64-linux.workspace-llvm-cov
-nix build .#checks.x86_64-linux.web-build
-nix build .#checks.x86_64-linux.web-test
-nix build .#checks.x86_64-linux.examples-nixos-eval
-nix build .#checks.x86_64-linux.frontend-backend-url-eval
-nix build .#checks.x86_64-linux.frontend-security-assertions-eval
-nix build .#checks.x86_64-linux.frontend-swap-posture-eval
-```
-
-`workspace-doc` builds workspace Rustdoc with warnings denied and uses pinned Crane defaults for `--no-deps` and `--locked`.
-For the direct equivalent, supply the exact Nix-built SPA artifact required by the backend:
-
-```bash
-system=$(nix eval --impure --raw --expr builtins.currentSystem)
-web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build")
-RUSTDOCFLAGS='-D warnings' UNDERWRAP_WEB_DIST="$web_dist" cargo doc --workspace --no-deps
-nix build ".#checks.${system}.workspace-doc"
-```
-
-`web-build` is the production SPA artifact embedded in the Rust package.
-`web-test` runs the complete Vitest suite and enforces the selected API/library 80-percent statement, branch, function, and line thresholds.
-Both checks use one npm dependency closure pinned by the committed lockfile and flake hash.
-`examples-nixos-eval` evaluates
-and builds both shipped examples as complete NixOS systems through the real
-underwrap module and selected system package.
-
-Run the complete deterministic flake gate for the current supported system
-with:
+## Deterministic Nix gate
 
 ```bash
 nix flake check
+nix flake check --all-systems --no-build
 ```
 
-This aggregate covers the listed Rust tests, formatting and lint, pinned
-RustSec advisory snapshot, dependency policy, coverage generation, SPA unit and
-production builds, example systems, and focused NixOS module evaluators. On
-`x86_64-linux` it additionally includes the production VM check:
+The first command builds the deterministic checks for the current supported system.
+The second evaluates both supported systems without cross-building them and is not runtime evidence.
+The [flake](../flake.nix) declares these independently selectable checks:
+
+| Checks | Scope |
+| --- | --- |
+| `workspace-test`, `workspace-nextest` | Workspace tests with SPA and packaged service prerequisites |
+| `workspace-clippy`, `workspace-fmt`, `workspace-doc` | Lint, formatting, warning-free Rustdoc |
+| `workspace-audit` | Pinned RustSec advisory snapshot |
+| `workspace-deny` | Dependency bans and sources, not a license-policy gate |
+| `workspace-llvm-cov` | Rust coverage report generation |
+| `web-build`, `web-test` | Production SPA and complete Vitest suite with selected coverage thresholds |
+| `examples-nixos-eval` | Both shipped NixOS examples through the real module and package, including their system builds |
+| `frontend-backend-url-eval`, `frontend-security-assertions-eval`, `frontend-swap-posture-eval` | Focused production-module predicates and generated configuration |
+
+Select one check with the current system, for example:
+
+```bash
+system=$(nix eval --impure --raw --expr builtins.currentSystem)
+nix build ".#checks.${system}.workspace-doc"
+nix build ".#checks.${system}.web-test"
+```
+
+The production VM check exists only on `x86_64-linux` and is included in that system's aggregate:
 
 ```bash
 nix build .#checks.x86_64-linux.vm-test
 ```
 
-The VM check is intentionally not exposed on `aarch64-linux`. Evaluate every
-supported system's outputs without cross-building them with:
+It needs a suitable VM builder with the required virtualization support.
+AArch64 package/check declarations do not establish AArch64 runtime validation.
+The deployed Rust artifacts are the actual dynamically linked Nix packages installed through NixOS security wrappers, not an inferred static or musl build.
+Playwright and live npm advisory queries are deliberately outside the sandboxed flake aggregate.
+
+## Browser and live advisory checks
+
+Use a non-root test user inside `nix develop` for the real filesystem-permission failure scenario.
+Prepare the local SPA and backend from the same changed tree, with an explicit binary path that also works when another `CARGO_TARGET_DIR` is configured:
 
 ```bash
-nix flake check --all-systems --no-build
+npm --prefix web ci
+npm --prefix web run build
+CARGO_TARGET_DIR="$PWD/target/browser-tests" \
+  UNDERWRAP_WEB_DIST="$PWD/web/dist" \
+  cargo build --locked -p underwrap-backend
+export UNDERWRAP_BACKENDD_BINARY="$PWD/target/browser-tests/debug/underwrap-backend"
+(cd web && npm run test:e2e-support && npm run test:e2e)
 ```
 
-The direct SPA commands remain useful for a focused local loop:
+`UNDERWRAP_BACKENDD_BINARY` is the fixture's exact variable name.
+The browser fixture errors if its backend binary or local `web/dist/index.html` is missing; it does not skip those prerequisites.
+The development shell selects Nix-compatible browsers and driver Node without downloading Playwright browsers.
+For interactive execution, use `npm --prefix web run test:e2e:ui` after the same preparation.
+
+The fixture runs disposable HTTPS backends with generated test PKI and offline operator provisioning.
+Its configured certificate-error bypass is test infrastructure, not a production trust policy.
+Playwright retains traces and screenshots on failure, so artifacts may contain rendered test key material; do not publish them unreviewed or use live secrets.
+
+Run dependency-health queries separately:
 
 ```bash
-cd web && npm test && npm run test:coverage && npm run build
+(cd web && npm ls --all && npm audit --package-lock-only)
+(cd web && npm outdated)
 ```
 
-Playwright is a separate host/browser integration suite and the live npm audit
-is a separate advisory-service query; neither is part of the sandboxed flake
-aggregate.
+`npm audit` queries a live advisory service; `npm outdated` can return nonzero when newer versions exist.
+Review results against the selected compatibility policy rather than treating all newer majors as supported or every advisory as a reachable exploit.
+Neither a pinned snapshot nor a clean live scan establishes absence of undisclosed or future vulnerabilities.
 
-## Dependency audits
+## Toolchain and dependency policy
 
-Audit the npm lock separately from the aggregate flake checks:
+Rust and Cargo are pinned exactly to **1.97.1** for Nix development, checks, and release builds, and every edition-2024 workspace package declares `rust-version = "1.97.1"`.
+That minimum does not promise independent validation of newer compilers.
 
-```bash
-cd web && npm audit --package-lock-only
-```
-
-The pinned RustSec snapshot used by `workspace-audit` currently reports zero
-fixable findings and exactly two unmaintained notices without patched releases:
-`paste` (`RUSTSEC-2024-0436`) and `rustls-pemfile` (`RUSTSEC-2025-0134`). Node is
-build and development tooling for the SPA; the backend embeds the resulting
-static assets, and Node does not enter its runtime closure. Keep the direct
-`@playwright/test` package version aligned with the nixpkgs Playwright driver
-when updating nixpkgs so browser revisions remain compatible.
-
-These audits describe the pinned lockfiles and advisory snapshots at the time
-they run. They do not prove that dependencies are free of undisclosed or future
-vulnerabilities, nor that an affected package path is exploitable by underwrap.
-
-## Frontend and OpenAPI tool matrix
-
-The committed npm lock and pinned Nix inputs define the validated frontend tool matrix.
-The caret constraints in `web/package.json` permit compatible future lock regeneration, but unselected versions are not independently supported.
-
-| Layer | Validated versions |
-| --- | --- |
-| Nix development/build tools | Node 24.19.0 and npm 11.17.0 |
-| SPA runtime | React and React DOM 19.2.8 |
-| Production build | Vite 8.2.2, `@vitejs/plugin-react` 6.1.1, Tailwind CSS and its Vite plugin 4.3.3, and TypeScript 5.9.3 |
-| Unit tests | Vitest and `@vitest/coverage-v8` 4.1.11, jsdom 30.0.1, `@testing-library/dom` 10.4.1, `@testing-library/jest-dom` 7.0.1, `@testing-library/react` 16.3.3, and `@testing-library/user-event` 14.6.6 |
-| Browser tests | `@playwright/test` 1.61.1 with the nixpkgs Playwright driver 1.61.1; the pinned driver helper uses Node 22.23.2 through `PLAYWRIGHT_NODEJS_PATH` |
-| OpenAPI generation and client | utoipa 5.5.0, utoipa-axum 0.2.0, OpenAPI 3.1.0, openapi-typescript 7.13.0, and openapi-fetch 0.17.0 |
-
-TypeScript remains on 5.9 because openapi-typescript 7 declares a TypeScript `^5.x` peer.
-OpenAPI 3.1.0 remains a valid 3.1 feature-line document and is the version emitted by the current generator; publication of OpenAPI 3.2 does not by itself require a format migration.
-The Playwright package is pinned exactly rather than with a caret so npm cannot select browser protocol code that differs from the pinned nixpkgs driver.
-
-Verify the selected matrix and dependency health with:
-
-```bash
-nix develop --command bash -lc '
-  node --version
-  npm --version
-  "$PLAYWRIGHT_NODEJS_PATH" --version
-  cd web
-  npx --no-install playwright --version
-  npm ci
-  npm ls --all
-  npm audit --package-lock-only
-  npm outdated
-  npm test
-  npm run test:coverage
-  npm run build
-'
-```
-
-A clean `npm outdated` result intentionally retains only newer TypeScript and Node-type majors plus the newer Playwright release that are outside the compatibility constraints above.
-Treat any other direct outdated row, peer-dependency error, audit finding, generated OpenAPI drift, unit-test failure, or build failure as matrix maintenance work rather than silently widening the support claim.
-
-## Rust toolchain
-
-Rust 1.97.1 is the minimum supported compiler for every workspace package.
-The Nix development, release, and check environment pins Rust and Cargo exactly to 1.97.1.
-Although `rust-version` is a minimum constraint, newer compilers are not independently promised by this pinned validation matrix.
-
-The workspace intentionally keeps Cargo resolver 2.
-`Cargo.lock` pins dependency versions, and Nix pins Rust/Cargo 1.97.1 for normal builds.
-Resolver 2's allow behavior makes dependency re-resolution expose a dependency that requires newer Rust as an error at the exact 1.97.1 build instead of resolver 3 falling back to an older compatible version.
-Resolver 2 does not enforce package `rust-version` during dependency selection; the exact Rust 1.97.1 build provides the enforcement evidence.
-
-Verify the package metadata, locked dependency graph, and complete pinned toolchain selection with:
+Cargo resolver **2** is deliberate.
+`Cargo.lock` selects dependencies, while resolver 2's allow behavior exposes a newly selected dependency's higher Rust requirement at the exact pinned build instead of resolver 3 falling back to an older compatible version.
+Resolver 2 itself does not enforce package `rust-version` during selection; the pinned build supplies that enforcement evidence.
+Changes require synchronized manifests, lock evidence, Nix tooling, and support documentation.
 
 ```bash
 cargo metadata --locked --format-version 1 --no-deps
 cargo tree --workspace --locked --edges normal,build,dev
-nix develop -c bash -lc 'rustc --version; rustc -Vv; cargo --version; cargo clippy --version; rustfmt --version'
+rustc --version
+rustc -Vv
+cargo --version
+cargo clippy --version
+rustfmt --version
 ```
 
-The metadata command reports exactly eleven edition-2024 packages with `rust_version` set to `1.97.1`.
-The flake retains the `rust-src`, `rust-analyzer`, and `llvm-tools-preview` components.
+The flake retains `rust-src`, `rust-analyzer`, and `llvm-tools-preview`.
+The committed npm lock and Nix inputs define the selected frontend matrix, not every version permitted by a caret constraint:
 
-Rust 1.97.1 is the fixed release selected to move release builds beyond the
-known LLVM optimizer defect range that included the previous reproducible
-compiler. Rebuilding and testing with the fixed compiler removes that avoidable
-toolchain uncertainty; it does not establish that any prior underwrap artifact
-was miscompiled or add a runtime security guarantee.
-
-## Rust coverage
-
-Workspace tests cover:
-
-- config parsing and validation;
-- IPC framing and SCM_RIGHTS transfer;
-- runtime/admin DTO serialization;
-- permission mode evaluation;
-- canonical resource blob handling, including deterministic identifier-only
-  enumeration of env, files, libsecret aliases, empty/nonempty collections, and
-  items;
-- plain and encrypted storage, including active resource-key absence and
-  repeated false deletion after removing a typed-empty blob;
-- daemon peer authentication and wrapper intake, including a private injected
-  operation seam shared by the live resolver. Deterministic traces prove that
-  only `SO_PEERPIDFD`'s `ENOPROTOOPT`/unsupported result reads the
-  `SO_PEERCRED` PID's status and selects `PeerCredFallback`; all other
-  acquisition errors, malformed descriptor payloads, pidfd PID/status
-  resolution failures, malformed status, and credential mismatches reject
-  without fallback. Every accepted pidfd trace closes exactly once after its
-  final resolution/status use, including all rejection outcomes;
-- daemon runtime-client admission and progress: the exact production 32-call/
-  30-second policy, independent direct async requests, timeout permit release,
-  fail-fast saturation without request start, and later admission;
-- backend runtime registration validation before storage, including exact
-  within-request duplicate rejection, name-error precedence, valid near misses,
-  checked internal insertion failures, and separate-call idempotence;
-- backend runtime policy and writeback validation;
-- six registry failure-atomicity unit matrices—store create/update/delete and
-  runtime client instance create/update/delete—using real directory
-  rename/regular-file blockers. They pin the exact 500 codes, unchanged live
-  and freshly loaded records after helper failure, absence of failed success
-  audit/cascade effects, successful retry publication, and store backend/state/
-  lifecycle-lock or complete client-record identity where applicable;
-- store key-generation, encrypted-create, and backend-migration unit matrices covering exact no-cache headers, storage-neutral generation, strict pre-mutation key validation including explicit-null extraction, lifecycle states and action projections, lease admission and drainage, both conversion directions, stable metadata and logical bytes, exact mode `0700` including special-bit rejection, streaming value release, displaced-source reopen and revalidation, runtime responsiveness, complete phase-failure mappings, rollback, cleanup, restart detection, and recovery-required disposition;
-- resource deletion blocker aggregation, malformed-blob fail-before behavior,
-  blob-delete-before-catalog ordering, storage-failure state re-read, and
-  absence of reconstruction or false success;
-- centralized selected-store admin reference checks: every explicit flat route
-  and all eight libsecret operations reject a missing parent before blob access;
-  permission upsert checks client/store, resource, and exact pair in order before
-  policy access; ordinary pair create uses the canonical value-free resource
-  404; rejection snapshots and operation traces prove no effect while valid,
-  disabled-client, missing-child, and idempotent-delete behavior remains intact;
-- target environment, capability, UID, idmap, mount, and writeback helpers, including all six shared forced home/XDG names, accepted near misses, trusted forced values, hostile passthrough suppression, ordinary resource precedence, and env-disabled conditional behavior;
-- Secret Service data model and production D-Bus handler behavior, including the
-  collection/item/alias mutation rejection matrix with structural live-store
-  equality, failed-create object-registration absence, ACKed create and
-  replacement paths, write-lock retention through exact ACK, wrong-generation
-  and EOF preservation, and a rejected generation followed by an unrelated
-  accepted generation;
-- private libsecret framing, strict canonical/semantic validation, exact
-  generation ACK/REJECT, fallback, terminal EOF/EAGAIN, and near-cap
-  backpressure;
-- real daemon/backend integration flows.
-
-### Daemon resource-open parser evidence
-
-The focused protocol resource-blob tests cover empty and populated typed round trips, byte-stable canonical re-encoding, independently built equality, sorted map serialization, Unicode, arbitrary non-UTF-8 secret bytes, empty sections, unknown schema rejection, garbage JSON rejection, inclusive complete-resource acceptance at one byte below and exactly 2 MiB, and size-before-parse plus serialization rejection at one byte above 2 MiB.
-The timestamp vectors below add exact safe-integer field and parse-order coverage.
-Strict libsecret publication tests separately cover exact canonical bytes, defaults and unknown or duplicate struct fields at that stricter boundary, identifier and alias-reference semantics, and the inclusive 1-MiB publication cap; they do not turn those checks into daemon-open semantics.
-
-The current `underwrapd` tests decode valid invocation-open `Deny` responses in the runtime-client concurrency fixtures and exercise the request deadline and admission behavior, but they do not drive a secret-bearing `Allow` response through `wrapper_flow/read.rs`.
-The integration runner exercises valid backend `Allow` responses through the real daemon parser, original-byte channel cache, Checkout framing, and receiver on ordinary service-mode reads, a resource above the generic 64-KiB frame limit, exact-2-MiB Checkout and Checkin, writable and read-only finalization, and follow-up Checkout.
-The direct runtime API integration tests additionally pin backend open and finalize behavior, but direct endpoint tests are not daemon parser tests.
-
-Protocol and namespace matrices derive all six cases from the shared forced-name authority, while backend handler tests cover value-free PUT and rename-destination rejection, exact blob preservation, and accepted near-miss recovery.
-The focused `forced_target_env_names_fail_closed_and_recover` integration test runs one real backend and daemon with env-enabled and files-only wrappers.
-Authenticated admin PUT requests reject all six shared forced names with structured HTTP 400 responses and byte-identical canonical resource state.
-After direct canonical invalid-state injection, authenticated per-key DELETE requests reject the forced name with the same structured, value-free HTTP 400 `invalid_request`, while normal resource deletion returns `ok: false` with an identifier-only content blocker covering the malformed entry; both paths preserve the blob byte-for-byte.
-The invalid state makes the env-enabled wrapper return an identifier-only `Internal` error, and a bounded raw control connection observes the exact connection-closed result instead of receiving an SCM_RIGHTS descriptor.
-The files-only wrapper accepts the same state conditionally, a direct test-only trusted restoration simulation replaces it with every `${name}_APP` near miss and recovers to `ReadOk`, and an ordinary final Checkout proves full recovery.
-The test does not exercise an admin repair path: none exists, and no automated recovery procedure is claimed for outside-contract stored state.
-These runtime-open and Checkout requests may update pair usage metadata, so the test makes no zero-effect claim for that metadata.
-Protocol, namespace, backend-handler, and real daemon/backend tests cover this lexical boundary directly; no VM witness is used for it.
-
-There is no dedicated daemon malformed-backend-open matrix for invalid outer JSON, malformed or oversized `blob_b64`, invalid typed resource JSON, unknown/default/duplicate-field behavior, noncanonical accepted bytes, or the 1-MiB libsecret generation-readiness consequence.
-The repository has no dedicated cargo-fuzz or libFuzzer harness, fuzz target, corpus, or recorded fuzz execution for this boundary, and it does not use proptest or quickcheck here.
-The valid-flow and protocol vectors therefore do not establish malformed-input or fuzz completeness.
-
-Use these focused tests and static parser/copy inventories when reviewing this boundary:
-
-```bash
-cargo test -p underwrap-protocol resource_blob::tests
-cargo test -p underwrapd
-./crates/integration-tests/run tests::store_read::forced_target_env_names_fail_closed_and_recover -- --exact
-./crates/integration-tests/run
-rg -n 'open_request|open_invocation|blob_b64|blob_bytes|from_canonical_bytes' \
-  crates/underwrapd/src/{backend_client.rs,wrapper_flow/read.rs}
-rg -n 'SecretBytes|cached_blob|CheckoutOk|read_canonical_resource_bytes|MAX_WRAPPER_RESOURCE_FRAME_SIZE' \
-  crates/underwrap-protocol/src crates/underwrapd/src/wrapper_resource_channel.rs
-rg -n 'cargo-fuzz|libFuzzer|fuzz_target!|proptest|quickcheck' \
-  --glob '!docs/**' --glob '!tickets/**' .
-find . \( -path ./.git -o -path ./target -o -path ./result \) -prune -o \
-  -type d \( -name fuzz -o -name fuzz_targets -o -name corpus \) -print
-```
-
-The static inventory follows the owned HTTP DTO and base64 string, decoded resource vector, temporary typed `SecretBytes`, original-byte cache, Checkout copy, encoded payload, bounded receiver frame, and decoded inner copy.
-`SecretBytes` vectors in the temporary parsed resource zeroize on drop, but tests do not instrument post-drop memory and the ordinary HTTP/base64 storage, cache, Checkout/frame vectors, receiver buffers, metadata, allocator remnants, dependency allocations, and operating-system copies remain outside that mechanism.
-This evidence does not establish comprehensive zeroization or resolve the broader copy-erasure gap.
-
-Protocol resource-blob timestamp tests exercise exactly 32 boundary outcomes: four fields (`Collection.created`, `Collection.modified`, `Item.created`, and `Item.modified`) × two containers (`ResourceBlob` and `LibsecretSection`) × typed maximum encode success, independently formatted raw maximum decode success, typed maximum-plus-one encode rejection, and independently formatted raw maximum-plus-one decode rejection.
-Direct semantic-validation and strict-publication tests retain the same value-free error message, accept the inclusive maximum without temporal-order rules, and reject each field independently above the maximum.
-Mixed-defect tests pin complete-resource size before parsing, publication-body size before parsing, timestamp decoding before schema, canonical, or publication-semantic checks, and timestamp encoding before a post-serialization resource-size check.
-Those protocol tests establish the four-field encode/decode boundary and validation order only; they do not establish timestamp generation, clock correctness, future-time policy, or collection/item modification propagation.
-
-The item-setter timestamp matrix uses distinct deterministic backdated item and collection baselines without sleeps or exact wall-clock expectations.
-Store tests cover `set_secret`, `set_attributes`, and `set_label`, requiring each successful setter to change only its requested fields, preserve created and unrelated data, and assign one exact shared value above both baselines to the item and containing collection `modified` fields.
-The same store matrix covers missing collections and items for all three setters, requiring `false` and exact full-state preservation.
-Item handler ACK tests independently cover secret, attributes, and label mutations on fresh backdated stores, requiring exact published/accepted metadata equality, preserved created and unrelated fields, a shared item/collection timestamp above both baselines, and the exact same value from the `Item.Modified` getter.
-The three matching REJECT tests require the published candidate's item and collection timestamps to be equal while the complete accepted live store remains structurally unchanged, and the EOF test retains separate transport-failure evidence.
-The table-driven `item_setters_update_collection_modified_property` test invokes all three public store setters on fresh backdated stores and requires `Collection.Modified` to return the exact shared item/collection value without a D-Bus wire harness or signal assertion.
-This matrix establishes setter propagation and ACK-gated live-state behavior for these paths only; it does not establish clock correctness, temporal validity of loaded timestamps, monotonicity, subsecond ordering, signal delivery, caller response delivery, or backend durability.
-
-Focused store-boundary evidence uses strict package Rustdoc plus static dependency and production call-path inventories:
-
-```bash
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p underwrap-secretsd-store
-cargo tree --locked -p underwrap-secretsd-store -e normal --depth 1
-rg -n 'SystemTime|getrandom' crates/underwrap-secretsd-store/src
-rg -n 'store_from_section|section_from_store|publish_store|candidate\.commit' \
-  crates/underwrap-secretsd/src/{main.rs,section_store.rs,publication.rs,dbus_service/mutation.rs}
-```
-
-These checks assign collections, items, aliases, timestamps, raw bytes, and in-process time and randomness to `underwrap-secretsd-store`.
-They assign one-shot initialization conversion, candidate conversion, canonicalization, private publication, external acknowledgement, and commit ordering to the production `underwrap-secretsd` caller.
-[Architecture](architecture.md) and the [Secret Service input boundary](secretsd-security.md) are normative for the complete mechanism and security boundary.
-Static ownership evidence does not prove that callers or configured targets cannot persist or disclose data, or that accepted backend generations cannot later be persisted or disclosed.
-
-Direct shared-segment-validator tests accept common client names, leading digits and underscores, and exactly 128 ASCII bytes, while rejecting empty, 129-byte, separator, punctuation, whitespace, control, and non-ASCII input.
-Typed `SetAlias` handler tests construct only `ObjectPath::try_from`-accepted path values and cover unexpected prefixes, the collection container, nested and extra paths, a 129-byte segment, a missing exact target, malformed aliases including newline, and alias-first error precedence.
-Every invalid handler row uses a fresh secret-bearing sentinel store and an empty publication script, requires exact `InvalidArgs`, compares the complete accepted state, and checks that the error omits the sentinel.
-Valid handler rows cover ordinary, leading-digit, leading-underscore, and 128-byte aliases, a 128-byte existing collection target, root clear, missing-alias clear, and same-target set with exactly one accepted matching publication.
-These tests call the production handler with typed Rust values and do not prove D-Bus wire decoding or transport behavior.
-
-Direct `Collection.CreateItem` parser vectors cover absent, exact empty and nonempty `s` and `a{ss}` values, wrong scalar and container values, nested variants, and explicit `a{us}`, `a{su}`, and string-bearing `a{sv}` dictionaries.
-The production-handler matrix runs wrong Label with valid Attributes, valid Label with a non-dictionary, valid Label with string-bearing `a{sv}`, and both malformed with Label-first precedence under both `replace=false` and `replace=true`, including nested-variant rows in each mode and malformed input against a missing collection.
-Each malformed row uses a fresh secret-bearing accepted store, request sentinel, empty publication script, and object-server harness; it requires exact value-free `InvalidArgs`, complete state equality, no observed publication, retained known replacement registration when `replace=true`, and no diagnostic occurrence of property, attribute, or secret sentinels.
-Each capture emits and observes the non-sensitive `f046_trace_capture_control` event after subscriber installation, so sentinel omission is not inferred from a vacuous tracing sink.
-The malformed matrix also passes with `UNDERWRAP_DEBUG_SECRETSD_TRACE_METADATA=1` and one test thread after explicitly initializing and asserting enabled metadata tracing before handler dispatch.
-That aggregate evidence and static source order establish pre-lock, pre-candidate, pre-random-id, pre-publication, and pre-registration handler rejection without claiming that the empty script inventories attempted writes or that the harness enumerates unknown random paths.
-Accepted vectors cover both properties absent, each property independently absent, an ignored unknown property, strict-superset subset replacement, absent-Attributes vacuous replacement, and nonmatching creation with exact published/accepted metadata and registration outcomes.
-These tests invoke the typed production handler with already decoded zvariant values; they establish typed handler behavior but do not exercise or prove D-Bus wire signatures, frame decoding, malformed frames, or transport behavior.
-
-The handler tests enforce the production ordering: retain the write lock, clone the accepted store once, mutate the candidate, canonicalize and publish it, observe the exact matching ACK, and only then commit.
-Preparation, publication, rejection, EOF, response mismatch, and transport failures preserve accepted live memory.
-Tests directly cover the complete-store zeroization helper and handler routes.
-Source/static inventory verifies that discarded candidate and displaced secret buffers, including deletion and replacement paths, are zeroized before drop; the suite does not instrument memory after drop.
-The lifecycle tests keep the separate host-side consequence explicit: a completely written ACK can remain eligible when secretsd or the D-Bus caller misses success, but ACK is neither caller delivery nor backend durability and a later Checkin can still fail.
-
-Some integration tests skip when the host cannot supply the required Linux
-capabilities. Focused `underwrap-ns` tests cover complete-plan zero-side-effect
-rejection, exact gate parsing, CLOEXEC/opposite-end ownership, returned-exec
-failure reporting, helper/target fd non-retention, parent death before/after
-arming and after credential-clear rearming, inherited SIGCHLD restoration,
-exact nonblocking target-status framing, wait failure, the real gate × status ×
-relay dispatch seam, and libsecret publication framing/selection.
-The libsecret helper-child tests pin both exact endpoint matrices, retained gate CLOEXEC, selected-endpoint CLOEXEC clearing and usability, controlled-error and caught-panic `_exit` outcomes without return, and a reused descriptor that remains live and readable through injected unwind.
-The gate, status, and publication channels are independent evidence; none authorizes a lifecycle by itself.
-The VM independently covers the deployed privileged chain,
-relay/PID-2 topology, supervisor/relay termination, complete namespace teardown,
-status/writeback preservation, old same-UID pathname irrelevance, legitimate
-mutation persistence, near-cap publication persisted through Checkin and
-subsequent D-Bus readback, exact-2-MiB files round trips, rejected oversize
-admin/files mutations with byte-identical prior storage, host-only
-receiver/secretsd-only publisher ownership, and plaintext/exact-base64 log
-hygiene.
-
-Keygen NSS tests inject unavailable, zero, distinct negative, unrepresentable, and oversized buffer hints; exact checked growth and exact-maximum `ERANGE`; arithmetic and initial/growth allocation failures; `EINTR` and another non-`ERANGE` error; not-found, success, and a foreign result pointer.
-They prove that only `ERANGE` grows, non-`ERANGE` errors are not retried, operational failures precede key generation and identity-file mutation, and daemon-owner success/not-found behavior retains its ordering.
-Real NSS probes cover root and a missing account.
-Synchronized calls through public `Cli::resolve_targets` are a concurrent public-API smoke/stability check: they verify stable results when calls start concurrently, but do not prove overlap inside NSS or the absence of races.
-
-Daemon startup NSS tests inject unavailable, zero, distinct negative, unrepresentable, and oversized group-buffer hints; exact doubling and cap-to-1-MiB growth; success and `ERANGE` at the maximum; checked arithmetic; initial and growth allocation failures; `EINTR` and another non-`ERANGE` error; embedded-NUL, not-found, exact-result, and foreign-result-pointer outcomes.
-They pin caller-owned `getgrnam_r` result validation, copied `gr_gid`, ERANGE-only growth, and the exact reservation/request bound.
-Real NSS probes cover root and generated missing groups, while a production `server::run` test proves a missing configured group returns before creating the wrapper socket.
-These tests exercise underwrap's ordering and response handling; they do not prove NSS-provider implementation details or scheduler behavior.
-
-The keygen identity-installation tests exercise a five-phase precommit failure
-matrix: complete temporary-file write, owner application, exact mode application,
-file sync, and the persist boundary. Every injected failure must preserve the old
-complete identity byte-for-byte with identical UID, GID, and mode and leave no
-staging entry. A separate success test requires one complete new identity with
-exact metadata, and a post-commit stdout-failure test proves that failed
-public-certificate delivery leaves that complete new identity installed. These tests
-pin persist as the visibility commit; they do not claim parent-directory fsync,
-power-loss durability, rollback, secure erasure, or a frontend/backend
-transaction.
-
-### Sensitive persistence claim evidence
-
-Use these focused checks when reviewing the scoped persistence claim and its separate credential, authentication-record, and configuration controls:
-
-```bash
-cargo test -p underwrap-keygen
-cargo test -p underwrapd startup::tests::credential_permissions
-cargo test -p underwrap-backend users
-nix build .#checks.x86_64-linux.frontend-security-assertions-eval
-nix build .#checks.x86_64-linux.examples-nixos-eval
-nix flake check --all-systems --no-build
-```
-
-The keygen suite covers daemon-account, existing-owner, and invoking-identity precedence together with mode-`0400`, file-sync, atomic-persist, and stdout-after-commit behavior.
-It does not establish parent-directory fsync, power-loss durability, secure erasure, backend enrollment transactionality, or live daemon reload.
-The daemon credential-permission filter covers a missing file, an accepted mode-`0400` file under mode `0700`, rejection of mode `0640`, and rejection of a mode-`0755` parent.
-Direct source inspection additionally shows the file-owner check and that parent ownership and mode are checked only when parent metadata lookup succeeds; the focused tests do not exercise a wrong owner or failed parent metadata lookup.
-The backend `users` filter covers Argon2 record validation, persisted user mutations, API omission, and `Debug` redaction.
-Static inspection of `users.rs` and `storage/json_dir_store.rs` shows restrictive Unix `NamedTempFile` creation, file sync, and atomic rename, but neither the tests nor the application establish a final record mode, users-directory mode, parent-directory fsync, encryption at rest, or secure erasure.
-Static inspection of `tls.rs`, encrypted-store lifecycle code, and the NixOS module establishes current code shape for TLS-key loading, master-key handling, retained workspaces, generated configuration, and declared service paths only.
-The two Nix builds prove that the unchanged production module and examples evaluate through their pinned check definitions, while the all-systems no-build command proves output evaluation for supported systems.
-Nix evaluation does not prove deployed ownership, mode, umask, runtime file contents, CA-key custody, secure deletion, memory erasure, or target behavior.
-The normative claim and control inventory remains in [Security](security.md#1-underwrap-managed-durable-brokered-resource-material-uses-backend-storage).
-
-Protocol tests pin the sole config field `client_identity_file`; keygen tests
-pin the sole explicit CLI flag `--client-identity-out`. Daemon startup and
-backend-client tests cover one-file admission, URL-before-file-I/O ordering,
-construction from the combined identity, CA policy, redirects, and typed errors.
-Integration PKI and daemon/backend-CA tests build and consume one combined
-identity while retaining separate certificate/key source fixtures only where a
-test independently needs those primitives.
-
-The daemon runtime-client concurrency tests are deterministic TLS fixtures. The
-current-thread Tokio test
-`independent_runtime_requests_are_not_globally_serialized` synchronizes after the
-server has accepted and completely read one invocation-open request, withholds
-that response, and proves an unrelated request reaches the server and completes
-before release. This detects both a global FIFO worker and a synchronous call
-that blocks the single runtime thread.
-`accepted_request_timeout_releases_its_permit` injects a short client deadline
-for an accepted but unanswered request and proves timeout, permit release, and a
-later successful admission.
-`saturation_is_fail_fast_without_starting_a_request_and_later_admission_succeeds`
-is a deterministic direct-closure test: it injects one slot, holds its request
-future, proves the saturated closure is never constructed or started, and then
-proves admission succeeds after release.
-`production_runtime_request_policy_is_pinned` checks the exact production
-constants of 32 calls and 30 seconds without making the test wait for the
-production deadline.
-
-The 30-second value is a product request deadline, measured after admission
-through complete success/error decoding. Fixture socket, channel, coordination,
-and injected short-client deadlines are test cleanup and assertion bounds; they
-do not redefine that product contract. The parent process that invokes the test
-command remains the hard whole-suite bound. Cancellation-unsafe blocking futures
-are not placed under an in-runtime timeout merely to bound the suite.
-
-Daemon transport tests cover absolute HTTPS URL admission, base-path preservation,
-and asynchronous HTTPS-to-HTTP redirect rejection through the production
-client, including zero connections to the plaintext trap. Applied root-policy
-unit tests record that the production client disables bundled
-WebPKI roots before adding a configured CA, while omission explicitly retains
-the bundled roots. Supplemental loopback probes use two independent private
-server authorities and a wrong-host certificate to prove selected-chain and
-hostname behavior through `BackendClient::open` and register; those probes do
-not require server-side client authentication, and rejection of an arbitrary
-second private CA alone is not evidence that public roots are excluded. The
-separate real-backend integration suite retains mTLS client-certificate,
-fingerprint-principal, registration, resource, policy, and writeback evidence.
-Together with the asynchronous integration `backend_ca_*` private-CA/hostname
-probes, registration tests, daemon open/store-read flows, and finalize/writeback
-and UsageSignal flows, this is aggregate evidence that direct async scheduling
-did not change transport, authority, error mapping, or persistence. The NixOS
-VM test in `nix/tests/test.py` provides the backend-service restart evidence;
-the Rust integration aggregate does not establish credential-file reload by a
-running daemon. The aggregate is not evidence of availability once all
-32 permits are occupied or while the backend is unavailable.
-Its registration regression sends duplicate rows over real client-certificate-
-authenticated HTTPS with auto-create on and off against missing and existing
-state, verifies the exact structured 400 without a TLS EOF, compares unchanged
-resource/pair/policy views, and then reuses the service and client for valid and
-separate-call-idempotent registration. The NixOS VM exercises representative
-deployed private-CA traffic. The
-real authenticated HTTPS admin suite also covers a libsecret-only deletion
-blocker, unchanged catalog/blob state while blocked, structured cleanup,
-successful deletion, and direct active-key absence. Its admin-reference matrix
-exercises representative flat, libsecret, permission, and pair 404 envelopes,
-compares unchanged unfiltered secrets, resources, pairs, policy, and runtime
-client views, verifies no orphan active key appeared, and then reuses the same
-live service and authenticated session for valid content and permission writes.
-A separate real authenticated HTTPS/mTLS registry matrix blocks the actual
-store/client registry paths while one live service and admin session performs
-store update, store delete, and all-field client update. It checks exact 500
-codes, unchanged authenticated list and fresh-load state, successful retries,
-local-to-tunnel certificate replacement, old-certificate rejection, and
-replacement disable/re-enable behavior. The normal path explicitly restores the
-directory before state assertions; `Drop` provides only a best-effort fallback.
-The daemon/backend stop future is always awaited without an in-test timeout.
-The same matrix pins the exact safe store/client-registry failure messages and proves that each blocked registry path is absent from the authenticated response.
-
-Sibling admin error tests cover direct generic construction, the real result adapter, one audited source-bearing constructor, and source-less static construction.
-They pin exact response envelopes and structured fields, prove generic source-display omission, retain nested alternate-Display chain/path detail only for the audited event, and statically inventory 44 generic paths, thirteen source-bearing migrations, and seventeen remaining source-less calls.
-Sibling runtime tests cover direct and adapted generic construction, and a real wrapper-register handler test injects a storage read failure through `TestStore`.
-Those runtime tests pin the exact generic envelope and type-only event without claiming that injected storage failure is a production filesystem observation.
-A configured desktop Chromium scenario runs the real backend as a required non-root process, removes permission from the fixture's plain-store directory, observes one direct authenticated 500 and exactly two retry-aware UI failures, and pins the safe alert with fixture-path omission.
-Its `finally` block restores and verifies the exact original mode before a post-restoration authenticated 200 check.
-This browser case is deterministic local-filesystem and real-handler evidence, not a claim about production filesystems, other browsers, middleware-generated errors, or every admin route.
-
-The complete frontend security assertion matrix in
-`frontend-security-assertions-eval` uses real `nixpkgs.lib.nixosSystem`
-evaluations of the production module. One valid
-hardened instance/wrapper baseline pins the exact sorted inventory of all 18
-underwrap assertion messages, requires every module-local and global assertion
-to be true, and forces a successful system toplevel.
-Seven positive rows cover the exact instance/wrapper length boundaries, canonical root and relative paths, mixed absolute/tilde access domains, exact `~`, ordinary Unicode paths, unrestricted `PATH`, and a `pkgs.writeText` backend CA derivation coerced to its canonical store path; `valid.tsv` records their successful toplevel results.
-The 81 option-type-valid negative rows preserve all prior assertion rows and cover every assertion family and independently meaningful conjunct or security-sensitive class within combined assertions.
-They include strict instance/wrapper names, runtime-base and CA paths, target-UID hash collision, backend transport, wrapper target/resource/projection/files paths, absolute and tilde access paths, linker and forced environment names, managed and path-like fixed environment values, reserved `debug`, ordinary swap, zram writeback, and the Linux 6.5 floor.
-Every negative row requires one exact false underwrap message, exactly one false assertion globally, and a failed forced toplevel.
-The deterministic `matrix.tsv` records row, family, message, and toplevel result.
-
-This is fail-closed evaluation evidence for the assertion expressions and the
-pinned nixpkgs/NixOS module composition, not runtime-enforcement evidence or a
-proof for arbitrary nixpkgs versions. The target-UID collision row pins two
-known production naming inputs and their current 12-hex SHA-256 prefix; it does
-not analyze collision probability or validate additional configuration input
-shapes. The old-kernel row evaluates the pinned `linuxPackages_6_1` package set
-and checks the exact resulting dynamic message. Finer valid-output evidence
-remains in the existing focused checks and deployed VM.
-
-The `frontend-backend-url-eval` check proves module-level HTTP rejection and
-exact HTTPS URL generation; the VM independently proves a handcrafted plaintext
-configuration fails before credentials, socket readiness, or network traffic.
-
-The `frontend-swap-posture-eval` check evaluates the production module across
-no-swap, ordinary encrypted/plain swap, high-level and typed zram-generator,
-mixed-failure, mounted-filesystem, inert, INI name-normalization and multiline
-section/directive-injection, and explicitly weaker-posture rows. It proves exact
-module-local swap-assertion presence, absence, and truth, checks the complete set
-of false underwrap assertion messages, and compares the merged false-assertion
-boolean count so an unrelated failure cannot pass unnoticed without forcing
-unrelated lazy assertion messages. This covers declared NixOS configuration,
-not arbitrary external `/etc` drop-ins or live runtime device state.
-
-## OpenAPI semantics and drift
-
-The backend admin API is generated from `utoipa` annotations. Semantic tests in
-`crates/underwrap-backend/tests/openapi_export.rs` inspect
-`admin_openapi_spec()` and pin:
-
-- traversal of all eight OpenAPI operation keys (`GET`, `PUT`, `POST`, `DELETE`,
-  `OPTIONS`, `HEAD`, `PATCH`, and `TRACE`), so a newly introduced method cannot
-  escape the contract checks;
-- absent-or-empty root security and effective OpenAPI inheritance semantics:
-  absent operation security inherits the root, while an explicit empty array
-  is public;
-- the exact three effectively public operations, session-only protected reads,
-  and one session-and-CSRF Security Requirement Object on each of the exact 34
-  protected mutations (never two OR-shaped objects);
-- the exact `apiKey` definitions for the `__Host-underwrap-session` cookie and
-  `X-CSRF-Token` header schemes;
-- zero 423 responses and the exact total set of 32 operations carrying any 503 response, followed by exact `store_locked` and/or `store_busy` descriptions and `ServiceErrorResponse` schemas;
-- the exact 32 operations advertising `500 migration_recovery_required`;
-- the exact lock, migrate, rotate-key, and unlock response sets and every canonical lifecycle code in their descriptions;
-- the store-key endpoint's session-plus-CSRF protection and exact non-cache response headers;
-- strict conditional create and migration key descriptions, optional non-null string `key_hex` request properties, and the explicit `ready`, `unlocked`, `locked`, `busy`, and `recovery-required` lifecycle schema.
-
-Live lifecycle handler tests pin statuses and codes actually emitted. The
-semantic OpenAPI tests pin generated meaning. The byte-drift test separately
-compares the generated bytes with:
-
-```text
-crates/underwrap-backend/openapi.json
-```
-
-When handler annotations or DTOs change, run:
-
-```bash
-cargo test --workspace
-cd web && npm run generate:api && npm run build
-```
-
-The drift test rewrites `openapi.json` in place when needed; review and commit
-that change with the implementation. The generated TypeScript schema under
-`web/src/api/schema.ts` is local build output and is not committed.
-
-## Store backend migration evidence
-
-Run the focused direct backend and SPA suites with:
-
-```bash
-cargo test -p underwrap-backend admin_api::stores::lifecycle
-cargo test -p underwrap-backend store_registry::tests::migration
-cd web && npm test -- src/pages/stores.test.tsx
-```
-
-The backend tests use real temporary directories and both storage implementations to cover complete id and byte preservation, canary rules, exact mode `0700` including special-bit rejection, one-value copy and one-pair verification release order, bounded source fingerprint revalidation, publication order, registry state, and restart detection.
-Injected phase hooks make migration-phase failure, rollback, cleanup, displaced-source disappearance or unreadability, same-id readable source-byte mutation after displacement and both rollback renames, and target corruption deterministic in both source kinds where applicable.
-Those cases are simulated failures rather than observations of process crashes, kernel interruption, power loss, arbitrary production filesystems, SHA-256 collision resistance, or malicious backend-host root.
-Handler and registry tests directly cover exact no-cache headers, storage-neutral key generation, strict pre-mutation key validation and explicit-null rejection, lifecycle action projection, blocking of new leases, drainage of admitted leases, a responsive multi-thread runtime and non-cancellable synchronous post-drain section, fixed public codes, recovery precedence over a matching target backend, and recovery-required publication.
-They do not prove external key custody, browser behavior, secure erasure, filesystem durability, or operator quiescence.
-
-The Stores-page Vitest matrix covers generated-key ordering, exact untrimmed comparison, no request on mismatch or pre-request cancellation, no generated key for encrypted-to-plain migration, lifecycle rendering, same-key retry after ambiguous failure, recovery precedence when the refreshed record already names the target backend, reconciliation-based retry disabling with key retention, explicit warned discard, and absence from application query and mutation cache data.
-Vitest runs in jsdom and does not establish real HTTP caching, browser process-memory handling, clipboard erasure, network response loss, or behavior in an actual browser engine.
-
-Run the real authenticated HTTPS migration scenario with:
-
-```bash
-./crates/integration-tests/run tests::store_migration -- --nocapture
-```
-
-That scenario exercises the packaged backend over authenticated HTTPS in both directions and checks the stable store id, metadata, runtime client mapping, control documents, nested storage ids, logical bytes, exact mode-`0700` target roots, and absence of an intentional plaintext migration pathname after successful plain-to-encrypted migration.
-Host-tree inspection after success establishes only the inspected path state on that test filesystem and does not prove secure media erasure, absence of stale blocks or snapshots, crash recovery, every failure disposition, or other filesystem behavior.
-
-Before Playwright, build the backend and SPA from the same changed tree:
-
-```bash
-system=$(nix eval --impure --raw --expr builtins.currentSystem)
-web_dist=$(nix build --no-link --print-out-paths ".#checks.${system}.web-build")
-UNDERWRAP_WEB_DIST="$web_dist" cargo build -p underwrap-backend
-nix develop -c bash -lc 'cd web && npm run build && UNDERWRAP_BACKENDD_BINARY="$PWD/../target/debug/underwrap-backend" npx playwright test e2e/stores.spec.ts'
-```
-
-The configured Playwright project exercises real encrypted creation and both migration directions through the SPA and real backend, while a simulated lost-response route checks retained-key reconciliation behavior without claiming an actual transport failure.
-Browser storage and cache assertions are bounded to the explicitly inspected web APIs and application caches and do not establish absence from browser internals, HTTP intermediaries, screenshots, traces, clipboard remnants, allocator memory, or other browser engines.
-Neither integration nor browser success proves operator quiescence, external key custody, independent recoverability, recovery after media loss or missing encrypted keys, power-loss durability, or secure erasure.
-
-## SPA secret-text unit tests
-
-Vitest pins the browser's text-only secret conversion boundary independently of
-the backend's arbitrary-byte contract. Known UTF-8/base64 vectors include
-`✓ à la mode` → `4pyTIMOgIGxhIG1vZGU=`, `päss🔐` → `cMOkc3Pwn5SQ`,
-Japanese text, empty text, and a multi-chunk input. Component tests pin exact
-Unicode request bodies for flat create/rename and libsecret item creation, plus
-exact reveal and clipboard text. Reveal tests distinguish missing and empty
-values, malformed base64, and valid base64 for non-UTF-8 bytes (`//4=` for
-`0xff 0xfe`); the invalid cases never reach the textarea or clipboard.
-
-Libsecret attribute parser tests cover one `key=value` entry per nonblank line,
-first-delimiter splitting, trimmed keys and values, ignored blank lines, CRLF,
-empty values, and case-sensitive keys. They also pin line-numbered rejection of
-missing delimiters, empty trimmed keys, and repeated exact trimmed keys (with
-the original line), plus safe own-property handling for object-like names such
-as `__proto__` and `constructor`. Create-item tests prove those field errors
-send no request and that valid mixed input sends the exact attribute map while
-retaining the Unicode secret bytes. These are browser checks, not backend/API
-attribute rejection tests.
-
-Run the focused boundary tests with:
-
-```bash
-cd web
-npm test -- src/lib/utf8-base64.test.ts \
-  src/pages/secrets/dialogs/write.test.tsx \
-  src/pages/secrets/libsecret/helpers.test.ts \
-  src/pages/secrets/libsecret/dialogs/create-item.test.tsx \
-  src/pages/secrets/reveal-secret-view.test.tsx
-```
-
-## SPA browser tests
-
-StrictMode hook tests and a shared Secrets/Wrapper-permissions Vitest matrix cover unresolved, stale, removed, valid, failed, and empty store-list states, URL and history preservation, popstate revalidation, detail-query gating, and store-scoped dialog reset.
-The configured `desktop-1280` Chromium project covers stale real-backend selection plus intercepted structured-failure and empty-list responses on both per-store pages with exact detail-request observation.
-This evidence establishes the tested frontend selection and rendering behavior only; it does not change or prove backend authorization, store availability, or browser behavior outside the configured project.
-
-The focused confirmation unit matrix covers successful outcomes, raw request rejection and synchronous throw, retry, a deliberately discarded outcome, and rejection from invalidation or the configured success callback.
-The same hook test recursively inventories the exact ten production hook users, eleven production confirmation-dialog users, two direct confirmation mutations, two result guards, and two narrow direct catches while rejecting generic-dialog or production global-rejection suppression.
-
-```bash
-cd web && npm test -- src/hooks/use-confirm-mutation.test.tsx \
-  src/components/confirm-dialog.test.tsx \
-  src/pages/stores.test.tsx \
-  src/pages/secrets/dialogs/delete-resource.test.tsx \
-  src/pages/wrapper-permissions/dialogs/delete-pair.test.tsx
-```
-
-The configured `desktop-1280` confirmation-error scenario intercepts one exact default-store DELETE with a synthetic structured 503 while the SPA and backend fixture remain real.
-It requires the exact inline error, retained dialog, restored Delete button, and empty `pageerror` and unsuppressed `unhandledrejection` collectors after one browser macrotask.
-This scenario does not exercise a real backend DELETE rejection or establish application-wide, cross-browser, mobile-browser, or every-promise diagnostic cleanliness.
-
-Playwright exercises protected routing, authentication, CSRF, stores, secrets, permissions, client instances, and user workflows.
-The configured `tablet-768` WebKit scenario runs against one real backend with the iPad gen7 device profile and its initial viewport and screen pinned to 768×1024.
-At exactly 768 CSS pixels, it observes the Stores desktop sidebar and hidden menu trigger, a visible table whose local overflow container computes to `overflow-x: auto` with `scrollWidth > clientWidth`, and no document-level horizontal overflow.
-After resizing the same page to 767×1024, it observes the desktop sidebar hidden, the menu trigger and navigation sheet usable, Profile navigation closing the sheet, the Profile page rendering, and no document-level horizontal overflow.
-This bounded scenario does not establish behavior at other widths, orientations, device scale factors, browser engines, operating systems, physical tablets, zoom or font settings, pages, tables, navigation paths, or backend data shapes.
-The real-backend encrypted-store creation scenario obtains a fresh key before mutation, exactly re-enters it, and observes one successful creation without a second key response.
-The corresponding backend unit test recursively scans its temporary test root for `.key` files after encrypted-store creation.
-The browser assertion checks local and session storage names and values, document text and script-visible cookies, the current and performance-resource URLs, Cache Storage names, request URLs, and response bodies, IndexedDB database names, and browser-context cookie names, values, and paths for the displayed key.
-The separate Vitest matrix inspects application query and mutation cache data.
-These checks do not inspect IndexedDB object-store contents, history entries, HTTP cache internals, network buffers, process or browser memory, clipboard remnants, backend-host blocks, or transient Playwright failure artifacts.
-The response headers instruct conforming caches not to retain the key, but this bounded scenario is not proof of every browser, proxy, or cache implementation.
-Because Playwright retains traces and screenshots on failure, those transient artifacts may contain rendered key material until removed.
-Authentication coverage includes hard-navigation sign-out with a freshly primed CSRF token, backend session destruction, stale-cookie rejection, and a failed first logout that remains visible and authenticated until a successful retry.
-The first Profile scenario authenticates one operator in two independent browser contexts against one real backend.
-After self-service password change in one context, exact `whoami` responses observe that the submitting session remains authenticated in this run and that the other pre-change session is unauthenticated on its first post-change admin-API request, followed by a `/profile` redirect to login.
-The scenario also retains old-password rejection and new-password login.
-This one configured `desktop-1280` Chromium scenario does not prove that submitting-session refresh cannot fail, immediate push invalidation, static-asset effects, all admin routes or sessions, concurrent password changes, restart behavior, or cross-backend session-store behavior.
-The resource lifecycle flow shows a typed libsecret blocker in the still-open delete dialog, clears it, and then observes successful resource removal.
-
-The focused `focus-indicators.spec.ts` run in the configured `desktop-1280` Chromium project observes the shared dialog close control in the desktop Create store flow under the default dark and toggle-driven light themes and the shared sheet close control in the 375×812 responsive layout under the default dark theme.
-It reaches each close control through the real keyboard focus path and observes an unfocused `box-shadow: none` baseline, a focused non-`none` box shadow in regular colors, and a `:focus-visible` outline at least two pixels wide under emulated forced colors.
-This evidence makes no contrast, WCAG conformance, screen-reader, cross-browser, mobile-browser, or application-wide focus-coverage claim.
-
-The Node browser-support suite uses simulated child processes to exercise partial acquisition, cleanup after a fixture-use failure, bounded readiness probes, exit observation after escalation, and retention of temporary state when a child cannot be reaped.
-
-```bash
-cd web
-npm run test:e2e-support
-```
-
-This support suite does not spawn the real backend or establish operating-system signal delivery.
-
-Run the Playwright suite inside the Nix development shell so it uses the NixOS-compatible browser:
-
-```bash
-nix develop
-cd web
-npm run test:e2e
-```
-
-For an interactive browser runner:
-
-```bash
-npm run test:e2e:ui
-```
-
-## NixOS VM test
-
-The VM test boots a real NixOS system with the module, backend processes,
-frontend instances, wrappers, unprivileged callers, and target programs.
-
-### Product and VM network topology
-
-The product deployment topology supports backend and frontend roles on separate hosts connected by HTTPS.
-The VM supplies one-node transport evidence rather than a multi-machine deployment test.
-One NixOS VM runs both backend services and both frontend daemons.
-The local and remote-style frontend instances connect directly to `127.0.0.1:18443` and `127.0.0.1:18444` respectively.
-The remote-style path exercises real backend-owned rustls, mTLS, certificate-fingerprint runtime principal handling, separate store and client registries, policy, resources, and backend service lifecycle.
-The VM enables no SSH service, and its retained `tunnel` fixture identifiers do not represent SSH transport.
-The VM does not exercise DNS resolution, a non-loopback SAN or hostname, firewall traversal, cross-host routing, latency, partitions, distinct-host compromise, or multi-machine orchestration.
-Separate daemon transport and integration tests retain the CA-selection, hostname-validation, mTLS principal, registration, policy, resource, and writeback evidence described above.
-
-### Packaging and service layout
-
-It checks:
-
-- users, groups, state/runtime directories, and systemd units;
-- setgid and capability wrappers;
-- socket path, owner, group, and mode;
-- generated daemon and entry-stage config, including JSON parsing of both files, absence of `ns_binary` from the full daemon config, and the strict sidecar's exact helper-key set and fixed namespace-helper path;
-- local and remote-style runtime client enrollment;
-- the deployed runtime identity cutover: the packaged `underwrap-keygen`
-  successfully installs
-  `/var/lib/underwrap-local/client-local.identity.pem` from
-  `/etc/underwrap/daemon/local.yaml` with exact `underwrap-local:underwrap-local`
-  ownership and mode `0400`; the unchanged daemon PID still succeeds with its
-  cached old identity before the public-certificate backend update; an exact
-  comparison of `id`, `display_name`, `current_store_id`, `current_store_name`,
-  `status`, `auto_create_wrapper_assets`, and
-  `current_credential_fingerprint` shows that only the fingerprint changes; the
-  same PID then receives enrollment guidance; and an explicit
-  `underwrapd-local.service` restart yields a distinct nonzero PID and bounded
-  wrapper success using the replacement identity.
-
-That cutover witness preserves the exact keygen → public-certificate PUT →
-same-PID cached-old failure → restart → distinct-PID success order. It discards
-target output, does not read the private-key portion separately, and passes only
-the public certificate through the authenticated admin request-body helper. It
-excludes volatile `last_seen_at` from the client-record comparison and leaves
-the replacement active for subsequent direct runtime mTLS checks. Those checks
-also give curl the same combined identity path for both `--cert` and `--key`.
-The witness establishes the explicit-restart operation and interruption window,
-not live reload, unauthorized-triggered retry, rollback, a grace credential, or
-zero downtime.
-
-### Wrapper identity and policy
-
-It checks:
-
-- effective-GID wrapper-socket peer authentication. The hardened witness first
-  asserts the running kernel is Linux 6.5 or newer, snapshots a journal cursor
-  immediately before one successful uniquely scoped setgid `test-echo`
-  invocation, and decodes only post-cursor `underwrapd-local` JSON records. Its
-  matching wrapper-read record must report `auth_path: PeerPidfd`, while the
-  complete scoped record set must contain neither `PeerCredFallback` nor a
-  fallback warning;
-- spoofing and direct-socket rejection;
-- rejection of a complete forged fd-3/fd-20 direct `underwrap-ns` handoff,
-  followed by a successful daemon-created handoff;
-- daemon validation of wrapper selectors;
-- daemon-chosen real/debug targets;
-- locked, unlocked, expiring, unsafe-debug, missing, and read-only permission
-  behavior;
-- per-wrapper/resource registration and usage timestamps.
-
-### Target isolation
-
-It checks that each `(instance, wrapper)` has a distinct dedicated target UID,
-including wrappers that share a target binary and wrappers across instances.
-It verifies real and debug variants use the intended identity and execute with
-zero capabilities.
-
-Against the target and a descendant, caller-owned peers and ancestors are denied
-access to:
-
-- `/proc/<pid>/{environ,maps,smaps,auxv,mem}`;
-- descriptor and executable links under `/proc/<pid>`;
-- `ptrace(PTRACE_ATTACH)`;
-- `process_vm_readv`.
-
-It also confirms that world-readable process metadata remains secret-free and
-that root retains its documented visibility.
-
-### Namespace and projection behavior
-
-It checks:
-
-- fresh PID and `/proc` views;
-- complete files-projection prevalidation, routing, staging, and writeback;
-- later-unroutable projection and returned-exec failures through the real
-  setgid/capability chain, including target non-execution, canonical blob byte
-  equality, and exact absence of terminal daemon audit verbs;
-- private D-Bus and Secret Service operation;
-- target-owned runtime directories;
-- idmapped caller access paths and resulting file ownership;
-- host-namespace inability to see private projection mounts or sockets;
-- read-only mutation discard and warning/audit behavior;
-- core-dump prevention and descriptor hygiene;
-- private exec-gate authorization and retained post-exec persistence/status for
-  a file-writing target that exits nonzero or dies by signal;
-- a resource env value above 64 KiB through the deployed authenticated bulk
-  Checkout path, and exact-2-MiB files-resource Checkout/Checkin, oversize
-  finalization suppression, stable admin size rejection, and byte-identical
-  retained storage.
-
-The private-libsecret-bus witness runs one dedicated target in a uniquely named
-transient systemd unit. The target completes a real lookup with its output
-discarded, reports its filesystem D-Bus address, and blocks on a unique release
-marker. While that exact unit is active and running, trusted root instrumentation
-in the host mount namespace proves that the exact reported pathname is absent
-and that no socket exists below the host bus tree. Separately, a process owned by
-the original caller performs exact metadata access and an `AF_UNIX` stream
-`connect_ex` against that pathname; both must return `EACCES` through the
-mode-`0000` bare host mountpoint. The unit must still be active and running after
-those probes. Only then does the test create the marker; the target completes a
-second discarded lookup, reports its fixed post-probe marker, and the unit must
-finish with a clean result and status. Exact-unit cleanup in a `finally` block
-makes the evidence independent of ordinary teardown timing.
-
-This is evidence for the normal filesystem-backed private bus on the tested
-NixOS kernel and deployed wrapper chain. Root's host-namespace absence result and
-the same-caller mode-`0000` metadata/connect denials are distinct observations:
-the caller's `EACCES` does not itself prove pathname absence. The witness does
-not hide or probe abstract Unix sockets, establish protection against host root
-or kernel compromise, or treat the configured target as untrusted. The target
-is trusted with the libsecret projection and can disclose it; the witness only
-exercises the same-caller host mount-namespace boundary while that trusted
-target and its private services are live.
-
-### Audit and writeback observability
-
-Focused `underwrapd` audit tests capture each helper on its own test-writer line and pin exactly seven events, their INFO/WARN levels, their fields, and the absence of the removed event and field vocabulary.
-The test-only writer proves emitted tracing metadata, not the production format or sink.
-A main-source test pins `fmt()`, `EnvFilter::try_from_default_env()`, the `info` fallback, and the absence of `.json()` and `.with_writer(...)` in daemon initialization.
-It also pins the `tracing-subscriber` 0.3.23 lockfile entry whose default builder is the evidence for the human-readable formatter and stdout writer; source-shape assertions alone do not establish dependency defaults.
-
-Focused namespace formatter tests cover one-line escaping for `permission_readonly`, `server_rejected`, and `resource_too_large`, including paired attempted and maximum lengths.
-The formatter intentionally accepts arbitrary reason strings, so those tests do not prove that production dispatch excludes a legacy reason token.
-The deployed VM proves `read_allowed` in text-formatted daemon output, native-journal `writeback_rejected` fields with `permission_readonly`, the `permission is read-only` warning, warning suppression without event suppression, and absence of the superseded names in those exercised paths.
-These audit-format checks do not provide a persistent audit ledger or configurable audit sink; the final hygiene flow below separately covers a bounded encoded and full-resource inventory.
-
-### Secret hygiene
-
-The final hygiene flow stores one unpredictable per-run ASCII canary in a dedicated env entry of `test/token` through the existing mode-restricted transient admin-body helper, ensures the real `test-echo` permission is `Unlocked`, and invokes the wrapper with target stdout and stderr discarded while checking its exit status.
-The driver fetches the resulting canonical bytes and derives deduplicated minimum-length needles for canary plaintext, standard and URL-safe base64 with and without padding, lowercase hex, raw and JSON-escaped canonical text, standard and URL-safe base64 with and without padding and lowercase hex of the complete canonical bytes, and the exact env-entry signature in memory.
-No canary or needle enters a test command argument, test-driver or shell environment variable, assertion message, or test log.
-It searches the unit journals for `underwrap-backend.service`, `underwrap-backend-local.service`, `underwrapd-local.service`, and `underwrapd-tunnel.service`, plus native records selected by `SYSLOG_IDENTIFIER=underwrap-ns`.
-Failures identify only the representation label and corpus, and the expanded corpus also receives the retained fixed-fixture plaintext and base64 scans and audit assertions.
-This is evidence for the selected successful deployed path, journal producers, representations, and retained fixtures, not for target output, every transform, every path or process, external collectors, non-journal sinks, or formal noninterference.
-
-## Validation by change type
-
-| Change | Required validation |
+| Layer | Selected compatibility baseline |
 | --- | --- |
-| Pure Rust logic in one crate | crate tests, fmt, clippy |
-| Runtime DTO or policy | protocol + backend + daemon tests, integration tests |
-| Admin handler or DTO | backend tests, OpenAPI drift, SPA test/build |
-| SPA behavior | Vitest, build; Playwright for user flows |
-| Storage or encryption | store/backend tests, integration tests |
-| NixOS module | focused evaluator checks, examples, workspace Nix checks, VM test |
-| setgid, peer auth, UID, namespace, capabilities, mounts, fd lifecycle | integration tests and VM test |
-| Documentation/examples only | link/path checks, example parse/evaluation tests, relevant generated-schema checks |
+| Build tools | Node 24.19.0, npm 11.17.0 |
+| SPA | React/React DOM 19.2.8; Vite 8.2.2; React plugin 6.1.1; Tailwind and Vite plugin 4.3.3 |
+| Type checking | TypeScript 5.9.3; openapi-typescript 7 requires a `^5.x` peer |
+| Unit tests | Vitest/coverage-v8 4.1.11; jsdom 30.0.1; Testing Library versions selected by the lock |
+| Browser tests | Exact `@playwright/test` 1.61.1 paired with nixpkgs driver 1.61.1; driver Node 22.23.2 via `PLAYWRIGHT_NODEJS_PATH` |
+| API tools | Utoipa 5.5.0; utoipa-axum 0.2.0; OpenAPI 3.1.0; openapi-typescript 7.13.0; openapi-fetch 0.17.0 |
 
-## What tests do not establish
+Playwright's exact package pin prevents npm from selecting protocol code incompatible with the pinned browser driver.
+OpenAPI 3.1.0 is the generator's valid feature line; a newer published specification is not by itself a migration requirement.
+Node builds the static SPA but does not enter the backend's runtime closure.
+Lock refreshes require peer-resolution and outdated review, audits, generated-schema checks, unit tests, production build, and the configured browser suite.
+Do not silently widen support, lower a gate, or expand exclusions to accommodate instrumentation changes.
 
-Automated tests do not establish:
+## Selected SPA coverage gate
 
-- correctness of the Linux `SO_PEERPIDFD` implementation itself. Unit tests
-  prove underwrap's production decision and close ordering through injected
-  operation results, while the VM witnesses the selected path on its one
-  deployed kernel/invocation; neither is a kernel proof or evidence for every
-  kernel/procfs environment;
-- absence of kernel or dependency vulnerabilities;
-- correctness on every Linux filesystem and desktop environment;
-- safety of a broad or malicious target;
-- protection after root or backend compromise;
-- formal noninterference or a complete security proof.
+```bash
+npm --prefix web run generate:api
+npm --prefix web test
+npm --prefix web run test:coverage
+npm --prefix web run build
+```
 
-The admin-reference tests establish deterministic behavior for serialized
-requests only. They do not exercise or claim cross-request transactions, CAS,
-locks, tombstones, concurrent check/use exclusion, or repair/migration of
-pre-existing inconsistencies; those limits remain operational requirements in
-[Backend](backend.md#concurrency-semantics). Registry failure tests likewise
-establish returned-helper-error and running-process publication behavior, not
-parent-directory fsync, power-loss durability, cross-registry serialization,
-pre-registry create-side-effect cleanup, or automatic repair.
+The V8 gate selects hand-written `src/api/**/*.ts` and `src/lib/**/*.ts`, excluding test files and generated API types from executable coverage.
+It requires **80 percent each for statements, branches, functions, and lines**.
+The existing Nix `web-test` runs `test:coverage` once for the complete suite; it does not duplicate Vitest in another aggregate derivation.
 
-Security-sensitive changes still require human review against
-[Security](security.md).
+Add meaningful endpoint/helper assertions: method, URL, path parameters, query, request body, credential posture, response decoding, and error outcomes.
+Calling functions solely to raise a percentage is not acceptance evidence.
+React Testing Library and Playwright retain their own component/browser scope rather than expanding this gate to all rendering code.
+Coverage is neither whole-application or Rust coverage nor correctness or security proof.
+Rust LCOV generation is checked separately, and byte reproducibility of its execution-count report under `nix build --rebuild` is not established.
 
-## Related documentation
+## Generated contracts and source inclusion
 
-- [Architecture](architecture.md)
-- [Security](security.md)
-- [`AGENTS.md`](../AGENTS.md)
+After handler annotation or DTO changes, with the SPA prerequisite prepared:
+
+```bash
+cargo test --locked -p underwrap-backend --test openapi_export --test admin_reference
+npm --prefix web run generate:api
+npm --prefix web run build
+```
+
+The Rust drift test **rewrites tracked** `crates/underwrap-backend/openapi.json` and fails when it differs from generation.
+Review the diff, rerun the test, and commit intended schema changes with their source.
+Do not run that test in an otherwise read-only review without authority to handle its mutation.
+Npm generation writes ignored `web/src/api/schema.ts`, which is local build output rather than a tracked contract.
+
+Semantic tests traverse every OpenAPI method and check effective security inheritance, public operations, session-and-CSRF requirements in one AND-shaped object, unavailable-store and lifecycle responses, key headers, and conditional key schemas.
+`admin_reference` additionally checks selected descriptions for deletion guards, optional force, flat-slot absence, concurrency, and key-owner lifetime.
+These selected assertions, byte equality, and structural checks do not prove every description agrees with handlers; inspect real statuses, defaults, null handling, and failure semantics separately.
+A stale description does not necessarily break TypeScript compilation.
+
+Compile-time non-Rust fixtures must survive both Cargo packaging and the Nix/Crane source filter.
+For example, integration `testdata/**` is explicitly included in both its manifest and `flake.nix`; assets, shipped examples, and committed OpenAPI also have filter support.
+`cargo package --list --allow-dirty -p integration-tests` can inspect Cargo's inclusion without reading fixture contents, but does not prove Nix inclusion.
+Ensure intended new files enter Git's flake source and validate the corresponding sandbox build; a local test can pass while its filtered fixture is absent.
+
+## Fixture and observation discipline
+
+Own temporary state, listeners, tasks, and child processes immediately after acquisition, before another fallible setup step.
+Preserve the primary startup or fixture-use error if cleanup also fails.
+Browser cleanup observes exit, waits boundedly after TERM and then KILL, and retains temporary state if the child cannot be reaped.
+The Node support suite simulates these paths; it does not prove OS signal delivery.
+Rust fixtures distinguish daemon abort-on-drop from synchronous backend-thread join and eventual temporary-directory cleanup.
+Await normal shutdown rather than wrapping cancellation-unsafe blocking work in an in-runtime timeout; the invoking process supplies the hard whole-suite bound.
+These fixture guarantees are not production shutdown semantics or universal cleanup after runtime termination.
+
+The Rust integration backend startup reservation retains an async process-local mutex and CLOEXEC advisory file lock through HTTPS readiness.
+It coordinates cooperating Cargo/nextest processes sharing the same temporary directory and effective UID.
+An unrelated process can still claim the released probe port; this is not a universal kernel reservation.
+
+Run numeric-fd close and EOF-sensitive witnesses in fresh single-test processes when parallel reuse or pre-exec inheritance would invalidate observation.
+Keep exact `EBADF`, endpoint ownership, CLOEXEC, and EOF assertions rather than inserting delays or retries.
+The restrictive-umask rotation child keeps `umask 0700` throughout the operation and assertions; its child-local exit guard changes only the exit umask to `0077` so LLVM can create an owner-readable profile.
+Changing the operation's umask would weaken the test, while changing only exit instrumentation does not.
+
+VM canonical-byte observation uses `nix/tests/test.py::admin_get_blob` to transfer independent **64-KiB chunks** with `machine.execute`, avoiding automatic secret-output logging on command failure.
+It validates base64 and each expected length, assembles the bytes, and compares length/SHA-256 with guest fingerprints before and after observation.
+Changes or truncation fail immediately without retries, and the final canonical byte-equality assertion remains intact.
+A short driver observation is not by itself backend corruption; the precise lower-layer truncation cause is not established.
+Never print resource bytes, decoded buffers, key material, or failing secret-bearing assertions for diagnosis.
+
+## Security witnesses and limits
+
+A recorded checksum or success entry does not recreate an unavailable temporary validation artifact.
+Current reproducibility claims need retained source and inputs plus a fresh corresponding check, not the checksum alone.
+
+The meaningful negative controls live in the tests rather than a documentation assertion inventory.
+Preserve these distinctions when extending them:
+
+- Resource tests retain inclusive 2-MiB complete-resource, independent 1-MiB publication, and 64-KiB control domains, exact wire envelope headroom, trailing-byte rejection, and fail-before-effect ordering.
+- Valid real-backend `Allow` flows and forced-env rejection exercise daemon parsing/cache/channel behavior, but no dedicated complete malformed-daemon-`Allow` matrix or fuzz harness establishes malformed outer JSON/base64, default/duplicate/noncanonical input, or publication-readiness completeness.
+- Typed Secret Service handler tests establish decoded-value validation, exact error precedence, full accepted-state equality, registration outcomes, and ACK-gated commit, not D-Bus wire signatures, malformed-frame decoding, or full draft conformance.
+- Secret-omission tracing tests must emit and observe a harmless capture-control event after subscriber installation, including when metadata tracing is enabled; an empty or disabled sink is not non-disclosure evidence.
+- Candidate/owned-buffer wiping and static copy inventories do not instrument post-drop memory or establish comprehensive erasure of HTTP, base64, cache, frame, allocator, dependency, or OS copies.
+- Peer-auth injected traces permit the explicit weak fallback only for `SO_PEERPIDFD`'s unsupported `ENOPROTOOPT` result; other acquisition, descriptor, status, and credential failures reject without fallback, with exact close ordering.
+  The deployed VM witnesses `PeerPidfd` on its selected kernel, not Linux UAPI correctness for every environment.
+- Exact generic HTTP error envelopes and type-only logs are distinct from individually audited detailed-source diagnostics; a representative real permission-denied browser case does not cover every route or middleware error.
+- Credential tests cover selected file and parent modes, not a complete wrong-owner/failed-parent-metadata matrix or production key custody.
+- Reference and registry rejection tests retain exact structured envelopes, full-state snapshots, no-orphan/operation traces, and successful reuse after rejection; a 4xx or 5xx alone does not establish fail-before-effect behavior.
+- Registry and migration fault hooks prove selected returned-error, state, ordering, rollback, and cleanup outcomes, not transactions, CAS, crash/power-loss durability, secure media erasure, or operator quiescence.
+
+The VM boots the real NixOS accounts, setgid/capability wrappers, target UIDs, daemons, and backend services.
+It witnesses caller-to-target `/proc` denial, lifecycle teardown, private projections, idmapped access, policy/writeback, size limits, and explicit credential-replacement restart through the deployed chain.
+Gate/status/publication evidence remains conjunctive: a local ACK is not D-Bus caller receipt or backend persistence, and target status is not a writeback receipt.
+See [Local protocol](local-protocol.md) and [Backend](backend.md) for those contracts.
+
+The live private-bus test requires readiness and a real lookup before host probes, continued target liveness across them, and a second lookup afterward.
+Trusted root's host-namespace pathname absence is distinct from the original caller's metadata/connect `EACCES` through the bare mode-`0000` mountpoint.
+Neither observation covers abstract sockets, root compromise, or an untrusted configured target.
+Nix negative evaluation requires the exact intended false assertion and failed forced system toplevel, not an unrelated failure; typed option checks do not attest activation, external drop-ins, or live swap devices.
+
+Journal hygiene covers selected successful paths and four backend/daemon unit journals plus native `underwrap-ns` records.
+The test derives plaintext, standard/URL-safe base64 with/without padding, lowercase hex, canonical raw/JSON-escaped text, encoded complete-resource forms, and the env-entry signature in memory, discarding target output and reporting only safe representation labels on failure.
+It does not cover target output, all paths or transforms, other sinks, external collectors, or formal noninterference.
+
+The VM is one-node loopback HTTPS/mTLS evidence, not SSH or a separate-host deployment test.
+It does not exercise non-loopback DNS/SANs, firewalls, routing, latency, partitions, distinct-host compromise, or multi-machine orchestration.
+A disposable deployment walkthrough using API operator transitions is not a browser-through-VM witness.
+No physical-device, general AArch64 runtime, external key-custody, or configured-target trustworthiness claim follows from the suite.
+
+## Frontend witness boundaries
+
+### Store selection
+
+The URL `store` parameter is requested state, not an effective selection until validated against the authoritative resolved store list.
+Unresolved, failed, and resolved-empty lists remain distinct.
+Hook and per-store page tests cover stale/removed selection canonicalization, unrelated URL/history-state preservation, popstate revalidation, delayed lists and StrictMode, detail-query gating, and synchronous reset of store-scoped dialogs and nested state.
+The configured desktop Chromium witness observes detail requests on Secrets and Wrapper permissions with real stale selection and intercepted failure/empty responses.
+This is frontend behavior evidence, not backend authorization, store availability, or general browser support.
+
+### Confirmation error ownership
+
+`useConfirmMutation` catches expected request rejection and synchronous request throws into handled error outcomes.
+Invalidation and configured `onSuccess` run outside that request catch; their failures remain observable promise rejections, and exact success follows their completion.
+The hook tests retain retry, discarded request-error outcome, caller inventories, and absence of generic-dialog/global rejection suppression.
+The desktop Chromium scenario intercepts one store DELETE with a synthetic structured 503 and checks the retained dialog, inline error, restored button, and unsuppressed diagnostics after a browser macrotask.
+It does not exercise a real backend DELETE rejection or establish application-wide, every-promise, or cross-browser cleanliness.
+
+### Authentication
+
+Logout tolerantly primes a fresh CSRF token with `whoami` GET before the revoking POST, clearing cache and replace-navigating only after success.
+Prime or POST failure preserves cache/session/URL and offers a visible non-overlapping Retry; the StrictMode guard prevents duplicate initial attempts, not cross-tab coordination or automatic retry.
+Hard-navigation and stale-cookie replay tests are distinct from already-primed in-app unit evidence.
+
+Password persistence precedes submitting-session refresh; refresh failure can still mean the password changed and require a new login.
+Other changed, reset, or deleted-user sessions invalidate lazily on their next admin request, and backend restart loses memory sessions.
+One two-context Chromium scenario is not proof for every route, concurrent change, session, or backend.
+
+### Presentation and secret custody
+
+Selected keyboard tests observe the dialog and sheet close controls under dark/light and emulated forced-colors conditions, not contrast, WCAG, screen-reader, or application-wide accessibility conformance.
+One WebKit tablet scenario pins viewport and screen to 768×1024, observes contained table overflow, then exercises the 767-pixel navigation transition.
+It establishes neither a cards layout nor broad tablet, orientation, zoom, physical-device, or browser support.
+
+Text/attribute tests pin exact UTF-8 conversion, distinct missing/empty/malformed-base64/non-UTF-8 outcomes, first-delimiter parsing, trimmed exact duplicate detection, line errors, and prototype-safe own keys with no request on invalid input.
+They do not redefine backend arbitrary-byte storage or the D-Bus attribute map.
+
+Generated-key tests distinguish transient component state from application query/mutation caches and inspect only named browser APIs: local/session storage, script-visible cookies, document and URL surfaces, Cache Storage, IndexedDB database names, and browser-context cookies.
+They do not inspect IndexedDB contents, all history, HTTP cache internals, intermediaries, network/process memory, clipboard remnants, allocator state, or failure artifacts.
+Synthetic lost-response routes test retained-key reconciliation, not actual network response loss.
+Exact untrimmed re-entry, no-cache headers, and successful create/migration do not establish external custody, independent recoverability, or erasure in other engines.

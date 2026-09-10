@@ -99,8 +99,7 @@ def main() -> None:
         )
     ns_binary, instance, wrapper, marker = sys.argv[1:]
 
-    # ExecBundle after the fixed descriptor was removed from
-    # ExecResourceBinding:
+    # Descriptor-free ExecBundle; the resource channel is fixed at fd 20.
     # env map, passthrough vec, env_set map, runtime base,
     # resource id/name/access/libsecret/files paths, access paths.
     payload = b"".join(

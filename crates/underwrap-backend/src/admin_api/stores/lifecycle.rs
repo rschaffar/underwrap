@@ -845,7 +845,7 @@ pub(crate) async fn handle_admin_store_unlock(
     security(("session_cookie" = [], "csrf_header" = [])),
     params(("id" = String, Path, description = "Store id.")),
     responses(
-        (status = 200, description = "Store locked; in-memory key material wiped.", body = AdminStoreLockResponse),
+        (status = 200, description = "Store locked against new storage leases. Already admitted leases may retain the backend; its master key is zeroized when the final owner is dropped.", body = AdminStoreLockResponse),
         (status = 400, description = "Store is not encrypted (`store_not_encrypted`).", body = ServiceErrorResponse),
         (status = 404, description = "Store not found (`not_found`).", body = ServiceErrorResponse),
         (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),

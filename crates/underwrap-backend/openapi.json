@@ -304,7 +304,7 @@
         },
         "responses": {
           "200": {
-            "description": "Instance updated. Remapping to a new store drops the prior store's wrapper permissions for this instance.",
+            "description": "Instance updated. Cleanup of prior-store wrapper permissions after a remap is best effort; success does not certify their removal.",
             "content": {
               "application/json": {
                 "schema": {
@@ -359,7 +359,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Instance removed; its wrapper permissions are dropped from the mapped store.",
+            "description": "Instance removed. Cleanup of its mapped-store wrapper permissions is best effort; success does not certify their removal.",
             "content": {
               "application/json": {
                 "schema": {
@@ -627,8 +627,8 @@
           {
             "name": "force",
             "in": "query",
-            "description": "Pass `?force=true` to bypass the empty-store guard.",
-            "required": true,
+            "description": "Optional; defaults to false. Pass `?force=true` to remove a nonempty or locked store record. Mapped runtime clients still block deletion; data directories are retained.",
+            "required": false,
             "schema": {
               "type": "boolean"
             }
@@ -636,7 +636,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Store removed.",
+            "description": "Store record removed; the data directory and retained generations are not deleted.",
             "content": {
               "application/json": {
                 "schema": {
@@ -645,8 +645,8 @@
               }
             }
           },
-          "400": {
-            "description": "Store is non-empty and `force` was not set.",
+          "404": {
+            "description": "Store not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -655,8 +655,8 @@
               }
             }
           },
-          "404": {
-            "description": "Store not found.",
+          "409": {
+            "description": "Store has mapped runtime clients (`store_in_use`), or force was omitted for a nonempty (`store_not_empty`) or locked (`store_locked_use_force`) store.",
             "content": {
               "application/json": {
                 "schema": {
@@ -714,7 +714,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Store locked; in-memory key material wiped.",
+            "description": "Store locked against new storage leases. Already admitted leases may retain the backend; its master key is zeroized when the final owner is dropped.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1801,7 +1801,7 @@
           {
             "name": "slot",
             "in": "path",
-            "description": "Slot name: env, files, libsecret.",
+            "description": "Flat slot: env or files. Libsecret uses the structured resource endpoints.",
             "required": true,
             "schema": {
               "type": "string"
@@ -1819,7 +1819,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Secret value, base64-encoded.",
+            "description": "Secret value, base64-encoded, or material_b64: null when the key is absent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1828,8 +1828,18 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid slot or key; libsecret is not a flat slot (`slot_not_supported`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "Store / resource / key not found.",
+            "description": "Store or resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1892,7 +1902,7 @@
           {
             "name": "slot",
             "in": "path",
-            "description": "Slot name: env, files, libsecret.",
+            "description": "Flat slot: env or files. Libsecret uses the structured resource endpoints.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2004,7 +2014,7 @@
           {
             "name": "slot",
             "in": "path",
-            "description": "Slot name: env, files, libsecret.",
+            "description": "Flat slot: env or files. Libsecret uses the structured resource endpoints.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2022,7 +2032,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Secret removed.",
+            "description": "Secret removed; existed is false when the key was already absent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2031,8 +2041,18 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid slot or key; libsecret is not a flat slot (`slot_not_supported`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "Store / resource / key not found.",
+            "description": "Store or resource not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2099,7 +2119,7 @@
           {
             "name": "slot",
             "in": "path",
-            "description": "Slot name.",
+            "description": "Flat slot: env or files. Libsecret uses the structured resource endpoints.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2127,7 +2147,7 @@
         },
         "responses": {
           "200": {
-            "description": "Secret renamed.",
+            "description": "Secret renamed with atomic blob replacement; concurrent load-modify-save operations remain last-writer-wins.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2136,8 +2156,18 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid slot, key, or material; libsecret is not a flat slot (`slot_not_supported`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "Store / resource / key not found.",
+            "description": "Store / resource / source key not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3570,7 +3600,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Operator deleted; all sessions held by the deleted user are invalidated automatically.",
+            "description": "Operator deleted; each affected session is rejected on its next authenticated admin request.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3579,8 +3609,8 @@
               }
             }
           },
-          "400": {
-            "description": "Cannot delete the last operator.",
+          "404": {
+            "description": "Operator not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3589,8 +3619,8 @@
               }
             }
           },
-          "404": {
-            "description": "Operator not found.",
+          "409": {
+            "description": "Cannot delete the last operator (`last_user_protected`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4168,7 +4198,7 @@
       },
       "AdminPairWithNewResourceRequest": {
         "type": "object",
-        "description": "Body of `POST /v1/admin/stores/{id}/pairs/with-new-resource` —\ncreate a fresh resource and pair it with `wrapper` in one\ntransactional step, removing the orphan-resource window the SPA\notherwise has when sequencing two calls.",
+        "description": "Body of `POST /v1/admin/stores/{id}/pairs/with-new-resource` —\ncreate a fresh resource and pair it with `wrapper` in one request.\nThe resource catalogue and pair document are saved separately.\nA failed pair save triggers best-effort resource rollback; the operation is\nnot transactional, and failed rollback can leave an unpaired resource.",
         "required": [
           "wrapper",
           "resource_name"
@@ -4410,7 +4440,7 @@
       },
       "AdminSecretRenameRequest": {
         "type": "object",
-        "description": "Move an entry within a resource blob from the URL-addressed\n`(resource_id, slot, from_key)` to `to_key` under the same slot,\noptionally overwriting its material. The whole operation is one\natomic load-modify-save of the resource blob — there is no\nintermediate \"both entries exist\" window.\n\n`material_b64 = None` means \"keep the existing material\"; `Some(_)`\noverwrites in the same step. Rename refuses when `to_key` already\nexists (callers must delete it explicitly).",
+        "description": "Move an entry within a resource blob from the URL-addressed\n`(resource_id, slot, from_key)` to `to_key` under the same slot,\noptionally overwriting its material. The modified blob is persisted with\natomic replacement visibility, without an intermediate two-key state.\nLoading, modifying, and saving are not a transaction: concurrent whole-blob\nwriters remain last-writer-wins.\n\n`material_b64 = None` means \"keep the existing material\"; `Some(_)`\noverwrites in the same replacement. A different existing destination is\nrejected; renaming to the same key is permitted and can replace its material.",
         "required": [
           "to_key"
         ],
@@ -4495,7 +4525,7 @@
       },
       "AdminStoreBackendKind": {
         "type": "string",
-        "description": "Storage backend kind a store uses. Kept as a flat enum so the\nadmin UI can switch on it without having to mirror the full\n`StorageConfig` discriminant logic; per-kind details (currently\nonly `dir`) live on the detail response.",
+        "description": "Storage backend kind, independent of lifecycle state and action availability.\nThe admin API does not expose a separate store-detail endpoint or the\nconfigured data directory in store list items.",
         "enum": [
           "plain",
           "encrypted"
@@ -4743,7 +4773,7 @@
         "properties": {
           "has_secrets": {
             "type": "boolean",
-            "description": "Whether the store currently contains at least one secret."
+            "description": "Whether inspection found a non-control storage entry.\nFalse also represents unavailable inspection for a locked, busy, or\nrecovery-required store; use lifecycle state and server-derived actions\nrather than interpreting that value as proof of an empty store."
           },
           "mapped_client_instance_count": {
             "type": "integer",

@@ -8,10 +8,10 @@
 //! the structured endpoints.
 //!
 //! Translates the URL-addressed `(store, resource_id, slot, key)`
-//! tuple through the resource-blob layout for per-key reads/writes;
-//! the `rename` handler is the only multi-step one and is
-//! intentionally a single load-modify-save against the blob so the
-//! file flip stays atomic.
+//! tuple through the resource-blob layout for per-key reads/writes.
+//! Rename changes both keys in memory before one atomic blob replacement.
+//! The load-modify-save sequence is not transactional; concurrent whole-blob
+//! mutations remain last-writer-wins.
 
 use std::sync::Arc;
 
@@ -123,12 +123,13 @@ pub(crate) async fn handle_admin_secrets_list(
     params(
         ("id" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
-        ("slot" = String, Path, description = "Slot name: env, files, libsecret."),
+        ("slot" = String, Path, description = "Flat slot: env or files. Libsecret uses the structured resource endpoints."),
         ("key" = String, Path, description = "Per-slot entry key."),
     ),
     responses(
-        (status = 200, description = "Secret value, base64-encoded.", body = AdminSecretReadResponse),
-        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
+        (status = 200, description = "Secret value, base64-encoded, or material_b64: null when the key is absent.", body = AdminSecretReadResponse),
+        (status = 400, description = "Invalid slot or key; libsecret is not a flat slot (`slot_not_supported`).", body = ServiceErrorResponse),
+        (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
         (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
@@ -156,7 +157,7 @@ pub(crate) async fn handle_admin_secret_read(
     params(
         ("id" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
-        ("slot" = String, Path, description = "Slot name: env, files, libsecret."),
+        ("slot" = String, Path, description = "Flat slot: env or files. Libsecret uses the structured resource endpoints."),
         ("key" = String, Path, description = "Per-slot entry key."),
     ),
     request_body = AdminSecretWriteRequest,
@@ -208,12 +209,13 @@ pub(crate) async fn handle_admin_secret_write(
     params(
         ("id" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
-        ("slot" = String, Path, description = "Slot name: env, files, libsecret."),
+        ("slot" = String, Path, description = "Flat slot: env or files. Libsecret uses the structured resource endpoints."),
         ("key" = String, Path, description = "Per-slot entry key."),
     ),
     responses(
-        (status = 200, description = "Secret removed.", body = AdminSecretDeleteResponse),
-        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
+        (status = 200, description = "Secret removed; existed is false when the key was already absent.", body = AdminSecretDeleteResponse),
+        (status = 400, description = "Invalid slot or key; libsecret is not a flat slot (`slot_not_supported`).", body = ServiceErrorResponse),
+        (status = 404, description = "Store or resource not found.", body = ServiceErrorResponse),
         (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
         (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),
     ),
@@ -260,13 +262,14 @@ pub(crate) async fn handle_admin_secret_delete(
     params(
         ("id" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
-        ("slot" = String, Path, description = "Slot name."),
+        ("slot" = String, Path, description = "Flat slot: env or files. Libsecret uses the structured resource endpoints."),
         ("key" = String, Path, description = "Source key (`from_key`)."),
     ),
     request_body = AdminSecretRenameRequest,
     responses(
-        (status = 200, description = "Secret renamed.", body = AdminOkResponse),
-        (status = 404, description = "Store / resource / key not found.", body = ServiceErrorResponse),
+        (status = 200, description = "Secret renamed with atomic blob replacement; concurrent load-modify-save operations remain last-writer-wins.", body = AdminOkResponse),
+        (status = 400, description = "Invalid slot, key, or material; libsecret is not a flat slot (`slot_not_supported`).", body = ServiceErrorResponse),
+        (status = 404, description = "Store / resource / source key not found.", body = ServiceErrorResponse),
         (status = 409, description = "Target key already exists.", body = ServiceErrorResponse),
         (status = 500, description = "Trusted-host migration recovery is required (`migration_recovery_required`).", body = ServiceErrorResponse),
         (status = 503, description = "Store is unavailable (`store_locked` or `store_busy`).", body = ServiceErrorResponse),

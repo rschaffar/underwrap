@@ -175,7 +175,7 @@ fn exec_gate_normal_returned_exec_error_reports_failed() {
         if writer.send_armed().is_err() {
             unsafe { libc::_exit(2) };
         }
-        let error = Command::new("/definitely/missing-underwrap-f006-target").exec();
+        let error = Command::new("/definitely/missing-underwrap-gate-target").exec();
         let _ = error;
         let _ = writer.send_failed();
         unsafe { libc::_exit(1) };

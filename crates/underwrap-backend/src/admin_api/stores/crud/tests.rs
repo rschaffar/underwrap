@@ -452,7 +452,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
 }
 
 #[test]
-fn f015_store_create_blocked_registry_publishes_no_candidate_and_retries_cleanly() {
+fn registry_store_create_blocked_registry_publishes_no_candidate_and_retries_cleanly() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));
     let principal = admin_principal();
@@ -507,7 +507,7 @@ fn f015_store_create_blocked_registry_publishes_no_candidate_and_retries_cleanly
 }
 
 #[test]
-fn f015_store_update_persists_before_publishing_live_record() {
+fn registry_store_update_persists_before_publishing_live_record() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));
     let principal = admin_principal();
@@ -598,7 +598,7 @@ fn f015_store_update_persists_before_publishing_live_record() {
 }
 
 #[test]
-fn f015_store_delete_persists_before_removing_live_entry() {
+fn registry_store_delete_persists_before_removing_live_entry() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(crud_state(tmp.path()));
     let principal = admin_principal();

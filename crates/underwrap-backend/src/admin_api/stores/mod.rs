@@ -173,11 +173,10 @@ pub(super) fn lifecycle_state(
     }
 }
 
-/// Usage summary for a store that we cannot currently inspect because
-/// it is locked. We surface zero secret count rather than guessing —
-/// the SPA's "is this safe to delete" hint then falls into the
-/// force-delete bucket and the operator gets a clear "unlock first
-/// or force-delete" decision.
+/// Usage summary when the backend is unavailable for content inspection.
+/// `has_secrets: false` is a placeholder, not proof of an empty store.
+/// Lifecycle state and server-derived actions keep locked deletion conservative
+/// and prohibit deletion while busy or recovery-required.
 pub(super) fn admin_store_usage_for_locked(
     state: &ListenerState,
     store_id: &str,

@@ -149,12 +149,12 @@ fn complete_projection_later_unroutable_has_zero_staging_side_effects() {
     let target_home = tempdir.path().join("home");
     std::fs::create_dir(&target_home).unwrap();
     let blob = blob_with_files(&[
-        (".config/f006/a-preserved", b"first"),
-        (".config/z-f006/missing", b"later"),
+        (".config/gate/a-preserved", b"first"),
+        (".config/z-gate/missing", b"later"),
     ]);
 
     let error =
-        plan_and_realize_for_test(blob, ".config/f006", &staging_root, &target_home).unwrap_err();
+        plan_and_realize_for_test(blob, ".config/gate", &staging_root, &target_home).unwrap_err();
     assert!(
         error.contains("no configured mount path is a prefix"),
         "unexpected error: {error}"
@@ -170,18 +170,18 @@ fn complete_projection_file_descendant_collision_has_zero_staging_side_effects()
     let target_home = tempdir.path().join("home");
     std::fs::create_dir(&target_home).unwrap();
     let blob = blob_with_files(&[
-        (".config/f006/a", b"file"),
-        (".config/f006/a/b", b"descendant"),
+        (".config/gate/a", b"file"),
+        (".config/gate/a/b", b"descendant"),
     ]);
 
     let error =
-        plan_and_realize_for_test(blob, ".config/f006", &staging_root, &target_home).unwrap_err();
+        plan_and_realize_for_test(blob, ".config/gate", &staging_root, &target_home).unwrap_err();
     assert!(
         error.contains("colliding file keys"),
         "unexpected error: {error}"
     );
-    assert!(error.contains(".config/f006/a"));
-    assert!(error.contains(".config/f006/a/b"));
+    assert!(error.contains(".config/gate/a"));
+    assert!(error.contains(".config/gate/a/b"));
     assert!(!staging_root.exists());
     assert_eq!(std::fs::read_dir(&target_home).unwrap().count(), 0);
 }

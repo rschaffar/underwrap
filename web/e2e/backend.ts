@@ -33,7 +33,7 @@ import selfsigned from "selfsigned";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../..");
 
-/** Where the cargo build drops the binary. Tests skip with a clear message if missing. */
+/** Resolve the required backend binary; fixture setup fails if it is missing. */
 function defaultBackendBinary(): string {
   return (
     process.env.UNDERWRAP_BACKENDD_BINARY ??
