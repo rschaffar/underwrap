@@ -9,7 +9,8 @@ import {
 } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { AppShell } from "@/components/app-shell";
+import { StoreNavigation } from "@/components/store-navigation";
+import { SetupPage } from "@/pages/setup";
 import { LoginPage } from "@/pages/login";
 import { BootstrapPage } from "@/pages/bootstrap";
 import { WrapperPermissionsPage } from "@/pages/wrapper-permissions/page";
@@ -66,7 +67,9 @@ function ErrorScreen({ error }: { error: Error }) {
           Something went wrong
         </h2>
         <p className="mt-2 text-sm text-(--color-muted)">
-          {error instanceof ApiError ? error.message : "The page failed to load."}
+          {error instanceof ApiError
+            ? error.message
+            : "The page failed to load."}
         </p>
         <Button
           className="mt-4"
@@ -96,9 +99,31 @@ function NotFound() {
 
 // ----- Protected app routes -----
 
+interface AppSearch {
+  [key: string]: unknown;
+  store?: string;
+  create?: string;
+  unlock?: string;
+  mappedStore?: string;
+  client?: string;
+}
+
+function validateAppSearch(search: Record<string, unknown>): AppSearch {
+  const first = Array.isArray(search.store) ? search.store[0] : search.store;
+  const result: AppSearch = { ...search };
+  delete result.store;
+  if (["string", "number", "boolean"].includes(typeof first))
+    result.store = String(first);
+  for (const key of ["create", "unlock", "mappedStore", "client"] as const) {
+    if (typeof result[key] !== "string") delete result[key];
+  }
+  return result;
+}
+
 const appLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "app",
+  validateSearch: validateAppSearch,
   beforeLoad: async ({ location }) => {
     try {
       const principal = await fetchWhoami();
@@ -128,18 +153,29 @@ const appLayoutRoute = createRoute({
 
 function AppLayoutComponent() {
   return (
-    <AppShell>
+    <StoreNavigation>
       <Outlet />
-    </AppShell>
+    </StoreNavigation>
   );
 }
 
 const indexRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/",
-  beforeLoad: () => {
-    throw redirect({ to: "/secrets", replace: true });
+  beforeLoad: ({ search, location }) => {
+    throw redirect({
+      to: "/setup",
+      search,
+      hash: location.hash,
+      replace: true,
+    });
   },
+});
+
+const setupRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: "/setup",
+  component: SetupPage,
 });
 
 const storesRoute = createRoute({
@@ -298,6 +334,7 @@ export function safeNextPath(next: string | null): string | null {
 const routeTree = rootRoute.addChildren([
   appLayoutRoute.addChildren([
     indexRoute,
+    setupRoute,
     wrapperPermissionsRoute,
     secretsRoute,
     storesRoute,

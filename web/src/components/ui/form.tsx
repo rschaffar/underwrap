@@ -33,7 +33,9 @@ interface FormFieldContextValue<
   name: TName;
 }
 
-const FormFieldContext = React.createContext<FormFieldContextValue | null>(null);
+const FormFieldContext = React.createContext<FormFieldContextValue | null>(
+  null,
+);
 
 function FormField<
   TFieldValues extends FieldValues = FieldValues,
@@ -93,7 +95,7 @@ const FormLabel = React.forwardRef<
   return (
     <Label
       ref={ref}
-      className={cn(error && "text-rose-400", className)}
+      className={cn(error && "text-(--color-danger)", className)}
       htmlFor={formItemId}
       {...props}
     />
@@ -149,7 +151,7 @@ const FormMessage = React.forwardRef<
     <p
       ref={ref}
       id={formMessageId}
-      className={cn("text-xs font-medium text-rose-400", className)}
+      className={cn("text-xs font-medium text-(--color-danger)", className)}
       {...props}
     >
       {body}

@@ -1,92 +1,113 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
-
-function requestedStoreId(): string | null {
-  if (typeof window === "undefined") return null;
-  return new URLSearchParams(window.location.search).get("store");
-}
-
-function replaceRequestedStoreId(id: string | null): void {
-  const current = new URL(window.location.href);
-  const currentIds = current.searchParams.getAll("store");
-  const alreadyCanonical =
-    id === null
-      ? currentIds.length === 0
-      : currentIds.length === 1 && currentIds[0] === id;
-  if (alreadyCanonical) return;
-
-  const next = new URL(window.location.href);
-  if (id === null) {
-    next.searchParams.delete("store");
-  } else {
-    next.searchParams.set("store", id);
-  }
-
-  const currentPath = current.pathname + current.search + current.hash;
-  const nextPath = next.pathname + next.search + next.hash;
-  if (nextPath !== currentPath) {
-    window.history.replaceState(window.history.state, "", nextPath);
-  }
-}
+import { useCallback, useEffect } from "react";
+import { useMatch, useRouter, useRouterState } from "@tanstack/react-router";
 
 /**
- * URL-persisted store selector shared by the per-store admin pages.
- * The URL value remains requested state until a resolved store list
- * synchronously validates it into the effective returned selection.
+ * The router URL is requested state; only a resolved store list makes it usable.
+ * Do not mirror the URL in component state or write native history behind the router.
  */
 export function useStoreSelector(
   availableStores: ReadonlyArray<{ id: string }> | undefined,
 ): { storeId: string | null; setStoreId: (id: string) => void } {
-  const [{ id: requestedId, revision }, updateRequestedId] = useReducer(
-    (state: { id: string | null; revision: number }, id: string | null) => ({
-      id,
-      revision: state.revision + 1,
-    }),
-    undefined,
-    () => ({ id: requestedStoreId(), revision: 0 }),
+  const router = useRouter();
+  const ownerMatchId = useMatch({
+    strict: false,
+    shouldThrow: false,
+    select: (match) => match.id,
+  });
+  const { location, status } = useRouterState({
+    select: (state) => ({ location: state.location, status: state.status }),
+    structuralSharing: false,
+  });
+  // TanStack parses repeated keys as arrays and re-serializes searchStr.
+  // Use its parsed value for selection and its history URL for raw duplicates.
+  const historyHref = router.history.location.href;
+  const rawIds = new URLSearchParams(router.history.location.search).getAll(
+    "store",
   );
-  const mountedPathname = useRef(
-    typeof window === "undefined" ? null : window.location.pathname,
-  ).current;
-
+  const requested = location.search.store;
+  const first = Array.isArray(requested) ? requested[0] : requested;
+  const requestedId =
+    typeof first === "string" ||
+    typeof first === "number" ||
+    typeof first === "boolean"
+      ? String(first)
+      : null;
   const storeId =
     availableStores === undefined
       ? null
-      : requestedId !== null &&
-          availableStores.some((store) => store.id === requestedId)
+      : availableStores.some((store) => store.id === requestedId)
         ? requestedId
         : (availableStores[0]?.id ?? null);
+  const canonical =
+    storeId === null
+      ? rawIds.length === 0
+      : rawIds.length === 1 &&
+        !Array.isArray(requested) &&
+        requestedId === storeId;
 
-  const setStoreId = useCallback(
-    (id: string) => {
+  const replaceSelection = useCallback(
+    (id: string | null) => {
+      // Pending navigation belongs to its destination, not a departing page's
+      // passive effect. Compare the captured location with both router views.
       if (
-        availableStores === undefined ||
-        !availableStores.some((store) => store.id === id) ||
-        id === storeId
+        ownerMatchId === undefined ||
+        !router.state.matches.some((match) => match.id === ownerMatchId) ||
+        router.state.status !== "idle" ||
+        router.state.location !== location ||
+        router.latestLocation.href !== location.href ||
+        router.history.location.href !== historyHref
       ) {
         return;
       }
-      updateRequestedId(id);
-      replaceRequestedStoreId(id);
+      if (id === storeId && canonical) return;
+      // The Router owns both the navigation and serialization; unrelated
+      // search values, hash and user history-state fields survive replacement.
+      void router.navigate({
+        to: location.pathname,
+        search: (previous) => {
+          const next: Record<string, unknown> & { store?: string } = {
+            ...previous,
+          };
+          // A store-scoped form must not follow a selection change or fallback.
+          if (
+            id !== requestedId &&
+            ["resource", "pair", "client"].includes(String(next.create))
+          )
+            delete next.create;
+          if (id === null) delete next.store;
+          else next.store = id;
+          return next;
+        },
+        hash: true,
+        replace: true,
+        state: true,
+        resetScroll: false,
+        hashScrollIntoView: false,
+      });
     },
-    [availableStores, storeId],
+    [
+      canonical,
+      historyHref,
+      location,
+      ownerMatchId,
+      requestedId,
+      router,
+      storeId,
+    ],
+  );
+
+  const setStoreId = useCallback(
+    (id: string) => {
+      if (!availableStores?.some((store) => store.id === id)) return;
+      replaceSelection(id);
+    },
+    [availableStores, replaceSelection],
   );
 
   useEffect(() => {
-    if (availableStores === undefined) return;
-    if (requestedId !== storeId) {
-      updateRequestedId(storeId);
-    }
-    replaceRequestedStoreId(storeId);
-  }, [availableStores, requestedId, revision, storeId]);
-
-  useEffect(() => {
-    const onPopState = () => {
-      if (window.location.pathname !== mountedPathname) return;
-      updateRequestedId(requestedStoreId());
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, [mountedPathname]);
+    if (availableStores === undefined || canonical || status !== "idle") return;
+    replaceSelection(storeId);
+  }, [availableStores, canonical, replaceSelection, status, storeId]);
 
   return { storeId, setStoreId };
 }

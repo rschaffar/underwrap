@@ -7,7 +7,9 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Link } from "@tanstack/react-router";
 import type {
+  AdminClientInstanceListItem,
   WrapperApprovalMode,
   WrapperPermission,
   WrapperResourcePairRecord,
@@ -32,6 +34,9 @@ export function ResourceGroupedPairsTable({
   displayNameById,
   resourceNameById,
   permissionIndex,
+  clientDetails,
+  clientMetadataReady,
+  storeId,
   onCellClick,
   onDeletePair,
 }: {
@@ -40,6 +45,9 @@ export function ResourceGroupedPairsTable({
   displayNameById: Map<string, string>;
   resourceNameById: Map<string, string>;
   permissionIndex: Map<string, WrapperPermission>;
+  clientDetails: Map<string, AdminClientInstanceListItem>;
+  clientMetadataReady: boolean;
+  storeId: string;
   onCellClick: (
     wr: WrapperResource,
     clientInstance: string,
@@ -50,6 +58,12 @@ export function ResourceGroupedPairsTable({
   return (
     <div className="overflow-x-auto rounded-xl border border-(--color-line)">
       <table className="min-w-full text-left text-sm">
+        <caption className="p-3 text-left text-xs text-(--color-muted)">
+          Cells show saved individual settings, not a frontend authorization
+          decision. Client overrides take precedence; unavailable stores and
+          disabled identities still deny access. Missing rows deny in Individual
+          settings. Unsafe debug always needs its separate timed approval.
+        </caption>
         <thead className="bg-(--color-surface-0)/60 text-xs uppercase tracking-wide text-(--color-muted)">
           <tr>
             <th className="sticky left-0 z-10 bg-(--color-surface-0)/60 px-4 py-2">
@@ -61,10 +75,33 @@ export function ResourceGroupedPairsTable({
             </th>
             {clientInstances.map((c) => {
               const displayName = displayNameById.get(c) ?? c;
+              const client = clientMetadataReady
+                ? clientDetails.get(c)
+                : undefined;
+              const override = client?.access_override;
               return (
                 <th key={c} className="px-3 py-2" title={c}>
                   <div className="font-medium text-(--color-fg)">
-                    {displayName}
+                    <Link
+                      className="underline"
+                      to="/client-instances"
+                      search={{ store: storeId, client: c }}
+                    >
+                      {displayName}
+                    </Link>
+                  </div>
+                  <div className="mt-1 max-w-56 text-xs font-normal normal-case">
+                    {!clientMetadataReady
+                      ? "Client state unavailable"
+                      : !client
+                        ? "No current mapping to this store"
+                        : client.status !== "active"
+                          ? "Identity disabled — access denied"
+                          : override?.kind === "locked"
+                            ? "Lock all — normal/debug denied"
+                            : override?.kind === "unlocked"
+                              ? `Unlock all — ${override.writable ? "writeback enabled" : "read-only"}; debug approval still required`
+                              : "Individual settings"}
                   </div>
                 </th>
               );
@@ -102,6 +139,9 @@ export function ResourceGroupedPairsTable({
                       <code className="rounded bg-(--color-surface-1) px-1.5 py-0.5 text-xs">
                         {resourceNameById.get(group.resource) ?? group.resource}
                       </code>
+                      <div className="mt-1 text-xs font-normal text-(--color-muted)">
+                        {group.resource}
+                      </div>
                     </th>
                   ) : null}
                   <td
@@ -123,7 +163,11 @@ export function ResourceGroupedPairsTable({
                     )}
                   </td>
                   {clientInstances.map((c) => {
-                    const key = permissionKey(c, pair.wrapper, pair.resource_id);
+                    const key = permissionKey(
+                      c,
+                      pair.wrapper,
+                      pair.resource_id,
+                    );
                     const permission = permissionIndex.get(key) ?? null;
                     return (
                       <td key={key} className="px-3 py-3">
@@ -144,7 +188,8 @@ export function ResourceGroupedPairsTable({
                       variant="ghost"
                       size="sm"
                       aria-label={`Delete pair ${pair.wrapper} / ${
-                        resourceNameById.get(pair.resource_id) ?? pair.resource_id
+                        resourceNameById.get(pair.resource_id) ??
+                        pair.resource_id
                       }`}
                       data-testid={`wrappers-delete-pair-${pair.wrapper}-${pair.resource_id}`}
                       onClick={() => onDeletePair(pair)}
@@ -162,15 +207,24 @@ export function ResourceGroupedPairsTable({
   );
 }
 
-/**
- * Absent permissions render as Locked — the same badge the explicit
- * `Locked` mode uses. This collapses two "deny" states (no row vs. a
- * row pinned to Locked) into a single visual: from the operator's
- * perspective, both deny reads, and the dialog still lets them upgrade
- * to a different mode.
- */
 function CellContent({ permission }: { permission: WrapperPermission | null }) {
-  return <ModeBadge mode={permission?.mode ?? { kind: "locked" }} />;
+  if (!permission)
+    return (
+      <span
+        data-testid="mode-missing"
+        title="No saved row: access is denied in Individual settings."
+      >
+        No individual row
+      </span>
+    );
+  return (
+    <span className="inline-flex flex-col gap-1">
+      <ModeBadge mode={permission.mode ?? { kind: "locked" }} />
+      <span className="text-(--color-muted)">
+        Saved writeback: {permission.writable ? "on" : "off"}
+      </span>
+    </span>
+  );
 }
 
 export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
@@ -179,7 +233,7 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
       return (
         <span
           data-testid="mode-locked"
-          className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-200"
+          className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-xs text-(--color-danger)"
         >
           <ShieldOff className="h-3 w-3" aria-hidden /> locked
         </span>
@@ -188,19 +242,19 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
       return (
         <span
           data-testid="mode-unlocked"
-          className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-200"
+          className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-xs text-(--color-success)"
         >
           <ShieldCheck className="h-3 w-3" aria-hidden /> unlocked
         </span>
       );
     case "unlocked-until": {
       const date = epochToDate(mode.until_epoch);
-      const expired = date.getTime() <= Date.now();
+      const expired = Math.floor(Date.now() / 1000) > mode.until_epoch;
       if (expired) {
         return (
           <span
             data-testid="mode-expired"
-            className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-200"
+            className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-xs text-(--color-danger)"
             title={`Expired ${date.toString()}`}
           >
             <ShieldOff className="h-3 w-3" aria-hidden /> expired{" "}
@@ -211,7 +265,7 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
       return (
         <span
           data-testid="mode-unlocked-until"
-          className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-200"
+          className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-xs text-(--color-warning)"
           title={`Expires ${date.toString()}`}
         >
           <Hourglass className="h-3 w-3" aria-hidden /> until{" "}
@@ -221,12 +275,12 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
     }
     case "unsafe-debug-until": {
       const date = epochToDate(mode.until_epoch);
-      const expired = date.getTime() <= Date.now();
+      const expired = Math.floor(Date.now() / 1000) > mode.until_epoch;
       if (expired) {
         return (
           <span
             data-testid="mode-unsafe-debug-expired"
-            className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-200"
+            className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 text-xs text-(--color-danger)"
             title={`Unsafe-debug expired ${date.toString()}`}
           >
             <ShieldOff className="h-3 w-3" aria-hidden /> unsafe-debug expired
@@ -236,7 +290,7 @@ export function ModeBadge({ mode }: { mode: WrapperApprovalMode }) {
       return (
         <span
           data-testid="mode-unsafe-debug-until"
-          className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-amber-100"
+          className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-(--color-warning)"
           title={`Unsafe-debug until ${date.toString()}`}
         >
           <AlertTriangle className="h-3 w-3" aria-hidden /> unsafe-debug until{" "}

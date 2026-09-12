@@ -38,13 +38,13 @@ pub enum WritebackOutcome {
     /// Bytes changed and the daemon accepted the `Checkin`.
     Persisted,
     /// Bytes changed but backend finalize rejected the `Checkin` after
-    /// re-evaluating the permission mode and writable flag. The change has
+    /// re-evaluating effective backend access and writability. The change has
     /// been dropped.
     RejectedReadOnly {
         resource_id: String,
         resource_name: String,
     },
-    /// Bytes changed and the permission row's writable flag was already false
+    /// Bytes changed and the effective writable flag was already false
     /// at Checkout — no `Checkin` was attempted. The change has been dropped.
     DroppedReadOnly {
         resource_id: String,
@@ -137,8 +137,8 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
     }
 
     if !channel.writable {
-        // Don't attempt a Checkin we know the daemon would reject.
-        // Still send UsageSignal so the daemon records the run.
+        // Honor the open-time read-only hint, even if backend settings changed.
+        // UsageSignal is still subject to current backend reauthorization.
         signal_usage(channel.channel_fd, &channel.resource_id)?;
         return Ok(WritebackOutcome::DroppedReadOnly {
             resource_id: channel.resource_id.clone(),

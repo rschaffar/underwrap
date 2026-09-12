@@ -41,7 +41,12 @@ test("a created user can sign in and change their own password", async ({
   // Admin logs out; the new user logs in.
   await page.goto(`${backendWithAdmin.baseUrl}/logout`);
   await page.waitForURL(/\/login(\?|$)/);
-  await loginViaUi(page, backendWithAdmin.baseUrl, "opbob", "op-bob-initial-pw");
+  await loginViaUi(
+    page,
+    backendWithAdmin.baseUrl,
+    "opbob",
+    "op-bob-initial-pw",
+  );
   const whoami = await page.request.get(
     `${backendWithAdmin.baseUrl}/v1/admin/auth/whoami`,
   );
@@ -53,7 +58,9 @@ test("a created user can sign in and change their own password", async ({
   await page.getByLabel(/^new password$/i).fill("op-bob-rotated-pw");
   await page.getByLabel(/confirm new password/i).fill("op-bob-rotated-pw");
   await page.getByRole("button", { name: /^save$/i }).click();
-  await expect(page.getByRole("status")).toContainText(/password updated/i);
+  await expect(page.getByRole("main").getByRole("status")).toContainText(
+    /password updated/i,
+  );
 
   // Sign out, sign back in with the new password.
   await page.goto(`${backendWithAdmin.baseUrl}/logout`);
@@ -62,13 +69,11 @@ test("a created user can sign in and change their own password", async ({
   await page.getByLabel("Username").fill("opbob");
   await page.getByLabel("Password").fill("op-bob-initial-pw");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(
-    page.getByText(/invalid username or password/i),
-  ).toBeVisible();
+  await expect(page.getByText(/invalid username or password/i)).toBeVisible();
   // New password works.
   await page.getByLabel("Password").fill("op-bob-rotated-pw");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await page.waitForURL(/\/secrets(\?|$)/);
+  await page.waitForURL(/\/setup(\?|$)/);
 });
 
 test("last-user protection rejects deleting the only remaining user via the API", async ({
@@ -103,5 +108,5 @@ test("last-user protection rejects deleting the only remaining user via the API"
   await page.getByLabel("Username").fill(ADMIN_USERNAME);
   await page.getByLabel("Password").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
-  await page.waitForURL(/\/secrets(\?|$)/);
+  await page.waitForURL(/\/setup(\?|$)/);
 });

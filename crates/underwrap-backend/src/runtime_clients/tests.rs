@@ -17,6 +17,7 @@ fn sample_cert_pem(label: &str) -> String {
 
 fn sample(id: &str) -> ClientInstanceRecord {
     ClientInstanceRecord {
+        access_override: Default::default(),
         id: id.to_string(),
         display_name: format!("Display {id}"),
         current_store_id: "store_work".into(),
@@ -24,6 +25,31 @@ fn sample(id: &str) -> ClientInstanceRecord {
         last_seen_at: Some(123),
         current_credential: current_credential_from_pem(sample_cert_pem(id)).unwrap(),
         auto_create_wrapper_assets: false,
+    }
+}
+
+#[test]
+fn omitted_override_defaults_to_individual_and_explicit_modes_survive_reload() {
+    use underwrap_protocol::policy::ClientAccessOverride;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("clients");
+    let mut record = sample("inst_override");
+    let mut value = serde_json::to_value(&record).unwrap();
+    value.as_object_mut().unwrap().remove("access_override");
+    let parsed: ClientInstanceRecord = serde_json::from_value(value).unwrap();
+    assert_eq!(parsed.access_override, ClientAccessOverride::Individual {});
+
+    for access in [
+        ClientAccessOverride::Locked {},
+        ClientAccessOverride::Unlocked { writable: false },
+        ClientAccessOverride::Unlocked { writable: true },
+        ClientAccessOverride::Individual {},
+    ] {
+        record.access_override = access;
+        save_client_instance(&dir, &record).unwrap();
+        let loaded = load_client_instances(&dir).unwrap();
+        assert_eq!(loaded[&record.id].access_override, access);
     }
 }
 

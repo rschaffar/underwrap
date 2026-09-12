@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroizing;
 
 use crate::entities::{ResourceRecord, WrapperResourcePairRecord};
-use crate::policy::WrapperPermission;
+use crate::policy::{ClientAccessOverride, WrapperPermission};
 use crate::resource::KvSecretSlot;
 use crate::resource_blob::ResourceContentReference;
 
@@ -354,6 +354,8 @@ pub struct AdminClientInstanceListItem {
     /// startup. Defaults to `false` for newly-created instances.
     #[serde(default)]
     pub auto_create_wrapper_assets: bool,
+    /// Backend request-time override; individual permission rows are retained.
+    pub access_override: ClientAccessOverride,
     pub actions: AdminClientInstanceActionState,
 }
 
@@ -374,7 +376,7 @@ pub struct AdminClientInstanceCreateRequest {
     pub auto_create_wrapper_assets: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminClientInstanceUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -391,6 +393,10 @@ pub struct AdminClientInstanceUpdateRequest {
     /// unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_create_wrapper_assets: Option<bool>,
+    /// Replace the client-wide override without modifying permission rows.
+    /// Omit or send null to leave unchanged. Unlocking never grants unsafe-debug approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_override: Option<ClientAccessOverride>,
 }
 
 // ===== Secret CRUD =====
@@ -731,3 +737,6 @@ pub struct AdminSecretsView {
     pub entries: Vec<AdminSecretEntry>,
     pub resources: Vec<ResourceRecord>,
 }
+
+#[cfg(test)]
+mod tests;

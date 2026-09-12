@@ -292,6 +292,7 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
     let client_before_live = live_client(daemon, &client_id).await?;
     let client_before_disk = disk_client(daemon, &client_id)?;
     let failed_client_update = AdminClientInstanceUpdateRequest {
+        access_override: None,
         display_name: Some("replacement runtime client".into()),
         current_store_id: Some(replacement_store.id.clone()),
         status: Some(AdminClientInstanceStatus::Disabled),
@@ -341,6 +342,7 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
         )?;
     expected_client.auto_create_wrapper_assets = true;
     let successful_client_update = AdminClientInstanceUpdateRequest {
+        access_override: None,
         status: Some(AdminClientInstanceStatus::Active),
         ..failed_client_update
     };
@@ -378,6 +380,7 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
         .update_client_instance(
             &client_id,
             &AdminClientInstanceUpdateRequest {
+                access_override: None,
                 display_name: None,
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Disabled),
@@ -397,6 +400,7 @@ async fn run_matrix(daemon: &TestDaemon) -> Result<()> {
         .update_client_instance(
             &client_id,
             &AdminClientInstanceUpdateRequest {
+                access_override: None,
                 display_name: None,
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Active),

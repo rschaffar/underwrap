@@ -75,11 +75,11 @@ export function KeyRevealDialog({
             Copy to clipboard
           </Button>
           {copyStatus === "copied" ? (
-            <span className="text-xs text-emerald-300">Copied.</span>
+            <span className="text-xs text-(--color-success)">Copied.</span>
           ) : copyStatus === "failed" ? (
-            <span className="text-xs text-rose-300">
-              Could not access clipboard — select the value above and
-              copy by hand.
+            <span className="text-xs text-(--color-danger)">
+              Could not access clipboard — select the value above and copy by
+              hand.
             </span>
           ) : null}
         </div>

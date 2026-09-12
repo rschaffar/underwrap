@@ -1,241 +1,379 @@
-import { StrictMode } from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { createContext, StrictMode, useContext, useState } from "react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import {
+  createBrowserHistory,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Link,
+  Outlet,
+  RouterProvider,
+  type RouterHistory,
+} from "@tanstack/react-router";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useStoreSelector } from "./use-store-selector";
 
 const STORES = [{ id: "primary" }, { id: "secondary" }] as const;
+type Stores = ReadonlyArray<{ id: string }> | undefined;
+const StoreList = createContext<Stores>(undefined);
+const dispose: Array<() => void> = [];
 
-function Harness({
-  stores,
-}: {
-  stores: ReadonlyArray<{ id: string }> | undefined;
-}) {
-  const { storeId, setStoreId } = useStoreSelector(stores);
-  return (
-    <>
-      <output data-testid="effective-store">{storeId ?? "none"}</output>
-      <button type="button" onClick={() => setStoreId("primary")}>
-        Select primary
-      </button>
-      <button type="button" onClick={() => setStoreId("secondary")}>
-        Select secondary
-      </button>
-      <button type="button" onClick={() => setStoreId("missing")}>
-        Select missing
-      </button>
-    </>
-  );
+// Match the authenticated layout's permissive search validator.
+function validateSearch(
+  search: Record<string, unknown>,
+): Record<string, unknown> & { store?: string } {
+  const first = Array.isArray(search.store) ? search.store[0] : search.store;
+  const result = { ...search };
+  delete result.store;
+  return {
+    ...result,
+    ...(typeof first === "string" ||
+    typeof first === "number" ||
+    typeof first === "boolean"
+      ? { store: String(first) }
+      : {}),
+  };
 }
 
-function renderSelector(stores: ReadonlyArray<{ id: string }> | undefined) {
-  return render(
+async function renderSelector(
+  initialStores: Stores,
+  initialPath = "/secrets?store=primary",
+  browser = false,
+) {
+  if (browser) {
+    // Seed before constructing the real browser router; never mutate native
+    // history underneath a mounted router or synthesize popstate events.
+    window.history.replaceState(null, "", initialPath);
+  }
+  const history: RouterHistory = browser
+    ? createBrowserHistory()
+    : createMemoryHistory({ initialEntries: [initialPath] });
+  if (browser) {
+    // The history adapter initializes its own state keys. Seed user state
+    // through that adapter before mounting, rather than before its creation.
+    history.replace(initialPath, {
+      ...history.location.state,
+      marker: "user-state",
+      nested: { count: 1 },
+    });
+    history.flush?.();
+  }
+  const replace = vi.spyOn(history, "replace");
+  const details = vi.fn(async (_id: string) => null);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  dispose.push(() => {
+    history.destroy();
+    queryClient.clear();
+  });
+  let updateStores!: (stores: Stores) => void;
+
+  function Harness() {
+    const { storeId, setStoreId } = useStoreSelector(useContext(StoreList));
+    useQuery({
+      queryKey: ["detail", storeId],
+      queryFn: () => details(storeId!),
+      enabled: storeId !== null,
+    });
+    return (
+      <>
+        <output data-testid="effective-store">{storeId ?? "none"}</output>
+        {["primary", "secondary", "missing"].map((id) => (
+          <button key={id} onClick={() => setStoreId(id)}>
+            Select {id}
+          </button>
+        ))}
+        <Link to="/secrets" search={storeId === null ? {} : { store: storeId }}>
+          Secrets
+        </Link>
+        <Link
+          to="/wrappers"
+          search={storeId === null ? {} : { store: storeId }}
+        >
+          Wrappers
+        </Link>
+      </>
+    );
+  }
+  const root = createRootRoute({ component: Outlet });
+  const layout = createRoute({
+    getParentRoute: () => root,
+    id: "app",
+    validateSearch,
+    component: Outlet,
+  });
+  const secrets = createRoute({
+    getParentRoute: () => layout,
+    path: "/secrets",
+    component: Harness,
+  });
+  const wrappers = createRoute({
+    getParentRoute: () => layout,
+    path: "/wrappers",
+    component: Harness,
+  });
+  const router = createRouter({
+    history,
+    routeTree: root.addChildren([layout.addChildren([secrets, wrappers])]),
+    defaultPendingMinMs: 0,
+  });
+  function Provider() {
+    const [stores, setStores] = useState(initialStores);
+    updateStores = setStores;
+    return (
+      <StoreList.Provider value={stores}>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>
+      </StoreList.Provider>
+    );
+  }
+  render(
     <StrictMode>
-      <Harness stores={stores} />
+      <Provider />
     </StrictMode>,
   );
+  await screen.findByTestId("effective-store");
+  await waitFor(() => expect(router.state.status).toBe("idle"));
+  return {
+    history,
+    router,
+    replace,
+    details,
+    updateStores: (stores: Stores) => updateStores(stores),
+    setStores: async (stores: Stores) => {
+      await act(async () => updateStores(stores));
+      await waitFor(() => expect(router.state.status).toBe("idle"));
+    },
+  };
 }
 
-function setLocation(path: string, state: unknown = null) {
-  window.history.replaceState(state, "", path);
+function effectiveStore() {
+  return screen.getByTestId("effective-store").textContent;
 }
 
-function effectiveStore(): string {
-  return screen.getByTestId("effective-store").textContent ?? "";
+function expectContext(
+  history: RouterHistory,
+  store: string | null,
+  hash = "#resource",
+) {
+  const url = new URL(history.location.href, "https://example.test");
+  expect(url.searchParams.getAll("store")).toEqual(
+    store === null ? [] : [store],
+  );
+  expect(url.searchParams.get("keep")).toBe("yes");
+  expect(url.hash).toBe(hash);
 }
 
 afterEach(() => {
+  cleanup();
+  for (const release of dispose.splice(0)) release();
   vi.restoreAllMocks();
-  setLocation("/");
+  window.history.replaceState(null, "", "/");
 });
 
-describe("useStoreSelector", () => {
-  it("never exposes an unresolved stale id and canonicalizes one fallback exactly once", () => {
-    setLocation("/secrets?store=stale&keep=yes#resource");
-    const replaceState = vi.spyOn(window.history, "replaceState");
-    const view = renderSelector(undefined);
-
-    expect(effectiveStore()).toBe("none");
-    expect(replaceState).not.toHaveBeenCalled();
-
-    view.rerender(
-      <StrictMode>
-        <Harness stores={STORES} />
-      </StrictMode>,
-    );
-
-    expect(effectiveStore()).toBe("primary");
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      "/secrets?store=primary&keep=yes#resource",
-    );
-    expect(replaceState).toHaveBeenCalledTimes(1);
-  });
-
-  it("falls back after removal and clears only store after the resolved list becomes empty", () => {
-    setLocation("/secrets?store=secondary&keep=yes#resource");
-    const replaceState = vi.spyOn(window.history, "replaceState");
-    const view = renderSelector(STORES);
-
-    expect(effectiveStore()).toBe("secondary");
-    expect(replaceState).not.toHaveBeenCalled();
-
-    view.rerender(
-      <StrictMode>
-        <Harness stores={[STORES[0]]} />
-      </StrictMode>,
-    );
-    expect(effectiveStore()).toBe("primary");
-    expect(window.location.search).toBe("?store=primary&keep=yes");
-
-    view.rerender(
-      <StrictMode>
-        <Harness stores={[]} />
-      </StrictMode>,
+describe("useStoreSelector with the real router", () => {
+  it("gates details while unresolved and canonicalizes one stale fallback in StrictMode", async () => {
+    const view = await renderSelector(
+      undefined,
+      "/secrets?store=stale&keep=yes#resource",
     );
     expect(effectiveStore()).toBe("none");
-    expect(window.location.search).toBe("?keep=yes");
-    expect(window.location.hash).toBe("#resource");
-    expect(replaceState).toHaveBeenCalledTimes(2);
-  });
-
-  it("updates a valid selection immediately without adding history or rewriting an effective choice", () => {
-    setLocation("/wrappers?store=secondary&keep=yes#policy", { marker: "selection" });
-    const initialLength = window.history.length;
-    const replaceState = vi.spyOn(window.history, "replaceState");
-    renderSelector(STORES);
-
-    expect(effectiveStore()).toBe("secondary");
-    expect(replaceState).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Select primary" }));
-    expect(effectiveStore()).toBe("primary");
-    expect(window.location.search).toBe("?store=primary&keep=yes");
-    expect(window.location.hash).toBe("#policy");
-    expect(window.history.length).toBe(initialLength);
-    expect(replaceState).toHaveBeenCalledTimes(1);
-
-    replaceState.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Select primary" }));
-    expect(effectiveStore()).toBe("primary");
-    expect(replaceState).not.toHaveBeenCalled();
-  });
-
-  it("preserves exact history state, unrelated query, hash, and history length when defaulting", () => {
-    setLocation("/secrets?keep=yes#resource", {
-      marker: "exact-state",
-      nested: { count: 1 },
-    });
-    const exactState = window.history.state;
-    const initialLength = window.history.length;
-    const replaceState = vi.spyOn(window.history, "replaceState");
-
-    renderSelector(STORES);
-
-    expect(effectiveStore()).toBe("primary");
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      "/secrets?keep=yes&store=primary#resource",
+    expect(view.replace).not.toHaveBeenCalled();
+    expect(view.details).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Select primary"));
+    expect(view.replace).not.toHaveBeenCalled();
+    await view.setStores(STORES);
+    await waitFor(() => expect(effectiveStore()).toBe("primary"));
+    expectContext(view.history, "primary");
+    expect(view.replace).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(view.details).toHaveBeenCalledWith("primary"));
+    expect(view.details.mock.calls.every(([id]) => id === "primary")).toBe(
+      true,
     );
-    expect(window.history.state).toBe(exactState);
-    expect(window.history.length).toBe(initialLength);
-    expect(replaceState).toHaveBeenCalledTimes(1);
-    expect(replaceState.mock.calls[0]?.[0]).toBe(exactState);
   });
 
-  it("does not replace a canonical initial URL or an already-effective setter choice", () => {
-    setLocation("/secrets?store=primary&keep=yes#resource");
-    const replaceState = vi.spyOn(window.history, "replaceState");
-
-    renderSelector(STORES);
-    expect(effectiveStore()).toBe("primary");
-    expect(replaceState).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Select primary" }));
-    expect(replaceState).not.toHaveBeenCalled();
-  });
-
-  it("rejects a setter id absent from the resolved store list without changing state or history", () => {
-    const state = { marker: "invalid-setter" };
-    setLocation("/secrets?store=secondary&keep=yes#resource", state);
-    const initialLength = window.history.length;
-    const replaceState = vi.spyOn(window.history, "replaceState");
-    renderSelector(STORES);
-
-    fireEvent.click(screen.getByRole("button", { name: "Select missing" }));
-
-    expect(effectiveStore()).toBe("secondary");
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
+  it("falls back after removal and removes only store for a resolved-empty list", async () => {
+    const view = await renderSelector(
+      STORES,
       "/secrets?store=secondary&keep=yes#resource",
     );
-    expect(window.history.state).toBe(state);
-    expect(window.history.length).toBe(initialLength);
-    expect(replaceState).not.toHaveBeenCalled();
-  });
-
-  it("rereads valid and stale popstate selections through normal validation", () => {
-    setLocation("/secrets?store=primary&keep=yes#resource");
-    const replaceState = vi.spyOn(window.history, "replaceState");
-    renderSelector(STORES);
-    expect(replaceState).not.toHaveBeenCalled();
-
-    setLocation("/secrets?store=secondary&keep=yes#resource", { nav: "valid" });
-    replaceState.mockClear();
-    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
     expect(effectiveStore()).toBe("secondary");
-    expect(replaceState).not.toHaveBeenCalled();
-
-    setLocation("/secrets?store=stale&keep=yes#resource", { nav: "stale" });
-    const staleState = window.history.state;
-    replaceState.mockClear();
-    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
-
+    expect(view.replace).not.toHaveBeenCalled();
+    view.details.mockClear();
+    await view.setStores([STORES[0]]);
     expect(effectiveStore()).toBe("primary");
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      "/secrets?store=primary&keep=yes#resource",
+    expectContext(view.history, "primary");
+    expect(view.details.mock.calls.every(([id]) => id === "primary")).toBe(
+      true,
     );
-    expect(window.history.state).toBe(staleState);
-    expect(replaceState).toHaveBeenCalledTimes(1);
+    view.details.mockClear();
+    await view.setStores([]);
+    expect(effectiveStore()).toBe("none");
+    expectContext(view.history, null);
+    expect(view.replace).toHaveBeenCalledTimes(2);
+    expect(view.details).not.toHaveBeenCalled();
   });
 
-  it("canonicalizes same-path duplicate params once when popstate keeps the same first id", async () => {
-    setLocation("/secrets?store=primary&keep=yes#resource");
-    const replaceState = vi.spyOn(window.history, "replaceState");
-    renderSelector(STORES);
-
-    setLocation(
-      "/secrets?store=primary&store=secondary&keep=yes#resource",
-      { nav: "duplicate" },
+  it("keeps a canonical URL untouched, rejects invalid setters, and replaces a valid choice", async () => {
+    const view = await renderSelector(
+      STORES,
+      "/secrets?store=secondary&keep=yes#resource",
+      true,
     );
-    const exactState = window.history.state;
-    replaceState.mockClear();
-    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
-
-    expect(effectiveStore()).toBe("primary");
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      "/secrets?store=primary&keep=yes#resource",
-    );
-    expect(window.history.state).toBe(exactState);
-    expect(replaceState).toHaveBeenCalledTimes(1);
-    expect(replaceState.mock.calls[0]?.[0]).toBe(exactState);
-
-    await act(async () => {});
-    expect(replaceState).toHaveBeenCalledTimes(1);
-  });
-
-  it("ignores popstate after navigation changes the mounted pathname", () => {
-    setLocation("/secrets?store=primary&keep=yes#resource");
-    const replaceState = vi.spyOn(window.history, "replaceState");
-    renderSelector(STORES);
-
-    setLocation("/wrappers?store=secondary&keep=yes#policy", {
-      nav: "different-path",
+    const length = window.history.length;
+    const userState = {
+      marker: window.history.state.marker,
+      nested: window.history.state.nested,
+    };
+    fireEvent.click(screen.getByText("Select missing"));
+    fireEvent.click(screen.getByText("Select secondary"));
+    expect(effectiveStore()).toBe("secondary");
+    expect(view.replace).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Select primary"));
     });
-    replaceState.mockClear();
-    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    await waitFor(() => expect(effectiveStore()).toBe("primary"));
+    expectContext(view.history, "primary");
+    expect(window.history.length).toBe(length);
+    expect(window.history.state).toMatchObject(userState);
+    expect(view.replace).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Select primary"));
+    expect(view.replace).toHaveBeenCalledTimes(1);
+  });
 
-    expect(effectiveStore()).toBe("primary");
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      "/wrappers?store=secondary&keep=yes#policy",
+  it("preserves user history state, query and hash when defaulting", async () => {
+    const initialLength = window.history.length;
+    const view = await renderSelector(
+      STORES,
+      "/secrets?keep=yes#resource",
+      true,
     );
-    expect(replaceState).not.toHaveBeenCalled();
+    expect(effectiveStore()).toBe("primary");
+    expectContext(view.history, "primary");
+    expect(window.history.state).toMatchObject({
+      marker: "user-state",
+      nested: { count: 1 },
+    });
+    expect(window.history.length).toBe(initialLength);
+    expect(view.replace).toHaveBeenCalledTimes(1);
+  });
+
+  it("canonicalizes duplicate keys to the first valid requested ID", async () => {
+    const view = await renderSelector(
+      STORES,
+      "/secrets?store=primary&store=secondary&keep=yes#resource",
+    );
+    expect(effectiveStore()).toBe("primary");
+    expectContext(view.history, "primary");
+    expect(view.replace).toHaveBeenCalledTimes(1);
+    await act(async () => {});
+    expect(view.replace).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await view.router.navigate({
+        href: "/secrets?store=primary&store=secondary&keep=yes#resource",
+      });
+    });
+    await waitFor(() => expectContext(view.history, "primary"));
+  });
+
+  it("revalidates stale IDs on real router navigation without ever fetching that ID", async () => {
+    const view = await renderSelector(STORES);
+    view.details.mockClear();
+    await act(async () => {
+      await view.router.navigate({
+        href: "/secrets?store=stale&keep=yes#resource",
+      });
+    });
+    await waitFor(() => expectContext(view.history, "primary"));
+    expect(effectiveStore()).toBe("primary");
+    expect(view.details.mock.calls.every(([id]) => id === "primary")).toBe(
+      true,
+    );
+  });
+
+  it("retains selection across sections and follows actual browser Back and Forward", async () => {
+    await renderSelector(STORES, "/secrets?store=secondary", true);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("link", { name: "Wrappers" }));
+    });
+    await waitFor(() => expect(window.location.pathname).toBe("/wrappers"));
+    expect(effectiveStore()).toBe("secondary");
+    await act(async () => {
+      fireEvent.click(screen.getByText("Select primary"));
+    });
+    await waitFor(() => expect(effectiveStore()).toBe("primary"));
+    await act(async () => {
+      window.history.back();
+    });
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/secrets");
+      expect(effectiveStore()).toBe("secondary");
+    });
+    await act(async () => {
+      window.history.forward();
+    });
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/wrappers");
+      expect(effectiveStore()).toBe("primary");
+    });
+  });
+
+  it("revalidates an obsolete selection reached through actual browser Back", async () => {
+    const view = await renderSelector(
+      STORES,
+      "/secrets?store=secondary&keep=yes#resource",
+      true,
+    );
+    await act(async () => {
+      await view.router.navigate({ href: "/wrappers?store=primary" });
+    });
+    await view.setStores([STORES[0]]);
+    view.details.mockClear();
+    await act(async () => {
+      window.history.back();
+    });
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/secrets");
+      expect(effectiveStore()).toBe("primary");
+      expectContext(view.history, "primary");
+    });
+    expect(view.details.mock.calls.every(([id]) => id === "primary")).toBe(
+      true,
+    );
+  });
+
+  it("does not let a departing route canonicalize a new route with its old list", async () => {
+    const view = await renderSelector(undefined, "/secrets?store=stale");
+    // Make the old route eligible for canonicalization while navigating to a
+    // distinct valid destination; no native history or hook internals are mocked.
+    await act(async () => {
+      const navigation = view.router.navigate({
+        href: "/wrappers?store=secondary&keep=yes#policy",
+      });
+      view.updateStores(STORES);
+      await navigation;
+    });
+    await waitFor(() => expect(effectiveStore()).toBe("secondary"));
+    expect(view.history.location.pathname).toBe("/wrappers");
+    expectContext(view.history, "secondary", "#policy");
+    expect(view.details.mock.calls.every(([id]) => id === "secondary")).toBe(
+      true,
+    );
   });
 });

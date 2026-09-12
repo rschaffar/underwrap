@@ -26,7 +26,11 @@ function describeContentReference(reference: ContentReference): string {
   }
 }
 
-function BlockersAlert({ blockers }: { blockers: Blockers | null | undefined }) {
+function BlockersAlert({
+  blockers,
+}: {
+  blockers: Blockers | null | undefined;
+}) {
   if (!blockers) return null;
   return (
     <Alert
@@ -38,9 +42,8 @@ function BlockersAlert({ blockers }: { blockers: Blockers | null | undefined }) 
       <ul className="list-disc pl-5">
         {blockers.content_entry_count > 0 ? (
           <li>
-            <strong>{blockers.content_entry_count}</strong> stored resource content
-            {" "}
-            {blockers.content_entry_count === 1 ? "entry" : "entries"}
+            <strong>{blockers.content_entry_count}</strong> stored resource
+            content {blockers.content_entry_count === 1 ? "entry" : "entries"}
             {(blockers.sample_content ?? []).length > 0 ? (
               <ul className="list-disc pl-5">
                 {(blockers.sample_content ?? []).map((reference, index) => (
@@ -56,8 +59,8 @@ function BlockersAlert({ blockers }: { blockers: Blockers | null | undefined }) 
         ) : null}
         {blockers.pair_count > 0 ? (
           <li>
-            <strong>{blockers.pair_count}</strong> wrapper/resource
-            pair{blockers.pair_count === 1 ? "" : "s"}
+            <strong>{blockers.pair_count}</strong> wrapper/resource pair
+            {blockers.pair_count === 1 ? "" : "s"}
             {(blockers.sample_pairs ?? []).length > 0 ? (
               <ul className="list-disc pl-5">
                 {(blockers.sample_pairs ?? []).map((pair, index) => (
@@ -77,22 +80,24 @@ function BlockersAlert({ blockers }: { blockers: Blockers | null | undefined }) 
             {blockers.permission_count === 1 ? "" : "s"}
             {(blockers.sample_permissions ?? []).length > 0 ? (
               <ul className="list-disc pl-5">
-                {(blockers.sample_permissions ?? []).map((permission, index) => (
-                  <li
-                    key={`${permission.client_instance}-${permission.wrapper}-${permission.resource_id}-${index}`}
-                  >
-                    <code className="font-mono">
-                      {permission.client_instance}/{permission.wrapper}/
-                      {permission.resource_id}
-                    </code>
-                  </li>
-                ))}
+                {(blockers.sample_permissions ?? []).map(
+                  (permission, index) => (
+                    <li
+                      key={`${permission.client_instance}-${permission.wrapper}-${permission.resource_id}-${index}`}
+                    >
+                      <code className="font-mono">
+                        {permission.client_instance}/{permission.wrapper}/
+                        {permission.resource_id}
+                      </code>
+                    </li>
+                  ),
+                )}
               </ul>
             ) : null}
           </li>
         ) : null}
       </ul>
-      <p className="text-amber-200/80">
+      <p className="text-(--color-warning)">
         Clear those dependents first, then try again.
       </p>
     </Alert>

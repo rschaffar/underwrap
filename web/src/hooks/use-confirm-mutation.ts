@@ -14,7 +14,8 @@ export interface UseConfirmMutationOptions<TArgs = void, TResult = unknown> {
 }
 
 export type ConfirmMutationOutcome<TResult> =
-  { status: "success"; result: TResult } | { status: "error" };
+  | { status: "success"; result: TResult }
+  | { status: "error" };
 
 interface RequestErrorOutcome {
   status: "error";
@@ -22,7 +23,8 @@ interface RequestErrorOutcome {
 }
 
 type InternalMutationOutcome<TResult> =
-  { status: "success"; result: TResult } | RequestErrorOutcome;
+  | { status: "success"; result: TResult }
+  | RequestErrorOutcome;
 
 export interface UseConfirmMutationResult<TArgs = void, TResult = unknown> {
   /** Resolve expected request failures as an error outcome; reject callback failures. */
@@ -60,7 +62,8 @@ export function useConfirmMutation<TArgs = void, TResult = unknown>(
       }
       await opts.onSuccess?.();
     },
-    onError: (err) => setSubmitError(describeApiError(err)),
+    // Mutation-level onError also receives failures from onSuccess above.
+    // Only the explicit request-error outcome may become an inline API error.
   });
   return {
     confirm: async (args: TArgs) => {

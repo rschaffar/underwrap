@@ -1,7 +1,10 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { type AdminClientInstancesListResponse, fetchClientInstances } from "@/api/client";
+import {
+  type AdminClientInstancesListResponse,
+  fetchClientInstances,
+} from "@/api/client";
 
 /**
  * Shared lookups for per-store admin pages: the global
@@ -15,16 +18,14 @@ export function useClientInstanceDirectory(): {
   clientInstances: AdminClientInstancesListResponse["items"];
   displayNameById: Map<string, string>;
   isLoading: boolean;
+  isSuccess: boolean;
 } {
   const query = useQuery<AdminClientInstancesListResponse>({
     queryKey: ["admin", "client-instances"],
     queryFn: fetchClientInstances,
   });
 
-  const clientInstances = useMemo(
-    () => query.data?.items ?? [],
-    [query.data],
-  );
+  const clientInstances = useMemo(() => query.data?.items ?? [], [query.data]);
 
   const displayNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -38,5 +39,6 @@ export function useClientInstanceDirectory(): {
     clientInstances,
     displayNameById,
     isLoading: query.isLoading,
+    isSuccess: query.isSuccess,
   };
 }

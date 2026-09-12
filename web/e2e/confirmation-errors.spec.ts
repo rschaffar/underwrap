@@ -50,6 +50,7 @@ test("an intercepted store-delete failure stays inline without global diagnostic
   await page.goto(`${backendWithAdmin.baseUrl}/stores`);
   const defaultRow = page.getByRole("row", { name: /\bdefault\b/ });
   await expect(defaultRow).toBeVisible();
+  await defaultRow.getByText("Maintenance", { exact: true }).click();
   await defaultRow.getByRole("button", { name: /^delete$/i }).click();
   const dialog = page.getByRole("dialog", { name: /delete store: default/i });
   const deleteButton = dialog.getByRole("button", {

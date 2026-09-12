@@ -4,8 +4,8 @@
  * Exercises the /secrets page end-to-end against a real backend:
  *
  *   - Admin can create a resource and per-slot entries (env, libsecret),
- *     reveal them (with explicit confirmation), overwrite them, and
- *     delete them via the simple confirm dialog.
+ *     reveal them (with explicit confirmation), explicitly replace or rename them,
+ *     and delete them via the simple confirm dialog.
  *   - Resource deletion is refused while dependents exist and succeeds
  *     once cleared.
  *
@@ -19,8 +19,8 @@ import { test, expect, loginViaUi } from "./fixtures";
 
 /**
  * The `data-testid="resource-block-..."` attribute is keyed by the
- * stable backend id, which the operator never sees. Locate by visible
- * name instead — that's also how a real user finds the block.
+ * stable backend id, displayed as secondary metadata.
+ * Locate by the visible resource name, as an operator does.
  */
 function resourceBlockByName(page: Page, name: string): Locator {
   return page
@@ -28,7 +28,7 @@ function resourceBlockByName(page: Page, name: string): Locator {
     .filter({ hasText: name });
 }
 
-test("admin always sees an enabled Create resource button (writes are unconditional)", async ({
+test("admin can create a resource in an available selected store", async ({
   page,
   backendWithAdmin,
 }) => {
@@ -36,18 +36,25 @@ test("admin always sees an enabled Create resource button (writes are unconditio
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
   await expect(page.getByRole("heading", { name: /^secrets$/i })).toBeVisible();
-  // No "writes disabled" status banner — there's no global toggle
-  // anymore. Admin writes are always allowed.
-  await expect(page.getByRole("status")).toHaveCount(0);
+  // No page-level wrapper-permission gate for admin writes in this available store.
+  // The shell's separate selected-store status remains visible.
+  await expect(page.getByRole("main").getByRole("status")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: /create resource/i }),
   ).toBeEnabled();
 });
 
-test("secrets full round trip: create → reveal → edit → delete (env slot)", async ({
+test("secrets full round trip: create → reveal → replace → rename → delete (env slot)", async ({
   page,
   backendWithAdmin,
 }) => {
+  let valueReads = 0;
+  let valueWrites = 0;
+  page.on("request", (request) => {
+    if (!new URL(request.url()).pathname.includes("/secrets/")) return;
+    if (request.method() === "GET") valueReads += 1;
+    if (request.method() === "PUT") valueWrites += 1;
+  });
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/secrets`);
 
@@ -77,6 +84,18 @@ test("secrets full round trip: create → reveal → edit → delete (env slot)"
   await expect(createDlg).toBeHidden();
 
   await expect(envSection.getByText("GH_TOKEN")).toBeVisible();
+  expect(valueWrites).toBe(1);
+
+  // A known-key Create cannot silently upsert even an explicitly empty value.
+  await envSection.getByTestId("slot-env-add").click();
+  const duplicate = page.getByRole("dialog", { name: /create env entry/i });
+  await duplicate.getByLabel("Key").fill("GH_TOKEN");
+  await duplicate.getByLabel(/store an empty value/i).check();
+  await duplicate.getByRole("button", { name: /^create$/i }).click();
+  await expect(duplicate.getByText(/already exists/i)).toBeVisible();
+  expect(valueWrites).toBe(1);
+  expect(valueReads).toBe(0);
+  await duplicate.getByRole("button", { name: "Cancel", exact: true }).click();
 
   // Reveal: the confirmation step gates the actual read.
   const row = envSection.getByText("GH_TOKEN").locator("xpath=ancestor::li");
@@ -92,11 +111,15 @@ test("secrets full round trip: create → reveal → edit → delete (env slot)"
   await revealDlg.getByText("Close", { exact: true }).click();
   await expect(revealDlg).toBeHidden();
 
-  // Edit: overwrite the material. The current dialog title is
-  // "Edit <slot> entry"; the key field is editable but we keep it
-  // stable for this assertion.
-  await row.getByRole("button", { name: /^edit$/i }).click();
-  const editDlg = page.getByRole("dialog", { name: /edit env entry/i });
+  // Explicit replacement pins the key and does not fetch its existing material.
+  await row.getByRole("button", { name: /^replace value$/i }).click();
+  const editDlg = page.getByRole("dialog", { name: /replace value/i });
+  const pinnedKey = editDlg.getByLabel("Key");
+  await expect(pinnedKey).toHaveJSProperty("readOnly", true);
+  await pinnedKey.focus();
+  await page.keyboard.type("DO_NOT_CHANGE");
+  await expect(pinnedKey).toHaveValue("GH_TOKEN");
+  expect(valueReads).toBe(1);
   await editDlg.getByTestId("material-input").fill("ghp_secret_value_v2");
   await editDlg.getByRole("button", { name: /^save$/i }).click();
   await expect(editDlg).toBeHidden();
@@ -107,10 +130,38 @@ test("secrets full round trip: create → reveal → edit → delete (env slot)"
   await expect(page.getByTestId("reveal-value")).toHaveValue(
     "ghp_secret_value_v2",
   );
+  const beforeRename = await page.getByTestId("reveal-value").inputValue();
+  await page.getByText("Close", { exact: true }).click();
+  expect(valueReads).toBe(2);
+
+  // Rename changes only the key: no value read, no replacement PUT, and exact preservation.
+  await row.getByRole("button", { name: /^rename$/i }).click();
+  const rename = page.getByRole("dialog", { name: /rename env entry/i });
+  await expect(rename.getByRole("button", { name: /^save$/i })).toBeDisabled();
+  await expect(rename.getByTestId("material-input")).toHaveCount(0);
+  await rename.getByLabel("Key").fill("RENAMED_TOKEN");
+  await rename.getByRole("button", { name: /^save$/i }).click();
+  await expect(rename).toBeHidden();
+  await expect(envSection.getByText("GH_TOKEN", { exact: true })).toHaveCount(
+    0,
+  );
+  expect(valueReads).toBe(2);
+  expect(valueWrites).toBe(2);
+  const renamedRow = envSection
+    .getByText("RENAMED_TOKEN")
+    .locator("xpath=ancestor::li");
+  await renamedRow.getByRole("button", { name: /reveal/i }).click();
+  await page.getByRole("button", { name: /^show$/i }).click();
+  await expect(page.getByTestId("reveal-value")).toBeVisible();
+  expect(
+    (await page.getByTestId("reveal-value").inputValue()) === beforeRename,
+    "rename preserves the complete material",
+  ).toBe(true);
+  expect(valueReads).toBe(3);
   await page.getByText("Close", { exact: true }).click();
 
   // Delete: simple confirm/cancel dialog.
-  await row.getByRole("button", { name: /^delete$/i }).click();
+  await renamedRow.getByRole("button", { name: /^delete$/i }).click();
   const delDlg = page.getByRole("dialog", { name: /delete secret/i });
   const delBtn = delDlg.getByRole("button", { name: /^delete$/i });
   await expect(delBtn).toBeEnabled();
@@ -229,14 +280,12 @@ test("admin builds a libsecret tree end-to-end (collection + item + alias)", asy
   const delItemDlg = page.getByRole("dialog", { name: /delete item/i });
   await delItemDlg.getByRole("button", { name: /^delete$/i }).click();
   await expect(delItemDlg).toBeHidden();
-  await expect(
-    tree.getByTestId("libsecret-item-default-item_1"),
-  ).toHaveCount(0);
+  await expect(tree.getByTestId("libsecret-item-default-item_1")).toHaveCount(
+    0,
+  );
 
   // Finally, delete the collection itself.
-  await collection
-    .getByTestId("libsecret-delete-collection-default")
-    .click();
+  await collection.getByTestId("libsecret-delete-collection-default").click();
   const delColDlg = page.getByRole("dialog", { name: /delete collection/i });
   await delColDlg.getByRole("button", { name: /^delete$/i }).click();
   await expect(delColDlg).toBeHidden();
@@ -299,9 +348,7 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
   const blockers = delDlg.getByTestId("resource-delete-blockers");
   await expect(blockers).toBeVisible();
   await expect(blockers).toContainText("env: EXAMPLE");
-  await expect(blockers).toContainText(
-    "libsecret collection: delete-blocker",
-  );
+  await expect(blockers).toContainText("libsecret collection: delete-blocker");
   await delDlg.getByRole("button", { name: /^cancel$/i }).click();
   await expect(delDlg).toBeHidden();
 
@@ -324,15 +371,11 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
   await expect(delDlg).toBeVisible();
   await expect(blockers).toBeVisible();
   await expect(blockers).not.toContainText("env: EXAMPLE");
-  await expect(blockers).toContainText(
-    "libsecret collection: delete-blocker",
-  );
+  await expect(blockers).toContainText("libsecret collection: delete-blocker");
   await delDlg.getByRole("button", { name: /^cancel$/i }).click();
   await expect(delDlg).toBeHidden();
 
-  await tree
-    .getByTestId("libsecret-delete-collection-delete-blocker")
-    .click();
+  await tree.getByTestId("libsecret-delete-collection-delete-blocker").click();
   const contentDeleteDlg = page.getByRole("dialog", {
     name: /delete collection/i,
   });

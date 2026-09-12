@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useNavigationLock } from "@/hooks/use-navigation-lock";
 
 import {
   Dialog,
@@ -16,8 +17,9 @@ export interface AdminDialogProps {
   children: React.ReactNode;
   /**
    * When `true`, Escape, outside-click, and pointer-down-outside are
-   * suppressed. Use for one-shot key-reveal flows that require an
-   * explicit acknowledgement before they can be closed.
+   * suppressed, route navigation is blocked, and unload prompts are armed.
+   * Use for pending mutations and acknowledgement-gated key custody.
+   * Explicit footer actions must independently respect their pending state.
    */
   nonDismissible?: boolean;
 }
@@ -35,6 +37,7 @@ export function AdminDialog({
   children,
   nonDismissible,
 }: AdminDialogProps) {
+  useNavigationLock(open && Boolean(nonDismissible));
   const block = (e: Event) => {
     if (nonDismissible) e.preventDefault();
   };
@@ -43,7 +46,11 @@ export function AdminDialog({
       open={open}
       onOpenChange={(o) => !o && !nonDismissible && onClose()}
     >
-      <DialogContent onEscapeKeyDown={block} onInteractOutside={block}>
+      <DialogContent
+        closeDisabled={nonDismissible}
+        onEscapeKeyDown={block}
+        onInteractOutside={block}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? (

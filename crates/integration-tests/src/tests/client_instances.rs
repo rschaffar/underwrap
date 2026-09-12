@@ -59,6 +59,7 @@ async fn disabling_runtime_client_instance_blocks_fresh_runtime_connections() {
         .update_client_instance(
             &client_id,
             &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
+                access_override: None,
                 display_name: None,
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Disabled),
@@ -109,6 +110,7 @@ async fn disabling_runtime_client_instance_blocks_next_wrapper_read_without_rest
         .update_client_instance(
             &client_id,
             &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
+                access_override: None,
                 display_name: None,
                 current_store_id: None,
                 status: Some(AdminClientInstanceStatus::Disabled),
@@ -212,6 +214,7 @@ async fn remapping_runtime_client_instance_changes_store_on_next_wrapper_read_wi
         .update_client_instance(
             &client_id,
             &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
+                access_override: None,
                 display_name: None,
                 current_store_id: Some(other_store_id.clone()),
                 status: None,

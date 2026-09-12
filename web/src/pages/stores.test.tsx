@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { StoresPage } from "./stores/page";
+import { withTestRouter } from "@/test-router";
 
 function mockJson(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -12,10 +20,17 @@ function mockJson(status: number, body: unknown): Response {
   });
 }
 
-function withQuery(node: React.ReactElement, qc = new QueryClient({
-  defaultOptions: { queries: { retry: false } },
-})) {
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+function withQuery(
+  node: React.ReactElement,
+  qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  }),
+) {
+  return (
+    <QueryClientProvider client={qc}>
+      {withTestRouter(node)}
+    </QueryClientProvider>
+  );
 }
 
 function containsString(value: unknown, expected: string): boolean {
@@ -24,7 +39,9 @@ function containsString(value: unknown, expected: string): boolean {
     return value.some((entry) => containsString(entry, expected));
   }
   if (value && typeof value === "object") {
-    return Object.values(value).some((entry) => containsString(entry, expected));
+    return Object.values(value).some((entry) =>
+      containsString(entry, expected),
+    );
   }
   return false;
 }
@@ -97,14 +114,8 @@ describe("StoresPage", () => {
   };
 
   it("enables edit/delete on mutable rows when actions allow it", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJson(200, sampleList),
-    );
-    render(
-      withQuery(
-        <StoresPage />,
-      ),
-    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockJson(200, sampleList));
+    render(withQuery(<StoresPage />));
     const workRow = (await screen.findByText("work")).closest("tr")!;
     expect(
       within(workRow as HTMLElement).getByRole("button", { name: /^edit$/i }),
@@ -116,14 +127,8 @@ describe("StoresPage", () => {
 
   it("admin can open the create dialog", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJson(200, sampleList),
-    );
-    render(
-      withQuery(
-        <StoresPage />,
-      ),
-    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockJson(200, sampleList));
+    render(withQuery(<StoresPage />));
     await screen.findByText("work");
     await user.click(screen.getByRole("button", { name: /create store/i }));
     expect(
@@ -133,14 +138,8 @@ describe("StoresPage", () => {
 
   it("delete dialog requires force confirmation for non-empty stores", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJson(200, sampleList),
-    );
-    render(
-      withQuery(
-        <StoresPage />,
-      ),
-    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockJson(200, sampleList));
+    render(withQuery(<StoresPage />));
     await screen.findByText("scratch");
     const scratchRow = screen.getByText("scratch").closest("tr")!;
     await user.click(
@@ -149,23 +148,23 @@ describe("StoresPage", () => {
       }),
     );
     const dlg = await screen.findByRole("dialog", { name: /delete store/i });
-    const deleteBtn = within(dlg).getByRole("button", { name: /force delete/i });
+    const deleteBtn = within(dlg).getByRole("button", {
+      name: /force delete/i,
+    });
     // Force-delete button stays disabled until the operator ticks the
     // "force delete" checkbox; the type-to-confirm gate is gone now.
     expect(deleteBtn).toBeDisabled();
-    await user.click(within(dlg).getByLabelText(/force delete even if the store contains secrets/i));
+    await user.click(
+      within(dlg).getByLabelText(
+        /force delete even if the store contains secrets/i,
+      ),
+    );
     expect(deleteBtn).toBeEnabled();
   });
 
   it("shows a Locked badge and Unlock button for locked encrypted stores", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJson(200, sampleList),
-    );
-    render(
-      withQuery(
-        <StoresPage />,
-      ),
-    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockJson(200, sampleList));
+    render(withQuery(<StoresPage />));
     const sharedRow = (await screen.findByText("shared")).closest("tr")!;
     expect(
       sharedRow.querySelector('[data-testid="store-status-store_shared"]')!
@@ -193,11 +192,7 @@ describe("StoresPage", () => {
       throw new Error(`unexpected fetch: ${url}`);
     });
     const user = userEvent.setup();
-    render(
-      withQuery(
-        <StoresPage />,
-      ),
-    );
+    render(withQuery(<StoresPage />));
     const unlockBtn = await screen.findByTestId("store-unlock-store_shared");
     await user.click(unlockBtn);
     const dlg = await screen.findByTestId("store-unlock-dialog");
@@ -215,7 +210,9 @@ describe("StoresPage", () => {
     // first arg, so we read URL/method/body off it.
     const unlockReqs = fetchMock.mock.calls
       .map(([first]) => first as Request)
-      .filter((req) => req.url.endsWith("/v1/admin/stores/store_shared/unlock"));
+      .filter((req) =>
+        req.url.endsWith("/v1/admin/stores/store_shared/unlock"),
+      );
     expect(unlockReqs).toHaveLength(1);
     const req = unlockReqs[0]!;
     expect(req.method).toBe("POST");
@@ -224,14 +221,8 @@ describe("StoresPage", () => {
   });
 
   it("disables delete when a store is still mapped to client instances", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockJson(200, sampleList),
-    );
-    render(
-      withQuery(
-        <StoresPage />,
-      ),
-    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockJson(200, sampleList));
+    render(withQuery(<StoresPage />));
     const sharedRow = (await screen.findByText("shared")).closest("tr")!;
     // Look up Delete by name rather than position — the row may also
     // include an Unlock button when the store is locked.
@@ -294,13 +285,11 @@ describe("StoresPage", () => {
     );
 
     const confirmation = await screen.findByTestId("key-confirmation-dialog");
-    expect(within(confirmation).getByTestId("generated-store-key")).toHaveTextContent(
-      generatedKey,
-    );
     expect(
-      requests.filter((request) =>
-        request.url.endsWith("/v1/admin/stores"),
-      ),
+      within(confirmation).getByTestId("generated-store-key"),
+    ).toHaveTextContent(generatedKey);
+    expect(
+      requests.filter((request) => request.url.endsWith("/v1/admin/stores")),
     ).toHaveLength(1);
 
     const reentry = within(confirmation).getByLabelText(/re-enter the exact/i);
@@ -314,8 +303,7 @@ describe("StoresPage", () => {
     expect(
       requests.filter(
         (request) =>
-          request.method === "POST" &&
-          request.url.endsWith("/v1/admin/stores"),
+          request.method === "POST" && request.url.endsWith("/v1/admin/stores"),
       ),
     ).toHaveLength(0);
 
@@ -402,7 +390,10 @@ describe("StoresPage", () => {
     await user.click(screen.getByRole("button", { name: /create store/i }));
     const dialog = await screen.findByRole("dialog", { name: /create store/i });
     await user.type(within(dialog).getByLabelText(/^name$/i), "cancelled");
-    await user.selectOptions(within(dialog).getByLabelText(/backend/i), "encrypted");
+    await user.selectOptions(
+      within(dialog).getByLabelText(/backend/i),
+      "encrypted",
+    );
     await user.click(
       within(dialog).getByRole("button", { name: /generate and review key/i }),
     );
@@ -452,7 +443,10 @@ describe("StoresPage", () => {
     await user.click(screen.getByRole("button", { name: /create store/i }));
     const dialog = await screen.findByRole("dialog", { name: /create store/i });
     await user.type(within(dialog).getByLabelText(/^name$/i), "retry");
-    await user.selectOptions(within(dialog).getByLabelText(/backend/i), "encrypted");
+    await user.selectOptions(
+      within(dialog).getByLabelText(/backend/i),
+      "encrypted",
+    );
     await user.click(
       within(dialog).getByRole("button", { name: /generate and review key/i }),
     );
@@ -462,10 +456,16 @@ describe("StoresPage", () => {
       screen.getByRole("button", { name: /^create encrypted store$/i }),
     );
 
-    expect(await screen.findByText("Synthetic ambiguous failure.")).toBeVisible();
-    expect(screen.getByTestId("generated-store-key")).toHaveTextContent(generatedKey);
+    expect(
+      await screen.findByText("Synthetic ambiguous failure."),
+    ).toBeVisible();
+    expect(screen.getByTestId("generated-store-key")).toHaveTextContent(
+      generatedKey,
+    );
     expect(screen.getByTestId("store-key-reentry")).toHaveValue("");
-    expect(screen.getByText(/cannot prove that no data changed/i)).toBeVisible();
+    expect(
+      screen.getByText(/cannot prove that no data changed/i),
+    ).toBeVisible();
 
     await user.type(screen.getByTestId("store-key-reentry"), generatedKey);
     await user.click(
@@ -499,21 +499,33 @@ describe("StoresPage", () => {
     await user.click(screen.getByRole("button", { name: /create store/i }));
     const dialog = await screen.findByRole("dialog", { name: /create store/i });
     await user.type(within(dialog).getByLabelText(/^name$/i), "discard");
-    await user.selectOptions(within(dialog).getByLabelText(/backend/i), "encrypted");
+    await user.selectOptions(
+      within(dialog).getByLabelText(/backend/i),
+      "encrypted",
+    );
     await user.click(
       within(dialog).getByRole("button", { name: /generate and review key/i }),
     );
-    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.type(
+      await screen.findByTestId("store-key-reentry"),
+      generatedKey,
+    );
     await user.click(
       screen.getByRole("button", { name: /^create encrypted store$/i }),
     );
     await screen.findByText("Synthetic ambiguous failure.");
-    await user.click(screen.getByRole("button", { name: /discard retained key/i }));
+    await user.click(
+      screen.getByRole("button", { name: /discard retained key/i }),
+    );
 
-    expect(screen.getByText(/may already protect committed or recoverable data/i)).toBeVisible();
+    expect(
+      screen.getByText(/may already protect committed or recoverable data/i),
+    ).toBeVisible();
     const discard = screen.getByRole("button", { name: /^discard key$/i });
     expect(discard).toBeDisabled();
-    await user.click(screen.getByLabelText(/retained key may still be required/i));
+    await user.click(
+      screen.getByLabelText(/retained key may still be required/i),
+    );
     expect(discard).toBeEnabled();
     await user.click(discard);
     expect(screen.queryByTestId("generated-store-key")).not.toBeInTheDocument();
@@ -554,17 +566,27 @@ describe("StoresPage", () => {
         },
       ],
     };
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockJson(200, unavailableList));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockJson(200, unavailableList),
+    );
     render(withQuery(<StoresPage />));
 
     for (const name of ["busy-store", "recovery-store"]) {
       const row = (await screen.findByText(name)).closest("tr") as HTMLElement;
-      expect(within(row).getByRole("button", { name: /^edit$/i })).toBeDisabled();
-      expect(within(row).getByRole("button", { name: /^migrate$/i })).toBeDisabled();
-      expect(within(row).getByRole("button", { name: /^delete$/i })).toBeDisabled();
+      expect(
+        within(row).getByRole("button", { name: /^edit$/i }),
+      ).toBeDisabled();
+      expect(
+        within(row).getByRole("button", { name: /^migrate$/i }),
+      ).toBeDisabled();
+      expect(
+        within(row).getByRole("button", { name: /^delete$/i }),
+      ).toBeDisabled();
       expect(row).toHaveTextContent(/contents unknown/i);
     }
-    expect(screen.getByTestId("store-status-store_busy")).toHaveTextContent("busy");
+    expect(screen.getByTestId("store-status-store_busy")).toHaveTextContent(
+      "busy",
+    );
     expect(screen.getByTestId("store-status-store_recovery")).toHaveTextContent(
       "recovery-required",
     );
@@ -578,13 +600,17 @@ describe("StoresPage", () => {
       return mockJson(200, sampleList);
     });
     render(withQuery(<StoresPage />));
-    const row = (await screen.findByText("shared")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("shared")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(within(row).getByRole("button", { name: /^migrate$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /migrate store: shared/i });
+    const dialog = await screen.findByRole("dialog", {
+      name: /migrate store: shared/i,
+    });
     expect(dialog).toHaveTextContent(/unlock this store first/i);
-    expect(
-      requests.some((request) => request.url.includes("/migrate")),
-    ).toBe(false);
+    expect(requests.some((request) => request.url.includes("/migrate"))).toBe(
+      false,
+    );
   });
 
   it("migrates plain to encrypted only after generation and exact re-entry", async () => {
@@ -602,7 +628,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
         return mockJson(200, { key_hex: generatedKey });
       }
-      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+      if (
+        url.endsWith("/v1/admin/stores/store_scratch/migrate") &&
+        method === "POST"
+      ) {
         return mockJson(200, {
           store: {
             ...sampleList.items[1],
@@ -614,7 +643,9 @@ describe("StoresPage", () => {
       throw new Error(`unexpected fetch: ${method} ${url}`);
     });
     render(withQuery(<StoresPage />));
-    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("scratch")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(
       within(row).getByRole("button", { name: /migrate to encrypted/i }),
     );
@@ -622,19 +653,26 @@ describe("StoresPage", () => {
       name: /migrate to encrypted: scratch/i,
     });
     expect(dialog).toHaveTextContent(/quiesce wrapper traffic/i);
-    expect(dialog).toHaveTextContent(/plaintext source data under a private backup/i);
+    expect(dialog).toHaveTextContent(
+      /plaintext source data under a private backup/i,
+    );
     await user.click(
       within(dialog).getByRole("button", { name: /generate and review key/i }),
     );
-    expect(
-      requests.some((request) => request.url.includes("/migrate")),
-    ).toBe(false);
-    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    expect(requests.some((request) => request.url.includes("/migrate"))).toBe(
+      false,
+    );
+    await user.type(
+      await screen.findByTestId("store-key-reentry"),
+      generatedKey,
+    );
     await user.click(
       screen.getByRole("button", { name: /^migrate to encrypted$/i }),
     );
 
-    const migration = requests.find((request) => request.url.includes("/migrate"));
+    const migration = requests.find((request) =>
+      request.url.includes("/migrate"),
+    );
     expect(migration).toBeDefined();
     expect(JSON.parse(await migration!.text())).toEqual({
       backend: "encrypted",
@@ -660,7 +698,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
         return mockJson(200, { key_hex: generatedKey });
       }
-      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+      if (
+        url.endsWith("/v1/admin/stores/store_scratch/migrate") &&
+        method === "POST"
+      ) {
         attempts += 1;
         submittedKeys.push((await request.clone().json()).key_hex);
         if (attempts === 1) {
@@ -680,7 +721,9 @@ describe("StoresPage", () => {
       throw new Error(`unexpected fetch: ${method} ${url}`);
     });
     render(withQuery(<StoresPage />));
-    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("scratch")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(
       within(row).getByRole("button", { name: /migrate to encrypted/i }),
     );
@@ -696,8 +739,12 @@ describe("StoresPage", () => {
     await user.click(
       screen.getByRole("button", { name: /^migrate to encrypted$/i }),
     );
-    expect(await screen.findByText(/synthetic ambiguous failure/i)).toBeVisible();
-    expect(screen.getByTestId("generated-store-key")).toHaveTextContent(generatedKey);
+    expect(
+      await screen.findByText(/synthetic ambiguous failure/i),
+    ).toBeVisible();
+    expect(screen.getByTestId("generated-store-key")).toHaveTextContent(
+      generatedKey,
+    );
     expect(screen.getByTestId("store-key-reentry")).toHaveValue("");
 
     fireEvent.change(screen.getByTestId("store-key-reentry"), {
@@ -746,7 +793,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
         return mockJson(200, { key_hex: generatedKey });
       }
-      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+      if (
+        url.endsWith("/v1/admin/stores/store_scratch/migrate") &&
+        method === "POST"
+      ) {
         migrationAttempts += 1;
         return mockJson(500, {
           code: "migration_recovery_required",
@@ -757,15 +807,21 @@ describe("StoresPage", () => {
     });
 
     render(withQuery(<StoresPage />));
-    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("scratch")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(
       within(row).getByRole("button", { name: /migrate to encrypted/i }),
     );
     await user.click(
-      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
-        .getByRole("button", { name: /generate and review key/i }),
+      within(
+        await screen.findByRole("dialog", { name: /migrate to encrypted/i }),
+      ).getByRole("button", { name: /generate and review key/i }),
     );
-    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.type(
+      await screen.findByTestId("store-key-reentry"),
+      generatedKey,
+    );
     await user.click(
       screen.getByRole("button", { name: /^migrate to encrypted$/i }),
     );
@@ -775,7 +831,11 @@ describe("StoresPage", () => {
     });
     await waitFor(() => expect(retry).toBeDisabled());
     expect(screen.getByTestId("generated-store-key")).toBeVisible();
-    expect(screen.getByText(/retain the key because it may protect recoverable data/i)).toBeVisible();
+    expect(
+      screen.getByText(
+        /retain the key because it may protect recoverable data/i,
+      ),
+    ).toBeVisible();
     expect(
       screen.getByRole("button", { name: /discard retained key/i }),
     ).toBeEnabled();
@@ -815,7 +875,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
         return mockJson(200, { key_hex: generatedKey });
       }
-      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+      if (
+        url.endsWith("/v1/admin/stores/store_scratch/migrate") &&
+        method === "POST"
+      ) {
         migrationAttempts += 1;
         return mockJson(500, {
           code: "synthetic_lost_response",
@@ -826,15 +889,21 @@ describe("StoresPage", () => {
     });
 
     render(withQuery(<StoresPage />));
-    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("scratch")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(
       within(row).getByRole("button", { name: /migrate to encrypted/i }),
     );
     await user.click(
-      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
-        .getByRole("button", { name: /generate and review key/i }),
+      within(
+        await screen.findByRole("dialog", { name: /migrate to encrypted/i }),
+      ).getByRole("button", { name: /generate and review key/i }),
     );
-    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.type(
+      await screen.findByTestId("store-key-reentry"),
+      generatedKey,
+    );
     await user.click(
       screen.getByRole("button", { name: /^migrate to encrypted$/i }),
     );
@@ -866,7 +935,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
         return mockJson(200, { key_hex: generatedKey });
       }
-      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+      if (
+        url.endsWith("/v1/admin/stores/store_scratch/migrate") &&
+        method === "POST"
+      ) {
         return mockJson(500, {
           code: "synthetic_lost_response",
           message: "Synthetic lost response.",
@@ -876,15 +948,21 @@ describe("StoresPage", () => {
     });
 
     render(withQuery(<StoresPage />));
-    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("scratch")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(
       within(row).getByRole("button", { name: /migrate to encrypted/i }),
     );
     await user.click(
-      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
-        .getByRole("button", { name: /generate and review key/i }),
+      within(
+        await screen.findByRole("dialog", { name: /migrate to encrypted/i }),
+      ).getByRole("button", { name: /generate and review key/i }),
     );
-    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.type(
+      await screen.findByTestId("store-key-reentry"),
+      generatedKey,
+    );
     await user.click(
       screen.getByRole("button", { name: /^migrate to encrypted$/i }),
     );
@@ -921,13 +999,16 @@ describe("StoresPage", () => {
     });
 
     render(withQuery(<StoresPage />, queryClient));
-    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("scratch")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(
       within(row).getByRole("button", { name: /migrate to encrypted/i }),
     );
     await user.click(
-      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
-        .getByRole("button", { name: /generate and review key/i }),
+      within(
+        await screen.findByRole("dialog", { name: /migrate to encrypted/i }),
+      ).getByRole("button", { name: /generate and review key/i }),
     );
     const reentry = await screen.findByTestId("store-key-reentry");
     await user.type(reentry, generatedKey.slice(0, 8));
@@ -967,7 +1048,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/store-keys") && method === "POST") {
         return mockJson(200, { key_hex: generatedKey });
       }
-      if (url.endsWith("/v1/admin/stores/store_scratch/migrate") && method === "POST") {
+      if (
+        url.endsWith("/v1/admin/stores/store_scratch/migrate") &&
+        method === "POST"
+      ) {
         return mockJson(500, {
           code: "synthetic_lost_response",
           message: "Synthetic lost response.",
@@ -977,15 +1061,21 @@ describe("StoresPage", () => {
     });
 
     render(withQuery(<StoresPage />, queryClient));
-    const row = (await screen.findByText("scratch")).closest("tr") as HTMLElement;
+    const row = (await screen.findByText("scratch")).closest(
+      "tr",
+    ) as HTMLElement;
     await user.click(
       within(row).getByRole("button", { name: /migrate to encrypted/i }),
     );
     await user.click(
-      within(await screen.findByRole("dialog", { name: /migrate to encrypted/i }))
-        .getByRole("button", { name: /generate and review key/i }),
+      within(
+        await screen.findByRole("dialog", { name: /migrate to encrypted/i }),
+      ).getByRole("button", { name: /generate and review key/i }),
     );
-    await user.type(await screen.findByTestId("store-key-reentry"), generatedKey);
+    await user.type(
+      await screen.findByTestId("store-key-reentry"),
+      generatedKey,
+    );
     await user.click(
       screen.getByRole("button", { name: /^migrate to encrypted$/i }),
     );
@@ -1002,7 +1092,9 @@ describe("StoresPage", () => {
       });
     });
     await waitFor(() => expect(retry).toBeDisabled());
-    expect(screen.getByText(/missing from the current Stores list/i)).toBeVisible();
+    expect(
+      screen.getByText(/missing from the current Stores list/i),
+    ).toBeVisible();
     expect(screen.getByTestId("generated-store-key")).toBeVisible();
 
     act(() => {
@@ -1054,7 +1146,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/stores") && method === "GET") {
         return mockJson(200, sampleList);
       }
-      if (url.endsWith("/v1/admin/stores/store_work/migrate") && method === "POST") {
+      if (
+        url.endsWith("/v1/admin/stores/store_work/migrate") &&
+        method === "POST"
+      ) {
         return mockJson(200, {
           store: {
             ...sampleList.items[0],
@@ -1067,16 +1162,22 @@ describe("StoresPage", () => {
     });
     render(withQuery(<StoresPage />));
     const row = (await screen.findByText("work")).closest("tr") as HTMLElement;
-    await user.click(within(row).getByRole("button", { name: /migrate to plain/i }));
+    await user.click(
+      within(row).getByRole("button", { name: /migrate to plain/i }),
+    );
     const dialog = await screen.findByRole("dialog", {
       name: /migrate to plain: work/i,
     });
-    expect(dialog).toHaveTextContent(/plaintext target data under a private stage/i);
+    expect(dialog).toHaveTextContent(
+      /plaintext target data under a private stage/i,
+    );
     await user.click(
       within(dialog).getByRole("button", { name: /^migrate to plain$/i }),
     );
 
-    const migration = requests.find((request) => request.url.includes("/migrate"));
+    const migration = requests.find((request) =>
+      request.url.includes("/migrate"),
+    );
     expect(migration).toBeDefined();
     expect(JSON.parse(await migration!.text())).toEqual({ backend: "plain" });
     expect(
@@ -1113,7 +1214,9 @@ describe("StoresPage", () => {
     const dialog = await screen.findByRole("dialog", {
       name: /rotate master key/i,
     });
-    expect(dialog).toHaveTextContent(/displaced ciphertext generation remains on the backend host/i);
+    expect(dialog).toHaveTextContent(
+      /displaced ciphertext generation remains on the backend host/i,
+    );
     expect(dialog).toHaveTextContent(/consumes disk/i);
     expect(dialog).toHaveTextContent(/decryptable with its old key/i);
     expect(dialog).toHaveTextContent(/manual cleanup/i);
@@ -1132,55 +1235,132 @@ describe("StoresPage", () => {
         .getAll()
         .some((mutation) => containsString(mutation.state.data, rotationKey)),
     ).toBe(false);
-    expect(reveal).toHaveTextContent(/retained old ciphertext consumes backend-host disk/i);
+    expect(reveal).toHaveTextContent(
+      /retained old ciphertext consumes backend-host disk/i,
+    );
     expect(reveal).toHaveTextContent(/remains decryptable with the old key/i);
-    expect(reveal).toHaveTextContent(/closing this dialog discards the one-time local display/i);
+    expect(reveal).toHaveTextContent(
+      /closing this dialog discards the one-time local display/i,
+    );
     expect(reveal).toHaveTextContent(
       /backend cannot know whether I received, saved, or independently verified/i,
     );
-    expect(reveal).not.toHaveTextContent(/I have saved and independently verified/i);
+    expect(reveal).not.toHaveTextContent(
+      /I have saved and independently verified/i,
+    );
     expect(screen.getByTestId("key-reveal-confirm")).toBeDisabled();
   });
 
-  it("keeps rotation retryable and never reveals a key after rejection", async () => {
+  it("retains a deferred rotation through Cancel, Escape and unload attempts", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const { url, method } = reqInfo(input);
-      if (url.endsWith("/v1/admin/stores") && method === "GET") {
-        return mockJson(200, sampleList);
-      }
-      if (url.includes("/rotate-key") && method === "POST") {
-        return mockJson(503, {
-          code: "synthetic_rotation_failure",
-          message: "Synthetic rotation failure.",
-        });
-      }
-      throw new Error(`unexpected fetch: ${method} ${url}`);
+    let resolveRotation!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => {
+      resolveRotation = resolve;
     });
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const { url, method } = reqInfo(input);
+        if (url.endsWith("/v1/admin/stores") && method === "GET")
+          return mockJson(200, sampleList);
+        if (url.includes("/rotate-key") && method === "POST") return response;
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      });
     render(withQuery(<StoresPage />));
-    const workRow = (await screen.findByText("work")).closest("tr")!;
-    await user.click(
-      within(workRow as HTMLElement).getByRole("button", {
-        name: /rotate key/i,
-      }),
-    );
+    const row = (await screen.findByText("work")).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: /rotate key/i }));
     const dialog = await screen.findByRole("dialog", {
       name: /rotate master key/i,
     });
     await user.click(within(dialog).getByRole("checkbox"));
-    const rotateButton = within(dialog).getByRole("button", {
-      name: /^rotate key$/i,
-    });
-
-    await user.click(rotateButton);
-
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "Synthetic rotation failure.",
+    await user.click(
+      within(dialog).getByRole("button", { name: /^rotate key$/i }),
     );
-    expect(dialog).toBeVisible();
-    expect(rotateButton).toBeEnabled();
-    expect(screen.queryByTestId("key-reveal-dialog")).not.toBeInTheDocument();
+    for (const name of ["Cancel", "Close"]) {
+      const control = within(dialog).getByRole("button", { name });
+      expect(control).toBeDisabled();
+      await user.click(control);
+    }
+    await user.keyboard("{Escape}");
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+    expect(dialog).toBeInTheDocument();
+    expect(
+      fetch.mock.calls.filter(([input]) =>
+        reqInfo(input).url.includes("/rotate-key"),
+      ),
+    ).toHaveLength(1);
+    // Synthetic material stays in the local fixture/DOM; assertions report no key bytes.
+    await act(async () =>
+      resolveRotation(
+        mockJson(200, {
+          key_hex: "b".repeat(64),
+          warning: "Synthetic custody guidance.",
+        }),
+      ),
+    );
+    expect(await screen.findByTestId("key-reveal-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("key-reveal-confirm")).toBeDisabled();
   });
+
+  it.each(["pre-effect", "ambiguous"] as const)(
+    "handles %s rotation rejection without revealing a key or blindly retrying",
+    async (failure) => {
+      const user = userEvent.setup();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const { url, method } = reqInfo(input);
+        if (url.endsWith("/v1/admin/stores") && method === "GET") {
+          return mockJson(200, sampleList);
+        }
+        if (url.includes("/rotate-key") && method === "POST") {
+          return failure === "pre-effect"
+            ? mockJson(503, { code: "store_busy", message: "Store is busy." })
+            : mockJson(503, {
+                code: "synthetic_rotation_failure",
+                message: "Synthetic rotation failure.",
+              });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      });
+      render(withQuery(<StoresPage />));
+      const workRow = (await screen.findByText("work")).closest("tr")!;
+      await user.click(
+        within(workRow as HTMLElement).getByRole("button", {
+          name: /rotate key/i,
+        }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: /rotate master key/i,
+      });
+      await user.click(within(dialog).getByRole("checkbox"));
+      const rotateButton = within(dialog).getByRole("button", {
+        name: /^rotate key$/i,
+      });
+
+      await user.click(rotateButton);
+
+      const alert = await within(dialog).findByRole("alert");
+      expect(alert).toHaveTextContent(
+        failure === "pre-effect"
+          ? "Store is busy."
+          : /rotation outcome unknown/i,
+      );
+      expect(dialog).toBeVisible();
+      expect(within(dialog).getByRole("checkbox")).not.toBeChecked();
+      expect(rotateButton).toBeDisabled();
+      await user.click(within(dialog).getByRole("checkbox"));
+      if (failure === "pre-effect") {
+        expect(rotateButton).toBeEnabled();
+      } else {
+        expect(rotateButton).toBeDisabled();
+        expect(alert).toHaveTextContent(
+          /do not rotate again until a trusted backend-host operator/i,
+        );
+      }
+      expect(screen.queryByTestId("key-reveal-dialog")).not.toBeInTheDocument();
+    },
+  );
 
   it("shows the cleanup hint after a force-delete leaves data on disk", async () => {
     const user = userEvent.setup();
@@ -1189,10 +1369,16 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/stores") && method === "GET") {
         return mockJson(200, sampleList);
       }
-      if (url.includes("/v1/admin/stores/store_scratch") && method === "DELETE") {
+      if (
+        url.includes("/v1/admin/stores/store_scratch") &&
+        method === "DELETE"
+      ) {
         return mockJson(200, {
           ok: true,
-          cleanup_hint: { data_dir: "/var/lib/uw/scratch", command: "rm -rf /var/lib/uw/scratch" },
+          cleanup_hint: {
+            data_dir: "/var/lib/uw/scratch",
+            command: "rm -rf /var/lib/uw/scratch",
+          },
         });
       }
       throw new Error(`unexpected fetch: ${method} ${url}`);
@@ -1200,7 +1386,9 @@ describe("StoresPage", () => {
     render(withQuery(<StoresPage />));
     const scratchRow = (await screen.findByText("scratch")).closest("tr")!;
     await user.click(
-      within(scratchRow as HTMLElement).getByRole("button", { name: /^delete$/i }),
+      within(scratchRow as HTMLElement).getByRole("button", {
+        name: /^delete$/i,
+      }),
     );
     const dialog = await screen.findByRole("dialog", { name: /delete store/i });
     await user.click(
@@ -1208,11 +1396,15 @@ describe("StoresPage", () => {
         /force delete even if the store contains secrets/i,
       ),
     );
-    await user.click(within(dialog).getByRole("button", { name: /force delete/i }));
+    await user.click(
+      within(dialog).getByRole("button", { name: /force delete/i }),
+    );
 
     const hint = await screen.findByRole("dialog", { name: /store deleted/i });
     expect(within(hint).getByText("/var/lib/uw/scratch")).toBeInTheDocument();
-    expect(within(hint).getByText("rm -rf /var/lib/uw/scratch")).toBeInTheDocument();
+    expect(
+      within(hint).getByText("rm -rf /var/lib/uw/scratch"),
+    ).toBeInTheDocument();
   });
 
   it("locks an unlocked encrypted store via the lock dialog", async () => {
@@ -1223,7 +1415,10 @@ describe("StoresPage", () => {
       if (url.endsWith("/v1/admin/stores") && method === "GET") {
         return mockJson(200, sampleList);
       }
-      if (url.includes("/v1/admin/stores/store_work/lock") && method === "POST") {
+      if (
+        url.includes("/v1/admin/stores/store_work/lock") &&
+        method === "POST"
+      ) {
         locked = true;
         return mockJson(200, { ok: true });
       }
@@ -1234,9 +1429,10 @@ describe("StoresPage", () => {
     await user.click(
       within(workRow as HTMLElement).getByRole("button", { name: /^lock$/i }),
     );
-    const dialog = await screen.findByRole("dialog", { name: /lock store: work/i });
+    const dialog = await screen.findByRole("dialog", {
+      name: /lock store: work/i,
+    });
     await user.click(within(dialog).getByRole("button", { name: /^lock$/i }));
     expect(locked).toBe(true);
   });
 });
-

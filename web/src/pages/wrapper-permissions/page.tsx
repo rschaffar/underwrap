@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, FileText } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  StoreAvailability,
+  storeIsAvailable,
+} from "@/components/store-availability";
+import { usePageIntent } from "@/hooks/use-page-intent";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -37,7 +45,13 @@ export function WrapperPermissionsPage() {
     queryKey: ["admin", "stores"],
     queryFn: fetchStores,
   });
-  const { storeId, setStoreId } = useStoreSelector(stores.data?.items);
+  const { storeId, setStoreId } = useStoreSelector(
+    stores.isSuccess ? stores.data.items : undefined,
+  );
+  const selectedStore = stores.data?.items.find(
+    (store) => store.id === storeId,
+  );
+  const available = storeIsAvailable(selectedStore);
 
   // Aggregate view: one round-trip pulls permissions, pairs, and the
   // resources catalog for this store. Client-instance directory is a
@@ -45,10 +59,13 @@ export function WrapperPermissionsPage() {
   const view = useQuery<AdminWrapperPermissionsView>({
     queryKey: ["admin", "wrapper-permissions-view", storeId],
     queryFn: () => fetchWrapperPermissionsView(storeId!),
-    enabled: !!storeId,
+    enabled: !!storeId && available,
   });
-  const { clientInstances: clientInstanceItems, displayNameById } =
-    useClientInstanceDirectory();
+  const {
+    clientInstances: clientInstanceItems,
+    displayNameById,
+    isSuccess: clientMetadataReady,
+  } = useClientInstanceDirectory();
 
   const resources = view.data?.resources ?? [];
   const { nameById: resourceNameById } = useResourceCatalog(resources);
@@ -58,17 +75,43 @@ export function WrapperPermissionsPage() {
     [view.data, resourceNameById],
   );
   const permissions = view.data?.permissions ?? [];
+  const [filter, setFilter] = useState("");
+  const [clientFilter, setClientFilter] = useState("");
+  const needle = filter.trim().toLowerCase();
+  const visibleGroups = groups
+    .map((group) => ({
+      ...group,
+      pairs: group.pairs.filter((pair) =>
+        [
+          group.resource,
+          resourceNameById.get(group.resource) ?? "",
+          pair.wrapper,
+        ].some((value) => value.toLowerCase().includes(needle)),
+      ),
+    }))
+    .filter((group) => group.pairs.length > 0);
+  const clientDetails = useMemo(
+    () =>
+      new Map(
+        clientInstanceItems
+          .filter((client) => client.current_store_id === storeId)
+          .map((client) => [client.id, client]),
+      ),
+    [clientInstanceItems, storeId],
+  );
   const totalPermissionCount = permissions.length;
   const writablePermissionCount = permissions.filter((p) => p.writable).length;
 
   const clientInstances = useMemo(
     () =>
-      clientInstancesForStore(
-        storeId ?? "",
-        clientInstanceItems,
-        permissions,
-      ),
+      clientInstancesForStore(storeId ?? "", clientInstanceItems, permissions),
     [storeId, clientInstanceItems, permissions],
+  );
+
+  const visibleClients = clientInstances.filter((id) =>
+    [id, displayNameById.get(id) ?? ""].some((value) =>
+      value.toLowerCase().includes(clientFilter.trim().toLowerCase()),
+    ),
   );
 
   /** Map `(client_instance, wrapper, resource)` → permission. */
@@ -95,12 +138,17 @@ export function WrapperPermissionsPage() {
 
   useEffect(() => {
     if (transientStoreId === storeId) return;
+    setFilter("");
+    setClientFilter("");
     setEditing(null);
     setRawOpen(false);
     setCreatingPair(false);
     setDeletingPair(null);
     setTransientStoreId(storeId);
   }, [storeId, transientStoreId]);
+  usePageIntent("create", available, (value) => {
+    if (value === "pair") setCreatingPair(true);
+  });
 
   if (!storeId) {
     return (
@@ -114,7 +162,19 @@ export function WrapperPermissionsPage() {
           <Alert>{describeApiError(stores.error)}</Alert>
         ) : (
           <Alert variant="warning" className="text-sm">
-            No stores are configured. Create one on the Stores page.
+            No stores are configured.{" "}
+            <Link
+              className="underline"
+              to="/stores"
+              search={{ create: "store" }}
+            >
+              Create a store
+            </Link>{" "}
+            or follow{" "}
+            <Link className="underline" to="/setup">
+              Get a wrapper working
+            </Link>
+            .
           </Alert>
         )}
       </div>
@@ -132,15 +192,24 @@ export function WrapperPermissionsPage() {
             <span
               data-testid="writable-permissions-badge"
               className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-xs text-(--color-fg)"
-              title="Permissions that allow wrapper-side writes"
+              title="Saved writable flags, before client override and admission checks"
             >
-              {writablePermissionCount} writable of {totalPermissionCount}
+              {writablePermissionCount} saved writable of {totalPermissionCount}
             </span>
           </div>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Wrapper/resource pairs registered with the backend, and the
-            permission each runtime client instance holds against them.
-            Click a cell to set or change the mode.
+            Wrapper/resource pairs registered with the backend, and the saved
+            permission for each runtime client instance. Click a cell to change
+            its individual mode and writable flag. Client-wide overrides are
+            managed in{" "}
+            <Link
+              className="underline"
+              to="/client-instances"
+              search={{ store: storeId, mappedStore: storeId }}
+            >
+              Client Instances
+            </Link>{" "}
+            without changing these rows.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -149,6 +218,7 @@ export function WrapperPermissionsPage() {
             size="sm"
             onClick={() => setCreatingPair(true)}
             data-testid="wrappers-create-pair"
+            disabled={!available}
           >
             <Plus className="mr-1.5 h-4 w-4" aria-hidden />
             Create pair
@@ -158,6 +228,7 @@ export function WrapperPermissionsPage() {
             variant="ghost"
             size="sm"
             onClick={() => setRawOpen(true)}
+            disabled={!available}
           >
             <FileText className="mr-1.5 h-4 w-4" aria-hidden />
             View raw policy
@@ -180,7 +251,42 @@ export function WrapperPermissionsPage() {
         </div>
       </header>
 
-      {view.isLoading ? (
+      <StoreAvailability store={selectedStore} />
+      <div className="flex flex-wrap gap-3">
+        <div className="min-w-64 flex-1 space-y-1">
+          <Label htmlFor="wrapper-filter">Filter wrappers and resources</Label>
+          <Input
+            id="wrapper-filter"
+            type="search"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            disabled={!available}
+          />
+        </div>
+        <div className="min-w-56 space-y-1">
+          <Label htmlFor="permission-client-filter">
+            Filter client columns
+          </Label>
+          <Input
+            id="permission-client-filter"
+            type="search"
+            value={clientFilter}
+            onChange={(event) => setClientFilter(event.target.value)}
+            disabled={!available}
+          />
+        </div>
+      </div>
+      {available && view.isSuccess ? (
+        <p className="text-xs text-(--color-muted)">
+          {visibleGroups.reduce(
+            (count, group) => count + group.pairs.length,
+            0,
+          )}{" "}
+          of {view.data.pairs.length} pairs; {visibleClients.length} of{" "}
+          {clientInstances.length} client columns.
+        </p>
+      ) : null}
+      {!available ? null : view.isLoading ? (
         <p className="text-sm text-(--color-muted)">
           Loading wrapper permissions…
         </p>
@@ -188,13 +294,25 @@ export function WrapperPermissionsPage() {
         <Alert>{describeApiError(view.error)}</Alert>
       ) : groups.length === 0 ? (
         <p className="text-sm text-(--color-muted)">
-          No wrapper/resource pairs are registered for this store yet.
-          {" "}Use Create pair to add one, or enable auto-create on a client instance so its wrappers register on startup.
+          No wrapper/resource pairs are registered for this store yet. Use
+          Create pair, or follow{" "}
+          <Link className="underline" to="/setup" search={{ store: storeId }}>
+            Get a wrapper working
+          </Link>{" "}
+          to explicitly choose manual creation or asset auto-creation and
+          restart the matching frontend daemon.
+        </p>
+      ) : visibleGroups.length === 0 ? (
+        <p className="text-sm text-(--color-muted)">
+          No pairs match this metadata filter.
         </p>
       ) : (
         <ResourceGroupedPairsTable
-          groups={groups}
-          clientInstances={clientInstances}
+          groups={visibleGroups}
+          clientInstances={visibleClients}
+          clientDetails={clientDetails}
+          clientMetadataReady={clientMetadataReady}
+          storeId={storeId}
           displayNameById={displayNameById}
           resourceNameById={resourceNameById}
           permissionIndex={permissionIndex}
@@ -226,6 +344,11 @@ export function WrapperPermissionsPage() {
                 resourceNameById.get(editing.resource_id) ?? editing.resource_id
               }
               existing={editing.permission}
+              accessOverride={
+                clientMetadataReady
+                  ? clientDetails.get(editing.clientInstance)?.access_override
+                  : undefined
+              }
               onClose={() => setEditing(null)}
             />
           ) : null}

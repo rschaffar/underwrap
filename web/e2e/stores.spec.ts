@@ -18,8 +18,24 @@ function storeRow(page: Page, name: string): Locator {
   return page.getByRole("row", { name: new RegExp(`\\b${name}\\b`) });
 }
 
+async function openStoreMaintenance(page: Page, name: string): Promise<void> {
+  const disclosure = storeRow(page, name)
+    .locator("details")
+    .filter({
+      has: page.locator("summary", { hasText: /^Maintenance$/ }),
+    });
+  const summary = disclosure.locator("summary");
+  await expect(summary).toBeVisible();
+  if ((await disclosure.getAttribute("open")) === null) {
+    await summary.click();
+  }
+  await expect(disclosure).toHaveJSProperty("open", true);
+}
+
 async function displayedGeneratedKey(page: Page): Promise<string> {
-  const key = (await page.getByTestId("generated-store-key").innerText()).trim();
+  const key = (
+    await page.getByTestId("generated-store-key").innerText()
+  ).trim();
   expect(
     /^[0-9a-f]{64}$/.test(key),
     "the backend-generated key should have canonical shape",
@@ -62,6 +78,7 @@ async function beginPlainToEncryptedMigration(
   page: Page,
   storeName: string,
 ): Promise<string> {
+  await openStoreMaintenance(page, storeName);
   await storeRow(page, storeName)
     .getByRole("button", { name: /migrate to encrypted/i })
     .click();
@@ -163,9 +180,12 @@ test("admin can create, edit, and delete a dynamic store", async ({
   await editDlg.getByLabel("Description").fill("renamed-by-test");
   await editDlg.getByRole("button", { name: /^save$/i }).click();
   await expect(editDlg).toBeHidden();
-  await expect(page.getByRole("cell", { name: "renamed-by-test" })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "renamed-by-test" }),
+  ).toBeVisible();
 
   // Delete is a simple confirm/cancel — no type-to-confirm gate.
+  await openStoreMaintenance(page, "scratch");
   await page
     .getByRole("row", { name: /\bscratch\b/ })
     .getByRole("button", { name: /delete/i })
@@ -206,9 +226,7 @@ test("encrypted creation requires exact re-entry and sends no mutation on mismat
   const generatedKey = await displayedGeneratedKey(page);
   const mismatch = `${generatedKey} `;
   await page.getByTestId("store-key-reentry").fill(mismatch);
-  await page
-    .getByRole("button", { name: /^create encrypted store$/i })
-    .click();
+  await page.getByRole("button", { name: /^create encrypted store$/i }).click();
 
   await expect(
     page.getByText(/does not exactly match.*no mutation request was sent/i),
@@ -249,9 +267,7 @@ test("real migrations preserve the selected store id, metadata, resource, and li
   await editDialog.getByRole("button", { name: /^save$/i }).click();
   await expect(editDialog).toBeHidden();
 
-  await page.goto(
-    `${backendWithAdmin.baseUrl}/secrets?store=default&keep=yes`,
-  );
+  await page.goto(`${backendWithAdmin.baseUrl}/secrets?store=default&keep=yes`);
   await expect(page.getByTestId("secrets-store-select")).toHaveValue("default");
   await page.getByRole("button", { name: /create resource/i }).click();
   const resourceDialog = page.getByRole("dialog", { name: /create resource/i });
@@ -301,9 +317,7 @@ test("real migrations preserve the selected store id, metadata, resource, and li
   expect(generatedKeyRequests).toBe(1);
   expect(await checkedBrowserStateContainsKey(page, migrationKey)).toBe(false);
 
-  await page.goto(
-    `${backendWithAdmin.baseUrl}/secrets?store=default&keep=yes`,
-  );
+  await page.goto(`${backendWithAdmin.baseUrl}/secrets?store=default&keep=yes`);
   await expect(page.getByTestId("secrets-store-select")).toHaveValue("default");
   await expect(page.getByText("migration/nested-marker")).toBeVisible();
   await expect(page).toHaveURL(
@@ -312,6 +326,7 @@ test("real migrations preserve the selected store id, metadata, resource, and li
 
   await page.goto(`${backendWithAdmin.baseUrl}/stores?store=default&keep=yes`);
   row = storeRow(page, "default");
+  await openStoreMaintenance(page, "default");
   await row.getByRole("button", { name: /migrate to plain/i }).click();
   const plainDialog = page.getByRole("dialog", {
     name: /migrate to plain: default/i,
@@ -334,9 +349,7 @@ test("real migrations preserve the selected store id, metadata, resource, and li
   expect(generatedKeyRequests).toBe(1);
   expect(encryptedToPlainRequestWasKeyFree).toBe(true);
 
-  await page.goto(
-    `${backendWithAdmin.baseUrl}/secrets?store=default&keep=yes`,
-  );
+  await page.goto(`${backendWithAdmin.baseUrl}/secrets?store=default&keep=yes`);
   await expect(page.getByTestId("secrets-store-select")).toHaveValue("default");
   await expect(page.getByText("migration/nested-marker")).toBeVisible();
 });
@@ -365,15 +378,16 @@ test("locked encrypted store gives unlock-first guidance without migration", asy
       migrationRequests += 1;
     }
   });
+  await openStoreMaintenance(page, "locked-vault");
   await row.getByRole("button", { name: /^migrate$/i }).click();
   const guidance = page.getByRole("dialog", {
     name: /migrate store: locked-vault/i,
   });
   await expect(guidance).toContainText(/unlock this store first/i);
   await expect(guidance).toContainText(/no migration request can be sent/i);
-  await expect(
-    guidance.getByRole("button", { name: /^migrate/i }),
-  ).toHaveCount(0);
+  await expect(guidance.getByRole("button", { name: /^migrate/i })).toHaveCount(
+    0,
+  );
   expect(migrationRequests).toBe(0);
   expect(await checkedBrowserStateContainsKey(page, key)).toBe(false);
 });
@@ -421,9 +435,7 @@ test("lost response retains the key and permits same-key retry while the source 
 
   displayedKey = await beginPlainToEncryptedMigration(page, "default");
   await page.getByTestId("store-key-reentry").fill(displayedKey);
-  await page
-    .getByRole("button", { name: /^migrate to encrypted$/i })
-    .click();
+  await page.getByRole("button", { name: /^migrate to encrypted$/i }).click();
 
   await expect(
     page.getByText(/error or lost response cannot prove that no data changed/i),
@@ -465,15 +477,11 @@ test("ambiguous failure supports explicit warned discard of the retained key", a
 
   const key = await beginPlainToEncryptedMigration(page, "default");
   await page.getByTestId("store-key-reentry").fill(key);
-  await page
-    .getByRole("button", { name: /^migrate to encrypted$/i })
-    .click();
+  await page.getByRole("button", { name: /^migrate to encrypted$/i }).click();
   await expect(
     page.getByRole("button", { name: /discard retained key/i }),
   ).toBeEnabled();
-  await page
-    .getByRole("button", { name: /discard retained key/i })
-    .click();
+  await page.getByRole("button", { name: /discard retained key/i }).click();
 
   await expect(
     page.getByText(/may already protect committed or recoverable data/i),
@@ -520,15 +528,15 @@ test("committed migration reconciliation disables source-direction retry and ret
 
   displayedKey = await beginPlainToEncryptedMigration(page, "default");
   await page.getByTestId("store-key-reentry").fill(displayedKey);
-  await page
-    .getByRole("button", { name: /^migrate to encrypted$/i })
-    .click();
+  await page.getByRole("button", { name: /^migrate to encrypted$/i }).click();
 
   const retry = page.getByRole("button", {
     name: /retry migrate to encrypted/i,
   });
   await expect(retry).toBeDisabled();
-  await expect(page.getByText(/already uses the target backend/i)).toBeVisible();
+  await expect(
+    page.getByText(/already uses the target backend/i),
+  ).toBeVisible();
   await expect(
     page.getByText(/retain this key while reconciling the stores list/i),
   ).toBeVisible();
@@ -555,6 +563,7 @@ test("rotate-key flow surfaces a fresh key once for an existing encrypted store"
 
   const originalKey = await createEncryptedStore(page, "rotvault");
 
+  await openStoreMaintenance(page, "rotvault");
   await storeRow(page, "rotvault")
     .getByRole("button", { name: /rotate key/i })
     .click();
@@ -656,10 +665,13 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
       body: JSON.stringify({ name: "marker-res" }),
     });
     if (!resRes.ok) {
-      throw new Error(`resource create failed: ${resRes.status} ${await resRes.text()}`);
+      throw new Error(
+        `resource create failed: ${resRes.status} ${await resRes.text()}`,
+      );
     }
     csrf = resRes.headers.get("X-CSRF-Token") ?? csrf;
-    const rid = ((await resRes.json()) as { resource: { id: string } }).resource.id;
+    const rid = ((await resRes.json()) as { resource: { id: string } }).resource
+      .id;
 
     const write = await fetch(
       `/v1/admin/stores/${packed.id}/secrets/${rid}/env/marker`,
@@ -671,7 +683,9 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
       },
     );
     if (!write.ok) {
-      throw new Error(`secret write failed: ${write.status} ${await write.text()}`);
+      throw new Error(
+        `secret write failed: ${write.status} ${await write.text()}`,
+      );
     }
   });
 
@@ -686,6 +700,7 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   // backend reports `can_delete_now=false` and `can_force_delete=true`
   // so the SPA relabels the submit button to "Force delete" and shows
   // the explicit acknowledgement checkbox.
+  await openStoreMaintenance(page, "packed");
   await page
     .getByRole("row", { name: /\bpacked\b/ })
     .getByRole("button", { name: /delete/i })

@@ -29,6 +29,8 @@ pub enum RuntimeDenyReason {
     UnregisteredPair,
     /// The matched permission is `Locked` and carries no operator reason.
     Locked,
+    /// The runtime client instance's override denies all invocations.
+    ClientLocked,
     /// The matched permission's TTL has elapsed.
     Expired,
     /// A `Debug` variant against a non-`UnsafeDebugUntil` permission.
@@ -44,6 +46,7 @@ impl RuntimeDenyReason {
             Self::NoPermission => "no-permission",
             Self::UnregisteredPair => "unregistered-pair",
             Self::Locked => "locked",
+            Self::ClientLocked => "client-locked",
             Self::Expired => "expired",
             Self::NotUnsafeDebug => "not-unsafe-debug",
             Self::NotWritable => "not-writable",
@@ -157,7 +160,7 @@ pub struct RuntimeWrapperInvocationOpenRequest {
 ///
 /// `Deny.reason` is a human-facing string. For the canonical denials it
 /// is exactly one of the [`RuntimeDenyReason`] kebab-case discriminators
-/// (`no-permission`, `unregistered-pair`, `locked`, `expired`,
+/// (`no-permission`, `unregistered-pair`, `locked`, `client-locked`, `expired`,
 /// `not-unsafe-debug`); for a `Locked` permission with an operator
 /// reason, that free text replaces `locked` and is shown to the user.
 /// `not-writable` is finalize-only and never appears here. The daemon
@@ -175,7 +178,7 @@ pub enum RuntimeWrapperInvocationOpenResponse {
         resource_id: String,
         /// Canonical resource blob, base64-encoded.
         blob_b64: String,
-        /// Whether the matched permission allows wrapper-side writes.
+        /// Whether the current effective policy allows wrapper-side writes.
         /// The daemon uses this only as a hint to fail closed early;
         /// the backend re-checks on finalize regardless.
         writable: bool,

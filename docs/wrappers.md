@@ -79,7 +79,8 @@ The bus tmpfs carries runtime socket/helper artifacts and has no `noswap` claim;
 
 The target can read every item in the projected libsecret resource and can mutate its local service even with writable permission off.
 Split occasional writable authentication from routine non-writable action wrappers, and lock the authentication wrapper when not needed.
-A non-writable flag prevents underwrap persistence, not disclosure or local mutation.
+An effective non-writable flag prevents underwrap persistence, not disclosure or local mutation.
+Account for the backend [client-wide override](backend.md#client-wide-override) before relying on an individual row's writable flag or Locked mode.
 
 A publication ACK means the host retained a validated invocation generation, not that the D-Bus caller received success or the backend persisted it.
 A complete resource is limited to 2,097,152 bytes, while a private canonical libsecret publication body has its separate 1,048,576-byte cap.

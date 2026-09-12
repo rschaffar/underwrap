@@ -78,7 +78,10 @@ export function KeyConfirmationDialog({
           independent recoverability. The backend does not persist the key.
         </Alert>
         <div className="space-y-2">
-          <p id="generated-store-key-label" className="text-sm font-medium text-(--color-fg)">
+          <p
+            id="generated-store-key-label"
+            className="text-sm font-medium text-(--color-fg)"
+          >
             Generated master key (hex)
           </p>
           <pre
@@ -124,7 +127,7 @@ export function KeyConfirmationDialog({
           {mismatch ? (
             <p
               id="store-key-mismatch"
-              className="text-xs text-rose-300"
+              className="text-xs text-(--color-danger)"
               role="alert"
             >
               The re-entered key does not exactly match. No mutation request was
@@ -138,8 +141,7 @@ export function KeyConfirmationDialog({
             The browser attempted to submit the mutation, and it may have
             reached the backend. An error or lost response cannot prove that no
             data changed. Retain this key while reconciling the Stores list;
-            retry uses this same displayed key when the source remains
-            eligible.
+            retry uses this same displayed key when the source remains eligible.
           </Alert>
         ) : null}
         {actionDisabledReason ? (

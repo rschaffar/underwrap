@@ -31,7 +31,7 @@ function BlockersAlert({
           </li>
         ))}
       </ul>
-      <p className="mt-2 text-amber-200/80">
+      <p className="mt-2 text-(--color-warning)">
         Clear those permissions in the table above, then try again.
       </p>
     </Alert>

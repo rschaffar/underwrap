@@ -9,9 +9,8 @@ import { deleteWrapperPermission, putWrapperPermission } from "@/api/client";
 import { EditCellDialog } from "./edit-cell";
 
 vi.mock("@/api/client", async () => {
-  const actual = await vi.importActual<typeof import("@/api/client")>(
-    "@/api/client",
-  );
+  const actual =
+    await vi.importActual<typeof import("@/api/client")>("@/api/client");
   return {
     ...actual,
     putWrapperPermission: vi.fn(),
@@ -72,9 +71,7 @@ describe("EditCellDialog — unsafe-debug-until confirmation flow", () => {
       "Backend permission is not Unix-user authorization",
     );
     expect(warning).toHaveTextContent("allowedUsers installs PATH shims only");
-    expect(warning).toHaveTextContent(
-      "sudo, polkit, or another OS-level gate",
-    );
+    expect(warning).toHaveTextContent("sudo, polkit, or another OS-level gate");
     expect(warning).toHaveTextContent(
       "underwrap-<instance> debug gh-authorized",
     );
@@ -98,9 +95,14 @@ describe("EditCellDialog — unsafe-debug-until confirmation flow", () => {
     ).toHaveTextContent(pendingLocal);
     expect(warning).toHaveTextContent("15-minute default");
     expect(warning).toHaveTextContent(
-      "Confirming only copies this exact value into the form. Unsafe debug is not active until you press Save",
+      "Confirming only copies this exact value into the form. Save submits this selection; confirming does not change backend policy",
     );
-    expect(warning).toHaveTextContent("backend rechecks expiry on every request");
+    expect(warning).toHaveTextContent(
+      "Existing permissions and overrides remain in effect until changed or expired",
+    );
+    expect(warning).toHaveTextContent(
+      "backend rechecks expiry on every request",
+    );
     expect(putWrapperPermission).not.toHaveBeenCalled();
   });
 
@@ -111,7 +113,10 @@ describe("EditCellDialog — unsafe-debug-until confirmation flow", () => {
 
     const effect = await screen.findByTestId("unsafe-debug-readonly-effect");
     expect(effect).toHaveTextContent(
-      "underwrap does not persist staged files or libsecret changes, but full target access and disclosure are unchanged",
+      "this setting does not authorize persistence of staged files or libsecret changes; client overrides and current backend checks still apply",
+    );
+    expect(effect).toHaveTextContent(
+      "Full target access and disclosure are unchanged",
     );
     expect(effect).toHaveTextContent("Env remains backend-owned and immutable");
     expect(putWrapperPermission).not.toHaveBeenCalled();
@@ -135,9 +140,9 @@ describe("EditCellDialog — unsafe-debug-until confirmation flow", () => {
     expect(screen.getByLabelText(/deadline/i)).toHaveValue(originalLocal);
 
     await user.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
-    expect(await screen.findByTestId("unsafe-debug-pending-expiry")).toHaveTextContent(
-      pendingLocal,
-    );
+    expect(
+      await screen.findByTestId("unsafe-debug-pending-expiry"),
+    ).toHaveTextContent(pendingLocal);
     await user.click(screen.getByTestId("confirm-danger-cancel"));
 
     await waitFor(() =>
@@ -153,9 +158,9 @@ describe("EditCellDialog — unsafe-debug-until confirmation flow", () => {
     renderDialog();
     await user.click(screen.getByTestId("permission-writable"));
     await user.click(screen.getByTestId("mode-radio-unsafe-debug-until"));
-    expect(await screen.findByTestId("unsafe-debug-pending-expiry")).toHaveTextContent(
-      pendingLocal,
-    );
+    expect(
+      await screen.findByTestId("unsafe-debug-pending-expiry"),
+    ).toHaveTextContent(pendingLocal);
 
     await user.click(screen.getByTestId("confirm-danger-confirm"));
     expect(screen.queryByTestId("unsafe-debug-security-warning")).toBeNull();
@@ -189,7 +194,9 @@ describe("EditCellDialog — unsafe-debug-until confirmation flow", () => {
         resource_id: "github/token",
         mode: {
           kind: "unsafe-debug-until",
-          until_epoch: Math.floor(new Date("2098-01-01T00:00").getTime() / 1000),
+          until_epoch: Math.floor(
+            new Date("2098-01-01T00:00").getTime() / 1000,
+          ),
         },
         writable: false,
       },
@@ -288,7 +295,9 @@ describe("EditCellDialog — existing permission, writable, reason, remove", () 
     const deadline = await screen.findByLabelText(/deadline/i);
     await user.clear(deadline);
     await user.click(screen.getByTestId("permission-save"));
-    expect(await screen.findByText(/pick a valid deadline/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/pick a valid deadline/i),
+    ).toBeInTheDocument();
     expect(putWrapperPermission).not.toHaveBeenCalled();
   });
 });

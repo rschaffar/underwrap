@@ -62,6 +62,9 @@ pub struct ClientInstanceRecord {
     /// and wrapper/resource-pair records on the runtime register
     /// endpoint. Off by default; an admin must flip it on explicitly.
     pub auto_create_wrapper_assets: bool,
+    /// Request-time access override, independent of saved permission rows.
+    #[serde(default)]
+    pub access_override: underwrap_protocol::policy::ClientAccessOverride,
 }
 
 pub fn cert_fingerprint_from_der(cert_der: &[u8]) -> String {

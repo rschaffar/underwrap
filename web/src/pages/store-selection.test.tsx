@@ -7,10 +7,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import {
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dialogStoreBindings = vi.hoisted(() => ({
@@ -65,6 +62,7 @@ import {
   fetchWrapperPermissionsView,
 } from "@/api/client";
 import { SecretsPage } from "./secrets/page";
+import { withTestRouter } from "@/test-router";
 import { WrapperPermissionsPage } from "./wrapper-permissions/page";
 
 const STORE_LIST = {
@@ -106,7 +104,9 @@ const STORE_LIST = {
   ],
 } satisfies AdminStoresListResponse;
 
-const PRIMARY_ONLY = { items: [STORE_LIST.items[0]] } satisfies AdminStoresListResponse;
+const PRIMARY_ONLY = {
+  items: [STORE_LIST.items[0]],
+} satisfies AdminStoresListResponse;
 
 const SHARED_RESOURCE = {
   id: "shared-resource",
@@ -165,7 +165,9 @@ function renderPage(ui: ReactElement): QueryClient {
   });
   render(
     <StrictMode>
-      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        {withTestRouter(ui)}
+      </QueryClientProvider>
     </StrictMode>,
   );
   return queryClient;
@@ -199,7 +201,10 @@ beforeEach(() => {
   vi.mocked(deleteLibsecretCollection).mockReset();
   vi.mocked(fetchClientInstances).mockResolvedValue({ items: [] });
   vi.mocked(fetchSecretsView).mockResolvedValue({ entries: [], resources: [] });
-  vi.mocked(fetchLibsecretTree).mockResolvedValue({ aliases: {}, collections: [] });
+  vi.mocked(fetchLibsecretTree).mockResolvedValue({
+    aliases: {},
+    collections: [],
+  });
   vi.mocked(fetchWrapperPermissionsView).mockResolvedValue({
     permissions: [],
     pairs: [],
@@ -228,12 +233,12 @@ describe.each(PAGE_CASES)("$name store selection", (pageCase) => {
       expect(screen.getByTestId(pageCase.selectTestId)).toHaveValue("primary"),
     );
     await waitFor(() => expect(detailMock(pageCase.name)).toHaveBeenCalled());
-    expect(detailMock(pageCase.name).mock.calls.every(([id]) => id === "primary")).toBe(
-      true,
-    );
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      `${pageCase.path}?store=primary&keep=yes#section`,
-    );
+    expect(
+      detailMock(pageCase.name).mock.calls.every(([id]) => id === "primary"),
+    ).toBe(true);
+    expect(
+      window.location.pathname + window.location.search + window.location.hash,
+    ).toBe(`${pageCase.path}?store=primary&keep=yes#section`);
   });
 
   it("shows a store-list network error without changing the requested URL or diagnosing access/content", async () => {
@@ -243,13 +248,17 @@ describe.each(PAGE_CASES)("$name store selection", (pageCase) => {
     renderPage(pageCase.ui);
 
     expect(
-      await screen.findByText("Network error. Check your connection and try again."),
+      await screen.findByText(
+        "Network error. Check your connection and try again.",
+      ),
     ).toBeInTheDocument();
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      `${pageCase.path}?store=requested&keep=yes#section`,
-    );
+    expect(
+      window.location.pathname + window.location.search + window.location.hash,
+    ).toBe(`${pageCase.path}?store=requested&keep=yes#section`);
     expect(screen.queryByText(/grant/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/ask an admin for access/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/ask an admin for access/i),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(pageCase.contentEmpty)).not.toBeInTheDocument();
     expect(detailMock(pageCase.name)).not.toHaveBeenCalled();
   });
@@ -261,11 +270,17 @@ describe.each(PAGE_CASES)("$name store selection", (pageCase) => {
     renderPage(pageCase.ui);
 
     expect(
-      await screen.findByText("No stores are configured. Create one on the Stores page."),
-    ).toBeInTheDocument();
+      await screen.findByRole("link", { name: "Create a store" }),
+    ).toHaveAttribute("href", "/stores?create=store");
+    expect(screen.getByText(/No stores are configured\./)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Get a wrapper working" }),
+    ).toHaveAttribute("href", "/setup");
     await waitFor(() =>
       expect(
-        window.location.pathname + window.location.search + window.location.hash,
+        window.location.pathname +
+          window.location.search +
+          window.location.hash,
       ).toBe(`${pageCase.path}?keep=yes#section`),
     );
     expect(detailMock(pageCase.name)).not.toHaveBeenCalled();
@@ -277,13 +292,17 @@ describe.each(PAGE_CASES)("$name store selection", (pageCase) => {
     const queryClient = renderPage(pageCase.ui);
 
     await waitFor(() =>
-      expect(screen.getByTestId(pageCase.selectTestId)).toHaveValue("secondary"),
+      expect(screen.getByTestId(pageCase.selectTestId)).toHaveValue(
+        "secondary",
+      ),
     );
     await waitFor(() =>
       expect(detailMock(pageCase.name)).toHaveBeenCalledWith("secondary"),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: pageCase.createButton }));
+    fireEvent.click(
+      screen.getByRole("button", { name: pageCase.createButton }),
+    );
     expect(
       screen.getByRole("dialog", { name: pageCase.createDialog }),
     ).toBeInTheDocument();
@@ -304,9 +323,9 @@ describe.each(PAGE_CASES)("$name store selection", (pageCase) => {
     ).not.toBeInTheDocument();
     await act(async () => {});
     expect(pageCase.bindings).toEqual([]);
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      `${pageCase.path}?store=primary&keep=yes#section`,
-    );
+    expect(
+      window.location.pathname + window.location.search + window.location.hash,
+    ).toBe(`${pageCase.path}?store=primary&keep=yes#section`);
     await waitFor(() =>
       expect(detailMock(pageCase.name)).toHaveBeenCalledWith("primary"),
     );
@@ -315,7 +334,9 @@ describe.each(PAGE_CASES)("$name store selection", (pageCase) => {
     ).toBe(true);
 
     pageCase.bindings.length = 0;
-    fireEvent.click(screen.getByRole("button", { name: pageCase.createButton }));
+    fireEvent.click(
+      screen.getByRole("button", { name: pageCase.createButton }),
+    );
     expect(
       screen.getByRole("dialog", { name: pageCase.createDialog }),
     ).toBeInTheDocument();
@@ -356,10 +377,7 @@ it("remounts Secrets resource state before cached same-id libsecret data can reb
   ).toBeInTheDocument();
 
   act(() => {
-    queryClient.setQueryData(
-      ["admin", "secrets-view", "primary"],
-      primaryView,
-    );
+    queryClient.setQueryData(["admin", "secrets-view", "primary"], primaryView);
     queryClient.setQueryData(
       ["admin", "libsecret", "primary", "shared-resource"],
       primaryTree,
@@ -375,9 +393,7 @@ it("remounts Secrets resource state before cached same-id libsecret data can reb
   ).not.toBeInTheDocument();
   expect(deleteLibsecretCollection).not.toHaveBeenCalled();
 
-  const destinationBlock = screen.getByTestId(
-    "resource-block-shared-resource",
-  );
+  const destinationBlock = screen.getByTestId("resource-block-shared-resource");
   expect(destinationBlock).not.toHaveAttribute("open");
   expect(
     within(destinationBlock).queryByText("Secondary collection"),

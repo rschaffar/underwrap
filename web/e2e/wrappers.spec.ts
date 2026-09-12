@@ -43,7 +43,9 @@ async function adminFetchJson<T>(
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`${method} ${path} failed ${res.status}: ${await res.text()}`);
+      throw new Error(
+        `${method} ${path} failed ${res.status}: ${await res.text()}`,
+      );
     }
     return (await res.json()) as T;
   }, req);
@@ -171,9 +173,7 @@ test("cell editor cycles a permission through every mode (incl. unsafe-debug con
   async function setMode(mode: string) {
     await cell.click();
     await expect(page.getByTestId("mode-radio-group")).toBeVisible();
-    await page
-      .getByTestId(`mode-radio-${mode}`)
-      .click({ force: true });
+    await page.getByTestId(`mode-radio-${mode}`).click({ force: true });
     if (mode === "unsafe-debug-until") {
       // Picking unsafe-debug-until opens a danger-confirm gate; the edit
       // dialog only switches into the mode once it is confirmed.
@@ -211,7 +211,9 @@ test("admin can create a wrapper/resource pair through the dialog", async ({
   await page.goto(`${backendWithAdmin.baseUrl}/wrappers?store=default`);
 
   await page.getByTestId("wrappers-create-pair").click();
-  const dlg = page.getByRole("dialog", { name: /create wrapper\/resource pair/i });
+  const dlg = page.getByRole("dialog", {
+    name: /create wrapper\/resource pair/i,
+  });
   await expect(dlg).toBeVisible();
   await dlg.getByLabel(/wrapper name/i).fill("gh-authorized");
   await dlg.getByTestId("pair-new-resource").fill("github/token");
@@ -221,10 +223,118 @@ test("admin can create a wrapper/resource pair through the dialog", async ({
   // The pair row is now visible in the table. Match on text content with
   // exact:true so the delete button's "Delete pair gh-authorized /
   // github/token" aria-label (not text content) doesn't interfere.
-  await expect(
-    page.getByText("gh-authorized", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("gh-authorized", { exact: true })).toBeVisible();
   await expect(page.getByText("github/token", { exact: true })).toBeVisible();
+});
+
+test("client access controls apply immediately, confirm unlock and preserve saved permissions", async ({
+  page,
+  backendWithAdmin,
+}) => {
+  await loginViaUi(page, backendWithAdmin.baseUrl);
+  const clientId = await createClientInstance(page, backendWithAdmin);
+  const resourceId = await seedPair(
+    page,
+    "default",
+    "override-wrapper",
+    "override-resource",
+  );
+  await upsertPermission(
+    page,
+    "default",
+    clientId,
+    "override-wrapper",
+    resourceId,
+    { kind: "locked" },
+    true,
+  );
+  const readPolicy = () =>
+    page.evaluate(async () => {
+      const response = await fetch(
+        "/v1/admin/stores/default/wrapper-permissions-view",
+        { credentials: "include" },
+      );
+      if (!response.ok)
+        throw new Error(`permission metadata HTTP ${response.status}`);
+      return (await response.json()).permissions;
+    });
+  const readOverride = () =>
+    page.evaluate(async (id) => {
+      const response = await fetch("/v1/admin/client-instances", {
+        credentials: "include",
+      });
+      if (!response.ok)
+        throw new Error(`client metadata HTTP ${response.status}`);
+      const body = await response.json();
+      const item = body.items.find(
+        (candidate: { id: string }) => candidate.id === id,
+      );
+      if (!item) throw new Error("enrolled client missing from metadata");
+      return item.access_override;
+    }, clientId);
+  const saved = await readPolicy();
+  expect(saved).toHaveLength(1);
+  expect(saved[0].mode).toEqual({ kind: "locked" });
+  expect(saved[0].writable).toBe(true);
+  let updates = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "PUT" &&
+      new URL(request.url()).pathname ===
+        `/v1/admin/client-instances/${clientId}`
+    )
+      updates += 1;
+  });
+  await page.goto(
+    `${backendWithAdmin.baseUrl}/client-instances?store=default&client=${clientId}`,
+  );
+  const controls = page.getByRole("group", {
+    name: "Access override for E2E client",
+  });
+  const mode = controls.getByLabel("Client access");
+  await expect(mode).toHaveValue("individual");
+  await mode.selectOption("locked");
+  await expect.poll(readOverride).toEqual({ kind: "locked" });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(updates).toBe(1);
+  expect(await readPolicy()).toEqual(saved);
+
+  await mode.selectOption("unlocked");
+  let confirmation = page.getByRole("dialog", {
+    name: "Unlock all: E2E client",
+  });
+  await expect(confirmation).toBeVisible();
+  expect(await readOverride()).toEqual({ kind: "locked" });
+  expect(updates).toBe(1);
+  await confirmation
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(confirmation).toBeHidden();
+  await expect(mode).toHaveValue("locked");
+  await mode.selectOption("unlocked");
+  confirmation = page.getByRole("dialog", { name: "Unlock all: E2E client" });
+  await confirmation
+    .getByRole("button", { name: "Unlock all read-only", exact: true })
+    .click();
+  await expect(confirmation).toBeHidden();
+  await expect
+    .poll(readOverride)
+    .toEqual({ kind: "unlocked", writable: false });
+  expect(updates).toBe(2);
+  expect(await readPolicy()).toEqual(saved);
+
+  // The checkbox reflects server acknowledgement, not an optimistic grant.
+  const writeback = controls.getByLabel("Allow files/libsecret writeback");
+  await writeback.click();
+  await expect.poll(readOverride).toEqual({ kind: "unlocked", writable: true });
+  await expect(writeback).toBeChecked();
+  expect(updates).toBe(3);
+  expect(await readPolicy()).toEqual(saved);
+  await mode.selectOption("individual");
+  await expect.poll(readOverride).toEqual({ kind: "individual" });
+  await expect(controls.getByRole("checkbox")).toHaveCount(0);
+  expect(updates).toBe(4);
+  expect(await readPolicy()).toEqual(saved);
 });
 
 test("raw policy viewer surfaces the live PolicyDocument and writable-permission count", async ({
@@ -237,7 +347,7 @@ test("raw policy viewer surfaces the live PolicyDocument and writable-permission
   // The writable-permission count badge lives in the page header now
   // (always visible), not inside the raw-policy dialog.
   await expect(page.getByTestId("writable-permissions-badge")).toHaveText(
-    /0 writable of 0/i,
+    /0 saved writable of 0/i,
   );
 
   await page.getByRole("button", { name: /view raw policy/i }).click();
@@ -269,10 +379,12 @@ test("raw policy viewer surfaces the live PolicyDocument and writable-permission
 
   await page.reload();
   await expect(page.getByTestId("writable-permissions-badge")).toHaveText(
-    /1 writable of 1/i,
+    /1 saved writable of 1/i,
   );
 
   await page.getByRole("button", { name: /view raw policy/i }).click();
   const dlg2 = page.getByRole("dialog", { name: /raw policy: default/i });
-  await expect(dlg2.getByTestId("policy-json")).toContainText('"writable": true');
+  await expect(dlg2.getByTestId("policy-json")).toContainText(
+    '"writable": true',
+  );
 });
