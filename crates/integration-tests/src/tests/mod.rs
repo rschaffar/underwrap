@@ -347,6 +347,7 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
 mod admin_libsecret;
 mod admin_reference_integrity;
 mod backend_ca;
+mod client_access_override;
 mod client_instances;
 mod daemon;
 mod directory_and_status;

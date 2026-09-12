@@ -32,7 +32,7 @@ export function ConfirmDangerDialog({
       open
       onClose={onCancel}
       title={
-        <span className="inline-flex items-center gap-2 text-amber-200">
+        <span className="inline-flex items-center gap-2 text-(--color-warning)">
           <AlertTriangle className="h-4 w-4" aria-hidden />
           {title}
         </span>

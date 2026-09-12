@@ -73,7 +73,9 @@ fn production_internal_constructor_inventory_is_static_and_complete() {
     let adapter_calls = occurrences(&sources, ".into_internal(");
     let direct_calls = occurrences(&sources, "RuntimeError::internal(");
 
-    assert_eq!(adapter_calls, 17);
+    // Resource and pair lookup have separate static contexts; both retain
+    // the type-only internal-error adapter, never arbitrary source text.
+    assert_eq!(adapter_calls, 18);
     assert_eq!(direct_calls, 2);
-    assert_eq!(adapter_calls + direct_calls, 19);
+    assert_eq!(adapter_calls + direct_calls, 20);
 }

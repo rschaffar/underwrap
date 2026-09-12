@@ -61,7 +61,7 @@ pub(crate) mod invocations;
 pub(crate) mod principal;
 pub(crate) mod wrappers;
 
-use principal::resolve_runtime_client;
+use principal::{RuntimeRequestPrincipal, resolve_runtime_client};
 
 /// Connection-level extension carrying the rustls peer certificate
 /// chain. Inserted once per connection by the HTTPS accept loop.
@@ -84,7 +84,7 @@ pub(crate) fn runtime_router() -> Router<Arc<ListenerState>> {
 fn resolve_runtime_request(
     state: &ListenerState,
     peer_certs: &PeerCertificates,
-) -> Result<(String, crate::store_registry::StoreLease), RuntimeError> {
+) -> Result<(RuntimeRequestPrincipal, crate::store_registry::StoreLease), RuntimeError> {
     let resolved = resolve_runtime_client(state, peer_certs.0.as_ref()).map_err(|e| {
         warn!(err = format!("{e:#}"), "rejecting runtime client request");
         RuntimeError::unauthorized("unauthorized", "runtime client is not currently authorized")
@@ -111,7 +111,7 @@ fn resolve_runtime_request(
             ));
         }
     };
-    Ok((resolved.instance_id, store))
+    Ok((resolved, store))
 }
 
 async fn axum_wrappers_register(
@@ -120,7 +120,12 @@ async fn axum_wrappers_register(
     Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperRegisterRequest>,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperRegisterResponse>, RuntimeError> {
     let (principal, store) = resolve_runtime_request(&state, &peer_certs)?;
-    wrappers::handle_runtime_wrapper_register(&state, store.as_ref(), &principal, &parsed)
+    wrappers::handle_runtime_wrapper_register(
+        &state,
+        store.as_ref(),
+        &principal.instance_id,
+        &parsed,
+    )
 }
 
 async fn axum_invocation_open(
@@ -129,7 +134,12 @@ async fn axum_invocation_open(
     Body(parsed): Body<underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest>,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse>, RuntimeError> {
     let (principal, store) = resolve_runtime_request(&state, &peer_certs)?;
-    invocations::handle_runtime_wrapper_invocation_open(store.as_ref(), &principal, &parsed)
+    invocations::handle_runtime_wrapper_invocation_open(
+        store.as_ref(),
+        &principal.instance_id,
+        principal.access_override,
+        &parsed,
+    )
 }
 
 async fn axum_invocation_finalize(
@@ -141,5 +151,10 @@ async fn axum_invocation_finalize(
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse>, RuntimeError>
 {
     let (principal, store) = resolve_runtime_request(&state, &peer_certs)?;
-    invocations::handle_runtime_wrapper_invocation_finalize(store.as_ref(), &principal, &parsed)
+    invocations::handle_runtime_wrapper_invocation_finalize(
+        store.as_ref(),
+        &principal.instance_id,
+        principal.access_override,
+        &parsed,
+    )
 }

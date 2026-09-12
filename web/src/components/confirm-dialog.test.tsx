@@ -4,7 +4,9 @@ import userEvent from "@testing-library/user-event";
 
 import { ConfirmDialog } from "./confirm-dialog";
 
-function renderDialog(overrides: Partial<React.ComponentProps<typeof ConfirmDialog>> = {}) {
+function renderDialog(
+  overrides: Partial<React.ComponentProps<typeof ConfirmDialog>> = {},
+) {
   const props = {
     title: "Delete store",
     description: "This cannot be undone.",
@@ -56,7 +58,7 @@ describe("ConfirmDialog", () => {
     expect(closeButton).toHaveClass(
       "focus-visible:outline-hidden",
       "focus-visible:ring-2",
-      "focus-visible:ring-(--color-accent)/40",
+      "focus-visible:ring-(--color-accent)",
     );
     expect(closeButton).not.toHaveClass("focus:outline-hidden");
     await user.click(closeButton);

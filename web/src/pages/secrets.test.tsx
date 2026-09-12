@@ -3,6 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { SecretsPage } from "./secrets/page";
+import { withTestRouter } from "@/test-router";
 import { groupSecretEntries } from "./secrets/grouping";
 
 // Mock the API surface; the unit tests assert rendering decisions
@@ -31,7 +32,9 @@ function renderWithQuery(ui: React.ReactNode) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={qc}>{withTestRouter(ui)}</QueryClientProvider>,
+  );
 }
 
 /**
@@ -109,7 +112,10 @@ describe("SecretsPage", () => {
       ],
     });
     vi.mocked(fetchLibsecretTree).mockImplementation(
-      async (_store: string, rid: string): Promise<AdminLibsecretTreeResponse> => {
+      async (
+        _store: string,
+        rid: string,
+      ): Promise<AdminLibsecretTreeResponse> => {
         if (rid === "github/gh") {
           return {
             aliases: { default: "default" },
@@ -148,7 +154,9 @@ describe("SecretsPage", () => {
     const ghTokenEnv = within(ghToken).getByTestId("slot-env");
     expect(within(ghTokenEnv).getByText("GH_TOKEN")).toBeInTheDocument();
     expect(within(ghTokenEnv).getByText("GH_USERNAME")).toBeInTheDocument();
-    expect(within(ghToken).getByTestId("slot-files")).toHaveTextContent(/none/i);
+    expect(within(ghToken).getByTestId("slot-files")).toHaveTextContent(
+      /none/i,
+    );
 
     // Resources that only have libsecret content now render the
     // libsecret tree directly under the resource block — but only
@@ -213,6 +221,7 @@ describe("SecretsPage", () => {
           current_store_id: "store_default",
           current_store_name: "default",
           status: "active",
+          access_override: { kind: "individual" as const },
           current_credential_fingerprint: "fp",
           auto_create_wrapper_assets: true,
           actions: {

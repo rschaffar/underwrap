@@ -75,6 +75,7 @@ fn admin_client_instance_list_item(
         last_seen_at: record.last_seen_at,
         current_credential_fingerprint: record.current_credential.cert_fingerprint.clone(),
         auto_create_wrapper_assets: record.auto_create_wrapper_assets,
+        access_override: record.access_override,
         actions: AdminClientInstanceActionState {
             can_disable: record.status == crate::runtime_clients::ClientInstanceStatus::Active,
             can_enable: record.status == crate::runtime_clients::ClientInstanceStatus::Disabled,
@@ -215,6 +216,7 @@ pub(crate) async fn handle_admin_client_instance_create(
         last_seen_at: None,
         current_credential,
         auto_create_wrapper_assets: body.auto_create_wrapper_assets.unwrap_or(false),
+        access_override: Default::default(),
     };
     instances.insert(id.clone(), record.clone());
     if let Err(e) =
@@ -251,7 +253,7 @@ pub(crate) async fn handle_admin_client_instance_create(
     params(("id" = String, Path, description = "Client instance id.")),
     request_body = AdminClientInstanceUpdateRequest,
     responses(
-        (status = 200, description = "Instance updated. Cleanup of prior-store wrapper permissions after a remap is best effort; success does not certify their removal.", body = AdminClientInstanceListItem),
+        (status = 200, description = "Instance updated. The access override applies on subsequent runtime opens and finalizes without rewriting permission rows or granting unsafe-debug approval. Cleanup of prior-store wrapper permissions after a remap is best effort; success does not certify their removal.", body = AdminClientInstanceListItem),
         (status = 400, description = "Validation failed.", body = ServiceErrorResponse),
         (status = 404, description = "Instance / target store not found.", body = ServiceErrorResponse),
     ),
@@ -325,6 +327,9 @@ pub(crate) async fn handle_admin_client_instance_update(
     }
     if let Some(flag) = body.auto_create_wrapper_assets {
         updated.auto_create_wrapper_assets = flag;
+    }
+    if let Some(access_override) = body.access_override {
+        updated.access_override = access_override;
     }
     if let Err(e) =
         crate::runtime_clients::save_client_instance(&state.admin().clients_dir, &updated)

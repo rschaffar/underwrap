@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Check } from "lucide-react";
 
 import { AdminDialog } from "@/components/admin-dialog";
@@ -39,16 +39,30 @@ export function PolicyViewerDialog({
   );
 
   const [copied, setCopied] = useState(false);
+  const mounted = useRef(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    };
+  }, []);
+
   async function onCopy() {
     try {
       await navigator.clipboard.writeText(formatted);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Older browsers / non-secure contexts: leave the badge as-is.
-      // The pre block is selectable so the operator can still copy
-      // manually.
+      // The pre block remains selectable without clipboard access.
+      return;
     }
+    if (!mounted.current) return;
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    setCopied(true);
+    resetTimer.current = setTimeout(() => {
+      resetTimer.current = null;
+      setCopied(false);
+    }, 1500);
   }
 
   return (
@@ -58,9 +72,8 @@ export function PolicyViewerDialog({
       title={`Raw policy: ${storeId}`}
       description={
         <>
-          The persisted <code>PolicyDocument</code> for this store.
-          Read-only — use the Wrapper permissions view to change
-          permissions.
+          The persisted <code>PolicyDocument</code> for this store. Read-only —
+          use the Wrapper permissions view to change permissions.
         </>
       }
     >

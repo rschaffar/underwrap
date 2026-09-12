@@ -10,7 +10,7 @@ use axum::Json;
 use tracing::warn;
 
 use underwrap_backend_store::{StorageBackend, load_resource_blob, save_resource_blob};
-use underwrap_protocol::policy::{PolicyDecision, PolicyDocument, WrapperPermission, decide};
+use underwrap_protocol::policy::{ClientAccessOverride, PolicyDecision};
 use underwrap_protocol::service::{RuntimeDenyReason, RuntimeInvalidBlobReason};
 use underwrap_protocol::variant::WrapperVariant;
 
@@ -19,102 +19,46 @@ use crate::storage::documents::{
     load_pairs_document, load_policy_document, load_resources_document, save_pairs_document,
 };
 
-/// Result of the policy + pair lookup shared by open and finalize.
-///
-/// Encodes the four authoritative outcomes the backend draws from the
-/// per-store state: pair not registered, no permission at all, the
-/// permission denies right now, or the permission allows.
-pub(crate) enum InvocationLookup<'a> {
-    UnregisteredPair,
-    NoPermission,
-    Denied(String),
-    Allowed {
-        resource_id: String,
-        permission: &'a WrapperPermission,
-    },
-}
-
-/// Resolve `(principal, wrapper_name, resource_name)` to either an
-/// allow-with-permission or a structured denial. Used by the open and
-/// finalize handlers; both must reach the same conclusion from the same inputs
-/// through stateless re-evaluation.
-pub(crate) fn resolve_invocation<'a>(
-    store: &dyn StorageBackend,
-    principal: &str,
-    wrapper_name: &str,
-    resource_name: &str,
-    variant: WrapperVariant,
-    policy: &'a PolicyDocument,
-) -> Result<InvocationLookup<'a>> {
-    let resources = load_resources_document(store)?;
-    let Some(resource) = resources.find_by_name(resource_name) else {
-        return Ok(InvocationLookup::UnregisteredPair);
-    };
-    let pairs = load_pairs_document(store)?;
-    if pairs.find(wrapper_name, &resource.id).is_none() {
-        return Ok(InvocationLookup::UnregisteredPair);
-    }
-    let Some(permission) = policy.find_permission(principal, wrapper_name, &resource.id) else {
-        return Ok(InvocationLookup::NoPermission);
-    };
-    // The shared `decide` is the single authority for the (mode × variant)
-    // matrix; the daemon-side evaluator and this backend handler must
-    // reach identical conclusions. A `Debug` variant is only ever allowed
-    // under an active `UnsafeDebugUntil` permission.
-    match decide(permission, variant, crate::time::now_epoch_secs()) {
-        PolicyDecision::Allow => Ok(InvocationLookup::Allowed {
-            resource_id: resource.id.clone(),
-            permission,
-        }),
-        PolicyDecision::Deny { reason } => Ok(InvocationLookup::Denied(reason)),
-    }
-}
-
-/// Either an Allow tuple `(resource_id, writable)` or a structured
-/// Deny reason. Handlers translate the Deny arm into their endpoint's
-/// `Deny` response variant.
+/// Effective policy result shared by open and finalize.
+/// An override can allow a registered pair without fabricating a permission row.
 pub(crate) enum InvocationResolution {
     Allow { resource_id: String, writable: bool },
     Deny(String),
 }
 
-/// Run [`resolve_invocation`] and collapse the four-arm enum into the
-/// two-arm [`InvocationResolution`]. Any storage error becomes a
-/// `RuntimeError::internal`; structural denies (unregistered pair, no
-/// permission, denied permission) become `Deny(reason)`.
+/// Resolve the registered pair and evaluate current backend policy.
+/// Neither an override nor a permission row bypasses asset registration.
 pub(crate) fn resolve_invocation_or_deny(
     store: &dyn StorageBackend,
     principal: &str,
+    access_override: ClientAccessOverride,
     wrapper_name: &str,
     resource_name: &str,
     variant: WrapperVariant,
 ) -> Result<InvocationResolution, RuntimeError> {
     let policy = load_policy_document(store).into_internal("loading policy document")?;
-    let lookup = resolve_invocation(
-        store,
-        principal,
-        wrapper_name,
-        resource_name,
-        variant,
-        &policy,
-    )
-    .into_internal("policy lookup failed")?;
-    Ok(match lookup {
-        InvocationLookup::UnregisteredPair => {
-            InvocationResolution::Deny(RuntimeDenyReason::UnregisteredPair.to_string())
-        }
-        InvocationLookup::NoPermission => {
-            InvocationResolution::Deny(RuntimeDenyReason::NoPermission.to_string())
-        }
-        InvocationLookup::Denied(reason) => InvocationResolution::Deny(reason),
-        InvocationLookup::Allowed {
-            resource_id,
-            permission,
-        } => InvocationResolution::Allow {
-            resource_id,
-            writable: permission.writable,
+    let resources = load_resources_document(store).into_internal("loading resources document")?;
+    let Some(resource) = resources.find_by_name(resource_name) else {
+        return Ok(InvocationResolution::Deny(
+            RuntimeDenyReason::UnregisteredPair.to_string(),
+        ));
+    };
+    let pairs = load_pairs_document(store).into_internal("loading pairs document")?;
+    if pairs.find(wrapper_name, &resource.id).is_none() {
+        return Ok(InvocationResolution::Deny(
+            RuntimeDenyReason::UnregisteredPair.to_string(),
+        ));
+    }
+    let permission = policy.find_permission(principal, wrapper_name, &resource.id);
+    Ok(
+        match access_override.decide(permission, variant, crate::time::now_epoch_secs()) {
+            PolicyDecision::Allow => InvocationResolution::Allow {
+                resource_id: resource.id.clone(),
+                writable: access_override.writable_for(permission),
+            },
+            PolicyDecision::Deny { reason } => InvocationResolution::Deny(reason),
         },
-    })
+    )
 }
 
 /// Set `last_used_at` on the `(wrapper, resource_id)` pair to the
@@ -149,6 +93,7 @@ pub(crate) fn bump_pair_last_used(
 pub(crate) fn handle_runtime_wrapper_invocation_open(
     store: &dyn StorageBackend,
     principal: &str,
+    access_override: ClientAccessOverride,
     body: &underwrap_protocol::service::RuntimeWrapperInvocationOpenRequest,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationOpenResponse>, RuntimeError> {
     use base64::Engine;
@@ -163,6 +108,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_open(
     let (resource_id, writable) = match resolve_invocation_or_deny(
         store,
         principal,
+        access_override,
         &body.wrapper_name,
         &body.resource_name,
         body.variant,
@@ -205,6 +151,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_open(
 pub(crate) fn handle_runtime_wrapper_invocation_finalize(
     store: &dyn StorageBackend,
     principal: &str,
+    access_override: ClientAccessOverride,
     body: &underwrap_protocol::service::RuntimeWrapperInvocationFinalizeRequest,
 ) -> Result<Json<underwrap_protocol::service::RuntimeWrapperInvocationFinalizeResponse>, RuntimeError>
 {
@@ -221,6 +168,7 @@ pub(crate) fn handle_runtime_wrapper_invocation_finalize(
     let (resource_id, writable) = match resolve_invocation_or_deny(
         store,
         principal,
+        access_override,
         &body.wrapper_name,
         &body.resource_name,
         body.variant,

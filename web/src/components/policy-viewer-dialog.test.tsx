@@ -1,11 +1,102 @@
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 import type { WrapperPermission } from "@/api/client";
 
 import { PolicyViewerDialog } from "./policy-viewer-dialog";
 
+afterEach(() => vi.restoreAllMocks());
+
+function clipboard(writeText: () => Promise<void>) {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+}
+
+function renderEmptyPolicy() {
+  return render(
+    <PolicyViewerDialog
+      storeId="test"
+      open
+      permissions={[]}
+      onClose={() => {}}
+    />,
+  );
+}
+
 describe("PolicyViewerDialog", () => {
+  it("restarts copy feedback and cancels its owned timer on unmount", async () => {
+    clipboard(vi.fn().mockResolvedValue(undefined));
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const clear = vi.spyOn(globalThis, "clearTimeout");
+    const view = renderEmptyPolicy();
+    const feedbackTimer = () => {
+      const index = timers.mock.calls.findLastIndex((call) => call[1] === 1500);
+      expect(index).toBeGreaterThanOrEqual(0);
+      return timers.mock.results[index].value;
+    };
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Copy JSON" })),
+    );
+    const first = feedbackTimer();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Copied" })),
+    );
+    const second = feedbackTimer();
+    expect(second).not.toBe(first);
+    expect(clear).toHaveBeenCalledWith(first);
+    view.unmount();
+    expect(clear).toHaveBeenCalledWith(second);
+  });
+
+  it("resets the copied badge when the feedback deadline elapses", async () => {
+    vi.useFakeTimers();
+    const view = renderEmptyPolicy();
+    try {
+      clipboard(vi.fn().mockResolvedValue(undefined));
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Copy JSON" })),
+      );
+      await act(() => vi.advanceTimersByTimeAsync(1499));
+      expect(
+        screen.getByRole("button", { name: "Copied" }),
+      ).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(
+        screen.getByRole("button", { name: "Copy JSON" }),
+      ).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not publish feedback or create a timer after a late clipboard completion", async () => {
+    let finish!: () => void;
+    clipboard(
+      vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    );
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const view = renderEmptyPolicy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy JSON" }));
+    view.unmount();
+    await act(async () => finish());
+    expect(timers.mock.calls.filter((call) => call[1] === 1500)).toHaveLength(
+      0,
+    );
+  });
   it("renders the formatted JSON and a copy button for a non-trivial policy", async () => {
     const permissions: WrapperPermission[] = [
       {

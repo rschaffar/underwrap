@@ -132,6 +132,7 @@ fn decoded_blob(blob_b64: &str) -> ResourceBlob {
 
 async fn set_auto_create(daemon: &TestDaemon, enable: bool) -> anyhow::Result<()> {
     let body = AdminClientInstanceUpdateRequest {
+        access_override: None,
         display_name: None,
         current_store_id: None,
         status: None,

@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -12,6 +18,7 @@ import {
 } from "@/api/client";
 
 import { ClientInstancesPage } from "./client-instances/page";
+import { withTestRouter } from "@/test-router";
 
 vi.mock("@/api/client", async () => {
   const actual =
@@ -32,7 +39,7 @@ function renderClientInstancesPage() {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <ClientInstancesPage />
+      {withTestRouter(<ClientInstancesPage />)}
     </QueryClientProvider>,
   );
 }
@@ -106,6 +113,7 @@ describe("ClientInstancesPage", () => {
         current_store_name: "Work",
         status: "active" as const,
         last_seen_at: 1_700_000_000,
+        access_override: { kind: "individual" as const },
         current_credential_fingerprint: "fp-work",
         auto_create_wrapper_assets: false,
         actions: {
@@ -120,6 +128,7 @@ describe("ClientInstancesPage", () => {
         current_store_name: "Other",
         status: "disabled" as const,
         last_seen_at: undefined,
+        access_override: { kind: "individual" as const },
         current_credential_fingerprint: "fp-old",
         auto_create_wrapper_assets: false,
         actions: {
@@ -146,6 +155,7 @@ describe("ClientInstancesPage", () => {
       current_store_name: "Work",
       status: "active",
       last_seen_at: undefined,
+      access_override: { kind: "individual" as const },
       current_credential_fingerprint: "fp-new",
       auto_create_wrapper_assets: false,
       actions: {
@@ -171,6 +181,7 @@ describe("ClientInstancesPage", () => {
               : "Other",
       status: body.status ?? (id === "client_work" ? "active" : "disabled"),
       last_seen_at: id === "client_work" ? 1_700_000_000 : undefined,
+      access_override: { kind: "individual" as const },
       current_credential_fingerprint:
         id === "client_work" ? "fp-work" : "fp-old",
       auto_create_wrapper_assets: false,
@@ -179,6 +190,27 @@ describe("ClientInstancesPage", () => {
         can_enable: body.status === "disabled" || id === "client_disabled",
       },
     }));
+  });
+
+  it("disables pristine Save and handles a programmatic no-op without a request or network error", async () => {
+    const user = userEvent.setup();
+    const dialog = await openWorkEditDialog(user);
+    const save = within(dialog).getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+    const name = within(dialog).getByLabelText("Display name");
+    await user.type(name, " amended");
+    expect(save).toBeEnabled();
+    await user.clear(name);
+    await user.type(name, "Work laptop");
+    expect(save).toBeDisabled();
+    fireEvent.submit(dialog.querySelector("form")!);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Edit: Work laptop" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(putClientInstanceUpdate).not.toHaveBeenCalled();
+    expect(screen.queryByText(/network error/i)).not.toBeInTheDocument();
   });
 
   it("shows display name, store, and status for each instance", async () => {

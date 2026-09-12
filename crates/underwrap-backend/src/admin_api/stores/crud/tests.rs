@@ -411,6 +411,7 @@ fn store_management_view_reflects_usage_for_authenticated_user() {
     state.shared.client_instances.write().unwrap().insert(
         "client_a".into(),
         crate::runtime_clients::ClientInstanceRecord {
+            access_override: Default::default(),
             id: "client_a".into(),
             display_name: "Laptop".into(),
             current_store_id: plain_id.clone(),

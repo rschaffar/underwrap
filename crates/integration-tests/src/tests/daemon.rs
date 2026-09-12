@@ -641,6 +641,7 @@ async fn underwrapd_binary_start_and_read() {
     underwrap_backend::store_registry::save_store_record(&stores_dir, &test_store).unwrap();
     let client_cert_pem = std::fs::read_to_string(&client_cert).unwrap();
     let client_instance = underwrap_backend::runtime_clients::ClientInstanceRecord {
+        access_override: Default::default(),
         id: "inst_underwrap_local".to_string(),
         display_name: "underwrap-local".to_string(),
         current_store_id: "test".to_string(),

@@ -537,6 +537,67 @@ fn assert_response_contract(spec: &Value, id: &str, expected: &[(&str, &str)]) {
 }
 
 #[test]
+fn client_override_schema_preserves_strict_shapes_and_optional_update() {
+    let spec = spec_json();
+    let schemas = &spec["components"]["schemas"];
+    let variants = schemas["ClientAccessOverride"]["oneOf"].as_array().unwrap();
+    assert_eq!(variants.len(), 3);
+    for (kind, names) in [
+        ("individual", vec!["kind"]),
+        ("locked", vec!["kind"]),
+        ("unlocked", vec!["kind", "writable"]),
+    ] {
+        let variant = variants
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["enum"] == json!([kind]))
+            .expect("every override kind has a schema");
+        let properties = variant["properties"].as_object().unwrap();
+        let required = variant["required"].as_array().unwrap();
+        assert_eq!(
+            properties
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            names.iter().copied().collect::<BTreeSet<_>>()
+        );
+        assert_eq!(
+            required
+                .iter()
+                .map(|name| name.as_str().unwrap())
+                .collect::<BTreeSet<_>>(),
+            names.iter().copied().collect::<BTreeSet<_>>()
+        );
+        // Required known fields fill the limit, leaving no room for extras.
+        assert_eq!(variant["maxProperties"], json!(names.len()));
+        if kind == "unlocked" {
+            assert_eq!(properties["writable"]["type"], "boolean");
+        }
+    }
+    let item = &schemas["AdminClientInstanceListItem"];
+    assert!(
+        item["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("access_override"))
+    );
+    let update = &schemas["AdminClientInstanceUpdateRequest"];
+    assert!(
+        update["required"]
+            .as_array()
+            .is_none_or(|required| !required.contains(&json!("access_override")))
+    );
+    let alternatives = update["properties"]["access_override"]["oneOf"]
+        .as_array()
+        .unwrap();
+    assert!(alternatives.iter().any(|schema| schema["type"] == "null"));
+    assert!(
+        alternatives
+            .iter()
+            .any(|schema| schema["$ref"] == "#/components/schemas/ClientAccessOverride")
+    );
+}
+
+#[test]
 fn openapi_spec_round_trips() {
     let doc = admin_openapi_spec();
     let serialized = serde_json::to_string_pretty(&doc).expect("OpenApi serializes to JSON");

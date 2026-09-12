@@ -39,11 +39,22 @@ export function ConfirmDialog({
   confirmTestId,
 }: ConfirmDialogProps) {
   return (
-    <AdminDialog open onClose={onClose} title={title} description={description}>
+    <AdminDialog
+      open
+      onClose={onClose}
+      nonDismissible={pending}
+      title={title}
+      description={description}
+    >
       {body}
       {submitError ? <Alert>{submitError}</Alert> : null}
       <DialogFooter>
-        <Button type="button" variant="ghost" onClick={onClose}>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onClose}
+          disabled={pending}
+        >
           Cancel
         </Button>
         <Button

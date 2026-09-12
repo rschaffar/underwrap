@@ -18,7 +18,8 @@ For the claim and its preconditions, read [Security](security.md).
 
 A **frontend instance** has its own daemon account, instance group, socket, setgid entry point, service, and private combined mTLS identity file.
 A **runtime client instance** is the backend principal selected by an active enrolled leaf-certificate fingerprint and mapped to exactly one store.
-A **wrapper/resource pair** binds a wrapper name to a resource; a **permission row** authorizes that pair for one runtime client instance.
+A **wrapper/resource pair** binds a wrapper name to a resource; a **permission row** stores individual settings for that pair and one runtime client instance.
+The backend's [client-wide override](backend.md#client-wide-override) determines when those saved settings apply.
 Every local `(instance, wrapper)` pair has a dedicated target UID/GID, shared by its real and debug variants but not by other wrappers.
 
 The local Unix caller is not a backend principal.
@@ -47,7 +48,7 @@ underwrap-backend ──► selected StorageBackend
 
 1. The setgid `underwrap-exec` entry stage—not the target—connects to the instance socket and supplies the wrapper selector and invocation variant.
 2. The daemon verifies peer effective GID, resolves the wrapper's configured resource, and asks the backend to open the invocation.
-3. The backend derives principal and store from mTLS, evaluates the pair's permission, and returns the resource and writable flag.
+3. The backend derives the current principal, store, and client override from mTLS-backed registry lookup, evaluates registered-pair access and any required permission row, and returns the resource and effective writable flag.
 4. The daemon completely parses the decoded resource, conditionally validates env names, chooses the configured real target or authorized debug tool, and caches the original decoded bytes for one scoped channel.
 5. The entry stage drops its instance-group privilege and hands the namespace stage execution metadata, the authenticated channel, and a separate parent-liveness pipe.
 6. The namespace stage authenticates the channel before trusting metadata, reads target identity only from the root-owned table, and plans projections before their filesystem effects.

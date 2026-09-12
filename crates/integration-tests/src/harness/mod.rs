@@ -215,6 +215,7 @@ impl TestDaemon {
         underwrap_backend::store_registry::save_store_record(&stores_dir, &test_store)?;
         let ready_cert_pem = std::fs::read_to_string(&ready_pki.client_cert)?;
         let runtime_client = underwrap_backend::runtime_clients::ClientInstanceRecord {
+            access_override: Default::default(),
             id: format!("inst_{accepted_principal}"),
             display_name: accepted_principal.to_string(),
             current_store_id: "test".to_string(),

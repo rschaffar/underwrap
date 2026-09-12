@@ -4,7 +4,13 @@
  * The first test verifies current-context refresh and lazy admin-API invalidation in a second browser context.
  * It retains the password roundtrip coverage against the real backend.
  */
-import { test, expect, loginViaUi, ADMIN_USERNAME, ADMIN_PASSWORD } from "./fixtures";
+import {
+  test,
+  expect,
+  loginViaUi,
+  ADMIN_USERNAME,
+  ADMIN_PASSWORD,
+} from "./fixtures";
 
 test("bootstrap operator password change refreshes the current context, lazily invalidates a second context, and retains the password roundtrip", async ({
   page,
@@ -45,7 +51,9 @@ test("bootstrap operator password change refreshes the current context, lazily i
     await page.getByLabel(/^new password$/i).fill(newPassword);
     await page.getByLabel(/confirm new password/i).fill(newPassword);
     await page.getByRole("button", { name: /^save$/i }).click();
-    await expect(page.getByRole("status")).toContainText(/password updated/i);
+    await expect(page.getByRole("main").getByRole("status")).toContainText(
+      /password updated/i,
+    );
 
     const submittingWhoami = await page
       .context()
@@ -74,7 +82,7 @@ test("bootstrap operator password change refreshes the current context, lazily i
     await expect(page.getByText(/invalid username or password/i)).toBeVisible();
     await page.getByLabel("Password").fill(newPassword);
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.waitForURL(`${backendWithAdmin.baseUrl}/`);
+    await page.waitForURL(/\/setup(\?|$)/);
   } finally {
     await otherContext.close();
   }
@@ -87,14 +95,16 @@ test("profile form rejects a wrong current password without changing anything", 
   await loginViaUi(page, backendWithAdmin.baseUrl);
   await page.goto(`${backendWithAdmin.baseUrl}/profile`);
 
-  await page.getByLabel(/current password/i).fill("definitely-not-the-password");
+  await page
+    .getByLabel(/current password/i)
+    .fill("definitely-not-the-password");
   await page.getByLabel(/^new password$/i).fill("does-not-matter-1");
   await page.getByLabel(/confirm new password/i).fill("does-not-matter-1");
   await page.getByRole("button", { name: /^save$/i }).click();
 
   // An error banner surfaces; the success status does not appear.
   await expect(page.getByRole("alert")).toBeVisible();
-  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(page.getByRole("main").getByRole("status")).toHaveCount(0);
 
   // The actual password is still the original — we can still sign in
   // with it after a forced logout.
@@ -103,5 +113,5 @@ test("profile form rejects a wrong current password without changing anything", 
   await page.getByLabel("Username").fill(ADMIN_USERNAME);
   await page.getByLabel("Password").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
-  await page.waitForURL(`${backendWithAdmin.baseUrl}/`);
+  await page.waitForURL(/\/setup(\?|$)/);
 });

@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { Link } from "@tanstack/react-router";
+import { RECOVERY_GUIDE } from "@/lib/operator-guidance";
 import { StatusChip, type ChipTone } from "@/components/ui/status-chip";
 import type { AdminStoresListResponse } from "@/api/client";
 
@@ -69,7 +71,9 @@ export function StoresTable({
   onMigrate,
 }: StoresTableProps) {
   if (items.length === 0) {
-    return <p className="text-sm text-(--color-muted)">No stores configured.</p>;
+    return (
+      <p className="text-sm text-(--color-muted)">No stores configured.</p>
+    );
   }
   return (
     <div className="overflow-x-auto rounded-xl border border-(--color-line)">
@@ -100,8 +104,21 @@ export function StoresTable({
                 className="border-t border-(--color-line) align-middle"
               >
                 <td className="px-4 py-3 font-medium text-(--color-fg)">
-                  <div>{item.name}</div>
+                  <Link
+                    className="underline"
+                    to="/secrets"
+                    search={{ store: item.id }}
+                  >
+                    {item.name}
+                  </Link>
                   <div className="text-xs text-(--color-muted)">{item.id}</div>
+                  <Link
+                    className="text-xs underline"
+                    to="/wrappers"
+                    search={{ store: item.id }}
+                  >
+                    Wrapper permissions
+                  </Link>
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
                   {item.backend}
@@ -113,18 +130,39 @@ export function StoresTable({
                   >
                     {item.lifecycle_state}
                   </StatusChip>
+                  {item.lifecycle_state === "recovery-required" ? (
+                    <div>
+                      <a
+                        className="text-xs underline"
+                        href={RECOVERY_GUIDE}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                      >
+                        Trusted-host recovery
+                      </a>
+                    </div>
+                  ) : null}
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
-                  <div>
+                  <Link
+                    className="underline"
+                    to="/client-instances"
+                    search={{ store: item.id, mappedStore: item.id }}
+                  >
                     {item.usage.mapped_client_instance_count} client
                     {item.usage.mapped_client_instance_count === 1 ? "" : "s"}
-                  </div>
+                  </Link>
+                  {item.usage.mapped_client_instance_count > 0 ? (
+                    <div className="text-xs">
+                      Remap clients before deleting this store.
+                    </div>
+                  ) : null}
                   <div className="text-xs">
                     {!contentsKnown
                       ? `contents unknown while ${item.lifecycle_state}`
                       : item.usage.has_secrets
                         ? "contains secrets"
-                        : "empty"}
+                        : "no resource data reported"}
                   </div>
                 </td>
                 <td className="px-4 py-3 text-(--color-muted)">
@@ -160,33 +198,40 @@ export function StoresTable({
                     >
                       Edit
                     </Button>
-                    {item.actions.can_rotate_key ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onRotateKey(item.id)}
-                      >
-                        Rotate key
-                      </Button>
-                    ) : null}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={migrationDisabled}
-                      title={migrationTitle(item)}
-                      onClick={() => onMigrate(item.id)}
-                    >
-                      {migrationLabel(item)}
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={!canDelete}
-                      title={storeDeleteTitle(item)}
-                      onClick={() => onDelete(item.id)}
-                    >
-                      Delete
-                    </Button>
+                    <details className="min-w-32 rounded-md border border-(--color-line) p-2 text-left">
+                      <summary className="cursor-pointer text-xs font-medium">
+                        Maintenance
+                      </summary>
+                      <div className="mt-2 flex flex-col gap-2">
+                        {item.actions.can_rotate_key ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onRotateKey(item.id)}
+                          >
+                            Rotate key
+                          </Button>
+                        ) : null}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={migrationDisabled}
+                          title={migrationTitle(item)}
+                          onClick={() => onMigrate(item.id)}
+                        >
+                          {migrationLabel(item)}
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          disabled={!canDelete}
+                          title={storeDeleteTitle(item)}
+                          onClick={() => onDelete(item.id)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </details>
                   </div>
                 </td>
               </tr>

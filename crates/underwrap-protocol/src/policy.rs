@@ -7,13 +7,14 @@
 //! Each permission carries:
 //!
 //! - a [`WrapperApprovalMode`] (`Locked`, `Unlocked`, `UnlockedUntil`,
-//!   `UnsafeDebugUntil`) deciding *if* the permission is usable right
-//!   now;
-//! - a `writable` flag controlling wrapper-side writes through the
-//!   secretsd channel for the `files` and `libsecret` slots (`env`
-//!   has no write path);
+//!   `UnsafeDebugUntil`) defining saved individual admission;
+//! - a saved `writable` flag for `files` and `libsecret` writeback (`env`
+//!   has no wrapper-side write path);
 //! - an optional operator-facing `reason` surfaced in the wrapper
 //!   permissions UI.
+//!
+//! [`ClientAccessOverride`] determines how those saved settings affect current
+//! requests; debug always needs a separate active timed permission.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,64 @@ pub enum PolicyDecision {
     Deny { reason: String },
 }
 
+/// Backend-owned override for one runtime client instance.
+/// Saved permission rows are never rewritten by a transition.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ClientAccessOverride {
+    // Empty structs enforce Serde's unknown-field rejection on every variant.
+    // All fields are required, so these property limits mirror that rejection
+    // in Utoipa's variant schemas, which do not inherit deny_unknown_fields.
+    /// Use each saved permission mode and writable flag; missing rows deny.
+    #[schema(max_properties = 1)]
+    Individual {},
+    /// Deny normal and debug invocations.
+    #[schema(max_properties = 1)]
+    Locked {},
+    /// Allow normal invocations for registered pairs and override writability.
+    /// Debug still needs an active per-pair `UnsafeDebugUntil` approval.
+    #[schema(max_properties = 2)]
+    Unlocked { writable: bool },
+}
+
+impl Default for ClientAccessOverride {
+    fn default() -> Self {
+        Self::Individual {}
+    }
+}
+
+impl ClientAccessOverride {
+    /// Evaluate access after the backend verifies the registered pair.
+    pub fn decide(
+        self,
+        permission: Option<&WrapperPermission>,
+        variant: WrapperVariant,
+        now_epoch: u64,
+    ) -> PolicyDecision {
+        match self {
+            Self::Locked {} => PolicyDecision::Deny {
+                reason: RuntimeDenyReason::ClientLocked.to_string(),
+            },
+            Self::Unlocked { .. } if variant == WrapperVariant::Real => PolicyDecision::Allow,
+            Self::Individual {} | Self::Unlocked { .. } => permission
+                .map(|permission| decide(permission, variant, now_epoch))
+                .unwrap_or_else(|| PolicyDecision::Deny {
+                    reason: RuntimeDenyReason::NoPermission.to_string(),
+                }),
+        }
+    }
+
+    /// Effective writable flag, used only after access is allowed.
+    /// This flag alone does not authorize an invocation or env changes.
+    pub fn writable_for(self, permission: Option<&WrapperPermission>) -> bool {
+        match self {
+            Self::Individual {} => permission.is_some_and(|permission| permission.writable),
+            Self::Locked {} => false,
+            Self::Unlocked { writable } => writable,
+        }
+    }
+}
+
 /// Runtime mode for one [`WrapperPermission`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -52,7 +111,7 @@ pub enum WrapperApprovalMode {
     /// `variant = Debug` invocation is allowed — the debug tool can drop an
     /// interactive shell or exec arbitrary commands with **read-write**
     /// access to the projected secret (writebacks are accepted on the same
-    /// terms as `Real`, gated by `writable`), so it is gated behind an
+    /// terms as `Real`, gated by effective writability), so it is gated behind an
     /// explicit operator opt-in with a TTL. Expiry is checked lazily per
     /// request.
     UnsafeDebugUntil { until_epoch: u64 },
@@ -72,9 +131,9 @@ pub struct WrapperPermission {
     pub resource_id: String,
     #[serde(default)]
     pub mode: WrapperApprovalMode,
-    /// Whether the wrapper may write to this resource through the
-    /// secretsd channel. Applies to the `files` and `libsecret` slots;
-    /// `env` has no wrapper-side write path. Defaults to `false`.
+    /// Saved individual writable flag for `files` and `libsecret` writeback.
+    /// Client-wide overrides can supersede it after access is authorized;
+    /// `env` remains operator-owned. Defaults to `false`.
     #[serde(default)]
     pub writable: bool,
     /// Operator-facing free-form note. Surfaced in the wrapper
@@ -93,7 +152,7 @@ pub struct PolicyDocument {
 }
 
 /// The three resource slots. `Files` and `Libsecret` have wrapper-side
-/// writeback paths governed by the permission's `writable` flag; `Env` is
+/// writeback paths governed by the effective writable flag; `Env` is
 /// backend-to-target only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretSlot {
@@ -117,12 +176,10 @@ impl PolicyDocument {
         })
     }
 
-    /// Evaluate a permission tuple at a given wall-clock time. Mirrors
-    /// the live runtime authorization path (`find_permission` then
-    /// [`decide`]) as one call — used by tests; the backend handlers
-    /// compose the two directly. Returns `None` when no matching
-    /// permission exists, `Some(Allow)` when the caller may proceed, or
-    /// `Some(Deny)` otherwise.
+    /// Evaluate only a saved permission tuple at a given wall-clock time.
+    /// Returns `None` without a row, otherwise its individual decision.
+    /// Runtime admission must also account for [`ClientAccessOverride`]
+    /// and the independent principal, store, and registration gates.
     pub fn evaluate_permission_at(
         &self,
         client_instance: &str,
@@ -135,9 +192,8 @@ impl PolicyDocument {
         Some(decide(permission, variant, now_epoch))
     }
 
-    /// True when the wrapper is permitted to write to `resource_id`
-    /// (any slot with a wrapper-side write path). Defaults to `false`
-    /// (no permission → not writable).
+    /// Read the saved individual writable flag, defaulting to false without
+    /// a row. This neither authorizes access nor evaluates a client override.
     pub fn writable_for(&self, client_instance: &str, wrapper: &str, resource_id: &str) -> bool {
         self.find_permission(client_instance, wrapper, resource_id)
             .map(|p| p.writable)

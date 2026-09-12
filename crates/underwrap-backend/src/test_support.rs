@@ -375,6 +375,7 @@ pub(crate) fn service_state_with_runtime_client(
     let client_instances = HashMap::from([(
         "inst_local".to_string(),
         crate::runtime_clients::ClientInstanceRecord {
+            access_override: Default::default(),
             id: "inst_local".to_string(),
             display_name: "Local".to_string(),
             current_store_id: store_id.to_string(),
@@ -700,6 +701,7 @@ pub(crate) fn make_runtime_api_fixture() -> RuntimeApiFixture {
         instances.insert(
             instance_id.clone(),
             crate::runtime_clients::ClientInstanceRecord {
+                access_override: Default::default(),
                 id: instance_id.clone(),
                 display_name: "test".into(),
                 current_store_id: store_id.clone(),

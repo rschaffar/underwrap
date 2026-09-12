@@ -374,6 +374,7 @@ async fn authenticated_https_preserves_store_across_both_migration_directions() 
             .update_client_instance(
                 &client_id,
                 &underwrap_protocol::service::AdminClientInstanceUpdateRequest {
+                    access_override: None,
                     display_name: None,
                     current_store_id: Some(store_id.clone()),
                     status: None,

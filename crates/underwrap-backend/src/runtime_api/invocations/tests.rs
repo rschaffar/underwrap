@@ -1,4 +1,6 @@
 use super::*;
+
+mod client_override;
 use crate::storage::documents::{load_pairs_document, save_pairs_document};
 use crate::test_support::{
     entity_test_state_with_store, make_runtime_api_fixture, typed_response_body,
@@ -78,6 +80,7 @@ fn runtime_wrapper_invocation_open_allows_unlocked_permission() {
     let resp = handle_runtime_wrapper_invocation_open(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -118,6 +121,7 @@ fn runtime_wrapper_invocation_open_denies_locked_permission() {
     let resp = handle_runtime_wrapper_invocation_open(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -143,6 +147,7 @@ fn runtime_wrapper_invocation_open_denies_unregistered_pair() {
     let resp = handle_runtime_wrapper_invocation_open(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "ghost".into(),
             resource_name: "alpha".into(),
@@ -166,6 +171,7 @@ fn runtime_wrapper_invocation_finalize_bumps_last_used_without_blob() {
     let resp = handle_runtime_wrapper_invocation_finalize(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -208,6 +214,7 @@ fn runtime_wrapper_invocation_finalize_persists_libsecret_change() {
     let resp = handle_runtime_wrapper_invocation_finalize(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -247,6 +254,7 @@ fn runtime_wrapper_invocation_finalize_rejects_env_mutation() {
     let resp = handle_runtime_wrapper_invocation_finalize(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -283,6 +291,7 @@ fn runtime_wrapper_invocation_finalize_rejects_noncanonical_blob() {
     let resp = handle_runtime_wrapper_invocation_finalize(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -317,6 +326,7 @@ fn runtime_wrapper_invocation_finalize_rejects_writeback_when_not_writable() {
     let resp = handle_runtime_wrapper_invocation_finalize(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationFinalizeRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -343,6 +353,7 @@ fn runtime_wrapper_invocation_open_denies_debug_variant_under_unlocked() {
     let resp = handle_runtime_wrapper_invocation_open(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),
@@ -374,6 +385,7 @@ fn runtime_wrapper_invocation_open_allows_both_variants_under_unsafe_debug() {
         let resp = handle_runtime_wrapper_invocation_open(
             fx.store().as_ref(),
             &fx.instance_id,
+            Default::default(),
             &RuntimeWrapperInvocationOpenRequest {
                 wrapper_name: "gh".into(),
                 resource_name: "alpha".into(),
@@ -403,6 +415,7 @@ fn runtime_wrapper_invocation_open_denies_expired_unsafe_debug() {
     let resp = handle_runtime_wrapper_invocation_open(
         fx.store().as_ref(),
         &fx.instance_id,
+        Default::default(),
         &RuntimeWrapperInvocationOpenRequest {
             wrapper_name: "gh".into(),
             resource_name: "alpha".into(),

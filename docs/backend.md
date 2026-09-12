@@ -9,7 +9,7 @@ Use [Configuration](configuration.md) for settings and [Operations](operations.m
 | Entity | Authority and relationship |
 | --- | --- |
 | Store | Stable id, operator metadata, canonical directory, backend kind, and independent live lifecycle state |
-| Runtime client instance | Active or disabled enrolled leaf fingerprint, exactly one current store, and an `auto_create_wrapper_assets` flag defaulting off |
+| Runtime client instance | Active or disabled enrolled leaf fingerprint, exactly one current store, an `auto_create_wrapper_assets` flag defaulting off, and a client-wide access override defaulting to Individual settings |
 | Resource | Stable server-generated `res_*` id, operator-facing name, and write-once creation provenance |
 | Wrapper/resource pair | Wrapper name plus stable resource id, write-once provenance, and optional `last_used_at` |
 | Permission row | Runtime client instance, wrapper, stable resource id, permission mode, writable flag, and optional reason |
@@ -69,7 +69,8 @@ Browser attribute-textarea validation is an input convenience, not a redefinitio
 ## Permission model
 
 One permission row is keyed by `(runtime client instance, wrapper, resource id)`.
-The writable flag is independent of permission mode.
+The saved writable flag is independent of permission mode.
+The following matrix governs individual rows; the client-wide override below determines when those saved settings apply.
 
 | Permission mode | Real variant | Debug variant |
 | --- | --- | --- |
@@ -85,10 +86,36 @@ The locked reason can be returned verbatim, so it must not contain secrets.
 The daemon selects the configured real target or debug tool only after the backend authorizes the requested variant.
 A forged real variant cannot select the debug tool.
 
-Both operations resolve the resource name, then exact pair, then permission for the authenticated principal, and finally evaluate mode and variant.
-An absent resource or pair denies `unregistered-pair`; an absent permission denies `no-permission`.
-A writeback additionally requires the current writable flag or denies `not-writable`.
-There is no global per-store write toggle: authenticated admin edits are not governed by a wrapper's writable flag.
+Both operations authenticate the current runtime client instance and acquire an available-store lease, then resolve the resource and exact pair before evaluating its override and saved permission.
+An absent resource or pair denies `unregistered-pair` even under Unlock all.
+A writeback additionally requires the current effective writable flag or denies `not-writable`.
+There is no global per-store write toggle: authenticated admin edits are not governed by runtime writable flags.
+
+### Client-wide override
+
+The override is persisted on the backend runtime client instance, not in the daemon configuration or policy document.
+It applies to registered pairs in that instance's current store, including pairs registered later.
+
+| Override | Ordinary access | Debug access | Effective writable flag after admission |
+| --- | --- | --- | --- |
+| Individual settings | Saved row and mode; absent row denies `no-permission` | Saved active `UnsafeDebugUntil` row only | Saved row flag |
+| Lock all | Deny `client-locked` | Deny `client-locked` | False |
+| Unlock all | Allow registered pairs, including absent, locked, or expired ordinary rows | Saved active `UnsafeDebugUntil` row still required | Override flag |
+
+Unlock all neither creates nor extends unsafe-debug approval; its writable flag also applies to separately approved debug calls.
+Saved permission rows, reasons, deadlines, and writable flags remain unchanged by override updates and resume their effect in Individual settings.
+Disabled identities, unavailable stores, registration requirements, canonical/size validation, and immutable env remain independently enforced.
+
+Admin list/update responses expose `access_override` as `{"kind":"individual"}`, `{"kind":"locked"}`, or `{"kind":"unlocked","writable":false}` with either boolean allowed for Unlocked.
+Only Unlocked accepts a writable field, and that field is required and non-null.
+New instances and persisted records with no override default to Individual settings.
+Omission or null in an admin update leaves the override unchanged.
+
+Each open and finalize resolves the current override with the authenticated principal; no daemon restart, new runtime endpoint, or additional runtime response field is needed.
+The existing Allow/Checkout writable flag records open-time effective writability.
+A later writable override does not upgrade a supported frontend invocation opened read-only: it still discards staged changes instead of sending Checkin.
+A writable invocation can attempt Checkin after a later denial, but finalize reauthorizes against current backend settings.
+This request-time snapshot does not recall delivered material, terminate targets, or transact with concurrent administration.
 
 Read-only files and libsecret surfaces are still writable staging for the target.
 Changes are discarded rather than persisted; disclosure and target behavior are unchanged.

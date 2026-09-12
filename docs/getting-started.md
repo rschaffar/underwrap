@@ -201,6 +201,7 @@ If auto-create is disabled, create the resource and pair manually and use the sa
 ## 5. Add the value and run the helper
 
 In **Secrets**, select store `demo`, open `demo/token`, and add env entry `DEMO_TOKEN` with a nonempty non-production value.
+Keep the runtime client's access override at **Individual settings**, its default; this demonstration uses individual permission rows.
 In **Wrapper permissions**, select the exact `demo-host`, `secret-check`, `demo/token` permission row, choose `Unlocked`, leave **writable** off, and select **Save**.
 Env is operator-owned and has no runtime edit path.
 

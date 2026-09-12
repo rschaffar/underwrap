@@ -234,6 +234,7 @@ Npm generation writes ignored `web/src/api/schema.ts`, which is local build outp
 Semantic tests traverse every OpenAPI method and check effective security inheritance, public operations, session-and-CSRF requirements in one AND-shaped object, unavailable-store and lifecycle responses, key headers, and conditional key schemas.
 `admin_reference` additionally checks selected descriptions for deletion guards, optional force, flat-slot absence, concurrency, and key-owner lifetime.
 These selected assertions, byte equality, and structural checks do not prove every description agrees with handlers; inspect real statuses, defaults, null handling, and failure semantics separately.
+Client access override semantic tests also pin strict variant properties and optional/null update behavior.
 A stale description does not necessarily break TypeScript compilation.
 
 Compile-time non-Rust fixtures must survive both Cargo packaging and the Nix/Crane source filter.
@@ -313,13 +314,27 @@ The URL `store` parameter is requested state, not an effective selection until v
 Unresolved, failed, and resolved-empty lists remain distinct.
 Hook and per-store page tests cover stale/removed selection canonicalization, unrelated URL/history-state preservation, popstate revalidation, delayed lists and StrictMode, detail-query gating, and synchronous reset of store-scoped dialogs and nested state.
 The configured desktop Chromium witness observes detail requests on Secrets and Wrapper permissions with real stale selection and intercepted failure/empty responses.
+Real-router Setup tests additionally exercise cached enrollment navigation, exact store/client continuation, unresolved-metadata creation gates, failed client refresh, and user history-state preservation through intent consumption and filter changes.
+Their API responses are mocked; the harness is not the production authentication/layout boundary.
 This is frontend behavior evidence, not backend authorization, store availability, or general browser support.
+
+### Client access overrides
+
+Protocol matrix and registry tests cover strict override shapes, safe defaults, saved modes and writable flags, absent rows, debug approval boundaries, and reload persistence.
+Handler tests cover current decisions, failed override persistence, independent identity/store/registration gates, and immutable env; their certificate extensions and unavailable lifecycle states are simulated.
+Real HTTPS/mTLS tests change overrides between open and finalize, compare complete canonical resources after accepted and denied file/libsecret-metadata changes, and verify saved permission rows remain unchanged.
+Debug expiry is exercised by installing an already-expired row, not waiting across an elapsed deadline.
+The real daemon scenario checks its cached read-only Checkout hint and current backend authorization of pending Checkin; it does not execute the namespace's read-only writeback suppression path.
+Desktop Chromium exercises immediate controls against a disposable real backend, cancellation before Unlock all approval, server-acknowledged writability, restoration to Individual settings, and unchanged saved permission metadata.
+These scenarios do not establish retroactive recall, representative target success, or independent security assurance.
 
 ### Confirmation error ownership
 
 `useConfirmMutation` catches expected request rejection and synchronous request throws into handled error outcomes.
 Invalidation and configured `onSuccess` run outside that request catch; their failures remain observable promise rejections, and exact success follows their completion.
 The hook tests retain retry, discarded request-error outcome, caller inventories, and absence of generic-dialog/global rejection suppression.
+Shared form and permission-editor guards span validation, request, awaited invalidation, and completion callbacks; only request rejection becomes an inline submission error.
+Real active-query observer regressions require awaited invalidation to reject failed refetches while retaining query error state, and distinguish deliberately non-blocking background reconciliation.
 The desktop Chromium scenario intercepts one store DELETE with a synthetic structured 503 and checks the retained dialog, inline error, restored button, and unsuppressed diagnostics after a browser macrotask.
 It does not exercise a real backend DELETE rejection or establish application-wide, every-promise, or cross-browser cleanliness.
 
@@ -340,6 +355,9 @@ One WebKit tablet scenario pins viewport and screen to 768×1024, observes conta
 It establishes neither a cards layout nor broad tablet, orientation, zoom, physical-device, or browser support.
 
 Text/attribute tests pin exact UTF-8 conversion, distinct missing/empty/malformed-base64/non-UTF-8 outcomes, first-delimiter parsing, trimmed exact duplicate detection, line errors, and prototype-safe own keys with no request on invalid input.
+Entry-editing tests also distinguish Create, key-preserving Replace, value-preserving Rename, and deliberate empty values.
+The env browser round trip checks known-collision rejection without a replacement PUT, explicit reveal, and exact material preservation through Rename without an automatic value GET.
+These are known-metadata accidental-overwrite guards, not compare-and-swap or concurrent-writer guarantees.
 They do not redefine backend arbitrary-byte storage or the D-Bus attribute map.
 
 Generated-key tests distinguish transient component state from application query/mutation caches and inspect only named browser APIs: local/session storage, script-visible cookies, document and URL surfaces, Cache Storage, IndexedDB database names, and browser-context cookies.

@@ -17,6 +17,7 @@ use crate::store_registry::StoreRegistry;
 pub(crate) struct RuntimeRequestPrincipal {
     pub(crate) instance_id: String,
     pub(crate) store_id: String,
+    pub(crate) access_override: underwrap_protocol::policy::ClientAccessOverride,
 }
 
 /// Startup-side check that every runtime client instance maps to a
@@ -73,6 +74,7 @@ pub(crate) fn resolve_runtime_client(
     Ok(RuntimeRequestPrincipal {
         instance_id: instance.id.clone(),
         store_id: instance.current_store_id.clone(),
+        access_override: instance.access_override,
     })
 }
 

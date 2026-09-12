@@ -18,6 +18,7 @@ import { LibsecretTree } from "./libsecret/tree";
 interface RowActions {
   onReveal: (entry: SecretEntry) => void;
   onEdit: (entry: SecretEntry) => void;
+  onRename: (entry: SecretEntry) => void;
   onDelete: (entry: SecretEntry) => void;
 }
 
@@ -87,11 +88,13 @@ export function ResourceBlock({
             data-testid={`resource-provenance-${group.resource_id}`}
           >
             · by {provenanceLabel}
-            {provenanceDate ? ` on ${provenanceDate.toLocaleDateString()}` : null}
+            {provenanceDate
+              ? ` on ${provenanceDate.toLocaleDateString()}`
+              : null}
           </span>
         ) : null}
         <span className="ml-auto text-xs text-(--color-muted)">
-          {total === 0 ? "empty" : summary}
+          {total === 0 ? "No env/files entries" : summary}
         </span>
         {provenance ? (
           <>
@@ -203,6 +206,7 @@ function EntryActions({
   entry,
   onReveal,
   onEdit,
+  onRename,
   onDelete,
 }: { entry: SecretEntry } & RowActions) {
   return (
@@ -213,7 +217,10 @@ function EntryActions({
       </Button>
       <Button variant="ghost" size="sm" onClick={() => onEdit(entry)}>
         <Pencil className="mr-1.5 h-4 w-4" aria-hidden />
-        Edit
+        Replace value
+      </Button>
+      <Button variant="ghost" size="sm" onClick={() => onRename(entry)}>
+        Rename
       </Button>
       <Button variant="destructive" size="sm" onClick={() => onDelete(entry)}>
         <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />

@@ -304,7 +304,7 @@
         },
         "responses": {
           "200": {
-            "description": "Instance updated. Cleanup of prior-store wrapper permissions after a remap is best effort; success does not certify their removal.",
+            "description": "Instance updated. The access override applies on subsequent runtime opens and finalizes without rewriting permission rows or granting unsafe-debug approval. Cleanup of prior-store wrapper permissions after a remap is best effort; success does not certify their removal.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3764,9 +3764,14 @@
           "current_store_name",
           "status",
           "current_credential_fingerprint",
+          "access_override",
           "actions"
         ],
         "properties": {
+          "access_override": {
+            "$ref": "#/components/schemas/ClientAccessOverride",
+            "description": "Backend request-time override; individual permission rows are retained."
+          },
           "actions": {
             "$ref": "#/components/schemas/AdminClientInstanceActionState"
           },
@@ -3812,6 +3817,17 @@
       "AdminClientInstanceUpdateRequest": {
         "type": "object",
         "properties": {
+          "access_override": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ClientAccessOverride",
+                "description": "Replace the client-wide override without modifying permission rows.\nOmit or send null to leave unchanged. Unlocking never grants unsafe-debug approval."
+              }
+            ]
+          },
           "auto_create_wrapper_assets": {
             "type": [
               "boolean",
@@ -4973,6 +4989,63 @@
           }
         }
       },
+      "ClientAccessOverride": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Use each saved permission mode and writable flag; missing rows deny.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "individual"
+                ]
+              }
+            },
+            "maxProperties": 1
+          },
+          {
+            "type": "object",
+            "description": "Deny normal and debug invocations.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "locked"
+                ]
+              }
+            },
+            "maxProperties": 1
+          },
+          {
+            "type": "object",
+            "description": "Allow normal invocations for registered pairs and override writability.\nDebug still needs an active per-pair `UnsafeDebugUntil` approval.",
+            "required": [
+              "writable",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unlocked"
+                ]
+              },
+              "writable": {
+                "type": "boolean"
+              }
+            },
+            "maxProperties": 2
+          }
+        ],
+        "description": "Backend-owned override for one runtime client instance.\nSaved permission rows are never rewritten by a transition."
+      },
       "EntityCreator": {
         "oneOf": [
           {
@@ -5283,7 +5356,7 @@
           },
           {
             "type": "object",
-            "description": "Allow **both** the real wrapper and its debug variant until\n`until_epoch`; deny afterwards. This is the only mode under which a\n`variant = Debug` invocation is allowed — the debug tool can drop an\ninteractive shell or exec arbitrary commands with **read-write**\naccess to the projected secret (writebacks are accepted on the same\nterms as `Real`, gated by `writable`), so it is gated behind an\nexplicit operator opt-in with a TTL. Expiry is checked lazily per\nrequest.",
+            "description": "Allow **both** the real wrapper and its debug variant until\n`until_epoch`; deny afterwards. This is the only mode under which a\n`variant = Debug` invocation is allowed — the debug tool can drop an\ninteractive shell or exec arbitrary commands with **read-write**\naccess to the projected secret (writebacks are accepted on the same\nterms as `Real`, gated by effective writability), so it is gated behind an\nexplicit operator opt-in with a TTL. Expiry is checked lazily per\nrequest.",
             "required": [
               "until_epoch",
               "kind"
@@ -5335,7 +5408,7 @@
           },
           "writable": {
             "type": "boolean",
-            "description": "Whether the wrapper may write to this resource through the\nsecretsd channel. Applies to the `files` and `libsecret` slots;\n`env` has no wrapper-side write path. Defaults to `false`."
+            "description": "Saved individual writable flag for `files` and `libsecret` writeback.\nClient-wide overrides can supersede it after access is authorized;\n`env` remains operator-owned. Defaults to `false`."
           }
         }
       },

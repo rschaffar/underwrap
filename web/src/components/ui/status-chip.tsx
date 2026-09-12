@@ -5,9 +5,9 @@ import { cn } from "@/lib/utils";
 export type ChipTone = "emerald" | "amber" | "sky" | "neutral";
 
 const TONE: Record<ChipTone, string> = {
-  emerald: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-  amber: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-  sky: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+  emerald: "border-emerald-500/30 bg-emerald-500/10 text-(--color-success)",
+  amber: "border-amber-500/30 bg-amber-500/10 text-(--color-warning)",
+  sky: "border-sky-500/30 bg-sky-500/10 text-(--color-info)",
   neutral: "border-(--color-line) bg-(--color-surface-1) text-(--color-muted)",
 };
 

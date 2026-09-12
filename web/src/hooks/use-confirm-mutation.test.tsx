@@ -61,10 +61,16 @@ describe("useConfirmMutation", () => {
     expect(outcome).toEqual({ status: "success", result: resultValue });
     expect(outcome?.status === "success" && outcome.result).toBe(resultValue);
     expect(invalidate).toHaveBeenCalledTimes(2);
-    expect(invalidate).toHaveBeenNthCalledWith(1, { queryKey: ["first"] });
-    expect(invalidate).toHaveBeenNthCalledWith(2, {
-      queryKey: ["second", 2],
-    });
+    expect(invalidate).toHaveBeenNthCalledWith(
+      1,
+      { queryKey: ["first"] },
+      { throwOnError: true },
+    );
+    expect(invalidate).toHaveBeenNthCalledWith(
+      2,
+      { queryKey: ["second", 2] },
+      { throwOnError: true },
+    );
     expect(order).toEqual([
       'invalidate:["first"]',
       'invalidate:["second",2]',
@@ -100,7 +106,8 @@ describe("useConfirmMutation", () => {
       );
 
       let outcome:
-        Awaited<ReturnType<typeof result.current.confirm>> | undefined;
+        | Awaited<ReturnType<typeof result.current.confirm>>
+        | undefined;
       await act(async () => {
         outcome = await result.current.confirm(undefined);
       });
@@ -209,9 +216,10 @@ describe("useConfirmMutation", () => {
       { wrapper },
     );
 
-    await expect(
-      act(async () => result.current.confirm(undefined)),
-    ).rejects.toBe(failure);
+    await act(async () => {
+      await expect(result.current.confirm(undefined)).rejects.toBe(failure);
+    });
+    expect(result.current.submitError).toBeNull();
   });
 
   it("leaves opts.onSuccess rejection on the mutateAsync error path", async () => {
@@ -228,9 +236,10 @@ describe("useConfirmMutation", () => {
       { wrapper },
     );
 
-    await expect(
-      act(async () => result.current.confirm(undefined)),
-    ).rejects.toBe(failure);
+    await act(async () => {
+      await expect(result.current.confirm(undefined)).rejects.toBe(failure);
+    });
+    expect(result.current.submitError).toBeNull();
   });
 });
 
@@ -303,6 +312,7 @@ describe("confirmation mutation production inventory", () => {
     );
 
     expectOneOccurrenceInEach(sources, /<ConfirmDialog\b/, [
+      "pages/client-instances/access-controls.tsx",
       "pages/client-instances/dialogs/delete.tsx",
       "pages/client-instances/dialogs/set-status.tsx",
       "pages/secrets/dialogs/delete-resource.tsx",
@@ -319,15 +329,22 @@ describe("confirmation mutation production inventory", () => {
     const mutateAsyncCalls = occurrenceCounts(sources, /\.mutateAsync\s*\(/);
     expect(mutateAsyncCalls).toEqual([
       ["hooks/use-confirm-mutation.ts", 1],
+      ["hooks/use-form-dialog.ts", 1],
       ["pages/secrets/dialogs/delete-resource.tsx", 1],
       ["pages/wrapper-permissions/dialogs/delete-pair.tsx", 1],
+      ["pages/wrapper-permissions/dialogs/edit-cell.tsx", 1],
     ]);
     expect(
       mutateAsyncCalls.reduce((total, [, count]) => total + count, 0),
-    ).toBe(3);
-    const directMutations = mutateAsyncCalls
-      .filter(([path]) => path !== "hooks/use-confirm-mutation.ts")
-      .map(([path]) => path);
+    ).toBe(5);
+    const resultGuardMutations = [
+      "pages/secrets/dialogs/delete-resource.tsx",
+      "pages/wrapper-permissions/dialogs/delete-pair.tsx",
+    ];
+    const requestErrorMutations = [
+      "hooks/use-form-dialog.ts",
+      "pages/wrapper-permissions/dialogs/edit-cell.tsx",
+    ];
 
     expectOneOccurrenceInEach(
       sources,
@@ -347,14 +364,49 @@ describe("confirmation mutation production inventory", () => {
 
     const narrowCatchPattern =
       /try \{\s*result = await [^;]+\.mutateAsync\([^;]*\);\s*\} catch \{\s*return;\s*\}/;
-    expectOneOccurrenceInEach(sources, narrowCatchPattern, directMutations);
-    for (const path of directMutations) {
+    expectOneOccurrenceInEach(
+      sources,
+      narrowCatchPattern,
+      resultGuardMutations,
+    );
+    for (const path of resultGuardMutations) {
       const source = sources.find(([candidate]) => candidate === path)![1];
       const catchEnd =
         source.match(narrowCatchPattern)!.index! +
         source.match(narrowCatchPattern)![0].length;
       expect(source.indexOf("if (result.ok)")).toBeGreaterThan(catchEnd);
     }
+    const requestCatch =
+      /try \{\s*(?:result = )?await [^;]+\.mutateAsync\([^;]*\);\s*\} catch \(error\) \{\s*(?:form\.setError|setSubmitError)\([^;]*describeApiError\(error\)[^;]*;\s*return;\s*\}/;
+    expectOneOccurrenceInEach(sources, requestCatch, requestErrorMutations);
+    for (const path of requestErrorMutations) {
+      const source = sources.find(([candidate]) => candidate === path)![1];
+      const match = source.match(requestCatch)!;
+      const catchEnd = match.index! + match[0].length;
+      const after = source.slice(catchEnd);
+      expect(after).toMatch(/await (?:invalidateAll|qc\.invalidateQueries)/);
+      expect(after).toMatch(/(?:opts\.onSuccess\(result\)|onClose\(\))/);
+      expect(source).toMatch(/if \(inFlight.current\) return;/);
+      expect(source).toMatch(/finally \{\s*inFlight.current = false;/);
+    }
+    // Immediate client controls use direct requests, never permission mutations.
+    expectOneOccurrenceInEach(
+      sources,
+      /updated = await putClientInstanceUpdate\(/,
+      ["pages/client-instances/access-controls.tsx"],
+    );
+    const access = sources.find(
+      ([path]) => path === "pages/client-instances/access-controls.tsx",
+    )![1];
+    expect(access).not.toMatch(
+      /\b(?:putWrapperPermission|deleteWrapperPermission)\b/,
+    );
+    expect(access).toMatch(
+      /if \(inFlight.current \|\| unknownRef.current\) return;/,
+    );
+    expect(access).toMatch(
+      /if \(await reconcile\(\)\) await invalidateViews\(\);/,
+    );
   });
 
   it("pins the generic dialog and production global-rejection boundaries", () => {

@@ -82,7 +82,10 @@ async function openCreateStoreByKeyboard(page: Page): Promise<{
   await reachByKeyboard(page, trigger);
   await page.keyboard.press("Enter");
 
-  const dialog = page.getByRole("dialog", { name: "Create store", exact: true });
+  const dialog = page.getByRole("dialog", {
+    name: "Create store",
+    exact: true,
+  });
   await expect(dialog).toBeVisible();
   const name = dialog.getByLabel("Name", { exact: true });
   await expect(name).toBeFocused();
@@ -108,7 +111,7 @@ async function openNavigationByKeyboard(page: Page): Promise<{
   const dialog = page.getByRole("dialog", { name: "Navigation", exact: true });
   await expect(dialog).toBeVisible();
   const firstLink = dialog.getByRole("link", {
-    name: "Wrapper permissions",
+    name: "Get a wrapper working",
     exact: true,
   });
   await reachByKeyboard(page, firstLink);
@@ -182,11 +185,19 @@ test("responsive navigation close has keyboard focus indicators in regular and f
     .toBe(true);
 
   let navigation = await openNavigationByKeyboard(page);
-  await expectRegularFocusIndicator(page, navigation.firstLink, navigation.close);
+  await expectRegularFocusIndicator(
+    page,
+    navigation.firstLink,
+    navigation.close,
+  );
   await page.keyboard.press("Enter");
   await expect(navigation.dialog).toBeHidden();
 
   await enableForcedColors(page);
   navigation = await openNavigationByKeyboard(page);
-  await expectForcedColorsIndicator(page, navigation.firstLink, navigation.close);
+  await expectForcedColorsIndicator(
+    page,
+    navigation.firstLink,
+    navigation.close,
+  );
 });

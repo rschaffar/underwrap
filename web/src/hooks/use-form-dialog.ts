@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useForm,
@@ -34,25 +35,23 @@ export interface UseFormDialogOptions<
    * mutation's return value so multi-step flows (e.g. create-then-
    * reveal-key) can route off the response without redoing the call.
    */
-  onSuccess: (result: TResult) => void;
+  onSuccess: (result: TResult) => void | Promise<void>;
 }
 
 export interface UseFormDialogResult<TValues extends FieldValues> {
   form: UseFormReturn<TValues>;
   /** Submit handler to pass to `<form onSubmit={...}>`. */
   onSubmit: ReturnType<UseFormReturn<TValues>["handleSubmit"]>;
-  /** True while the mutation is in flight. */
+  /** True through validation, the request, invalidation, and the success callback. */
   pending: boolean;
   /** The "root" submit error message, if any. */
   submitError: string | undefined;
 }
 
 /**
- * Centralizes the shared lifecycle for form-bearing admin dialogs:
- * `useForm` + zod resolver + a `useMutation` whose `onSuccess`
- * invalidates a list of query keys and whose `onError` writes to the
- * form's "root" error so a single `<Alert>` driven by
- * `form.formState.errors.root` renders the submit failure.
+ * Serialize the complete submission, including async form validation.
+ * Only request failures become form errors; mapping, invalidation, and callback
+ * failures remain observable rejections, not misleading network errors.
  */
 export function useFormDialog<
   TValues extends FieldValues,
@@ -62,6 +61,8 @@ export function useFormDialog<
   opts: UseFormDialogOptions<TValues, TRequest, TResult>,
 ): UseFormDialogResult<TValues> {
   const qc = useQueryClient();
+  const inFlight = useRef(false);
+  const [pending, setPending] = useState(false);
   const form = useForm<TValues>({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resolver: zodResolver(opts.schema as any),
@@ -69,27 +70,38 @@ export function useFormDialog<
   });
   const mut = useMutation({
     mutationFn: (request: TRequest) => opts.submit(request),
-    onSuccess: async (result) => {
-      if (opts.invalidate) {
-        await invalidateAll(qc, opts.invalidate);
-      }
-      opts.onSuccess(result);
-    },
-    onError: (err) => {
-      form.setError("root", { message: describeApiError(err) });
-    },
   });
-  const onSubmit = form.handleSubmit((values) => {
+  const validatedSubmit = form.handleSubmit(async (values) => {
     form.clearErrors("root");
     const request = opts.toRequest
       ? opts.toRequest(values as TValues)
       : (values as unknown as TRequest);
-    mut.mutate(request);
+    let result: TResult;
+    try {
+      result = await mut.mutateAsync(request);
+    } catch (error) {
+      form.setError("root", { message: describeApiError(error) });
+      return;
+    }
+    if (opts.invalidate) await invalidateAll(qc, opts.invalidate);
+    await opts.onSuccess(result);
   });
+  const onSubmit: ReturnType<typeof form.handleSubmit> = async (event) => {
+    event?.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setPending(true);
+    try {
+      await validatedSubmit(event);
+    } finally {
+      inFlight.current = false;
+      setPending(false);
+    }
+  };
   return {
     form,
     onSubmit,
-    pending: mut.isPending,
+    pending,
     submitError: form.formState.errors.root?.message,
   };
 }

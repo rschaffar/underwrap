@@ -142,6 +142,7 @@ impl PermissionFixture {
         state.shared.client_instances.write().unwrap().insert(
             instance_id.clone(),
             ClientInstanceRecord {
+                access_override: Default::default(),
                 id: instance_id.clone(),
                 display_name: "Published client".into(),
                 current_store_id: store_id.clone(),

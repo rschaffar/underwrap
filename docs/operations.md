@@ -154,6 +154,23 @@ See [Security](security.md) for the identity boundary and implementation qualifi
 Auto-create allows startup registration to add missing resources and pairs; registration is upsert-only and does not remove stale configuration assets or rewrite existing provenance.
 A daemon can start without an identity and retry backend-client initialization on requests, but that does not repeat startup registration.
 The restart remains mandatory after enrollment.
+The **Get a wrapper working** page connects these steps and branches on the explicit auto-create choice; it does not create permissions or run host commands automatically.
+Backend display names are not frontend service-instance names: use the actual configured `<instance>` when restarting its daemon.
+Enrollment, inventory counts, and usage timestamps do not establish successful representative target behavior.
+
+### Client-wide access controls
+
+In **Client Instances**, select **Individual settings**, **Lock all**, or **Unlock all** for the exact runtime client instance.
+Changes apply through the backend immediately on subsequent opens/finalizes, without Save or daemon restart; only entering Unlock all requires confirmation.
+Unlock all starts read-only and exposes **Allow files/libsecret writeback** for immediate writable-flag changes.
+It includes every registered pair in the mapped store, including missing or denying ordinary rows, but never supplies timed unsafe-debug approval.
+Individual rows remain saved; returning to Individual settings restores their effect.
+See [Backend](backend.md#client-wide-override) for the complete override and writeback contract.
+
+Controls retain the last acknowledged setting while a request is pending and reconcile a failed update through a fresh client-list read.
+If reconciliation fails, the UI labels state unknown and requires refresh before another change rather than optimistically presenting a grant.
+These controls do not stop running targets, recall delivered values, drain operations, or replace maintenance coordination.
+Remapping carries the override to the new store; review the displayed old/new store identities, broad-access consequences, and best-effort old-permission cleanup before Save.
 
 ### Replace an instance certificate
 
@@ -177,6 +194,9 @@ The **Stores** page uses server-provided lifecycle and action fields.
 `ready` means a plain backend is available, `unlocked` an encrypted backend is available, and `locked` an encrypted backend has no installed key.
 `busy` means migration owns lifecycle publication; `recovery-required` means trusted-host migration recovery is required.
 Locked, busy, and recovery-required contents are unknown, not proven empty; a false contents boolean is not an inspection result.
+Store names link to their resources and permissions; mapped-client counts open an explicit client filter for remapping and deletion blockers.
+Rare migration, rotation, and deletion actions are grouped under **Maintenance**.
+Locked-store guidance opens Unlock for its exact store id; recovery-required guidance points to trusted-host work, not automatic recovery.
 
 ### Create or migrate to encrypted storage
 
@@ -237,6 +257,10 @@ Rotation creates its replacement key during mutation and returns it once afterwa
 Quiesce all access first: rotation serializes store lifecycle operations but does not drain ordinary I/O, so concurrent reads can fail and writes can be lost.
 Save the returned key immediately in external generation-specific custody and independently verify the later key before any old-generation cleanup.
 Response success or a browser acknowledgement is not proof of custody.
+The pending dialog disables dismissal and blocks in-app navigation, with a best-effort unload prompt; crashes, forced closure, and lost responses remain possible.
+A known pre-effect rejection requires renewed acknowledgement before retry.
+An ambiguous or malformed response disables retry in that dialog and directs the operator to trusted-host reconciliation; store metadata cannot establish key delivery.
+Do not reopen or retry rotation after an unknown outcome until generation state and external key custody are reconciled.
 
 Each rotation creates a unique mode-`0700` sibling `.<store-id>.underwrap-rotation-<16-lowercase-hex-id>/`.
 Before swap it holds `stage/`; successful rotation leaves the complete old generation in `backup/` and the new generation at the canonical path.
@@ -259,12 +283,19 @@ An unresolved or failed store list is not an empty list.
 The requested URL selection becomes effective only after validation against the authoritative store list; stale or removed selections are canonicalized before store-detail queries proceed.
 Changing the effective store resets store-scoped dialogs and nested editing state rather than carrying a mutation into a different store.
 Store selection preserves unrelated URL state and follows browser back/forward navigation; these presentation rules do not make a requested URL authoritative.
+Navigation retains store context and highlights the active section, while Stores and Client Instances remain global inventories unless explicitly filtered.
+Store-scoped creation intents do not follow an invalid selection into a different store.
 Wait for the selected store to resolve before editing; URL state is not backend authorization.
+Metadata filters match resource names/ids, env keys, file paths, wrappers, and runtime client metadata without revealing values or fetching unopened Secret Service trees.
+A resource with no env/files entries is not described as wholly empty merely because its libsecret tree has not been opened.
 
 The browser secret editor is text-only and encodes exact UTF-8 without Unicode normalization or intentional line-ending conversion, using chunk-safe transport encoding.
 Missing data, empty bytes, malformed base64, and non-UTF-8 bytes are distinct states.
 Empty text is valid and copyable; malformed or non-UTF-8 values are not revealed or copied, and the UI has no binary editor or download mode.
 Backend storage still accepts arbitrary secret bytes.
+For env/files, **Create** rejects a known same-slot key collision, **Rename** preserves material without fetching it, and **Replace value** pins the existing key and requires new material.
+An intentional empty write requires **Store an empty value**; leaving a value field blank alone is not replacement, and Delete remains separate.
+Known-key collision checks prevent accidental overwrite in the displayed inventory, not concurrent changes or last-writer-wins races.
 
 Libsecret attributes accept one `key=value` per nonblank line, split at the first delimiter, trim both sides, allow empty values, and keep keys case-sensitive.
 Blank lines and CRLF input are handled without creating extra attributes.
@@ -274,16 +305,12 @@ This is browser textarea validation, not a new restriction on backend or D-Bus a
 
 ### Permission modes and writeback
 
-| Mode | Real target | Debug target |
-| --- | --- | --- |
-| `Locked` | Denied | Denied |
-| `Unlocked` | Allowed | Denied |
-| Active `UnlockedUntil` | Allowed | Denied |
-| Active `UnsafeDebugUntil` | Allowed | Allowed |
-| Either timed mode after expiry | Denied | Denied |
-
-The backend rechecks mode, variant, and expiry on both open and finalize; expiry is lazy, not a background sweep or an approval prompt.
-The separate writable flag allows files/libsecret persistence, not target disclosure or admin writes.
+The [permission matrix and client override](backend.md#permission-model) define admission and effective writability.
+Cells in **Wrapper permissions** show saved individual modes and writable flags; column headers identify the client-wide override or unavailable client metadata.
+An absent row is distinguished from an explicit Locked row without changing Individual settings' default deny.
+Saving or removing an individual row does not remove a client override, and opposing Save/Remove requests cannot overlap within the dialog.
+The backend rechecks current settings, variant, and expiry on both open and finalize; expiry is lazy, not a background sweep or an approval prompt.
+The effective writable flag allows files/libsecret persistence, not target disclosure or admin writes.
 The target-facing surfaces stay writable even when persistence is disabled.
 Env remains operator-owned, but finalize's loaded-snapshot comparison is not compare-and-swap and cannot protect against a racing admin edit between load and whole-blob save.
 Serialize mutations as described below.
@@ -296,7 +323,7 @@ Any local user can reach the system-wide entry while this tuple is authorized; t
 Verify that deployment before enabling debug, and use an OS-level gate if local-user restriction or a prompt is required.
 Writable false does not reduce disclosure; writable true additionally permits future-state changes through accepted files/libsecret finalize.
 
-The confirmation proposes an exact local expiry with a 15-minute default, but only **Save** activates the permission.
+The confirmation proposes an exact local expiry with a 15-minute default; **Save** submits that selection, while confirmation alone leaves existing backend permissions and overrides unchanged.
 Use the shortest practical interval and return to a safer mode immediately after the incident task.
 Do not use debug as routine presence verification.
 
@@ -443,7 +470,8 @@ Do not disable verification to work around a mismatch.
 
 For enrollment errors, verify identity existence and metadata without opening it, the active backend client fingerprint, selected store, and the required daemon restart after enrollment or replacement.
 For missing assets, verify names and auto-create policy and restart for startup registration, or create missing resources/pairs manually.
-For locked or expired access, check the exact permission row and encrypted-store state.
+For locked or expired access, check the client override, exact permission row, and encrypted-store state.
+`client-locked` identifies Lock all; changing an individual row does not remove that override.
 For effective-GID mismatch, use the root-installed setgid entry point instead of connecting directly to the socket.
 Do not weaken peer authentication or edit the target-UID table manually.
 
@@ -453,7 +481,7 @@ A successful target exit, local Secret Service ACK, or changed `last_used_at` is
 Eligible nonzero and signal exits can finalize too, while collection or finalize errors remain diagnostic and preserve the target's exit/signal status.
 Underwrap does not expose a separate machine-visible finalize result to the caller.
 
-1. Confirm the exact resource, enabled projections, initial writable hint, and backend permission mode, expiry, and writable flag at finalize time.
+1. Confirm the exact resource, enabled projections, initial writable hint, and backend client override, permission mode, expiry, and effective writable flag at finalize time.
 2. Check namespace lifecycle, collection, publication, and size diagnostics before assuming a network failure; an oversized final resource suppresses both Checkin and UsageSignal.
 3. Inspect `writeback_rejected` reason metadata: `permission_readonly`, `server_rejected`, or `resource_too_large`.
 4. Inspect daemon checkout/checkin/usage and backend decision diagnostics, accounting for a refused Checkin followed by UsageSignal rather than assuming one terminal verb.

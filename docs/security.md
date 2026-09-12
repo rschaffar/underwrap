@@ -157,6 +157,11 @@ Restrictive temporary-file creation, file sync, and atomic replacement do not im
 ## Policy, outcomes, and diagnostics
 
 [Backend policy](backend.md#permission-model) governs open and finalize independently.
+The trusted operator can apply a backend runtime-client override without rewriting individual permission rows.
+Against a caller seeking resource disclosure or unauthorized writeback, the boundary remains backend-controlled: Unlock all broadens ordinary registered-pair access but does not bypass identity, store, registration, validation, or env-integrity checks.
+Unsafe debug still needs its separate active timed per-pair approval; Lock all denies both variants.
+The current override is resolved per request, not supplied by the caller or cached as daemon configuration.
+An override change neither recalls a delivered projection nor upgrades an existing read-only Checkout, and already admitted operations retain the documented concurrency limits.
 Read-only files and libsecret staging remain writable to the trusted target; the writable flag only controls persistence.
 Env comparison protects against changes relative to the snapshot loaded by finalize, not against concurrent admin edits between load and save.
 Whole-resource and control-document mutations are stateless last-writer-wins operations; operators must serialize participating writers.
@@ -164,7 +169,8 @@ Resource deletion, registry publication, and cross-entity checks do not supply C
 
 Unsafe debug grants the complete configured projection to an intentionally broad target for the exact authorized runtime client instance, pair, and expiry.
 Any local user can invoke it while authorized; read-only does not reduce its disclosure capability.
-The UI's proposed expiry is not activation until Save.
+Confirming the UI's proposed expiry changes only the local form; Save submits that selection.
+Existing permissions and client overrides remain effective until changed or expired.
 Use the shortest practical interval, restore a safer mode, and apply an external OS gate if necessary.
 
 Generic backend internal errors return HTTP 500, code `internal`, and `the backend could not complete the request`.

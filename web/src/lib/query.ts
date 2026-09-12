@@ -1,11 +1,15 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-/** Invalidate every listed query key in parallel. */
+/** Await invalidation and active refreshes; preserve refresh rejection. */
 export async function invalidateAll(
   qc: QueryClient,
   keys: ReadonlyArray<readonly unknown[]>,
 ): Promise<void> {
-  await Promise.all(keys.map((key) => qc.invalidateQueries({ queryKey: key })));
+  await Promise.all(
+    keys.map((key) =>
+      qc.invalidateQueries({ queryKey: key }, { throwOnError: true }),
+    ),
+  );
 }
 
 /** Launch invalidation without extending a mutation's pending/error lifecycle. */

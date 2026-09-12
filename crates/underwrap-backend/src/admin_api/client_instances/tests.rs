@@ -119,6 +119,7 @@ fn client_instance_crud_and_store_mapping_round_trip() {
         Extension(p.clone()),
         Path(client_id.clone()),
         Body(AdminClientInstanceUpdateRequest {
+            access_override: None,
             display_name: Some("laptop-renamed".into()),
             current_store_id: Some(other_id.clone()),
             status: Some(AdminClientInstanceStatus::Disabled),
@@ -180,6 +181,7 @@ fn client_instance_delete_cascades_to_wrapper_permissions() {
         let mut instances = state.shared.client_instances.write().unwrap();
         for (id, fp) in [(&doomed_id, "fp-doomed"), (&survivor_id, "fp-survivor")] {
             let record = crate::runtime_clients::ClientInstanceRecord {
+                access_override: Default::default(),
                 id: id.clone(),
                 display_name: format!("{id}-laptop"),
                 current_store_id: store_id.clone(),
@@ -313,6 +315,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
     let instance_id = "to-remap".to_string();
     {
         let record = crate::runtime_clients::ClientInstanceRecord {
+            access_override: Default::default(),
             id: instance_id.clone(),
             display_name: "laptop".into(),
             current_store_id: old_store_id.clone(),
@@ -352,6 +355,7 @@ fn client_instance_update_returns_ok_when_remap_cascade_fails() {
         Extension(p),
         Path(instance_id.clone()),
         Body(AdminClientInstanceUpdateRequest {
+            access_override: None,
             display_name: None,
             current_store_id: Some(new_store_id.clone()),
             status: None,
@@ -412,6 +416,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
         Extension(p.clone()),
         Path(id.clone()),
         Body(AdminClientInstanceUpdateRequest {
+            access_override: None,
             display_name: None,
             current_store_id: None,
             status: None,
@@ -433,6 +438,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
         Extension(p.clone()),
         Path(id.clone()),
         Body(AdminClientInstanceUpdateRequest {
+            access_override: None,
             display_name: Some("renamed".into()),
             current_store_id: None,
             status: None,
@@ -449,6 +455,7 @@ fn client_instance_auto_create_flag_defaults_off_and_can_be_toggled() {
         Extension(p),
         Path(id),
         Body(AdminClientInstanceUpdateRequest {
+            access_override: None,
             display_name: None,
             current_store_id: None,
             status: None,
@@ -642,6 +649,7 @@ fn registry_client_update_persists_before_publishing_and_cascading() {
     );
     assert_eq!(candidate.last_seen_at, before.last_seen_at);
     let request = AdminClientInstanceUpdateRequest {
+        access_override: None,
         display_name: Some(candidate.display_name.clone()),
         current_store_id: Some(candidate.current_store_id.clone()),
         status: Some(AdminClientInstanceStatus::Disabled),

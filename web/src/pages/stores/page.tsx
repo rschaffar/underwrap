@@ -3,11 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  type AdminStoresListResponse,
-  fetchStores,
-} from "@/api/client";
+import { type AdminStoresListResponse, fetchStores } from "@/api/client";
 import { useDocumentTitle } from "@/hooks/use-document-title";
+import { usePageIntent } from "@/hooks/use-page-intent";
 import { describeApiError } from "@/lib/error-message";
 
 import { StoresTable } from "./table";
@@ -37,6 +35,16 @@ export function StoresPage() {
   const [rotatingId, setRotatingId] = useState<string | null>(null);
   const [migratingId, setMigratingId] = useState<string | null>(null);
 
+  usePageIntent("create", !isLoading && !error, (value) => {
+    if (value === "store") setCreateOpen(true);
+  });
+  usePageIntent("unlock", !isLoading && !error, (id) => {
+    if (
+      data?.items.some((store) => store.id === id && store.actions.can_unlock)
+    )
+      setUnlockingId(id);
+  });
+
   const items = data?.items ?? [];
   const editing = items.find((item) => item.id === editingId) ?? null;
   const unlocking = items.find((item) => item.id === unlockingId) ?? null;
@@ -50,8 +58,8 @@ export function StoresPage() {
         <div>
           <h2 className="text-xl font-semibold text-(--color-fg)">Stores</h2>
           <p className="mt-1 text-sm text-(--color-muted)">
-            Stores are backend-managed records. Create, edit, and delete
-            them here.
+            Stores are backend-managed records. Create, edit, and delete them
+            here.
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)}>Create store</Button>
@@ -79,16 +87,10 @@ export function StoresPage() {
         <CreateStoreDialog onClose={() => setCreateOpen(false)} />
       ) : null}
       {editing ? (
-        <EditStoreDialog
-          store={editing}
-          onClose={() => setEditingId(null)}
-        />
+        <EditStoreDialog store={editing} onClose={() => setEditingId(null)} />
       ) : null}
       {deleting ? (
-        <DeleteStoreDialog
-          store={deleting}
-          onClose={() => setDeleting(null)}
-        />
+        <DeleteStoreDialog store={deleting} onClose={() => setDeleting(null)} />
       ) : null}
       {unlocking ? (
         <UnlockStoreDialog
@@ -97,10 +99,7 @@ export function StoresPage() {
         />
       ) : null}
       {locking ? (
-        <LockStoreDialog
-          store={locking}
-          onClose={() => setLockingId(null)}
-        />
+        <LockStoreDialog store={locking} onClose={() => setLockingId(null)} />
       ) : null}
       {rotatingId ? (
         <RotateStoreKeyDialog

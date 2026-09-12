@@ -1,5 +1,7 @@
 use super::*;
 
+mod client_override;
+
 fn doc_with_permission(mode: WrapperApprovalMode) -> PolicyDocument {
     PolicyDocument {
         permissions: vec![WrapperPermission {
