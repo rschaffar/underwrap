@@ -73,7 +73,10 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderControls(instance = item()) {
+function renderControls(
+  instance = item(),
+  onUncertaintyChange?: (clientId: string, unknown: boolean) => void,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -81,7 +84,10 @@ function renderControls(instance = item()) {
   const invalidate = vi.spyOn(queryClient, "invalidateQueries");
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <ClientAccessControls instance={instance} />
+      <ClientAccessControls
+        instance={instance}
+        onUncertaintyChange={onUncertaintyChange}
+      />
     </QueryClientProvider>,
   );
   return { ...view, queryClient, invalidate };
@@ -438,6 +444,42 @@ describe("ClientAccessControls", () => {
       expect(putClientInstanceUpdate).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("reports uncertainty to its column until authoritative reconciliation completes", async () => {
+    const notify = vi.fn();
+    const refresh = deferred<AdminClientInstancesListResponse>();
+    vi.mocked(putClientInstanceUpdate).mockRejectedValue(
+      new Error("response lost"),
+    );
+    vi.mocked(fetchClientInstances).mockReturnValue(refresh.promise);
+    const { unmount } = renderControls(item(), notify);
+    expect(notify).toHaveBeenLastCalledWith("client_controls", false);
+    await userEvent.setup().selectOptions(selector(), "locked");
+    await waitFor(() =>
+      expect(notify).toHaveBeenLastCalledWith("client_controls", true),
+    );
+    await act(async () =>
+      refresh.resolve({ items: [item({ kind: "locked" })] }),
+    );
+    await waitFor(() => expect(selector()).toHaveValue("locked"));
+    expect(notify).toHaveBeenLastCalledWith("client_controls", false);
+    unmount();
+    expect(notify).toHaveBeenLastCalledWith("client_controls", false);
+  });
+
+  it("clears its column marker on unmount and ignores late parent notifications", async () => {
+    const notify = vi.fn();
+    const request = deferred<AdminClientInstanceListItem>();
+    vi.mocked(putClientInstanceUpdate).mockReturnValue(request.promise);
+    const { unmount } = renderControls(item(), notify);
+    await userEvent.setup().selectOptions(selector(), "locked");
+    unmount();
+    expect(notify).toHaveBeenLastCalledWith("client_controls", false);
+    const calls = notify.mock.calls.length;
+    await act(async () => request.reject(new Error("late response loss")));
+    expect(fetchClientInstances).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledTimes(calls);
+  });
 
   it("keeps invalidation failure observable, separate from a successful update", async () => {
     const failure = new Error("synthetic invalidation failure");

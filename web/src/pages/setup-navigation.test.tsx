@@ -204,7 +204,7 @@ describe("guided navigation ownership", () => {
       "Asset auto-creation is explicitly enabled for this instance.",
     );
     const review = screen.getByRole("link", {
-      name: "Review client override and status",
+      name: "Review client identity and status",
     });
     expect(
       new URL(
@@ -241,7 +241,7 @@ describe("guided navigation ownership", () => {
     await screen.findByText(/requested runtime client instance is not mapped/);
     expect(screen.getByLabelText("Runtime client instance")).toHaveValue("");
     expect(
-      screen.queryByRole("link", { name: "Review client override and status" }),
+      screen.queryByRole("link", { name: "Review client identity and status" }),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("setup-registration-path")).toHaveTextContent(
       "Select or enroll a runtime client instance",
@@ -272,7 +272,7 @@ describe("guided navigation ownership", () => {
       "Select or enroll a runtime client instance",
     );
     expect(
-      screen.queryByRole("link", { name: "Review client override and status" }),
+      screen.queryByRole("link", { name: "Review client identity and status" }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText(/requested runtime client instance is not mapped/),

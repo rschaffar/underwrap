@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, FileText } from "lucide-react";
 import { Link } from "@tanstack/react-router";
@@ -71,10 +71,29 @@ export function WrapperPermissionsPage() {
   const { nameById: resourceNameById } = useResourceCatalog(resources);
 
   const groups = useMemo(
-    () => groupPairsByResource(view.data?.pairs ?? [], resourceNameById),
-    [view.data, resourceNameById],
+    () =>
+      groupPairsByResource(
+        available && view.isSuccess ? view.data.pairs : [],
+        resourceNameById,
+      ),
+    [available, view.data, view.isSuccess, resourceNameById],
   );
-  const permissions = view.data?.permissions ?? [];
+  const permissions = available && view.isSuccess ? view.data.permissions : [];
+  const [unknownOverrides, setUnknownOverrides] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const onOverrideUncertaintyChange = useCallback(
+    (clientId: string, unknown: boolean) => {
+      setUnknownOverrides((previous) => {
+        if (previous.has(clientId) === unknown) return previous;
+        const next = new Set(previous);
+        if (unknown) next.add(clientId);
+        else next.delete(clientId);
+        return next;
+      });
+    },
+    [],
+  );
   const [filter, setFilter] = useState("");
   const [clientFilter, setClientFilter] = useState("");
   const needle = filter.trim().toLowerCase();
@@ -144,6 +163,7 @@ export function WrapperPermissionsPage() {
     setRawOpen(false);
     setCreatingPair(false);
     setDeletingPair(null);
+    setUnknownOverrides(new Set());
     setTransientStoreId(storeId);
   }, [storeId, transientStoreId]);
   usePageIntent("create", available, (value) => {
@@ -194,22 +214,18 @@ export function WrapperPermissionsPage() {
               className="rounded-md border border-(--color-line) bg-(--color-surface-1) px-2 py-0.5 font-mono text-xs text-(--color-fg)"
               title="Saved writable flags, before client override and admission checks"
             >
-              {writablePermissionCount} saved writable of {totalPermissionCount}
+              {available && view.isSuccess
+                ? `${writablePermissionCount} saved writable of ${totalPermissionCount}`
+                : "Saved flags unavailable"}
             </span>
           </div>
           <p className="mt-1 text-sm text-(--color-muted)">
             Wrapper/resource pairs registered with the backend, and the saved
             permission for each runtime client instance. Click a cell to change
-            its individual mode and writable flag. Client-wide overrides are
-            managed in{" "}
-            <Link
-              className="underline"
-              to="/client-instances"
-              search={{ store: storeId, mappedStore: storeId }}
-            >
-              Client Instances
-            </Link>{" "}
-            without changing these rows.
+            its individual mode and writable flag. Client-wide access controls
+            sit beneath each instance heading and cover all registered pairs,
+            including filtered-out pairs. Changes apply on subsequent opens and
+            finalizes without Save or daemon restart; saved rows stay intact.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -272,7 +288,6 @@ export function WrapperPermissionsPage() {
             type="search"
             value={clientFilter}
             onChange={(event) => setClientFilter(event.target.value)}
-            disabled={!available}
           />
         </div>
       </div>
@@ -286,47 +301,53 @@ export function WrapperPermissionsPage() {
           {clientInstances.length} client columns.
         </p>
       ) : null}
-      {!available ? null : view.isLoading ? (
-        <p className="text-sm text-(--color-muted)">
-          Loading wrapper permissions…
-        </p>
-      ) : view.error ? (
-        <Alert>{describeApiError(view.error)}</Alert>
-      ) : groups.length === 0 ? (
-        <p className="text-sm text-(--color-muted)">
-          No wrapper/resource pairs are registered for this store yet. Use
-          Create pair, or follow{" "}
-          <Link className="underline" to="/setup" search={{ store: storeId }}>
-            Get a wrapper working
-          </Link>{" "}
-          to explicitly choose manual creation or asset auto-creation and
-          restart the matching frontend daemon.
-        </p>
-      ) : visibleGroups.length === 0 ? (
-        <p className="text-sm text-(--color-muted)">
-          No pairs match this metadata filter.
-        </p>
-      ) : (
-        <ResourceGroupedPairsTable
-          groups={visibleGroups}
-          clientInstances={visibleClients}
-          clientDetails={clientDetails}
-          clientMetadataReady={clientMetadataReady}
-          storeId={storeId}
-          displayNameById={displayNameById}
-          resourceNameById={resourceNameById}
-          permissionIndex={permissionIndex}
-          onCellClick={(wr, clientInstance, permission) =>
-            setEditing({
-              clientInstance,
-              wrapper: wr.wrapper,
-              resource_id: wr.resource_id,
-              permission,
-            })
-          }
-          onDeletePair={(pair) => setDeletingPair(pair)}
-        />
-      )}
+      <ResourceGroupedPairsTable
+        groups={visibleGroups}
+        clientInstances={clientInstances}
+        visibleClients={new Set(visibleClients)}
+        clientDetails={clientDetails}
+        clientMetadataReady={clientMetadataReady}
+        unknownOverrides={unknownOverrides}
+        onOverrideUncertaintyChange={onOverrideUncertaintyChange}
+        emptyMessage={
+          !available ? (
+            "Saved permissions are unavailable while this store is unavailable. Client overrides do not unlock the store."
+          ) : view.isLoading ? (
+            "Loading wrapper permissions…"
+          ) : view.error ? (
+            <Alert>{describeApiError(view.error)}</Alert>
+          ) : groups.length === 0 ? (
+            <>
+              No wrapper/resource pairs are registered for this store yet. Use
+              Create pair, or follow{" "}
+              <Link
+                className="underline"
+                to="/setup"
+                search={{ store: storeId }}
+              >
+                Get a wrapper working
+              </Link>{" "}
+              to explicitly choose manual creation or asset auto-creation and
+              restart the matching frontend daemon.
+            </>
+          ) : (
+            "No pairs match this metadata filter."
+          )
+        }
+        storeId={storeId}
+        displayNameById={displayNameById}
+        resourceNameById={resourceNameById}
+        permissionIndex={permissionIndex}
+        onCellClick={(wr, clientInstance, permission) =>
+          setEditing({
+            clientInstance,
+            wrapper: wr.wrapper,
+            resource_id: wr.resource_id,
+            permission,
+          })
+        }
+        onDeletePair={(pair) => setDeletingPair(pair)}
+      />
 
       {transientStateMatchesStore ? (
         <>
@@ -345,7 +366,8 @@ export function WrapperPermissionsPage() {
               }
               existing={editing.permission}
               accessOverride={
-                clientMetadataReady
+                clientMetadataReady &&
+                !unknownOverrides.has(editing.clientInstance)
                   ? clientDetails.get(editing.clientInstance)?.access_override
                   : undefined
               }

@@ -284,7 +284,7 @@ export function SetupPage() {
                 to="/client-instances"
                 search={{ ...search, client: client.id }}
               >
-                Review client override and status
+                Review client identity and status
               </Link>
             </>
           ) : null}

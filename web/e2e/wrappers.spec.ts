@@ -285,18 +285,139 @@ test("client access controls apply immediately, confirm unlock and preserve save
     )
       updates += 1;
   });
-  await page.goto(
-    `${backendWithAdmin.baseUrl}/client-instances?store=default&client=${clientId}`,
-  );
-  const controls = page.getByRole("group", {
+  await page.goto(`${backendWithAdmin.baseUrl}/wrappers?store=default`);
+  const column = page.getByTestId(`wrappers-client-column-${clientId}`);
+  const controls = column.getByRole("group", {
     name: "Access override for E2E client",
   });
+  const cell = page.getByTestId(
+    `wrappers-cell-override-wrapper-${resourceId}-${clientId}`,
+  );
+  const savedMode = cell.getByTestId("mode-locked");
   const mode = controls.getByLabel("Client access");
   await expect(mode).toHaveValue("individual");
+  await expect(savedMode).toHaveAttribute("data-muted", "false");
   await mode.selectOption("locked");
   await expect.poll(readOverride).toEqual({ kind: "locked" });
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(updates).toBe(1);
+  expect(await readPolicy()).toEqual(saved);
+  await expect(savedMode).toHaveAttribute("data-muted", "true");
+  await expect(cell).toHaveAttribute("data-overridden", "true");
+  await expect(cell).toContainText("Overridden · Lock all");
+  await expect(mode).toBeEnabled();
+
+  // Metadata-only screenshots and real pointer/keyboard checks on the new placement.
+  // Neutral badges stay readable; greying is not disabled interaction or opacity loss.
+  for (const theme of ["dark", "light"] as const) {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    if (theme === "light")
+      await page
+        .getByRole("button", { name: "Switch to light theme", exact: true })
+        .click();
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: width === 390 ? 667 : 720 });
+      await mode.scrollIntoViewIfNeeded();
+      const headingBox = await column
+        .getByRole("link", { name: "E2E client", exact: true })
+        .boundingBox();
+      const modeBox = await mode.boundingBox();
+      const columnBox = await column.boundingBox();
+      expect(headingBox).not.toBeNull();
+      expect(modeBox).not.toBeNull();
+      expect(columnBox).not.toBeNull();
+      expect(modeBox!.y).toBeGreaterThanOrEqual(
+        headingBox!.y + headingBox!.height,
+      );
+      expect(modeBox!.x).toBeGreaterThanOrEqual(columnBox!.x);
+      expect(modeBox!.x + modeBox!.width).toBeLessThanOrEqual(
+        columnBox!.x + columnBox!.width,
+      );
+      expect(
+        await mode.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          return [2, rect.width / 2, rect.width - 2].every((dx) =>
+            [2, rect.height / 2, rect.height - 2].every((dy) =>
+              element.contains(
+                document.elementFromPoint(rect.x + dx, rect.y + dy),
+              ),
+            ),
+          );
+        }),
+      ).toBe(true);
+      const legend = page.getByText(/^Cells show saved individual settings/);
+      expect(
+        await legend.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          return (
+            rect.left >= 0 &&
+            rect.right <= window.innerWidth &&
+            element.scrollWidth <= element.clientWidth
+          );
+        }),
+      ).toBe(true);
+      await mode.click();
+      await page.keyboard.press("Escape");
+      await page.keyboard.press("Tab");
+      await expect(cell).toBeFocused();
+      expect(
+        await cell.evaluate((element) => element.matches(":focus-visible")),
+      ).toBe(true);
+      await expect(cell).toHaveCSS("opacity", "1");
+      await expect(cell).toHaveCSS("border-top-style", "dashed");
+      const colors = await savedMode.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          color: style.color,
+          background: style.backgroundColor,
+          opacity: style.opacity,
+        };
+      });
+      expect(colors.opacity).toBe("1");
+      const luminance = (css: string) => {
+        expect(css).toMatch(/^rgb\(/);
+        const channels = css
+          .match(/[\d.]+/g)!
+          .map(Number)
+          .map((c) => c / 255)
+          .map((c) =>
+            c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4,
+          );
+        return (
+          channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        );
+      };
+      const foreground = luminance(colors.color),
+        background = luminance(colors.background);
+      expect(
+        (Math.max(foreground, background) + 0.05) /
+          (Math.min(foreground, background) + 0.05),
+      ).toBeGreaterThanOrEqual(4.5);
+      const viewport = await page.evaluate(() => ({
+        width: window.innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        assistiveGeometry: Array.from(
+          document.querySelectorAll(".sr-only"),
+        ).map((element) => {
+          const rect = element.getBoundingClientRect();
+          return { tag: element.tagName, left: rect.left, right: rect.right };
+        }),
+      }));
+      expect(
+        viewport.scrollWidth,
+        JSON.stringify(viewport),
+      ).toBeLessThanOrEqual(viewport.width);
+      await page.screenshot({
+        path: test.info().outputPath(`permission-column-${theme}-${width}.png`),
+      });
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  // The greyed-out cell still opens its original saved settings, even under Lock all.
+  await cell.click();
+  const editor = page.getByRole("dialog");
+  await expect(editor.getByRole("checkbox")).toBeChecked();
+  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(await readPolicy()).toEqual(saved);
 
   await mode.selectOption("unlocked");
@@ -322,6 +443,8 @@ test("client access controls apply immediately, confirm unlock and preserve save
     .toEqual({ kind: "unlocked", writable: false });
   expect(updates).toBe(2);
   expect(await readPolicy()).toEqual(saved);
+  await expect(cell).toContainText("Overridden · Unlock all");
+  await expect(cell).toContainText("Saved writeback: on");
 
   // The checkbox reflects server acknowledgement, not an optimistic grant.
   const writeback = controls.getByLabel("Allow files/libsecret writeback");
@@ -335,6 +458,9 @@ test("client access controls apply immediately, confirm unlock and preserve save
   await expect(controls.getByRole("checkbox")).toHaveCount(0);
   expect(updates).toBe(4);
   expect(await readPolicy()).toEqual(saved);
+  await expect(savedMode).toHaveAttribute("data-muted", "false");
+  await expect(cell).toHaveAttribute("data-overridden", "false");
+  await expect(cell.getByTestId("permission-override-note")).toHaveCount(0);
 });
 
 test("raw policy viewer surfaces the live PolicyDocument and writable-permission count", async ({

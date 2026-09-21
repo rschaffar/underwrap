@@ -160,7 +160,10 @@ Enrollment, inventory counts, and usage timestamps do not establish successful r
 
 ### Client-wide access controls
 
-In **Client Instances**, select **Individual settings**, **Lock all**, or **Unlock all** for the exact runtime client instance.
+In **Wrapper permissions**, select the store and use **Client access** directly beneath the intended runtime client instance's column heading.
+Choose **Individual settings**, **Lock all**, or **Unlock all** there.
+Controls remain available for mapped instances when there are no visible pairs or the store's permission contents are unavailable; an override does not unlock an encrypted store.
+**Client Instances** owns enrollment, identity status and mapping, with links to the mapped store's Wrapper permissions page.
 Changes apply through the backend immediately on subsequent opens/finalizes, without Save or daemon restart; only entering Unlock all requires confirmation.
 Unlock all starts read-only and exposes **Allow files/libsecret writeback** for immediate writable-flag changes.
 It includes every registered pair in the mapped store, including missing or denying ordinary rows, but never supplies timed unsafe-debug approval.
@@ -306,7 +309,10 @@ This is browser textarea validation, not a new restriction on backend or D-Bus a
 ### Permission modes and writeback
 
 The [permission matrix and client override](backend.md#permission-model) define admission and effective writability.
-Cells in **Wrapper permissions** show saved individual modes and writable flags; column headers identify the client-wide override or unavailable client metadata.
+Cells in **Wrapper permissions** show saved individual modes and writable flags; column headers contain client-wide controls and identify unavailable client metadata.
+Overridden saved settings use neutral badges, dashed outlines and explicit override labels, rather than disappearing or becoming uneditable.
+Under Unlock all, unsafe-debug badges retain their warning/expiry colors because the separate timed approval still applies; ordinary admission and the saved writable flag are overridden.
+An uncertain update is labelled separately rather than presenting the previous override as confirmed.
 An absent row is distinguished from an explicit Locked row without changing Individual settings' default deny.
 Saving or removing an individual row does not remove a client override, and opposing Save/Remove requests cannot overlap within the dialog.
 The backend rechecks current settings, variant, and expiry on both open and finalize; expiry is lazy, not a background sweep or an approval prompt.
