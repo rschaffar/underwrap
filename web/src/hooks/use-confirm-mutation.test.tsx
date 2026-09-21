@@ -312,7 +312,6 @@ describe("confirmation mutation production inventory", () => {
     );
 
     expectOneOccurrenceInEach(sources, /<ConfirmDialog\b/, [
-      "pages/client-instances/access-controls.tsx",
       "pages/client-instances/dialogs/delete.tsx",
       "pages/client-instances/dialogs/set-status.tsx",
       "pages/secrets/dialogs/delete-resource.tsx",
@@ -323,6 +322,7 @@ describe("confirmation mutation production inventory", () => {
       "pages/stores/dialogs/delete.tsx",
       "pages/stores/dialogs/lock.tsx",
       "pages/users/dialogs/delete.tsx",
+      "pages/wrapper-permissions/access-controls.tsx",
       "pages/wrapper-permissions/dialogs/delete-pair.tsx",
     ]);
 
@@ -393,10 +393,10 @@ describe("confirmation mutation production inventory", () => {
     expectOneOccurrenceInEach(
       sources,
       /updated = await putClientInstanceUpdate\(/,
-      ["pages/client-instances/access-controls.tsx"],
+      ["pages/wrapper-permissions/access-controls.tsx"],
     );
     const access = sources.find(
-      ([path]) => path === "pages/client-instances/access-controls.tsx",
+      ([path]) => path === "pages/wrapper-permissions/access-controls.tsx",
     )![1];
     expect(access).not.toMatch(
       /\b(?:putWrapperPermission|deleteWrapperPermission)\b/,

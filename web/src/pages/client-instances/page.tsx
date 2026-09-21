@@ -8,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { usePageIntent } from "@/hooks/use-page-intent";
-import { ClientAccessControls } from "./access-controls";
 import {
   type AdminClientInstanceListItem,
   type AdminClientInstancesListResponse,
@@ -204,10 +203,9 @@ export function ClientInstancesPage() {
         automatically. {items.length} matching clients.
       </p>
       <p className="text-sm text-(--color-muted)">
-        Access overrides apply on subsequent opens and finalizes without Save or
-        daemon restart. Individual permission rows stay unchanged. Only entering
-        Unlock all requires confirmation. Writable local staging is not
-        permission to persist changes; the backend remains the authority.
+        Client-wide access controls are beneath each instance's column heading
+        on Wrapper permissions. Use the link in its Store column to open the
+        mapped store. Individual permission rows stay unchanged by overrides.
       </p>
       {storesQuery.isSuccess && storesQuery.data.items.length === 0 ? (
         <Alert variant="warning">
@@ -243,7 +241,6 @@ export function ClientInstancesPage() {
                 <th className="px-4 py-2">Instance</th>
                 <th className="px-4 py-2">Store</th>
                 <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Access override</th>
                 <th className="px-4 py-2">Last seen</th>
                 <th className="px-4 py-2 text-right">Actions</th>
               </tr>
@@ -290,9 +287,6 @@ export function ClientInstancesPage() {
                       <AutoCreateBadge
                         enabled={item.auto_create_wrapper_assets ?? false}
                       />
-                    </td>
-                    <td className="px-4 py-3">
-                      <ClientAccessControls instance={item} />
                     </td>
                     <td className="px-4 py-3 text-(--color-muted)">
                       {formatEpochAbsolute(item.last_seen_at)}

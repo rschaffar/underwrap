@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -20,14 +20,17 @@ const permissionsKey = ["admin", "wrapper-permissions-view"] as const;
 
 export function ClientAccessControls({
   instance,
+  onUncertaintyChange,
 }: {
   instance: AdminClientInstanceListItem;
+  onUncertaintyChange?: (clientId: string, unknown: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const id = useId();
   const inFlight = useRef(false);
   const confirmingRef = useRef(false);
   const unknownRef = useRef(false);
+  const mounted = useRef(false);
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [unknown, setUnknown] = useState(false);
@@ -45,9 +48,21 @@ export function ClientAccessControls({
       : instance;
   const access = current.access_override;
 
+  // Column presentation must not describe a lost response as a known override.
+  // Drop this component's uncertainty marker when its column is removed.
+  useEffect(() => {
+    mounted.current = true;
+    onUncertaintyChange?.(instance.id, unknownRef.current);
+    return () => {
+      mounted.current = false;
+      onUncertaintyChange?.(instance.id, false);
+    };
+  }, [instance.id, onUncertaintyChange]);
+
   function setStateUnknown(value: boolean) {
     unknownRef.current = value;
     setUnknown(value);
+    if (mounted.current) onUncertaintyChange?.(instance.id, value);
   }
 
   function closeConfirmation() {
@@ -178,7 +193,7 @@ export function ClientAccessControls({
 
   return (
     <div
-      className="min-w-64 space-y-2 text-left"
+      className="min-w-52 space-y-2 text-left font-normal normal-case tracking-normal"
       role="group"
       aria-label={`Access override for ${current.display_name}`}
       aria-busy={pending}
