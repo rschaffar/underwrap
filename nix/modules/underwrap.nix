@@ -283,6 +283,31 @@ let
   # Build artifacts only from selectors admitted by the strict grammar.
   instances = lib.mapAttrs mkInstance artifactInstances;
 
+  # Public discovery has an explicit field allowlist, separate from daemon and
+  # privileged sidecar schemas. Never serialize a whole wrapper/instance here:
+  # targets, resource names, env values, backend URLs and identity paths are not
+  # needed for caller guidance. Nothing in this catalog grants execution access.
+  discoveryCatalog = {
+    schema_version = 1;
+    instances = builtins.attrNames artifactInstances;
+    wrappers = lib.concatLists (lib.mapAttrsToList (instName: inst:
+      lib.mapAttrsToList (wname: w: {
+        instance = instName;
+        name = wname;
+        inherit (w) description;
+        command = [ "/run/wrappers/bin/underwrap-${instName}" wname ];
+        alias = { name = wname; users = inst.allowedUsers; };
+        access_paths = w.accessPaths;
+        projections = {
+          inherit (w) env libsecret;
+          files = wrapperDirectoryPaths w;
+        };
+        fixed_home = w.envSet ? HOME;
+        fixed_tmpdir = w.envSet ? TMPDIR;
+      }) inst.wrappers
+    ) artifactInstances);
+  };
+
   # Per-user wrapper namespace.
   #
   # `security.wrappers` is system-wide: the single `underwrap-<instance>` setgid
@@ -367,6 +392,18 @@ let
 
   wrapperSubmodule = lib.types.submodule {
     options = {
+      description = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = ''
+          Short public description of this wrapper's purpose and capabilities,
+          shown by the unprivileged underwrap-info discovery command.
+          This is configuration metadata, not authorization or a permission grant.
+          It is published in the Nix store and the world-readable discovery catalog;
+          never include credentials, secret values, or sensitive identifiers.
+        '';
+        example = "Search and download team documents through the configured account.";
+      };
       target = lib.mkOption {
         type = lib.types.str;
         description = "Canonical absolute path to the target binary.";
@@ -866,16 +903,14 @@ in {
       };
     }] ++ lib.mapAttrsToList (_: i: i.securityWrappers) instances);
 
-    # Operator-facing helpers on PATH. `underwrap-keygen` generates a
-    # self-signed client credential locally; an admin then pastes the
-    # cert PEM into the backend admin UI. Exposed as a small symlink
-    # derivation so the operator gets the keygen helper without also
-    # pulling underwrap-debug-tool / underwrap-backend onto every
-    # user's PATH.
+    # Expose only the identity-installation helper and unprivileged public
+    # discovery command, not underwrap-debug-tool / underwrap-backend. Discovery
+    # is not a security wrapper and never executes a target or reads an identity.
     environment.systemPackages = [
-      (pkgs.runCommandLocal "underwrap-keygen-bin" { } ''
+      (pkgs.runCommandLocal "underwrap-tools-bin" { } ''
         mkdir -p $out/bin
         ln -s ${cfg.package}/bin/underwrap-keygen $out/bin/underwrap-keygen
+        ln -s ${cfg.package}/bin/underwrap-info $out/bin/underwrap-info
       '')
     ];
 
@@ -885,6 +920,14 @@ in {
     # underwrap-ns reads it directly; the identity never travels over IPC.
     environment.etc = lib.mkMerge (
       (lib.mapAttrsToList (_: i: i.etcFiles) instances)
+      ++ [{
+        "underwrap/discovery.json" = {
+          text = builtins.toJSON discoveryCatalog;
+          mode = "0644";
+          user = "root";
+          group = "root";
+        };
+      }]
       ++ lib.optional (targetPairs != []) {
         "underwrap/target-uids" = {
           text = targetUidTableText;

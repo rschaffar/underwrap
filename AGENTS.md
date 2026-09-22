@@ -12,6 +12,7 @@ The project is pre-release: keep the intended design coherent, retain useful pro
 - [Local protocol](docs/local-protocol.md): privileged handoff, lifetime, projections, and Secret Service validation.
 - [Backend](docs/backend.md): resource, policy, API, and persistence semantics.
 - [Configuration](docs/configuration.md) and [Operations](docs/operations.md): deployment and operator duties.
+- [Agent usage](docs/agent-usage.md): public wrapper discovery, mapped file paths, and portable skill installation.
 - [Testing](docs/testing.md): commands, required checks by boundary, and evidence limits.
 
 Read the relevant owners before editing and read Security before making security judgments.
@@ -114,6 +115,7 @@ Report actual changes, checks, unavailable evidence, and remaining obligations w
 Do not maintain vendor-specific copies.
 Read a selected skill before using it:
 
+- `underwrap`: caller-facing wrapper discovery and mapped-file usage; also exported for other harnesses.
 - `writing-plans`: optional bounded working notes and evidence tracking.
 - `reviewing-code`: ordinary scoped read-only review.
 - `hardening-code-paths`: authorized hardening in one specific flow.

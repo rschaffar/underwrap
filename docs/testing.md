@@ -104,6 +104,7 @@ The [flake](../flake.nix) declares these independently selectable checks:
 | `web-build`, `web-test` | Production SPA and complete Vitest suite with selected coverage thresholds |
 | `examples-nixos-eval` | Both shipped NixOS examples through the real module and package, including their system builds |
 | `frontend-backend-url-eval`, `frontend-security-assertions-eval`, `frontend-swap-posture-eval` | Focused production-module predicates and generated configuration |
+| `wrapper-discovery-eval` | Public metadata allowlist, descriptions/defaults, unchanged execution configuration, helper exposure and portable skill packaging |
 
 Select one check with the current system, for example:
 
@@ -305,6 +306,14 @@ The VM is one-node loopback HTTPS/mTLS evidence, not SSH or a separate-host depl
 It does not exercise non-loopback DNS/SANs, firewalls, routing, latency, partitions, distinct-host compromise, or multi-machine orchestration.
 A disposable deployment walkthrough using API operator transitions is not a browser-through-VM witness.
 No physical-device, general AArch64 runtime, external key-custody, or configured-target trustworthiness claim follows from the suite.
+
+## Wrapper discovery evidence
+
+`cargo test --locked -p underwrap-info` checks inventory/detail selection, ambiguity, empty instances, strict versioned decoding, public diagnostics, terminal escaping and JSON preservation.
+`wrapper-discovery-eval` evaluates the real module for described and undescribed wrappers, including an instance without alias users and an empty instance.
+It checks the exact metadata allowlist, description-independent daemon/sidecar and security-wrapper configuration, helper exposure, and the self-contained exported skill's packaged bytes.
+The VM runs discovery as `nobody`, without convenience aliases and before either backend starts, checks explicit instance selection, and temporarily removes/restores only the public catalog to witness missing-catalog failure.
+These checks do not execute a representative external service wrapper or establish live authorization, guaranteed path access, agent compliance, or production activation.
 
 ## Frontend witness boundaries
 
