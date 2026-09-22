@@ -586,6 +586,54 @@ def set_local_unlocked_permission(wrapper, resource=None):
     )
 
 
+def discovery_without_backend_access():
+    """Public metadata works before backend startup and for a user with no aliases."""
+    for unit in ("underwrap-backend.service", "underwrap-backend-local.service"):
+        machine.fail(f"systemctl is-active --quiet {unit}")
+    info = "/run/current-system/sw/bin/underwrap-info"
+    invocation = f"su nobody -s /bin/sh -c '{info} --json'"
+    inventory = json.loads(machine.succeed(invocation))
+    assert inventory["schema_version"] == 1
+    assert inventory["scope"] == "local-configuration"
+    assert inventory["authorization"] == inventory["filesystem_access"] == "not-checked"
+    assert inventory["instances"] == ["local", "tunnel"]
+    keys = {
+        "instance", "name", "description", "command", "alias", "access_paths",
+        "projections", "fixed_home", "fixed_tmpdir",
+    }
+    for wrapper in inventory["wrappers"]:
+        assert set(wrapper) == keys
+        assert wrapper["command"] == [
+            f"/run/wrappers/bin/underwrap-{wrapper['instance']}", wrapper["name"]
+        ]
+        assert wrapper["alias"] == {"name": wrapper["name"], "users": ["testuser"]}
+        assert set(wrapper["projections"]) == {"env", "files", "libsecret"}
+    echo = next(w for w in inventory["wrappers"] if w["instance"] == "local" and w["name"] == "test-echo")
+    assert echo["description"] == "Synthetic environment-projection test target."
+    selected = json.loads(machine.succeed(
+        f"su nobody -s /bin/sh -c '{info} test-echo --instance local --json'"
+    ))
+    assert selected["wrappers"] == [echo]
+    assert any(w["description"] == "" for w in inventory["wrappers"])
+    text = machine.succeed(f"su nobody -s /bin/sh -c '{info} test-echo --instance local'")
+    assert echo["description"] in text and "authorization and filesystem access are not checked" in text
+    machine.fail(f"su nobody -s /bin/sh -c '{info} absent-wrapper --json'")
+    machine.succeed("test $(stat -Lc '%a:%U:%G' /etc/underwrap/discovery.json) = 644:root:root")
+    # No fallback to daemon configuration, credentials, live policy or target execution.
+    machine.succeed("mv /etc/underwrap/discovery.json /etc/underwrap/discovery.json.saved")
+    try:
+        status, output = machine.execute(f"{invocation} 2>&1")
+        assert status == 1, "missing catalog must return the CLI failure exit code"
+        assert output.strip() == (
+            "underwrap-info: cannot read /etc/underwrap/discovery.json; "
+            "ask the host operator to install the NixOS discovery catalog"
+        ), "missing catalog must return the static stderr diagnostic"
+    finally:
+        machine.succeed("mv /etc/underwrap/discovery.json.saved /etc/underwrap/discovery.json")
+    assert json.loads(machine.succeed(invocation)) == inventory
+    machine.log("PASS: public discovery works without aliases or running backends; missing catalog fails explicitly")
+
+
 def boot_and_service_checks():
     # ============================================================
     # BOOT + SERVICE CHECKS
@@ -596,6 +644,8 @@ def boot_and_service_checks():
     machine.fail("systemctl is-enabled --quiet sshd.service")
     machine.fail("systemctl is-active --quiet sshd.service")
     machine.log("PASS: sshd.service is neither enabled nor active in the loopback-only VM")
+
+    discovery_without_backend_access()
 
     # Neither backend listener is started until deployment-side filesystem
     # authority has created its first operator through the real offline CLI.

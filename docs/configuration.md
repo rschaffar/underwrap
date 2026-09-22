@@ -106,6 +106,7 @@ Options below are relative to `instances.<instance>.wrappers.<wrapper>`.
 
 | Option | Type and default | Meaning |
 | --- | --- | --- |
+| `description` | String, `""` | Public purpose/capability text for `underwrap-info`; never secrets or sensitive identifiers |
 | `target` | String, required | Canonical absolute daemon-chosen real target; prefer a reviewed Nix store helper |
 | `resource` | String, required | One nonempty backend resource name |
 | `env` | Boolean, `false` | Project resource env entries |
@@ -119,6 +120,14 @@ Options below are relative to `instances.<instance>.wrappers.<wrapper>`.
 Enable at least one of env, files, or libsecret.
 Several wrappers can share one resource while retaining separate wrapper/resource pairs and permission rows.
 Backend **writable** permission is distinct from projection configuration: files and libsecret remain writable to the target even when their changes will be discarded.
+
+### Public wrapper discovery
+
+The module installs the unprivileged `underwrap-info` helper and a root-owned mode-`0644` `/etc/underwrap/discovery.json` catalog.
+The catalog lists all configured wrappers, not only a user's convenience aliases, with optional descriptions, exact ordinary invocation prefixes, configured host access paths and projection-path metadata.
+It is a separate allowlisted schema, not a serialization of full daemon configuration; descriptions do not change registration or authorization.
+The helper reads only this public catalog and never invokes a target, fetches credentials, contacts the backend, or checks current filesystem access.
+See [Agent discovery and usage](agent-usage.md) for commands, the versioned JSON contract, path guidance and the reusable skill export.
 
 ### Target environment
 

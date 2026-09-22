@@ -13,6 +13,7 @@ members = [
     "crates/underwrap-secretsd",
     "crates/underwrap-debug-tool",
     "crates/underwrap-keygen",
+    "crates/underwrap-info",
     "crates/underwrap-backend",
     "crates/integration-tests",
 ]

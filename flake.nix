@@ -167,6 +167,15 @@
             underwrap-debug-tool = mkCrate "underwrap-debug-tool";
             underwrap-backend = underwrapBackendPackage;
             underwrap-secretsd = mkCrate "underwrap-secretsd";
+            underwrap-info = mkCrate "underwrap-info";
+            # The package root is itself a portable skill directory. Consumers
+            # may instead use lib.agentSkills.underwrap without a system build.
+            underwrap-agent-skill = pkgs.runCommand "underwrap-agent-skill" { } ''
+              mkdir -p "$out"
+              cp -R ${self.lib.agentSkills.underwrap}/. "$out/"
+              cp ${./LICENSE-MIT} "$out/LICENSE-MIT"
+              cp ${./LICENSE-APACHE} "$out/LICENSE-APACHE"
+            '';
             # Expose the SPA build separately so the VM test (and any
             # external consumer) can grab the static bundle without
             # rebuilding the workspace.
@@ -306,6 +315,16 @@
                 printf '%s\n' "$expectedMessage" > "$out/plaintext-rejection.txt"
               '';
 
+            # Public discovery metadata, optional descriptions, unchanged
+            # privileged configuration, and portable skill packaging.
+            wrapper-discovery-eval = import ./nix/tests/wrapper-discovery-eval.nix {
+              inherit nixpkgs system;
+              underwrapModule = self.nixosModules.default;
+              infoPackage = self.packages.${system}.underwrap-info;
+              skillSource = self.lib.agentSkills.underwrap;
+              skillPackage = self.packages.${system}.underwrap-agent-skill;
+            };
+
             # Prove every production frontend security assertion and each
             # independently meaningful combined-predicate class fails closed.
             frontend-security-assertions-eval = import ./nix/tests/frontend-security-assertions-eval.nix {
@@ -356,6 +375,9 @@
       systemIndependent = {
         # NixOS modules.
         nixosModules.default = ./nix/modules/underwrap.nix;
+        # Harness-independent source directory, suitable for Home Manager's
+        # home.file.<harness skill directory>.source without compiling Rust.
+        lib.agentSkills.underwrap = ./.agents/skills/underwrap;
       };
 
       # NixOS VM test (x86_64-linux only since it needs KVM).

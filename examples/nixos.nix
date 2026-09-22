@@ -46,6 +46,7 @@ in
       };
 
       wrappers.secret-check = {
+        description = "Check that the configured demo credential reaches the target without printing it.";
         target = "${secretCheck}/bin/underwrap-secret-check";
         resource = "demo/token";
         env = true;

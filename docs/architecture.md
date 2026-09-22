@@ -15,6 +15,7 @@ For the claim and its preconditions, read [Security](security.md).
 | `underwrap-secretsd` | Invocation-private, in-memory Secret Service for libsecret-enabled targets |
 | `underwrap-debug-tool` | Deliberately unsafe target available only through backend-authorized debug mode |
 | `underwrap-keygen` | Installs a frontend runtime identity and outputs its public certificate for enrollment |
+| `underwrap-info` | Unprivileged local discovery from public Nix-generated metadata, without executing targets or contacting the backend |
 
 A **frontend instance** has its own daemon account, instance group, socket, setgid entry point, service, and private combined mTLS identity file.
 A **runtime client instance** is the backend principal selected by an active enrolled leaf-certificate fingerprint and mapped to exactly one store.

@@ -73,6 +73,7 @@ Backend permissions identify the mTLS-authenticated runtime client instance, not
 | Deploy, enroll clients, manage access, or recover a store | [Operations](docs/operations.md) |
 | Configure NixOS and the backend | [Configuration](docs/configuration.md) |
 | Design and review a wrapper | [Wrappers](docs/wrappers.md) |
+| Discover wrappers, use mapped file paths, or install the agent skill | [Agent discovery and usage](docs/agent-usage.md) |
 | Understand trust and limitations | [Security](docs/security.md) |
 | Understand resource, policy, and API semantics | [Backend](docs/backend.md) |
 | Review privileged handoff and projection mechanisms | [Local protocol](docs/local-protocol.md) |

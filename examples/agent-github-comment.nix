@@ -85,6 +85,7 @@ in
       };
 
       wrappers.agent-gh-comment = {
+        description = "Post a reviewed stdin comment to a pull request in the fixed configured repository.";
         # IMPORTANT: point underwrap at your own narrow wrapper, not directly at
         # the full gh CLI, when the command is meant for an agent.
         target = "${agentGhComment}/bin/agent-gh-comment";

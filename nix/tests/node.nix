@@ -556,6 +556,7 @@ in {
         };
         wrappers = {
           test-echo = {
+            description = "Synthetic environment-projection test target.";
             target = "${pkgs.coreutils}/bin/env";
             resource = "test/token";
             env = true;
