@@ -154,6 +154,20 @@ fn mismatched_current_credential_fingerprint_is_rejected() {
 }
 
 #[test]
+fn missing_certificate_in_current_credential_is_rejected() {
+    let err = cert_fingerprint_from_pem("").expect_err("missing certificate must be rejected");
+    assert!(format!("{err:#}").contains("contained no certificate"));
+}
+
+#[test]
+fn malformed_certificate_in_current_credential_is_rejected() {
+    let err =
+        cert_fingerprint_from_pem("-----BEGIN CERTIFICATE-----\n%%%\n-----END CERTIFICATE-----\n")
+            .expect_err("malformed certificate must be rejected");
+    assert!(format!("{err:#}").contains("parsing client certificate PEM"));
+}
+
+#[test]
 fn multiple_certificates_in_current_credential_are_rejected() {
     let err = cert_fingerprint_from_pem(&format!(
         "{}{}",
