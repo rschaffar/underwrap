@@ -8,6 +8,7 @@
 //! handshake signature checks out against the leaf's public key.
 
 use anyhow::{Context, Result};
+use rustls::pki_types::pem::PemObject;
 use std::path::Path;
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
@@ -107,8 +108,7 @@ impl rustls::server::danger::ClientCertVerifier for FingerprintClientCertVerifie
 fn load_cert_chain(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     let pem = std::fs::read(path)
         .with_context(|| format!("reading certificate file {}", path.display()))?;
-    let mut reader = std::io::BufReader::new(pem.as_slice());
-    let certs = rustls_pemfile::certs(&mut reader)
+    let certs = rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parsing certificate PEM")?;
     anyhow::ensure!(
@@ -122,10 +122,8 @@ fn load_cert_chain(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<
 fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
     let pem = std::fs::read(path)
         .with_context(|| format!("reading private key file {}", path.display()))?;
-    let mut reader = std::io::BufReader::new(pem.as_slice());
-    if let Some(key) =
-        rustls_pemfile::private_key(&mut reader).context("parsing private key PEM")?
-    {
+    let mut keys = rustls::pki_types::PrivateKeyDer::pem_slice_iter(&pem);
+    if let Some(key) = keys.next().transpose().context("parsing private key PEM")? {
         Ok(key)
     } else {
         anyhow::bail!(
@@ -134,3 +132,6 @@ fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'sta
         )
     }
 }
+
+#[cfg(test)]
+mod tests;

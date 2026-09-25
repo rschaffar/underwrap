@@ -18,6 +18,7 @@
 //! per-file tempfile + atomic rename; deletes are a single unlink.
 
 use anyhow::{Context, Result};
+use rustls::pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -72,8 +73,7 @@ pub fn cert_fingerprint_from_der(cert_der: &[u8]) -> String {
 }
 
 pub fn cert_fingerprint_from_pem(cert_pem: &str) -> Result<String> {
-    let mut reader = std::io::BufReader::new(cert_pem.as_bytes());
-    let certs = rustls_pemfile::certs(&mut reader)
+    let certs = rustls::pki_types::CertificateDer::pem_slice_iter(cert_pem.as_bytes())
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parsing client certificate PEM")?;
     let cert = certs

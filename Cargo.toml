@@ -50,7 +50,6 @@ http-body-util = "0.1"
 # rather than relying on a transitive crate to turn it on via unification.
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
-rustls-pemfile = "2"
 sha2 = "0.10"
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 chacha20poly1305 = "0.10"
@@ -62,6 +61,6 @@ axum_csrf = { version = "0.11", features = ["layer"] }
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 hex = "0.4"
-utoipa = { version = "5", features = ["axum_extras"] }
-utoipa-axum = "0.2"
+utoipa = { version = "6", features = ["axum_extras"] }
+utoipa-axum = "0.3"
 serde_jcs = "0.2"

@@ -3820,11 +3820,11 @@
           "access_override": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ClientAccessOverride",
                 "description": "Replace the client-wide override without modifying permission rows.\nOmit or send null to leave unchanged. Unlocking never grants unsafe-debug approval."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -3857,10 +3857,10 @@
           "status": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/AdminClientInstanceStatus"
               },
               {
-                "$ref": "#/components/schemas/AdminClientInstanceStatus"
+                "type": "null"
               }
             ]
           }
@@ -4200,10 +4200,10 @@
           "blocked_by": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/AdminPairDeleteBlockers"
               },
               {
-                "$ref": "#/components/schemas/AdminPairDeleteBlockers"
+                "type": "null"
               }
             ]
           },
@@ -4349,10 +4349,10 @@
           "blocked_by": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/AdminResourceDeleteBlockers"
               },
               {
-                "$ref": "#/components/schemas/AdminResourceDeleteBlockers"
+                "type": "null"
               }
             ]
           },
@@ -4609,11 +4609,11 @@
           "cleanup_hint": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AdminStoreDeleteCleanupHint",
                 "description": "Filesystem cleanup the operator still has to do by hand. Set\nwhen `force=true` deleted a store whose data dir is non-empty;\nthe server intentionally never `rm -rf`s secret material."
+              },
+              {
+                "type": "null"
               }
             ]
           },

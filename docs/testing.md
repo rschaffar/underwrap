@@ -190,7 +190,7 @@ The committed npm lock and Nix inputs define the selected frontend matrix, not e
 | Type checking | TypeScript 5.9.3; openapi-typescript 7 requires a `^5.x` peer |
 | Unit tests | Vitest/coverage-v8 4.1.11; jsdom 30.1.1; Testing Library versions selected by the lock |
 | Browser tests | Exact `@playwright/test` 1.63.0 paired with nixpkgs driver 1.63.0; driver Node 22.23.3 via `PLAYWRIGHT_NODEJS_PATH` |
-| API tools | Utoipa 5.5.0; utoipa-axum 0.2.0; OpenAPI 3.1.0; openapi-typescript 7.13.0; openapi-fetch 0.17.0 |
+| API tools | Utoipa 6.0.0; utoipa-axum 0.3.0; OpenAPI 3.1.0; openapi-typescript 7.13.0; openapi-fetch 0.17.0 |
 
 Playwright's exact package pin prevents npm from selecting protocol code incompatible with the pinned browser driver.
 OpenAPI 3.1.0 is the generator's valid feature line; a newer published specification is not by itself a migration requirement.

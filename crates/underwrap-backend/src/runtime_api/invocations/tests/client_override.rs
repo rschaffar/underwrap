@@ -4,6 +4,7 @@ use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use base64::Engine;
+use rustls::pki_types::pem::PemObject;
 use serde_json::Value;
 use underwrap_protocol::policy::{
     ClientAccessOverride, POLICY_DOCUMENT_SECRET_ID, WrapperApprovalMode,
@@ -33,9 +34,11 @@ fn fixture() -> (RuntimeApiFixture, PeerCertificates) {
     let certs = {
         let mut instances = fx.state.shared.client_instances.write().unwrap();
         let record = instances.get_mut(&fx.instance_id).unwrap();
-        let certs = rustls_pemfile::certs(&mut record.current_credential.cert_pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let certs = rustls::pki_types::CertificateDer::pem_slice_iter(
+            record.current_credential.cert_pem.as_bytes(),
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
         record.current_credential.cert_fingerprint =
             crate::runtime_clients::cert_fingerprint_from_der(certs[0].as_ref());
         save_client_instance(&fx.state.admin().clients_dir, record).unwrap();
