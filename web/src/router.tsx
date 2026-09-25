@@ -6,6 +6,7 @@ import {
   createRoute,
   createRouter,
   redirect,
+  type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -59,7 +60,7 @@ function RootLayout() {
   return <Outlet />;
 }
 
-function ErrorScreen({ error }: { error: Error }) {
+function ErrorScreen({ error }: ErrorComponentProps) {
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
       <div className="max-w-md rounded-xl border border-(--color-line) bg-(--color-surface-0)/70 p-6 text-center">

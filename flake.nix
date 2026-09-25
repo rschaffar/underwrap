@@ -50,8 +50,8 @@
 
           # RustSec advisory database for cargo-audit.
           advisoryDb = pkgs.fetchzip {
-            url = "https://github.com/RustSec/advisory-db/archive/2f08fbb85332687b721f2f22706d07448369451b.tar.gz";
-            hash = "sha256-hRoCd9955xmj8kS1ujgkv7Xg2IjcQt/WyYBow3DXZIc=";
+            url = "https://github.com/RustSec/advisory-db/archive/ef8244d224cb89be53491e0c55a96c1279d9fdf1.tar.gz";
+            hash = "sha256-/lAcx/5nlUX2uWslk6eImVeCD3lBKVxSS1sJrrxuaek=";
           };
 
           # Common build inputs.
@@ -76,7 +76,7 @@
             src = ./web;
             # If this hash drifts the fetch fails with the offending hash
             # printed; copy it back into this file.
-            hash = "sha256-cmWImDUbONd6V2cxQ057dbQkCCJhoN+LkntV3aGMqAM=";
+            hash = "sha256-cDLJ40j8s4WX3jNEVNNoKzW7tZsnHd7yJSJ8/ZMnPmg=";
           };
 
           # The build/test npm hooks generate API bindings before their main step.
