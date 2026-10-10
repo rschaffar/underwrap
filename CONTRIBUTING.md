@@ -56,9 +56,11 @@ Never point disposable test fixtures at production resources or accounts.
 ## Propose and review a change
 
 Keep changes bounded and describe the behavior, rationale, risks, and checks in the contribution.
-For nontrivial work needing continuity, choose one work owner, such as an issue, pull request, or agreed temporary working document.
-There is no mandatory committed plan or completion archive.
-Planning and read-only review do not authorize implementation, publication, or deployment.
+For nontrivial work needing continuity, choose one work owner, such as an issue, pull request, finding record, or agreed planning document.
+Use the [review-findings register](docs/review-findings/README.md) for actionable review findings, brief decision summaries, durable evidence and explicit archival dispositions.
+A small approved correction may use its finding as the planning owner; larger or shared corrections link one agreed plan instead of duplicating it.
+There is no general requirement for a committed plan or completion diary.
+Recording findings under that convention does not authorize their implementation, publication, or deployment; an explicitly no-write review keeps its output external.
 Ask before adding dependencies, changing the `underwrap-exec → underwrap-ns` chain, or weakening a security boundary.
 
 The repository default is a dedicated feature branch in a linked worktree based on current local `main`, unless already working in a suitable feature worktree.

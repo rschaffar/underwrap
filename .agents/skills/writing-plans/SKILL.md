@@ -22,7 +22,10 @@ Name the protected asset, attacker, and boundary direction when security is invo
 Use a short checkbox list in the chosen work owner or an external working note.
 Each item names an action, expected result, and the evidence needed to mark it complete.
 Include recovery or interruption handling when the operation can destroy or strand state.
-A committed planning directory, filename convention, local commit, or permanent archive is not required.
+A general committed planning directory or completion archive is not required.
+For work arising from a review, follow the [review-findings convention](../../../docs/review-findings/README.md): suggestions and acceptance criteria are not an approved plan.
+A small explicitly authorized fix may keep its scope/evidence checklist in `finding.md`; a larger or shared correction links one agreed plan from all affected findings.
+Do not create competing plans or treat a shared fix as automatic acceptance of every linked finding.
 
 ## Evidence and completion
 
@@ -32,6 +35,8 @@ Keep meaningful unresolved obligations attached to an explicit current owner rat
 Follow the relevant [testing requirements](../../../docs/testing.md); never weaken an assertion or claim broader protection just to close an item.
 
 When work completes, put current behavior and limitations in their topic guide, important rationale beside the mechanism, and regression evidence in tests.
+Update the linked finding's decision summary and resolution evidence; archive it only under the convention's explicit disposition and verification rules.
+A partial correction or missing required evidence remains unresolved, and accepting risk requires a maintainer decision.
 Do not copy execution transcripts, approval chains, temporary hashes, or a completion diary into product documentation.
 Temporary notes may be discarded once no durable fact or obligation depends on them, subject to the user's instructions and normal file/Git safeguards.
 Implementation, integration, publication, history rewriting, and worktree cleanup retain their separate authority boundaries.
