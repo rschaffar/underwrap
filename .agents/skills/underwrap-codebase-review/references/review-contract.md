@@ -16,6 +16,8 @@ Keep optional product or workflow alternatives separate, with their motivation a
 
 Each reviewer states complete files or explicitly assigned ranges read, source/test exclusions, commands, confirmed strengths, candidate findings, alternatives and verification gaps.
 Use stable report-local IDs when several reviewers need deduplication and accounting.
+When importing actionable findings into the [project register](../../../../docs/review-findings/README.md), assign stable project IDs and preserve those report-local IDs as review-scoped aliases.
+Keep the final verified severity, confidence, distinct merged consequences and missing evidence; a migration is not fresh behavioral verification.
 A file request is not read evidence if its returned content was truncated.
 Existing tests are leads: inspect important assertions and distinguish that inspection from a current passing execution.
 Do not quote secret-bearing inputs or fixtures.
@@ -50,3 +52,4 @@ Add claim matrices, curation maps and input ledgers only where the agreed scope 
 An independent report check verifies content and important omissions, not just headings or counts.
 State a failed acceptance gate honestly and obtain replacement evidence or explicit limited-scope approval before claiming completion.
 Do not embed a new implementation plan or imply that review authorizes fixes, publication or integration.
+Register records may contain bounded correction suggestions and acceptance criteria, but execution planning and later archival follow the single-owner and disposition rules of the project convention.

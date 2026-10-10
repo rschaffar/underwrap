@@ -14,6 +14,7 @@ The project is pre-release: keep the intended design coherent, retain useful pro
 - [Configuration](docs/configuration.md) and [Operations](docs/operations.md): deployment and operator duties.
 - [Agent usage](docs/agent-usage.md): public wrapper discovery, mapped file paths, and portable skill installation.
 - [Testing](docs/testing.md): commands, required checks by boundary, and evidence limits.
+- [Review findings](docs/review-findings/README.md): finding records, decision summaries, evidence, planning ownership, and archival dispositions.
 
 Read the relevant owners before editing and read Security before making security judgments.
 When an index exists, use CodeGraph first for structural source discovery and blast-radius analysis; verify important test coverage directly.
@@ -26,7 +27,9 @@ Code, generated OpenAPI, and tested Nix options are evidence when prose disagree
   A review or a proposed plan does not authorize implementation.
 - Ask before adding dependencies, changing the privileged binary chain, weakening a security boundary, or selecting a materially different product behavior.
 - For work needing continuity, use one explicit work owner and a short scope/evidence checklist.
-  Temporary working notes do not require a committed plan, ticket, report archive, or completion diary.
+  Follow the [review-findings convention](docs/review-findings/README.md) for actionable review records and their three-file active/archive lifecycle.
+  Recording findings is a review deliverable, not authority to implement their suggestions; an explicitly no-write review keeps its output external.
+  General temporary working notes do not require a committed plan, ticket, or completion diary.
 - Keep durable decisions and limitations in their maintained topic owner, with present-tense rationale rather than approval transcripts or commit references.
 - Preserve unrelated changes; never stash, reset, clean, or overwrite them for convenience.
 - Distinguish direct, simulated, unavailable, and user-reported evidence.

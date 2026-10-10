@@ -11,8 +11,10 @@ This is an engineering assessment, not a formal proof or an independent security
 
 ## Authority
 
-Review only: do not fix source, generate tracked-contract changes, create implementation work, commit, or rewrite history.
-Keep reports and intermediate evidence in a private directory outside the repository unless the user explicitly requests another destination through the applicable Git lifecycle.
+Review only: do not fix source, generate tracked-contract changes, execute correction plans, or rewrite history.
+Recording actionable findings follows the [project convention](../../../docs/review-findings/README.md) and applicable Git lifecycle; it does not authorize their implementation, integration or publication.
+Keep raw reports and intermediate evidence in a private directory outside the repository.
+An explicitly no-write review keeps all output external and reports any pending register import.
 Do not quote credentials, brokered values, keys or secret-bearing fixtures.
 Review the current working tree, including relevant existing changes; never clean it to make review convenient.
 
@@ -23,6 +25,8 @@ Use CodeGraph before structural discovery when an index exists.
 Hash the scope with `scripts/scope-manifest.py`; record the baseline and compare it after research, review, executable validation and before reporting.
 On drift, stop and re-establish a coherent baseline rather than publishing mixed-revision evidence.
 The script records hashes and metadata, not file contents.
+Complete the unchanged-baseline review and synthesis before importing its findings into the register.
+Treat that import as a separate documentation-only phase: record its paths and verify that reviewed source and contracts remain unchanged instead of calling the new full-tree manifest identical.
 
 Choose independent review angles that cover the requested scope without a mandatory fixed-size panel.
 For a broad code review, consider shared formats/storage, backend, daemon, privileged chain/Secret Service, SPA, Nix/deployment, documentation, architecture, tests and security claims.
@@ -46,6 +50,9 @@ If verification fails, report the exact blocker rather than presenting the draft
 
 ## Handoff
 
-Present the verified conclusions, complete finding index, intentional alternatives, checks and meaningful gaps, with the external report path and baseline.
-Keep detailed claim/evidence inventories in the report rather than creating permanent repository bureaucracy.
-Stop before implementation; applying recommendations requires a separate user request.
+Present the verified conclusions, complete finding index, intentional alternatives, checks and meaningful gaps, with the report paths and reviewed baseline.
+For register imports, follow the project convention's three-file structure, stable IDs and review-scoped aliases; retain the final verified dispositions, deduplicated consequences and evidence limits.
+Make each record's essential evidence durable without copying raw reports, temporary paths or the full claim inventory into the register.
+Keep the full review's contextual conclusions and claim inventory in its review report; do not manufacture extra findings to archive every observation.
+Verify the import's substantive fidelity and links separately from the review's original behavioral checks.
+Stop before implementing corrections; applying recommendations requires a separate user request.

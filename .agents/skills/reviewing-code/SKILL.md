@@ -6,8 +6,9 @@ description: Perform a bounded read-only review of a diff, commit, pull request,
 # Reviewing code
 
 Review the requested scope rather than silently expanding into a whole-repository audit.
-Review is read-only unless the user separately authorizes fixes.
-Do not create implementation work merely because a finding exists.
+Source review is read-only unless the user separately authorizes fixes.
+Record actionable findings under the [project convention](../../../docs/review-findings/README.md), subject to its no-write and confidentiality exceptions and the Git lifecycle.
+Creating a finding record does not authorize implementation work.
 
 ## Method
 
@@ -39,5 +40,7 @@ For each confirmed finding include priority, concrete trigger, path and line, ev
 For security findings also name the asset, attacker, direction, and violated invariant.
 Use critical for demonstrated severe security/integrity failures or inability to use the supported product, high for material blocking defects, medium for meaningful bounded corrections, and low for localized polish.
 If no finding survives verification, say so and state meaningful remaining limits.
-Keep reports outside the repository unless the user explicitly requests a repository artifact through the applicable Git lifecycle.
+Create or update the finding's brief `README.md`, technical `finding.md` and bounded `evidence.md` under the project convention; preserve stable IDs, aliases, uncertainty and existing work ownership.
+Keep raw reports and intermediate evidence private and external; essential evidence in the record must not depend on temporary artifacts.
+A no-write review reports externally without importing records.
 Give a mergeability verdict only when requested; a review does not authorize integration or publication.
