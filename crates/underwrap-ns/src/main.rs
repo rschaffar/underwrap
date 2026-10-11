@@ -226,10 +226,14 @@ fn run() -> Result<(), String> {
     // through a checked target-owned runtime directory only in this namespace.
     let directory_layout = if has_files {
         let layout = target_uid::with_target_fsuid(isolation, || {
+            // Filesystem-ID changes can reset dumpability. Reestablish the
+            // invariant before setup while decoded brokered bytes are live.
+            make_process_non_dumpable()?;
             prepare_directory_mounts(&directory_plan, Path::new(&xdg_runtime_dir), isolation)
-        })??;
+        });
+        // Restoration can reset it again; check even when setup failed.
         make_process_non_dumpable()?;
-        layout
+        layout??
     } else {
         Vec::new()
     };
