@@ -113,6 +113,59 @@ let
         ;;
     esac
   '';
+  # RF-0001: target-validated readiness, then an explicit release barrier.
+  # Only synthetic fixture state is compared; output contains decision metadata.
+  stagingProvenanceScript = pkgs.writeScript "staging-provenance-target" ''
+    #!${pkgs.python3}/bin/python3
+    import os
+    import stat
+    import subprocess
+    import sys
+    import time
+
+    directory = os.path.join(os.environ["HOME"], ".config/staging-provenance")
+    path = os.path.join(directory, "state")
+    release, mode = sys.argv[1:]
+    uid = os.getuid()
+    assert uid != 0
+    assert os.stat(directory).st_uid == uid
+    assert stat.S_IMODE(os.stat(directory).st_mode) == 0o700
+    assert os.stat(path).st_uid == uid
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert open(path, "rb").read() == b"provenance-original"
+    staging = os.path.join(os.environ["XDG_RUNTIME_DIR"], ".underwrap-files")
+    assert os.stat(staging).st_uid == uid
+    assert os.stat(staging).st_gid == os.getgid()
+    assert stat.S_IMODE(os.stat(staging).st_mode) == 0o700
+    assert os.stat(staging).st_dev == os.stat(directory).st_dev
+    filesystem = subprocess.check_output(["${pkgs.coreutils}/bin/stat", "-f", "-c", "%T", directory], text=True).strip()
+    assert filesystem == "tmpfs"
+    options = subprocess.check_output(["${pkgs.util-linux}/bin/findmnt", "-n", "-o", "OPTIONS", "-T", directory], text=True).strip().split(",")
+    assert "noswap" in options
+    assert "size=8192k" in options
+    for line in open("/proc/self/status"):
+        if line.startswith(("CapInh:", "CapPrm:", "CapEff:", "CapAmb:")):
+            assert int(line.split()[1], 16) == 0
+    for name in os.listdir("/proc/self/fd"):
+        if int(name) > 2:
+            try:
+                os.fstat(int(name))
+            except OSError:
+                continue
+            raise AssertionError("target inherited an unexpected descriptor")
+    print(f"STAGING_PROVENANCE_READY uid={uid} fs=tmpfs noswap=1", flush=True)
+    deadline = time.monotonic() + 60
+    while not os.path.exists(release):
+        assert time.monotonic() < deadline, "release barrier timed out"
+        time.sleep(0.05)
+    assert open(path, "rb").read() == b"provenance-original"
+    if mode == "change":
+        with open(path, "wb") as output:
+            output.write(b"provenance-target-result")
+    else:
+        assert mode == "unchanged"
+    print("STAGING_PROVENANCE_DONE", flush=True)
+  '';
   dirSleepScript = pkgs.writeShellScript "dir-sleep-target" ''
     set -eu
     ${pkgs.coreutils}/bin/cat "$HOME/.config/underwrap-dir-a/token" >/dev/null
@@ -658,6 +711,12 @@ in {
             resource = "test/caps-tok";
             env = true;
             envSet.PATH = pkgs.lib.makeBinPath [ pkgs.gnugrep ];
+          };
+          test-staging-provenance = {
+            target = "${stagingProvenanceScript}";
+            resource = "test/staging-provenance";
+            files.paths = [ ".config/staging-provenance" ];
+            accessPaths = [ "~/.config" ];
           };
           test-dir-write = {
             target = "${dirWriteScript}";

@@ -9,11 +9,11 @@ Current behavior and enduring limitations belong in the maintained [topic docume
 ```text
 review-findings/
   README.md
-  active/RF-0001/
+  active/RF-0002/
     README.md
     finding.md
     evidence.md
-  archived/RF-0002/
+  archived/RF-0001/
     README.md
     finding.md
     evidence.md
@@ -129,7 +129,7 @@ The register is an actionable-findings migration, not an archive of the full rev
 
 | ID | Review aliases | Priority | State | Finding |
 | --- | --- | --- | --- | --- |
-| [RF-0001](active/RF-0001/README.md) | `N-01` | High | `open` | Replaceable staging root can substitute collected files |
+| [RF-0001](archived/RF-0001/README.md) | `N-01` | High | `archived` (`fixed`) | Replaceable staging root can substitute collected files |
 | [RF-0002](active/RF-0002/README.md) | `B-01` | High (conditional) | `open` | Dynamic-debug SPA fallback can disclose an outside symlink target |
 | [RF-0003](active/RF-0003/README.md) | `F-01`, `A-01`, `S-02`, `W-01` | Medium | `open` | Structured admin libsecret identifiers fail initial publication |
 | [RF-0004](active/RF-0004/README.md) | `B-02` | Medium | `open` | Authenticated activity does not renew inactivity expiry |

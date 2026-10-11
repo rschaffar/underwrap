@@ -1,5 +1,7 @@
 use super::*;
 
+mod replacement;
+
 #[test]
 fn validate_relative_path_rejects_bad_inputs() {
     for path in ["", "/abs", "a//b", "a/./b", "a/../b", "a\0b"] {
@@ -11,7 +13,7 @@ fn validate_relative_path_rejects_bad_inputs() {
     assert!(validate_relative_path(".config/gws").is_ok());
 }
 
-fn round_trip_plans(tempdir: &Path) -> Vec<DirectoryMountPlan> {
+fn round_trip_plans(tempdir: &Path) -> Vec<DirectoryMount> {
     let staging_a = tempdir.join("mount-0");
     let staging_b = tempdir.join("mount-1");
     std::fs::create_dir_all(&staging_a).unwrap();
@@ -21,13 +23,13 @@ fn round_trip_plans(tempdir: &Path) -> Vec<DirectoryMountPlan> {
     std::fs::write(staging_a.join("sub").join("b.bin"), b"\x00\x01\x02").unwrap();
     std::fs::write(staging_b.join("c.txt"), b"charlie").unwrap();
     vec![
-        DirectoryMountPlan {
+        DirectoryMount {
             mount_path: ".config/gh".to_string(),
-            staging_path: staging_a,
+            directory: Directory::open_path(&staging_a).unwrap(),
         },
-        DirectoryMountPlan {
+        DirectoryMount {
             mount_path: ".config/git".to_string(),
-            staging_path: staging_b,
+            directory: Directory::open_path(&staging_b).unwrap(),
         },
     ]
 }
@@ -55,18 +57,16 @@ fn collect_staging_files_round_trips_files_section() {
 
 #[test]
 fn collect_staging_files_refuses_symlinks() {
-    // A symlink in the staging aborts the writeback so it can never reach the
-    // backend (for an isolated target the walk also runs under setfsuid(X),
-    // which bounds any followed path to the target's own uid). Here we assert the
-    // static refusal.
+    // Every component is opened NOFOLLOW; a symlink aborts writeback rather
+    // than reaching any outside object, even if it is readable by the target.
     let tempdir = tempfile::TempDir::new().unwrap();
     let staging = tempdir.path().join("mount-0");
     std::fs::create_dir_all(&staging).unwrap();
     std::fs::write(staging.join("ok.txt"), b"ok").unwrap();
     std::os::unix::fs::symlink("/etc/passwd", staging.join("evil")).unwrap();
-    let plans = vec![DirectoryMountPlan {
+    let plans = vec![DirectoryMount {
         mount_path: ".config/gh".to_string(),
-        staging_path: staging,
+        directory: Directory::open_path(&staging).unwrap(),
     }];
     let err = collect_staging_files(&plans).unwrap_err();
     assert!(
@@ -130,16 +130,11 @@ fn blob_with_files(entries: &[(&str, &[u8])]) -> ResourceBlob {
 fn plan_and_realize_for_test(
     blob: ResourceBlob,
     mount: &str,
-    staging_root: &Path,
+    _staging_root: &Path,
     target_home: &Path,
 ) -> Result<(), String> {
-    let plan = plan_directory_projection(
-        &[mount.to_string()],
-        staging_root,
-        "complete-projection-test",
-        blob,
-    )?;
-    realize_directory_mounts(target_home, &plan)
+    let plan = plan_directory_projection(&[mount.to_string()], "complete-projection-test", blob)?;
+    realize_directory_mounts(target_home, &plan, &[])
 }
 
 #[test]
@@ -188,14 +183,12 @@ fn complete_projection_file_descendant_collision_has_zero_staging_side_effects()
 
 #[test]
 fn complete_projection_valid_input_routes_every_file_exactly_once() {
-    let tempdir = tempfile::TempDir::new().unwrap();
     let blob = blob_with_files(&[
         (".config/gh/hosts.yml", b"gh"),
         (".config/git/config", b"git"),
     ]);
     let plan = plan_directory_projection(
         &[".config/gh".to_string(), ".config/git".to_string()],
-        tempdir.path(),
         "complete-projection-test",
         blob,
     )
@@ -211,11 +204,9 @@ fn complete_projection_valid_input_routes_every_file_exactly_once() {
 
 #[test]
 fn complete_projection_rejects_multiple_strict_routes() {
-    let tempdir = tempfile::TempDir::new().unwrap();
     let blob = blob_with_files(&[("a/b/c", b"value")]);
     let error = plan_directory_projection(
         &["a".to_string(), "a/b".to_string()],
-        tempdir.path(),
         "complete-projection-test",
         blob,
     )

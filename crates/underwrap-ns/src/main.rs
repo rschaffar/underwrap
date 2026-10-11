@@ -30,6 +30,7 @@ mod tests;
 mod boundary;
 mod caps;
 mod directory_credential;
+mod directory_handle;
 mod env;
 mod exec_gate;
 mod handoff;
@@ -49,16 +50,13 @@ use std::path::{Path, PathBuf};
 
 use caps::{drop_caps, set_no_new_privs};
 use directory_credential::{
-    DirectoryMountPlan, DirectoryProjectionPlan, plan_directory_projection,
+    DirectoryMount, DirectoryProjectionPlan, plan_directory_projection, prepare_directory_mounts,
     realize_directory_mounts,
 };
 use env::build_target_env;
 use exec_gate::{ExecGate, GateAuthorization, GateReader, GateWriter};
 use libsecret::setup_libsecret;
-use mounts::{
-    make_mount_namespace_private, remount_proc, setup_directory_staging_tmpfs,
-    setup_mount_namespace,
-};
+use mounts::{make_mount_namespace_private, remount_proc, setup_mount_namespace};
 use publication::{PublicationPair, Receiver};
 use resource_channel::ResourceChannel;
 use supervision::{LivenessWriter, SigchldState};
@@ -66,8 +64,6 @@ use target_status::{TargetStatus, TargetStatusReader, TargetStatusWriter};
 use underwrap_protocol::exec::{EXEC_BUNDLE_FD, ExecBundle, IDMAP_REQUIRED_ENV};
 use underwrap_protocol::resource_blob::ResourceBlob;
 use writeback::{WritebackInput, WritebackOutcome};
-
-pub(crate) const DIRECTORY_STAGING_ROOT: &str = "/tmp/.underwrap-ns-directories";
 
 struct TargetIdentity {
     uid: libc::uid_t,
@@ -210,14 +206,10 @@ fn run() -> Result<(), String> {
     // configuration in the exec bundle.
     let idmap_paths = exec_bundle.access_paths.clone();
 
-    // Re-arm after all pre-namespace helper and handoff work. Linux clears the
-    // setting across several credential transitions; retaining the private
-    // reader through this second check also closes any already-dead-parent race
-    // before the namespace fork. The reader never enters the target namespace.
+    // Retain outer liveness through mount setup and the temporary fsid window;
+    // its final checked rearm below follows every pre-fork credential change.
     supervision::arm_and_check(&outer_liveness)
-        .map_err(|e| format!("rearming wrapper-parent lifetime before namespace fork: {e}"))?;
-    drop(outer_liveness);
-
+        .map_err(|e| format!("checking wrapper-parent lifetime before namespace setup: {e}"))?;
     prepare_namespace()?;
 
     // Apply the idmapped bind mounts now: fsuid is still the caller (so open_tree
@@ -228,6 +220,26 @@ fn run() -> Result<(), String> {
         idmap::mount_idmapped_dirs(&idmap_paths, &target_identity.home, userns)
             .map_err(|e| format!("setting up idmapped directories: {e}"))?;
     }
+
+    // Prepare only empty projection directories before fork, giving both
+    // supervisors handles to the same filesystem objects. The tmpfs is attached
+    // through a checked target-owned runtime directory only in this namespace.
+    let directory_layout = if has_files {
+        let layout = target_uid::with_target_fsuid(isolation, || {
+            // Filesystem-ID changes can reset dumpability. Reestablish the
+            // invariant before setup while decoded brokered bytes are live.
+            make_process_non_dumpable()?;
+            prepare_directory_mounts(&directory_plan, Path::new(&xdg_runtime_dir), isolation)
+        });
+        // Restoration can reset it again; check even when setup failed.
+        make_process_non_dumpable()?;
+        layout??
+    } else {
+        Vec::new()
+    };
+    supervision::arm_and_check(&outer_liveness)
+        .map_err(|e| format!("rearming wrapper-parent lifetime before namespace fork: {e}"))?;
+    drop(outer_liveness);
 
     let pid = fork_into_namespace()?;
     if pid == 0 {
@@ -250,6 +262,7 @@ fn run() -> Result<(), String> {
             isolation,
             has_files,
             &directory_plan,
+            directory_layout,
         )
     } else {
         let receiver = publication.map(|pair| {
@@ -261,7 +274,7 @@ fn run() -> Result<(), String> {
             exec_gate.into_parent(),
             namespace_liveness.into_host(),
             target_status.into_host(),
-            directory_plan.mounts(),
+            &directory_layout,
             &resource_channel,
             has_files,
             isolation,
@@ -370,7 +383,6 @@ fn plan_files_projection(
 ) -> Result<DirectoryProjectionPlan, String> {
     plan_directory_projection(
         &resource_channel.files_target_paths,
-        &PathBuf::from(DIRECTORY_STAGING_ROOT),
         &resource_channel.resource_id,
         blob,
     )
@@ -379,11 +391,15 @@ fn plan_files_projection(
 
 /// Realize only a completed files projection after switching to the dedicated
 /// target uid, so fsuid is naturally X.
-fn realize_files_mounts(target_home: &Path, plan: &DirectoryProjectionPlan) -> Result<(), String> {
+fn realize_files_mounts(
+    target_home: &Path,
+    plan: &DirectoryProjectionPlan,
+    mounts: &[DirectoryMount],
+) -> Result<(), String> {
     if plan.is_empty() {
         return Ok(());
     }
-    realize_directory_mounts(target_home, plan)
+    realize_directory_mounts(target_home, plan, mounts)
         .map_err(|e| format!("realizing files-slot mounts: {e}"))
 }
 
@@ -414,6 +430,7 @@ fn run_relay(
     isolation: target_uid::Isolation,
     has_files: bool,
     directory_plan: &DirectoryProjectionPlan,
+    directory_layout: Vec<DirectoryMount>,
 ) -> ! {
     let prepared = (|| -> Result<_, String> {
         // The host owns the sole writer. Arm before namespace-local setup as
@@ -432,10 +449,11 @@ fn run_relay(
         make_process_non_dumpable()?;
 
         if has_files {
-            setup_directory_staging_tmpfs(DIRECTORY_STAGING_ROOT)
-                .map_err(|e| format!("directory staging setup (isolated): {e}"))?;
-            realize_files_mounts(&target_identity.home, directory_plan)?;
+            realize_files_mounts(&target_identity.home, directory_plan, &directory_layout)?;
         }
+        // Only the host collector retains staging authority. Drop the relay's
+        // handles before any target/helper fork; all handles are also CLOEXEC.
+        drop(directory_layout);
         if libsecret_enabled {
             setup_mount_namespace().map_err(|e| format!("mount namespace setup failed: {e}"))?;
         }
@@ -654,7 +672,7 @@ fn run_parent(
     gate_reader: GateReader,
     namespace_liveness: LivenessWriter,
     target_status_reader: TargetStatusReader,
-    directory_layout: &[DirectoryMountPlan],
+    directory_layout: &[DirectoryMount],
     resource_channel: &ResourceChannel,
     has_files: bool,
     isolation: target_uid::Isolation,

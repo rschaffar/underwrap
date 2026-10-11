@@ -165,7 +165,11 @@ Files projection remains anchored to the caller's passwd home even if `envSet.HO
 A files key is a full caller-home-relative path, such as `.config/tool/credentials`.
 It must route below exactly one configured `files.paths` prefix, cannot equal the mount path, and cannot form a file/descendant collision.
 The whole routing plan is validated before projection effects.
-Staging uses private size-capped `noswap` tmpfs; collection admits regular files and rejects symlinks.
+Staging uses one private size-capped `noswap` tmpfs and retained directory handles, without a shared `/tmp` staging mountpoint.
+A mode-`0000` `.underwrap-files` attachment beneath the dedicated target's mode-`0700` runtime directory anchors the tmpfs only in the invocation's private namespace.
+Runtime and attachment descriptors require exact target ownership and modes; the host sees only the bare attachment, never staged contents.
+Materialization, binding and collection use the retained objects; collection admits regular files and rejects symlinks.
+Files setup requires the Linux 6.5 mount/permission APIs and mandatory `noswap` support even when host hardening is disabled; unsupported operations reject without a pathname fallback.
 
 `accessPaths` exposes existing host directories, not backend-managed secret storage.
 Entries may be canonical absolute paths, `~`, or canonical `~/...` paths.

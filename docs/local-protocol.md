@@ -65,10 +65,18 @@ The helper closes fd 3 and fd 20 before briefly becoming dumpable for its proc m
 With fixed handoff slots still occupied, the host creates private CLOEXEC authorization-gate, inner-liveness, and target-status pipes.
 It reads execution metadata, checks out the resource, builds the final environment, and completes pure files planning before namespace preparation, idmapped mounts, PID fork, staging, target identity switch, or target-facing helper launch.
 
-The host unshares PID, mount, IPC, and UTS namespaces, makes mount propagation private, realizes planned host-access mounts, and forks a trusted non-execing PID 1 relay.
+The host unshares PID, mount, IPC, and UTS namespaces, makes mount propagation private, and realizes planned host-access mounts.
+For files projection, it creates one capped `noswap` tmpfs inside a checked target-fsid window before fork.
+The filesystem is created detached, then attached by descriptor to a mode-`0000` `.underwrap-files` directory beneath the dedicated target's provisioned mode-`0700` runtime directory, only in this private namespace.
+Both attachment directories require exact target UID/GID and modes on their held descriptors, interpreted in the current mount/idmap view; symlinks and unexpected visible ownership reject.
+This namespace attachment is required before `open_tree` can clone the projection directories.
+Retained CLOEXEC projection handles pin the same filesystem objects in both supervisors; no files-staging mountpoint lives in shared `/tmp` and no later staging operation re-resolves the runtime pathname.
+Filesystem-context creation, options, mount creation, attachment and empty-directory creation all run as the target filesystem identity, with checked restoration before the final pre-fork liveness rearm.
+Unsupported mount APIs or required options reject without a pathname-based fallback.
+The host then forks a trusted non-execing PID 1 relay.
 The relay remounts `/proc`, switches supplementary groups to only the target group and all real/effective/saved ids to the dedicated identity, and becomes non-dumpable before staging.
 It arms parent-death `SIGKILL` and rearms immediately after credential switching, which clears that setting.
-After projection setup it sets `NoNewPrivs`, clears effective/permitted/inheritable/ambient capabilities, verifies the drop and inability to regain UID 0, and performs a final liveness arm/check.
+After projection setup it drops its staging handles before any target/helper fork, sets `NoNewPrivs`, clears effective/permitted/inheritable/ambient capabilities, verifies the drop and inability to regain UID 0, and performs a final liveness arm/check.
 It closes fd 20 before forking the configured target as PID 2.
 
 PID 2 establishes its own session, restores the intended SIGCHLD state, starts private helpers, and closes or marks CLOEXEC every fd above stderr before target exec.
@@ -108,7 +116,7 @@ A request completed before later stage-one death cannot be retracted without bac
 The NixOS namespace wrapper supplies `CAP_SYS_ADMIN`, `CAP_SETUID`, and `CAP_SETGID`.
 `CAP_SETPCAP` is named so the security wrapper can raise those capabilities; NixOS does not pass it into `underwrap-ns`'s ambient set.
 Supervisors without files projection drop capabilities before waiting.
-Files supervisors retain all three capabilities through target execution and the bounded post-run files-only fsuid collection window; they do not selectively discard `CAP_SYS_ADMIN` before waiting.
+Files supervisors use a target-fsid window for detached staging setup and retain all three capabilities through target execution and the bounded post-run files-only fsuid collection window; they do not selectively discard `CAP_SYS_ADMIN` before waiting.
 
 Ordinary fsuid/fsgid restoration is queried and checked, and restoration failure is fatal with the collected result dropped.
 Failed entry is different: if setting fsuid fails after fsgid changed, the fsgid rollback is best effort and its result is not verified before returning the fatal setup error.
@@ -177,8 +185,11 @@ The caller's logind runtime tree is not automatically mounted.
 
 Files planning validates all configured clean relative mounts and all file keys before effects.
 Each key must route to exactly one strict mount prefix, must not equal a mount path, and must not collide as ancestor/descendant of another regular-file key.
-Realization consumes only the complete plan, stages regular files on private capped `noswap`, mode-`0700` tmpfs, and bind-mounts the selected paths into the caller-home view.
-Post-run collection accepts regular files and rejects symlinks.
+Realization consumes only the complete plan and retained projection directory handles, stages regular files on the private capped `noswap`, mode-`0700` tmpfs, and binds clones of the held directory objects into the caller-home view with `open_tree` and `move_mount`.
+Materialization and collection resolve each child relative to retained directory descriptors with `O_NOFOLLOW`; ancestor or staging-name replacement cannot redirect them.
+The host retains the original projection objects until authorized collection completes, independently of the target's bind-mount names.
+Collection uses fresh directory streams, accepts only regular files and directories, and rejects symlinks and unsupported entries.
+Target-home attachment points are opened component-wise and bound through held destination descriptors; caller changes to their names can still affect target path reachability, not the host's staging authority.
 The target sees writable staging regardless of the persistence flag.
 
 `accessPaths` is a separate explicit host-access mechanism using one caller-to-target UID and GID idmap.

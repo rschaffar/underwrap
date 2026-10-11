@@ -17,27 +17,27 @@
 //! target path to reconstruct the full keys for the Checkin blob.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::Path;
+
+use crate::directory_handle::Directory;
 
 use underwrap_protocol::message::SecretBytes;
 use underwrap_protocol::resource_blob::ResourceBlob;
 
-/// The pure layout for one files-slot mount: where its staging tmpfs
-/// subdirectory lives and where it binds into the target's home. Computed by
-/// the parent with **no filesystem side effects** (see
-/// [`plan_directory_projection`]) so the same layout drives both the child-side
-/// realize step (at fsuid X) and the parent-side end-of-run writeback walk
-/// (under a `setfsuid(X)` window).
+/// Pure, pathname-free staging plan, computed before any filesystem effects.
 #[derive(Debug, Clone)]
 pub struct DirectoryMountPlan {
-    /// Wrapper-configured relative path (e.g. `.config/gh`). Key prefix when
-    /// reconstructing blob file keys at writeback; also where (under
-    /// `<target_home>`) the staging binds.
     pub mount_path: String,
-    /// Host-side staging tmpfs subdirectory (`<staging_root>/mount-{i}`)
-    /// materialized into and bound at the mount path; walked at writeback.
-    pub staging_path: PathBuf,
+}
+
+/// Actual projection authority, prepared under target filesystem ids before
+/// fork. Both supervisors inherit the same pinned directory objects; neither
+/// stores or re-resolves an absolute staging pathname.
+#[derive(Debug)]
+pub struct DirectoryMount {
+    pub mount_path: String,
+    pub directory: Directory,
 }
 
 #[derive(Debug)]
@@ -62,10 +62,6 @@ impl DirectoryProjectionPlan {
         &self.blob
     }
 
-    pub fn mounts(&self) -> &[DirectoryMountPlan] {
-        &self.mounts
-    }
-
     pub fn is_empty(&self) -> bool {
         self.mounts.is_empty()
     }
@@ -78,7 +74,6 @@ impl DirectoryProjectionPlan {
 /// errors after staging writes begin.
 pub fn plan_directory_projection(
     target_paths: &[String],
-    staging_root: &Path,
     resource_id: &str,
     blob: ResourceBlob,
 ) -> Result<DirectoryProjectionPlan, String> {
@@ -91,11 +86,10 @@ pub fn plan_directory_projection(
     }
 
     let mut mounts = Vec::with_capacity(target_paths.len());
-    for (index, mount_path) in target_paths.iter().enumerate() {
+    for mount_path in target_paths {
         validate_relative_path(mount_path)?;
         mounts.push(DirectoryMountPlan {
             mount_path: mount_path.clone(),
-            staging_path: staging_root.join(format!("mount-{index}")),
         });
     }
 
@@ -134,69 +128,92 @@ pub fn plan_directory_projection(
     })
 }
 
-/// Realize a completed files projection. The staging tmpfs **root** must already
-/// be mounted by the child after switching to uid X. Environmental filesystem
-/// and mount operations can still fail, but routing, equality, cleanliness, and
-/// aggregate file-shape semantics were settled before this function is called.
+/// Create only empty directories on one private tmpfs. The caller runs this
+/// in its private mount namespace and checked target-fsid window after pure
+/// planning. No brokered bytes are materialized until the relay becomes X.
+pub fn prepare_directory_mounts(
+    plan: &DirectoryProjectionPlan,
+    runtime_dir: &Path,
+    isolation: crate::target_uid::Isolation,
+) -> Result<Vec<DirectoryMount>, String> {
+    if plan.is_empty() {
+        return Ok(Vec::new());
+    }
+    let runtime = Directory::open_target_home(runtime_dir)?;
+    runtime.require_identity_mode(isolation.uid, isolation.gid, 0o700)?;
+    let attachment = runtime.target_child(".underwrap-files", 0)?;
+    attachment.require_identity_mode(isolation.uid, isolation.gid, 0)?;
+    let mount = crate::mounts::create_directory_staging_tmpfs()?;
+    // Attach while the fsmount descriptor still owns the anonymous mount.
+    // open_tree can then clone its directories inside this namespace; no later
+    // operation resolves the attachment's pathname.
+    let root = Directory::from_mount(mount, &attachment)?;
+    root.require_identity_mode(isolation.uid, isolation.gid, 0o700)?;
+    prepare_mount_directories(plan, &root)
+}
+
+fn prepare_mount_directories(
+    plan: &DirectoryProjectionPlan,
+    root: &Directory,
+) -> Result<Vec<DirectoryMount>, String> {
+    plan.mounts
+        .iter()
+        .enumerate()
+        .map(|(index, mount)| {
+            Ok(DirectoryMount {
+                mount_path: mount.mount_path.clone(),
+                directory: root.create_child(&format!("mount-{index}"), 0o700)?,
+            })
+        })
+        .collect()
+}
+
+/// Materialize and bind the completed projection after the relay becomes X.
 pub fn realize_directory_mounts(
     target_home: &Path,
     plan: &DirectoryProjectionPlan,
+    mounts: &[DirectoryMount],
 ) -> Result<(), String> {
-    // Phase 1: create per-mount staging directories.
-    for mount in &plan.mounts {
-        create_dir_mode(&mount.staging_path, 0o700)?;
-    }
-
-    // Phase 2: materialize only pre-routed files. The plan and blob originate
-    // from the same immutable Checkout decode in `run`, so indexing cannot
-    // introduce a new semantic failure during realization.
-    for file in &plan.files {
-        let content = &plan.blob.files[&file.key];
-        materialize_file(
-            &plan.mounts[file.mount_index].staging_path,
-            &file.relative_path,
-            content.as_slice(),
-        )?;
-    }
-
-    // Phase 3: bind-mount each staging dir at its target path.
-    for mount in &plan.mounts {
+    materialize_directory_files(plan, mounts)?;
+    for mount in mounts {
         let mountpoint = ensure_mount_target(target_home, &mount.mount_path)?;
-        bind_mount_dir(&mount.staging_path, &mountpoint)?;
+        mount.directory.bind_to(&mountpoint)?;
     }
-
     Ok(())
 }
 
-fn create_dir_mode(path: &Path, mode: u32) -> Result<(), String> {
-    std::fs::create_dir_all(path)
-        .map_err(|e| format!("creating staging directory {}: {e}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .map_err(|e| format!("setting permissions on {}: {e}", path.display()))
+fn materialize_directory_files(
+    plan: &DirectoryProjectionPlan,
+    mounts: &[DirectoryMount],
+) -> Result<(), String> {
+    if mounts.len() != plan.mounts.len()
+        || mounts
+            .iter()
+            .zip(&plan.mounts)
+            .any(|(mount, planned)| mount.mount_path != planned.mount_path)
+    {
+        return Err("projection handles do not match the completed plan".into());
+    }
+    for file in &plan.files {
+        materialize_file(
+            &mounts[file.mount_index].directory,
+            &file.relative_path,
+            plan.blob.files[&file.key].as_slice(),
+        )?;
+    }
+    Ok(())
 }
 
-/// Walk every mount's staging tmpfs and produce a `files` section
-/// suitable for inclusion in the end-of-run Checkin blob. Each
-/// relative path is re-prefixed with the mount's `mount_path` so the
-/// emitted keys match the shape the backend originally handed us.
-///
-/// The walk rejects symlinks (a symlink in the staging aborts the writeback) and
-/// reads only regular files. For an isolated target the supervisor performs this
-/// walk inside a `setfsuid(X)` window (see [`crate::run_parent`]), which bounds
-/// every read to the target's own uid X — so a target-planted symlink could only
-/// redirect to content X already controls, never to the caller's files. That
-/// uid bound, not a fancier resolver, is what keeps the cross-uid writeback safe.
+/// Walk the originally pinned projection objects under the target-fsid window.
+/// Each component is opened with NOFOLLOW and each read uses the resulting fd;
+/// neither ancestor renames nor replacement staging names redirect collection.
+/// The target and its descendants have been reaped before this walk begins.
 pub fn collect_staging_files(
-    plans: &[DirectoryMountPlan],
+    mounts: &[DirectoryMount],
 ) -> Result<BTreeMap<String, SecretBytes>, String> {
     let mut out = BTreeMap::new();
-    for plan in plans {
-        collect_files_with_prefix(
-            &plan.staging_path,
-            &plan.staging_path,
-            &plan.mount_path,
-            &mut out,
-        )?;
+    for mount in mounts {
+        collect_files_with_prefix(&mount.directory, "", &mount.mount_path, &mut out)?;
     }
     Ok(out)
 }
@@ -253,136 +270,80 @@ fn strip_mount_prefix<'a>(key: &'a str, mount: &str) -> &'a str {
 /// non-regular entries abort the walk so they can never reach the
 /// backend.
 fn collect_files_with_prefix(
-    root: &Path,
-    current: &Path,
+    directory: &Directory,
+    prefix: &str,
     mount_prefix: &str,
     out: &mut BTreeMap<String, SecretBytes>,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(current)
-        .map_err(|e| format!("listing directory {}: {e}", current.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("reading directory entry: {e}"))?;
-        let path = entry.path();
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|e| format!("stat {}: {e}", path.display()))?;
-        let file_type = metadata.file_type();
-        if file_type.is_symlink() {
-            return Err(format!(
-                "managed directory '{}' contains a symlink at {}",
-                root.display(),
-                path.display()
-            ));
-        }
-        if file_type.is_dir() {
-            collect_files_with_prefix(root, &path, mount_prefix, out)?;
-        } else if file_type.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|e| format!("stripping prefix from {}: {e}", path.display()))?
-                .to_str()
-                .ok_or_else(|| format!("path {} is not valid UTF-8", path.display()))?;
-            validate_relative_path(relative)?;
-            let bytes = std::fs::read(&path)
-                .map_err(|e| format!("reading staged file {}: {e}", path.display()))?;
+    for name in directory.entries()? {
+        let name = name
+            .to_str()
+            .ok_or_else(|| "projection entry name is not valid UTF-8".to_string())?;
+        let relative = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        validate_relative_path(&relative)?;
+        let mut file = directory.open_entry(name)?;
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("reading projection metadata: {e}"))?;
+        if metadata.is_dir() {
+            collect_files_with_prefix(&Directory::from_file(file), &relative, mount_prefix, out)?;
+        } else if metadata.is_file() {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|e| format!("reading projection file: {e}"))?;
             out.insert(
                 format!("{mount_prefix}/{relative}"),
                 SecretBytes::from(bytes),
             );
         } else {
-            return Err(format!(
-                "managed directory '{}' contains unsupported entry type at {}",
-                root.display(),
-                path.display()
-            ));
+            return Err("projection directory contains unsupported entry type".into());
         }
     }
     Ok(())
 }
 
 fn materialize_file(
-    staging_root: &Path,
+    directory: &Directory,
     relative_path: &str,
     content: &[u8],
 ) -> Result<(), String> {
-    let target = staging_root.join(relative_path);
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("creating staging directory {}: {e}", parent.display()))?;
-        set_mode(parent, 0o700)?;
-    }
-    std::fs::write(&target, content)
-        .map_err(|e| format!("writing staged file {}: {e}", target.display()))?;
-    set_mode(&target, 0o600)?;
-    Ok(())
-}
-
-fn ensure_mount_target(target_home: &Path, relative_path: &str) -> Result<PathBuf, String> {
     validate_relative_path(relative_path)?;
-    let mut current = target_home.to_path_buf();
-    let components: Vec<&str> = relative_path.split('/').collect();
-
-    for (index, component) in components.iter().enumerate() {
-        let next = current.join(component);
-        match std::fs::symlink_metadata(&next) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
-                    return Err(format!(
-                        "target path {} contains a symlink component",
-                        next.display()
-                    ));
-                }
-                if !metadata.is_dir() {
-                    return Err(format!(
-                        "target path {} exists but is not a directory",
-                        next.display()
-                    ));
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&next)
-                    .map_err(|err| format!("creating mountpoint {}: {err}", next.display()))?;
-                let is_final = index + 1 == components.len();
-                set_mode(&next, if is_final { 0o000 } else { 0o700 })?;
-            }
-            Err(e) => {
-                return Err(format!("stat {}: {e}", next.display()));
-            }
+    let mut components = relative_path.split('/').peekable();
+    let mut parents = Vec::new();
+    let mut current = directory;
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            return current.create_file(component, content);
         }
-        current = next;
+        let child = match current.open_child(component) {
+            Ok(child) => child,
+            Err(_) => current.create_child(component, 0o700)?,
+        };
+        parents.push(child);
+        current = parents.last().unwrap();
     }
+    Err("empty projection file path".into())
+}
 
+fn ensure_mount_target(target_home: &Path, relative_path: &str) -> Result<Directory, String> {
+    validate_relative_path(relative_path)?;
+    let mut current = Directory::open_target_home(target_home)?;
+    let components: Vec<&str> = relative_path.split('/').collect();
+    for (index, component) in components.iter().enumerate() {
+        current = current.target_child(
+            component,
+            if index + 1 == components.len() {
+                0
+            } else {
+                0o700
+            },
+        )?;
+    }
     Ok(current)
-}
-
-fn bind_mount_dir(source: &Path, target: &Path) -> Result<(), String> {
-    let source = path_to_cstring(source)?;
-    let target = path_to_cstring(target)?;
-    // SAFETY: `source` and `target` are live NUL-terminated path buffers;
-    // MS_BIND permits null filesystem-type and data pointers, and the trusted
-    // bind flag plus syscall return are checked before the mount is used.
-    let ret = unsafe {
-        libc::mount(
-            source.as_ptr(),
-            target.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND,
-            std::ptr::null(),
-        )
-    };
-    if ret != 0 {
-        return Err(format!(
-            "bind-mounting {} -> {} failed: {}",
-            source.to_string_lossy(),
-            target.to_string_lossy(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .map_err(|e| format!("setting permissions on {}: {e}", path.display()))
 }
 
 fn validate_relative_path(path: &str) -> Result<(), String> {
@@ -404,12 +365,6 @@ fn validate_relative_path(path: &str) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn path_to_cstring(path: &Path) -> Result<std::ffi::CString, String> {
-    use std::os::unix::ffi::OsStrExt;
-    std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| format!("path '{}' contains a null byte", path.display()))
 }
 
 #[cfg(test)]

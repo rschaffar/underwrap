@@ -4,5 +4,6 @@
 *.swo
 *~
 .direnv/
+__pycache__/
 test-results/
 .claude/

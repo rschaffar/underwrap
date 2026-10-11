@@ -96,6 +96,7 @@ Cancellation before dispatch sends no terminal verb, but later parent death cann
 
 Underwrap-managed durable brokered resource material uses the backend's selected `StorageBackend`.
 The frontend retains it in process memory, except files staged on invocation-private `noswap` tmpfs.
+Retained directory handles, rather than a shared `/tmp` staging pathname, select the same private filesystem objects for materialization, binding and collection.
 Libsecret state stays in memory; its bus tmpfs carries sockets and helper artifacts without a `noswap` claim.
 Ordinary temporary secret files, frontend disk caches, sidecar databases, and alternate durable frontend resource paths are not part of the design.
 A trusted target can independently persist or disclose its own projection.

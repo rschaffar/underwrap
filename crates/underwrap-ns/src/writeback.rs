@@ -25,7 +25,7 @@ use underwrap_protocol::message::{
 };
 use underwrap_protocol::resource_blob::{LibsecretSection, ResourceBlob};
 
-use crate::directory_credential::{DirectoryMountPlan, collect_staging_files};
+use crate::directory_credential::{DirectoryMount, collect_staging_files};
 use crate::resource_channel::ResourceChannel;
 
 /// Per-resource end-of-run outcome, surfaced to the caller so it can
@@ -63,12 +63,12 @@ pub enum WritebackOutcome {
 /// Per-resource input from the run's tmpfs/state side.
 pub struct WritebackInput<'a> {
     pub channel: &'a ResourceChannel,
-    /// Files-slot layout to walk when composing the post-run blob.
+    /// Pinned files-slot directory objects to walk when composing the post-run blob.
     /// Empty when the wrapper does not project files; in that case the
     /// Checkout's `files` section is preserved verbatim. For an isolated
     /// target this walk runs inside a `setfsuid(X)` window (see
     /// [`crate::run_parent`]), which bounds the cross-uid read to uid X.
-    pub directory_layout: &'a [DirectoryMountPlan],
+    pub directory_layout: &'a [DirectoryMount],
     /// Latest complete host-validated generation whose exact ACK was fully
     /// written, or `None` when this resource does not project libsecret.
     pub libsecret_generation: Option<&'a LibsecretSection>,
