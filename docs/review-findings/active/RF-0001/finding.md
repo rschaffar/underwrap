@@ -58,7 +58,13 @@ Review the bus pathname separately without presuming interception.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This finding owns the authorized correction of caller-to-files projection integrity and private storage.
+Keep one invocation-private capped `noswap` tmpfs, writable projections, the shipped capabilities and entry chain, and existing finalization policy.
+Libsecret bus-path hardening, backend protocol changes and additional dependencies are outside this scope.
+
+- [ ] Create the files tmpfs without resolving a caller-controlled mountpoint, attach through a checked target-runtime descriptor in the private namespace, and retain projection handles before fork.
+- [ ] Materialize, bind and collect through the retained objects; preserve planning-before-effects, symlink rejection, lifecycle suppression and descriptor isolation.
+- [ ] Add deterministic directory-replacement regressions and a shipped-chain distinct-UID VM witness, including early and post-bind replacement controls.
+- [ ] Run namespace tests, Rustfmt, denied-warning Clippy, relevant integration and NixOS VM checks; review the shared resource flow and update the maintained protocol/security descriptions.
+
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

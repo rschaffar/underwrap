@@ -235,9 +235,9 @@ pub(crate) fn verify_switched() -> Result<(), String> {
 }
 
 /// Run `f` with the process's **filesystem** uid/gid temporarily set to the
-/// isolated target's `iso`, then restore them. The supervisor uses this one
-/// bounded fsuid window to read target-owned files staging during writeback.
-/// Libsecret selection is descriptor-based and never enters this window.
+/// isolated target's `iso`, then restore them. The supervisor uses bounded
+/// windows for private files staging setup and post-run collection.
+/// Libsecret selection never enters these windows.
 ///
 /// `setfsuid`/`setfsgid` change only the credentials used for filesystem access
 /// checks; they do not affect process ownership, signal permissions, or the
@@ -246,8 +246,9 @@ pub(crate) fn verify_switched() -> Result<(), String> {
 /// supervisor retains those caps until after writeback for exactly this reason.
 /// Restoring to the caller's own ids needs no capability.
 ///
-/// The window doubles as the symlink-TOCTOU defense: while the supervisor walks
-/// the target-controlled staging tree, its authority is bounded to uid X.
+/// The window bounds filesystem DAC authority to uid X. Filesystem-object
+/// provenance and symlink rejection additionally require the retained staging
+/// directory handles and component-wise NOFOLLOW traversal.
 ///
 /// `f`'s value is returned on success. If restoring the ids fails the error is
 /// surfaced (a leaked fsuid would be a security problem) and `f`'s value is

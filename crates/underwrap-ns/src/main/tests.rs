@@ -93,7 +93,7 @@ fn test_resource_channel(fd: i32, original_canonical: Vec<u8>) -> ResourceChanne
 fn changed_staging_fixture(
     original: &[u8],
     changed: &[u8],
-) -> (tempfile::TempDir, ResourceBlob, [DirectoryMountPlan; 1]) {
+) -> (tempfile::TempDir, ResourceBlob, [DirectoryMount; 1]) {
     let staging = tempfile::TempDir::new().unwrap();
     std::fs::write(staging.path().join("token"), changed).unwrap();
     let mut blob = ResourceBlob::empty();
@@ -101,9 +101,9 @@ fn changed_staging_fixture(
         ".config/gate/token".to_string(),
         SecretBytes::from(original.to_vec()),
     );
-    let plans = [DirectoryMountPlan {
+    let plans = [DirectoryMount {
         mount_path: ".config/gate".to_string(),
-        staging_path: staging.path().to_path_buf(),
+        directory: directory_handle::Directory::open_path(staging.path()).unwrap(),
     }];
     (staging, blob, plans)
 }
@@ -112,9 +112,9 @@ fn changed_staging_fixture(
 fn pre_exec_failure_skips_collection_and_terminal_verbs() {
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
     daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-    let (_staging, blob, plans) = changed_staging_fixture(b"original", b"changed");
+    let (staging, blob, plans) = changed_staging_fixture(b"original", b"changed");
     assert_eq!(
-        std::fs::read(plans[0].staging_path.join("token")).unwrap(),
+        std::fs::read(staging.path().join("token")).unwrap(),
         b"changed"
     );
     assert_eq!(
@@ -273,7 +273,7 @@ fn target_liveness_wait_rejects_hup_and_cleans_up_target() {
     assert_target_liveness_wait(true);
 }
 
-fn run_parent_wait_failure_case(channel: &ResourceChannel, plans: &[DirectoryMountPlan]) -> i32 {
+fn run_parent_wait_failure_case(channel: &ResourceChannel, plans: &[DirectoryMount]) -> i32 {
     let gate = match ExecGate::new_for_test() {
         Ok(gate) => gate,
         Err(_) => return 10,
@@ -330,9 +330,9 @@ fn run_parent_wait_failure_case(channel: &ResourceChannel, plans: &[DirectoryMou
 fn run_parent_wait_failure_after_armed_skips_collection_and_terminal_verbs() {
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
     daemon_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();
-    let (_staging, blob, plans) = changed_staging_fixture(b"original", b"changed");
+    let (staging, blob, plans) = changed_staging_fixture(b"original", b"changed");
     assert_eq!(
-        std::fs::read(plans[0].staging_path.join("token")).unwrap(),
+        std::fs::read(staging.path().join("token")).unwrap(),
         b"changed"
     );
     assert_eq!(
@@ -372,9 +372,9 @@ fn accepted_combined_dispatch(
 ) -> (Option<Vec<WritebackOutcome>>, WrapperResourceRequest) {
     let staging = tempfile::TempDir::new().unwrap();
     std::fs::write(staging.path().join("token"), staged_file).unwrap();
-    let plans = [DirectoryMountPlan {
+    let plans = [DirectoryMount {
         mount_path: ".config/gate".to_string(),
-        staging_path: staging.path().to_path_buf(),
+        directory: directory_handle::Directory::open_path(staging.path()).unwrap(),
     }];
     let (channel_end, mut daemon_end) = UnixStream::pair().unwrap();
     channel_end.set_read_timeout(Some(TEST_IO_TIMEOUT)).unwrap();

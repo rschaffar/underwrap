@@ -46,37 +46,64 @@ fn guard_mountpoint_mode(path: &str) -> Result<(), String> {
     }
 }
 
-/// Stage the files-slot tmpfs root. Only invoked when the wrapper projects a
-/// files slot; the mount-tree-private step is now a separate, unconditional
-/// concern (see `make_mount_namespace_private`).
-pub(crate) fn setup_directory_staging_tmpfs(staging_root_path: &str) -> Result<(), String> {
-    std::fs::create_dir_all(staging_root_path)
-        .map_err(|e| format!("creating directory staging mount point {staging_root_path}: {e}"))?;
-    guard_mountpoint_mode(staging_root_path)?;
-    let staging_root = std::ffi::CString::new(staging_root_path).unwrap();
-    let tmpfs = std::ffi::CString::new("tmpfs").unwrap();
-    // SAFETY: both CStrings and the static NUL-terminated options string remain
-    // live for the call; trusted tmpfs arguments are checked before staging use.
-    let ret = unsafe {
-        libc::mount(
-            tmpfs.as_ptr(),
-            staging_root.as_ptr(),
-            tmpfs.as_ptr(),
-            0,
-            c"size=8m,mode=0700,noswap".as_ptr() as *const libc::c_void,
-        )
-    };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::EINVAL) {
-            return Err(
-                "mount tmpfs for directory staging failed: kernel does not support tmpfs noswap"
-                    .to_string(),
-            );
-        }
-        return Err(format!("mount tmpfs for directory staging failed: {err}"));
+/// Create a single detached files-slot tmpfs under the target filesystem ids.
+/// The caller attaches it to a held protected object in its private namespace;
+/// no caller-controlled staging pathname selects the mount or its contents.
+/// Namespace references and owned handles retain the filesystem through collection.
+/// Unsupported options/syscalls fail closed; there is no pathname fallback.
+pub(crate) fn create_directory_staging_tmpfs() -> Result<std::os::fd::OwnedFd, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    // FSOPEN_CLOEXEC and FSMOUNT_CLOEXEC (linux/mount.h).
+    const CLOEXEC: u32 = 1;
+    // SAFETY: a static filesystem name and trusted flag; fsopen returns one
+    // fresh owned configuration descriptor or an error, checked immediately.
+    let fd = unsafe { libc::syscall(libc::SYS_fsopen, c"tmpfs".as_ptr(), CLOEXEC) };
+    if fd < 0 {
+        return Err(format!(
+            "opening detached staging tmpfs: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-    Ok(())
+    // SAFETY: successful fsopen returned one fresh descriptor, adopted once.
+    let context = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    // FSCONFIG_SET_STRING=1, SET_FLAG=0, CMD_CREATE=6 (linux/mount.h).
+    for (command, key, value) in [
+        (1u32, c"size".as_ptr(), c"8m".as_ptr()),
+        (1u32, c"mode".as_ptr(), c"0700".as_ptr()),
+        (0u32, c"noswap".as_ptr(), std::ptr::null()),
+        (6u32, std::ptr::null(), std::ptr::null()),
+    ] {
+        // SAFETY: the configuration fd and static C strings are live; nullable
+        // fields follow each fsconfig command's contract. No secret is passed.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_fsconfig,
+                context.as_raw_fd(),
+                command,
+                key,
+                value,
+                0i32,
+            )
+        };
+        if result != 0 {
+            return Err(format!(
+                "configuring detached staging tmpfs (noswap required): {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    // SAFETY: the configured context is live; fsmount creates a detached mount
+    // with CLOEXEC and default attributes, returning one fresh owned fd.
+    let fd = unsafe { libc::syscall(libc::SYS_fsmount, context.as_raw_fd(), CLOEXEC, 0u32) };
+    if fd < 0 {
+        return Err(format!(
+            "creating detached staging tmpfs: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: successful fsmount returned a fresh uniquely owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 
 /// Mount a fresh `proc` over `/proc` inside the new PID namespace. Must be

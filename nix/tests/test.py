@@ -526,6 +526,7 @@ LOCAL_WRAPPER_RESOURCES = {
     "test-caps": "test/caps-tok",
     "test-ns-pids": "test/ns-pids-store",
     "test-ns-pids-env": "test/ns-pids-env-store",
+    "test-staging-provenance": "test/staging-provenance",
     "test-dir-write": "test/dir-a",
     "test-dir-read": "test/dir-a",
     "test-dir-readonly-write": "test/dir-a",
@@ -2994,6 +2995,152 @@ def local_atomic_writeback():
     )
 
 
+def files_staging_provenance():
+    """Distinct-UID shipped chain ignores preclaimed/replaced legacy staging names."""
+    wrapper = "test-staging-provenance"
+    resource = LOCAL_WRAPPER_RESOURCES[wrapper]
+    key = ".config/staging-provenance/state"
+    legacy = "/tmp/.underwrap-ns-directories"
+    machine.succeed("install -d -m 0700 -o testuser -g users /home/testuser/.config")
+    target_user = machine.succeed(
+        "awk -F '\\t' '$1 == \"local\" && $2 == \"test-staging-provenance\" {print $3}' /etc/underwrap/target-uids"
+    ).strip()
+    target_uid = int(machine.succeed(f"id -u {shlex.quote(target_user)}").strip())
+    runtime_attachment = f"/run/underwrap-test-runtime/{target_user}/.underwrap-files"
+    assert target_uid not in {0, 1099}, "target identity is not distinct"
+
+    def as_caller(command):
+        return f"runuser -u testuser -- sh -c {shlex.quote(command)}"
+
+    def properties(unit):
+        output = machine.succeed(
+            f"systemctl show {shlex.quote(unit)} --no-pager "
+            "--property=ActiveState --property=SubState --property=Result --property=ExecMainStatus"
+        )
+        return dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+
+    def journal(unit):
+        return machine.succeed(f"journalctl --quiet -u {shlex.quote(unit)} --output=cat --no-pager")
+
+    def wait_ready(unit):
+        expected = f"STAGING_PROVENANCE_READY uid={target_uid} fs=tmpfs noswap=1"
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            output = journal(unit)
+            if expected in output.splitlines():
+                assert output.splitlines().count(expected) == 1
+                assert properties(unit).get("SubState") == "running"
+                return
+            state = properties(unit)
+            assert state.get("ActiveState") not in {"failed", "inactive"}, (
+                f"staging target failed before READY: {state}; {output}"
+            )
+            time.sleep(0.05)
+        raise AssertionError("staging target did not reach READY")
+
+    # Changed state proves collection/persistence, rather than merely a target
+    # success whose diagnostic-only finalization was silently suppressed.
+    for case, mode, writable in [
+        ("writable", "change", True),
+        ("unchanged", "unchanged", True),
+        ("readonly", "change", False),
+        ("protected-root", "change", True),
+    ]:
+        protected = case == "protected-root"
+        probe = uuid.uuid4().hex
+        unit = f"underwrap-staging-provenance-{probe}.service"
+        release = f"/tmp/staging-provenance-release-{probe}"
+        before_path = f"/tmp/staging-provenance-before-{probe}"
+        after_path = f"/tmp/staging-provenance-after-{probe}"
+        set_local_unlocked_permission(wrapper)
+        admin_upsert_permission(
+            ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, wrapper, resource,
+            {"kind": "unlocked"}, writable=writable,
+        )
+        admin_write_resource_value(ADMIN_LOCAL, "local", resource, "files", key, b"provenance-original")
+        baseline = admin_get_blob(ADMIN_LOCAL, "local", resource)
+        expected = baseline
+        if mode == "change" and writable:
+            value = json.loads(base64.b64decode(baseline))
+            value["files"][key] = base64.b64encode(b"provenance-target-result").decode()
+            expected = base64.b64encode(json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ).encode()).decode()
+        machine.succeed(f"test ! -e {shlex.quote(legacy)}")
+        try:
+            if protected:
+                machine.succeed(f"install -d -m 0000 -o root -g root {shlex.quote(legacy)}")
+                machine.fail(as_caller(f"mv {shlex.quote(legacy)} {shlex.quote(before_path)}"))
+            else:
+                # All preclaim and replacement effects are performed by U, not root.
+                machine.succeed(as_caller(
+                    f"mkdir {shlex.quote(legacy)}; mv {shlex.quote(legacy)} {shlex.quote(before_path)}; "
+                    f"mkdir -p {shlex.quote(legacy)}/mount-0; "
+                    f"printf 'caller-decoy' > {shlex.quote(legacy)}/mount-0/state; "
+                    f"chmod 0755 {shlex.quote(legacy)} {shlex.quote(legacy)}/mount-0; "
+                    f"chmod 0644 {shlex.quote(legacy)}/mount-0/state"
+                ))
+                assert machine.succeed(f"stat -c %u {shlex.quote(legacy)}").strip() == "1099"
+            cursor = journal_cursor()
+            machine.succeed(
+                f"systemd-run --quiet --unit={shlex.quote(unit)} --collect --uid=testuser "
+                "--property=Type=simple --property=RemainAfterExit=yes "
+                f"/run/wrappers/bin/underwrap-local {wrapper} {shlex.quote(release)} {mode}"
+            )
+            wait_ready(unit)
+            # Root instrumentation sees only the bare mode-0000 attachment,
+            # while the target just observed its mode-0700 noswap tmpfs there.
+            quoted_attachment = shlex.quote(runtime_attachment)
+            assert machine.succeed(f"stat -c '%u %a' {quoted_attachment}").strip() == f"{target_uid} 0"
+            machine.succeed(f"test -z \"$(find {quoted_attachment} -mindepth 1 -print -quit)\"")
+            machine.fail(as_caller(f"mv {quoted_attachment} {quoted_attachment}.replaced"))
+            if protected:
+                machine.fail(as_caller(f"mv {shlex.quote(legacy)} {shlex.quote(after_path)}"))
+            else:
+                old_inode = machine.succeed(f"stat -c %i {shlex.quote(legacy)}").strip()
+                machine.succeed(as_caller(
+                    f"mv {shlex.quote(legacy)} {shlex.quote(after_path)}; "
+                    f"mkdir -p {shlex.quote(legacy)}/mount-0; "
+                    f"printf 'caller-replacement' > {shlex.quote(legacy)}/mount-0/state; "
+                    f"printf 'caller-only' > {shlex.quote(legacy)}/mount-0/injected; "
+                    f"chmod 0755 {shlex.quote(legacy)} {shlex.quote(legacy)}/mount-0; "
+                    f"chmod 0644 {shlex.quote(legacy)}/mount-0/state {shlex.quote(legacy)}/mount-0/injected"
+                ))
+                assert machine.succeed(f"stat -c %i {shlex.quote(legacy)}").strip() != old_inode
+            assert properties(unit).get("SubState") == "running"
+            machine.succeed(as_caller(f"touch {shlex.quote(release)}"))
+            deadline = time.monotonic() + 30
+            while properties(unit).get("SubState") != "exited":
+                state = properties(unit)
+                assert state.get("ActiveState") != "failed", f"staging target failed: {state}; {journal(unit)}"
+                assert time.monotonic() < deadline, "staging invocation did not finish"
+                time.sleep(0.05)
+            state = properties(unit)
+            assert state.get("Result") == "success" and state.get("ExecMainStatus") == "0", state
+            assert journal(unit).splitlines().count("STAGING_PROVENANCE_DONE") == 1
+            assert admin_get_blob(ADMIN_LOCAL, "local", resource) == expected, (
+                f"{case}: collected state differs from the exact target-authored state"
+            )
+            expected_audit = "resource_checkin" if writable and mode == "change" else "resource_usage_signal"
+            deadline = time.monotonic() + 2
+            while True:
+                records = underwrapd_terminal_records_since(cursor, wrapper, LOCAL_RESOURCE_IDS[resource])
+                if records or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            assert [record["parsed_fields"].get("audit") for record in records] == [expected_audit], (
+                f"{case}: missing or unexpected terminal dispatch"
+            )
+            if not protected:
+                machine.succeed(f"test $(stat -c %u {shlex.quote(legacy)}/mount-0/state) = 1099")
+                machine.succeed(f"test $(stat -c %u {shlex.quote(after_path)}/mount-0/state) = 1099")
+            machine.log(f"PASS: pinned staging provenance {case}, distinct UID, tmpfs/noswap and exact terminal state")
+        finally:
+            machine.execute(f"systemctl stop {shlex.quote(unit)}")
+            machine.execute(f"systemctl reset-failed {shlex.quote(unit)}")
+            machine.succeed("rm -rf -- " + " ".join(shlex.quote(path) for path in (legacy, release, before_path, after_path)))
+
+
 def pre_exec_writeback_gate():
     """Exercise pre-exec suppression and retained post-exec finalization."""
 
@@ -5103,6 +5250,7 @@ local_proc_isolation_libsecret_mode()
 local_libsecret_mode()
 local_libsecret_two_slot_compatibility()
 local_directory_credentials()
+files_staging_provenance()
 local_atomic_writeback()
 pre_exec_writeback_gate()
 supervisor_lifecycle()
