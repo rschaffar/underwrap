@@ -25,6 +25,11 @@ No symlink, malicious target, instance-group membership or stolen fd 20 is requi
 
 ## Consequence and boundary
 
+The protected assets are files-slot resource integrity and invocation-private storage containment.
+The attacker is ordinary caller U; the configured target X remains trusted with its projection.
+The boundary runs from U's mutable filesystem names to the supervisor's materialization, binding and collection authority.
+The invariant is that all three phases select the same intended invocation-private filesystem objects.
+
 The host supervisor retains setup capabilities and collects with filesystem IDs X (`crates/underwrap-ns/src/main.rs:656-668,739-790`; `crates/underwrap-ns/src/target_uid.rs:255-322`).
 Other-readable U-owned regular files satisfy DAC and the collector's static checks; collection does not validate mount/inode identity or ownership.
 A valid lifecycle can therefore submit substituted files through `crates/underwrap-ns/src/writeback.rs:85-158`.
@@ -48,13 +53,18 @@ Require stable private-filesystem authority across all three phases despite host
 An operator-protected mountpoint can mitigate preclaim but is not supplied by the module; ownership checks at one instant alone must not be assumed to solve subsequent relookup.
 Review the bus pathname separately without presuming interception.
 
-## Acceptance criteria
+## Acceptance criteria and correction
 
 - In an authorized disposable NixOS test, use distinct U/X and the shipped wrapper, preclaim the root, then deterministically replace it after binding.
   Compare the target's original view with collected/persisted state; replacement files must not be selected.
 - Test pre-materialization replacement separately, checking filesystem identity and ownership rather than equating host visibility with readability.
 - Retain normal writable/read-only, size-limit, symlink and lifecycle controls, plus a protected-root negative control.
-  No fix acceptance is claimed yet.
+
+The correction is accepted at `365916646f67bda32fcd1ab356baaeead1361925` on the evidence recorded in [resolution verification](evidence.md#resolution-evidence).
+`DirectoryMount` retains the original projection objects, and descriptor-relative materialization, mount cloning and collection replace staging-path relookup.
+The shipped-chain VM exercises the now-unused legacy basename; ordinary-directory regressions separately replace actual retained-handle ancestors before materialization and collection.
+The private runtime attachment cannot be renamed by U in the tested deployment.
+This does not settle the separate libsecret bus-path concern or establish execution on every supported kernel.
 
 ## Work ownership
 
@@ -62,9 +72,9 @@ This finding owns the authorized correction of caller-to-files projection integr
 Keep one invocation-private capped `noswap` tmpfs, writable projections, the shipped capabilities and entry chain, and existing finalization policy.
 Libsecret bus-path hardening, backend protocol changes and additional dependencies are outside this scope.
 
-- [ ] Create the files tmpfs without resolving a caller-controlled mountpoint, attach through a checked target-runtime descriptor in the private namespace, and retain projection handles before fork.
-- [ ] Materialize, bind and collect through the retained objects; preserve planning-before-effects, symlink rejection, lifecycle suppression and descriptor isolation.
-- [ ] Add deterministic directory-replacement regressions and a shipped-chain distinct-UID VM witness, including early and post-bind replacement controls.
-- [ ] Run namespace tests, Rustfmt, denied-warning Clippy, relevant integration and NixOS VM checks; review the shared resource flow and update the maintained protocol/security descriptions.
+- [x] Create the files tmpfs without resolving a caller-controlled mountpoint, attach through a checked target-runtime descriptor in the private namespace, and retain projection handles before fork.
+- [x] Materialize, bind and collect through the retained objects; preserve planning-before-effects, symlink rejection, lifecycle suppression and descriptor isolation.
+- [x] Add deterministic directory-replacement regressions and a shipped-chain distinct-UID VM witness, including early and post-bind replacement controls.
+- [x] Run namespace tests, Rustfmt, denied-warning Clippy, relevant integration and NixOS VM checks; review the shared resource flow and update the maintained protocol/security descriptions.
 
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

@@ -68,7 +68,7 @@ It reads execution metadata, checks out the resource, builds the final environme
 The host unshares PID, mount, IPC, and UTS namespaces, makes mount propagation private, and realizes planned host-access mounts.
 For files projection, it creates one capped `noswap` tmpfs inside a checked target-fsid window before fork.
 The filesystem is created detached, then attached by descriptor to a mode-`0000` `.underwrap-files` directory beneath the dedicated target's provisioned mode-`0700` runtime directory, only in this private namespace.
-Both attachment directories require exact target UID/GID and modes on their held descriptors; symlinks and caller-owned substitutes reject.
+Both attachment directories require exact target UID/GID and modes on their held descriptors, interpreted in the current mount/idmap view; symlinks and unexpected visible ownership reject.
 This namespace attachment is required before `open_tree` can clone the projection directories.
 Retained CLOEXEC projection handles pin the same filesystem objects in both supervisors; no files-staging mountpoint lives in shared `/tmp` and no later staging operation re-resolves the runtime pathname.
 Filesystem-context creation, options, mount creation, attachment and empty-directory creation all run as the target filesystem identity, with checked restoration before the final pre-fork liveness rearm.
