@@ -117,6 +117,10 @@ See [Parsing and copies](local-protocol.md#parsing-and-copies).
 
 ## Backend transport and administration
 
+When administration is enabled, the SPA shell and assets are public; authentication protects the admin JSON API, not website delivery.
+All backend build profiles embed the nonsecret SPA bundle and perform exact asset-key lookup, never request-selected filesystem reads.
+This excludes runtime traversal and symlink lookup, not content intentionally included by the trusted build.
+
 The daemon requires an absolute HTTPS URL with a host and normal hostname verification.
 Startup rejects invalid URLs before credential reads or socket binding, client construction repeats validation before file I/O, and HTTPS-only reqwest transport prevents redirect downgrade.
 A configured CA bundle is its exclusive server trust set; without one it uses bundled WebPKI roots.
