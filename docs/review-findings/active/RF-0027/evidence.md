@@ -45,6 +45,17 @@ Same-second equality cannot establish that no update was attempted; best-effort 
 These harness tests drive a synthetic wrapper-side channel against daemon/backend services, not the complete privileged namespace/target lifecycle.
 No new test or source mutation occurred during migration.
 
+## Post-RF-0001 assessment
+
+Assessed revision: `7d4b1d30794171956031cef45b805b0c46500619`.
+Source/diff inspection confirms that `crates/integration-tests/src/tests/wrapper_writeback.rs` and `crates/underwrap-backend/src/runtime_api/invocations.rs` are unchanged across the RF-0001 range from `a00cb9b40042064bfff9ca64fca95dab70d3f57a`.
+The new `nix/tests/test.py:3121-3133` assertions compare exact content and terminal audit verbs, not timestamps.
+
+The [RF-0001 verification record](../../archived/RF-0001/evidence.md#resolution-evidence) records a successful full VM run with all four terminal-state controls at the corrected runtime inputs and a 12-test wrapper-writeback integration run.
+Those are recorded executions from the correction, not new executions performed by this documentation follow-up.
+They establish the stated content/verb outcomes but contain no clock-controlled or finalize-update-omission experiment.
+The presence-only timestamp defect and its specific acceptance obligation remain open.
+
 ## Resolution evidence
 
 Unresolved.

@@ -7,6 +7,7 @@
 ## Why it matters
 
 Admitted percent, backslash or quote characters can make tmpfiles provision a different runtime path or reject the rule, breaking deployment or invocation.
+After [RF-0001](../../archived/RF-0001/README.md), files staging also requires the exact provisioned target runtime directory before fork; descriptor checks do not repair tmpfiles escaping.
 
 ## Suggested fix
 

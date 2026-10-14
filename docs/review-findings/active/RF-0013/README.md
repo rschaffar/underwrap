@@ -8,6 +8,7 @@
 
 Valid ns and runtime instance names collide with the namespace wrapper or runtime root.
 The former fails evaluation; the latter emits incompatible directory owners.
+[RF-0001](../../archived/RF-0001/README.md) places files staging beneath the same provisioned runtime tree but does not separate the colliding generated names.
 
 ## Suggested fix
 

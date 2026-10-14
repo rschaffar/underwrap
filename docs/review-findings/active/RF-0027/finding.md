@@ -27,6 +27,14 @@ The nearby `checkin_keeps_last_used_at_least_at_checkout_value` assertion and co
 `docs/backend.md:155-159` defines timestamps as best-effort metadata, at one-second resolution, not receipts for changed content.
 Equal sampled seconds can produce no rewrite; wall-clock values need not be strictly monotonic.
 
+## Effect of RF-0001
+
+At `7d4b1d30794171956031cef45b805b0c46500619`, `nix/tests/test.py::files_staging_provenance` verifies the complete backend blob and exact terminal audit verb for writable-changed, writable-unchanged, read-only-changed and protected-root controls (`nix/tests/test.py:3121-3133`).
+This independently checks content and terminal dispatch, so a successful target exit cannot hide suppressed finalization.
+It does not sample or control `last_used_at`, distinguish the open-time update from finalize, or disable only finalize's metadata effect.
+The integration tests cited above and production timestamp semantics are unchanged by [RF-0001](../../archived/RF-0001/README.md).
+The new evidence complements those tests without correcting their timestamp-attribution claim.
+
 ## Correction and alternatives
 
 Observe or control the timestamp after open and arrange a distinguishable finalize-time value, without confusing best-effort metadata with persistent content.
