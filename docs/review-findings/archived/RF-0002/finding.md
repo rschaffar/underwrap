@@ -35,7 +35,7 @@ No live credential, private resource or host symlink inventory was inspected.
 Constrain public retrieval to the intended asset set in every network-serving build, including dynamic debug, or deliberately make embedding-only behavior a network-serving prerequisite.
 Retain normal asset MIME/cache handling, public shell delivery, history fallback and HEAD semantics.
 Restricting debug artifacts to local development is an operational alternative, not evidence that existing exposed debug deployments are safe.
-No implementation choice is selected here.
+The completed correction selects embedding-only behavior, as recorded below.
 
 ## Acceptance criteria
 
@@ -45,11 +45,17 @@ No implementation choice is selected here.
   HEAD's empty body alone cannot establish confinement.
 - Retain release-handler and packaged-release negative controls; check actual build features/profiles.
 - If deployment-level closure is claimed, run a disposable full debug HTTPS case with authentication absent and confirm the same confinement.
-  No such fixed-build check has yet been executed.
+  The fixed-build checks are recorded in the resolution evidence.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This record owns the authorized, bounded correction: embed the SPA in every backend build profile.
+The protected asset is backend-readable content outside the nonsecret bundle; the attacker is an unauthenticated requester crossing from HTTP into filesystem reads.
+The invariant is that public website requests resolve only compiled asset keys.
+No dependency addition, runtime/admin API redesign, local privileged-chain change or deployment change is in scope.
+
+- [x] Enable `debug-embed` and document the backend rebuild requirement for development.
+- [x] Reproduce the outside final-component symlink failure before the fix, then pass the real-handler/router regression in debug and release with shell, history, regular-file traversal, asset and HEAD controls.
+- [x] Run backend tests, Rustfmt, denied-warning Clippy and relevant contract/SPA checks; obtain independent review and record the actual evidence and limits.
+
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).
