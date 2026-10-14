@@ -24,6 +24,8 @@ The shell supplies tools, not a built SPA or packaged integration executables.
 The backend's `build.rs` requires `index.html` in `UNDERWRAP_WEB_DIST`; without that variable, it looks in `web/dist`.
 An empty placeholder bundle defeats this safeguard and is not a valid preparation step.
 Rebuild the SPA artifact after frontend changes rather than embedding a stale bundle.
+Every backend build, including debug, embeds the SPA instead of reading its files at request time.
+Rebuild the backend after rebuilding the SPA when developing through the backend listener; Vite development remains available.
 
 For daemon/backend integration, the supported runner prepares all three prerequisites itself:
 

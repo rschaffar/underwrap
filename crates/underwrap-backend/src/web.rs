@@ -11,10 +11,9 @@
 //! be linked against an empty embed — `serve_spa` takes that
 //! invariant for granted.
 //!
-//! In debug builds, `rust-embed` reads the same files dynamically
-//! from disk at request time, so a `npm run build` is enough to
-//! iterate on the SPA without rebuilding the daemon. Release builds
-//! bake the assets in.
+//! The `debug-embed` feature keeps assets compiled in for every profile.
+//! Public requests never read the backend filesystem; rebuilding the SPA
+//! therefore also requires rebuilding the backend, including in development.
 //!
 //! For any non-API GET/HEAD that does not match a file, [`serve_spa`]
 //! falls back to `index.html` so client-side routing can take over.
@@ -33,7 +32,7 @@
 //! Wire this in by attaching [`serve_spa`] as the top-level
 //! `Router::fallback`.
 //!
-//! See `docs/security.md` "Admin listener" for the threat model behind
+//! See `docs/security.md` "Backend transport and administration" for the threat model behind
 //! shipping the SPA inside the binary closure.
 
 use axum::body::Body;
