@@ -43,6 +43,18 @@ Synthetic fixture inspection is not production-log coverage, and no all-sinks or
 A post-correction safe-mismatch witness remains missing.
 No primary PKI fixture, private browser capture or live-secret file was needed, and no new test or fix was made during this migration.
 
+## Post-RF-0001 assessment
+
+Assessed revision: `7d4b1d30794171956031cef45b805b0c46500619`.
+Source/diff inspection of the RF-0001 range from `a00cb9b40042064bfff9ca64fca95dab70d3f57a` confirms that the originally listed integration assertion sites are unchanged.
+`crates/underwrap-ns/src/directory_credential/tests.rs:37-47` is an additional existing operand-formatting byte-comparison helper.
+New callers at `directory_credential/tests/replacement.rs:15,19,54` reuse it; the helper's comparison semantics predate RF-0001, while those callers do not.
+
+The new VM comparison at `nix/tests/test.py:3121-3123` retains complete-blob equality without formatting either operand on mismatch.
+The [RF-0001 verification record](../../archived/RF-0001/evidence.md#resolution-evidence) records passing namespace and VM checks, not a safe-mismatch diagnostic experiment.
+This follow-up inspected source and the exact change range only; it did not induce any existing fixture assertion failure or inspect secret-bearing failure captures.
+The current additional sites join this finding's correction scope, while a nonsecret, discriminating failure-output witness remains required.
+
 ## Resolution evidence
 
 Unresolved.

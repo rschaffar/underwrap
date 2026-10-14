@@ -27,6 +27,14 @@ It used x86_64-linux, a container-style configuration, `hardenTargetHost=false`,
 This isolates generation; it does not establish a running deployment.
 The later evaluation supersedes the original specialist's evaluation-pending note, not the continuing activation gap.
 
+## Effect of RF-0001
+
+At `7d4b1d30794171956031cef45b805b0c46500619`, [RF-0001](../../archived/RF-0001/README.md) replaces shared-path files staging with a descriptor-selected runtime attachment.
+`crates/underwrap-ns/src/directory_credential.rs:134-152` opens the configured target runtime directory and requires exact visible target UID/GID and mode 0700 before creating the private tmpfs attachment.
+`crates/underwrap-ns/src/main.rs:224-245` performs this setup before the namespace fork, including for files-only wrappers.
+A missing or differently interpreted provisioned path therefore rejects files setup before target execution; later handle retention does not correct provisioning syntax.
+The lexical admission and unescaped tmpfiles generation remain unchanged, so this finding remains open rather than becoming a caller-to-root security claim.
+
 ## Correction and alternatives
 
 Encode paths correctly for tmpfiles, covering specifiers as well as quoting/escapes, or reject unsupported characters with a clear module assertion and documented grammar.
@@ -40,6 +48,8 @@ Shell quoting alone must not be assumed to implement tmpfiles quoting.
 - Verify the specific assertion rather than accepting an unrelated evaluation failure.
 - In an authorized disposable VM, check exact paths and root/target ownership and permissions after activation; no differently interpreted path should be created.
 - Preserve ordinary custom-base and `/run/user` rejection controls.
+- Include a files-only wrapper in custom-base activation controls, verifying exact runtime-directory ownership/mode and successful descriptor-based staging at the admitted literal path.
+  Early setup rejection for a misprovisioned path is not a substitute for correcting module admission or encoding.
   These are future acceptance checks, not recorded fix results.
 
 ## Work ownership

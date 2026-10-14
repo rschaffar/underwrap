@@ -50,6 +50,17 @@ The parser witness and module evaluation occurred separately, with synthetic con
 Existing VM/evaluator passes cover ordinary scenarios and do not repair this admitted parser boundary.
 No caller control, privilege escalation or arbitrary root command execution was demonstrated.
 
+## Post-RF-0001 assessment
+
+Assessed revision: `7d4b1d30794171956031cef45b805b0c46500619`.
+Source/diff inspection of the RF-0001 range from `a00cb9b40042064bfff9ca64fca95dab70d3f57a` confirms that `nix/modules/underwrap.nix` is unchanged.
+`directory_credential.rs::prepare_directory_mounts` now requires the exact target runtime directory and checked visible ownership/mode before attachment; `main.rs` calls it before fork for files projection.
+This extends the direct provisioning dependency to files-only invocations, without changing the demonstrated tmpfiles parser mismatch.
+
+The ordinary runtime-base shipped-chain controls passed during [RF-0001 correction verification](../../archived/RF-0001/evidence.md#resolution-evidence).
+Those recorded executions did not activate percent/backslash/quote bases and are not acceptance evidence for this finding.
+This follow-up ran no edge-base activation or new invocation test; the original discovery results and activation gap remain.
+
 ## Resolution evidence
 
 Unresolved.

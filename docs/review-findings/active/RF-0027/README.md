@@ -18,6 +18,7 @@ Open, Low-priority evidence-attribution defect.
 Preserve best-effort timestamps and independent content-persistence checks.
 The tests still witness accepted verbs, selected rejection behavior and a timestamp after the run.
 One-second resolution and wall-clock behavior preclude treating timestamp equality as proof of no update.
+[RF-0001](../../archived/RF-0001/README.md) adds exact terminal-verb/content controls, not finalize-specific timestamp attribution; this finding remains open.
 
 No correction is authorized or completed by this record.
 The aliases belong to the review of `01214454aee850ebe8ceef5b757b9ae61cca07aa`.

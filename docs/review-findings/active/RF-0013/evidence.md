@@ -48,6 +48,16 @@ Neither edge configuration was activated.
 No deployed directory takeover, account fusion or authorization bypass was observed.
 The fresh ordinary VM pass and selector-grammar/hash-collision evaluators remain useful, but do not cover these internal generated-name collisions.
 
+## Post-RF-0001 assessment
+
+Assessed revision: `7d4b1d30794171956031cef45b805b0c46500619`.
+Source/diff inspection of the RF-0001 range from `a00cb9b40042064bfff9ca64fca95dab70d3f57a` confirms that `nix/modules/underwrap.nix` and its colliding generated names/rules are unchanged.
+`directory_credential.rs::prepare_directory_mounts` now selects a checked target-child runtime object for files staging, but does not validate or resolve the two competing runtime-base ownership contracts.
+
+[RF-0001 correction verification](../../archived/RF-0001/evidence.md#resolution-evidence) exercised noncolliding instance/runtime configurations only.
+A root-protected legacy staging basename is not an `ns`/`runtime` selector-collision control.
+This follow-up performed no collision activation or new evaluator execution; the original specific evaluation failure, duplicate-rule evidence and deployed-ordering gap remain.
+
 ## Resolution evidence
 
 Unresolved.

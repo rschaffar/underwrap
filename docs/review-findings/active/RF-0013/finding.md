@@ -30,6 +30,15 @@ Accounts, daemons and configuration are trusted; this evidence does not demonstr
 This is distinct from documented per-user alias collisions and intentional helper basename shadowing.
 The latter has an explicit-path remedy, including [RF-0035](../RF-0035/README.md); it cannot solve two definitions of the same internal security-wrapper key.
 
+## Effect of RF-0001
+
+At `7d4b1d30794171956031cef45b805b0c46500619`, [RF-0001](../../archived/RF-0001/README.md) attaches files staging beneath the selected target runtime directory (`crates/underwrap-ns/src/directory_credential.rs:134-152`).
+That directory must already have exact visible target ownership and mode 0700.
+This makes coherent runtime provisioning part of files setup as well as the existing daemon/runtime contract.
+The module's instance names, global security-wrapper key and duplicate base rules are unchanged.
+Checking the target-child descriptor neither reserves `ns`/`runtime` nor establishes the runtime base's intended root ownership or the daemon socket directory's writability.
+The original collision remains open; the new staging mechanism is not a collision-resolution control.
+
 ## Correction and alternatives
 
 Make internal wrapper/runtime namespaces disjoint, or detect overlaps before generation with explicit documented restrictions.
@@ -41,6 +50,7 @@ Preserve explicit-instance invocation and intentional `info` helper handling; br
 - Force real-module toplevel evaluation for `ns` and a noncolliding selector; rejection, if chosen, must come from the intended validation rather than the downstream wrapper assertion.
 - For `runtime` with a wrapper, ensure each directory has one coherent ownership contract; inspect generated rules and verify exact owner/mode in a disposable activation.
 - Keep noncolliding default/custom-base controls and supported helper naming behavior.
+- Include files projection when checking runtime-tree activation, verifying coherent base/child ownership, daemon socket readiness and successful descriptor attachment rather than inferring them from a checked child alone.
   No new activation or fix validation is claimed complete.
 
 ## Work ownership

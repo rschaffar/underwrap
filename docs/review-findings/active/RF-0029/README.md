@@ -6,7 +6,8 @@
 
 ## Why it matters
 
-Selected failing integration assertions can copy complete unwrapped resource bytes or decoded values into captured CI logs, bypassing typed wrappers' redacted Debug behavior.
+Selected failing Rust test assertions can copy unwrapped resource bytes or decoded values into captured CI logs, bypassing typed wrappers' redacted Debug behavior.
+[RF-0001](../../archived/RF-0001/README.md) adds value-free VM comparisons but reuses a byte-formatting namespace-test helper; include that helper and its new callers in the correction scope.
 
 ## Suggested fix
 
