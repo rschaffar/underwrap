@@ -25,7 +25,7 @@ No hostile input, oversized resource, race or malicious target is required.
 
 This merges A-01's backend/storage/transport trace, S-02's conversion and initial-readiness consequences, and W-01's default UI omission and permissive validation evidence.
 Medium reflects workflow scope without demonstrated confidentiality or authorization failure, rather than uncertainty about the mismatch.
-Dot-segment browser URL normalization remains a separate consequence in [RF-0008](../RF-0008/README.md).
+Dot-segment browser URL normalization remains a separate consequence in [RF-0008](../../active/RF-0008/README.md).
 
 `docs/backend.md:44-60` deliberately separates representability from projectability.
 That limit does not justify a built-in structured producer whose default item ID always violates its intended consumer's contract.
@@ -51,11 +51,18 @@ This is a retained non-finding qualification, not a new accepted vulnerability o
 - Rejected new identifiers must leave prior resource state unchanged; existing invalid state must remain repairable.
 - Preserve unrelated sections/entries, env/files-only behavior, strict publication references/canonicality and existing policy gates.
 - Do not infer full startup success from the recorded isolated validator control.
-  No fixed-build acceptance checks have run.
+  Fixed-build acceptance now includes the deployed startup/readiness/lookup witness recorded in [resolution evidence](evidence.md#resolution-evidence).
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This finding owns the user-authorized correction of admin-created libsecret identifiers.
+Keep the strict host contract, raw storage/load semantics, disabled projections and existing read/delete repair paths unchanged.
+Do not redesign publication, rename stored identifiers implicitly, add dependencies, or resolve unrelated findings.
+
+- [x] Share identifier predicates between strict publication and admin admission; generate compatible default item IDs without overwriting existing entries.
+- [x] Align SPA validation and generated API descriptions; cover omitted/explicit IDs and rejection before mutation.
+- [x] Verify legacy inspection/deletion, unrelated state preservation and env/files-only behavior.
+- [x] Exercise default admin creation through persisted loading, generation-zero validation, private-service readiness and lookup.
+- [x] Run the affected Rust, generated-contract, SPA/browser, integration and VM checks and record their actual evidence.
+
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

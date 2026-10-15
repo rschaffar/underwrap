@@ -22,7 +22,7 @@ A collection DELETE with ID `.` loses that segment; ID `..` also removes the pre
 An item-secret GET with item ID `..` removes the preceding `items` segment.
 Successful JSON creation therefore does not establish that later supported browser operations address the created object.
 
-This is a browser/admin addressing defect, distinct from the generation-zero publication failure in [RF-0003](../RF-0003/README.md).
+This is a browser/admin addressing defect, distinct from the generation-zero publication failure in [RF-0003](../../archived/RF-0003/README.md).
 It does not require a wrapper invocation.
 No broader unauthorized operation or cross-store authorization bypass was demonstrated; a changed route shape is not proof that another privileged operation succeeds.
 
