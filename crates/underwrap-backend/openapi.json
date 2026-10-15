@@ -2764,10 +2764,13 @@
           {
             "name": "name",
             "in": "path",
-            "description": "Alias name.",
+            "description": "Alias name: 1–128 ASCII letters, digits or underscores, including leading digits/underscores. No normalization.",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_]+$"
             }
           }
         ],
@@ -3896,19 +3899,23 @@
       },
       "AdminLibsecretAliasUpsertRequest": {
         "type": "object",
-        "description": "`PUT .../libsecret/aliases/{name}`. `collection_id` must name an\nexisting collection; the handler returns 404 otherwise.",
+        "description": "`PUT .../libsecret/aliases/{name}`. `collection_id` must name an\nexisting collection; the handler returns 404 otherwise.\nNew alias names and their targets must satisfy the publication segment rules.",
         "required": [
           "collection_id"
         ],
         "properties": {
           "collection_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Existing collection id: 1–128 ASCII letters, digits or underscores.",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_]+$"
           }
         }
       },
       "AdminLibsecretCollectionCreateRequest": {
         "type": "object",
-        "description": "`POST .../libsecret/collections`. `id` is optional; when absent the\nserver derives one from the label.",
+        "description": "`POST .../libsecret/collections`. Omitted/null `id` selects the first unused\n`c<n>` identifier (starting at c1), independent of the label.",
         "required": [
           "label"
         ],
@@ -3917,7 +3924,11 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Explicit ids contain 1–128 ASCII letters, digits or underscores.\nLeading digits/underscores are allowed; no trimming or normalization.",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_]+$"
           },
           "label": {
             "type": "string"
@@ -3989,7 +4000,7 @@
       },
       "AdminLibsecretItemCreateRequest": {
         "type": "object",
-        "description": "`POST .../libsecret/collections/{cid}/items`. `id` is optional; when\nabsent the server derives one from the label.",
+        "description": "`POST .../libsecret/collections/{cid}/items`. Omitted/null `id` generates\n16 random bytes encoded as lowercase hex, retrying occupied ids.\nThe containing collection must have a valid publication identifier.",
         "required": [
           "label",
           "content_type",
@@ -4012,7 +4023,11 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Explicit ids contain exactly 32 lowercase hexadecimal characters.\nNo trimming or normalization; an explicit empty string is invalid.",
+            "maxLength": 32,
+            "minLength": 32,
+            "pattern": "^[0-9a-f]{32}$"
           },
           "label": {
             "type": "string"
@@ -4107,7 +4122,7 @@
         "properties": {
           "aliases": {
             "type": "object",
-            "description": "Alias name → collection id. Free-form name space at the\nService level; aliases pointing at non-existent collections\nare not produced by this endpoint (the alias-PUT handler\nenforces target existence).",
+            "description": "Stored alias name → collection id, including legacy invalid names or\ndangling references so operators can inspect and repair them.",
             "additionalProperties": {
               "type": "string"
             },

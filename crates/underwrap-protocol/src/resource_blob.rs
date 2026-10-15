@@ -204,6 +204,24 @@ pub struct LibsecretSection {
     pub collections: BTreeMap<String, Collection>,
 }
 
+/// Collection and alias identifiers used as one D-Bus object-path segment.
+/// Shared with structured admin creation; ordinary stored-state reads remain permissive.
+pub fn is_libsecret_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// Item identifier contract for publication, including admin-created items.
+pub fn is_libsecret_item_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 impl LibsecretSection {
     /// Serialize this section to JCS-canonical JSON bytes.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>> {
@@ -237,12 +255,7 @@ impl LibsecretSection {
 
     pub fn validate_publication_semantics(&self) -> Result<()> {
         fn segment(kind: &str, value: &str) -> Result<()> {
-            if value.is_empty()
-                || value.len() > 128
-                || !value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-            {
+            if !is_libsecret_segment(value) {
                 return Err(anyhow!("invalid {kind} path segment"));
             }
             Ok(())
@@ -252,11 +265,7 @@ impl LibsecretSection {
             validate_libsecret_timestamp(collection.created)?;
             validate_libsecret_timestamp(collection.modified)?;
             for (item_id, item) in &collection.items {
-                if item_id.len() != 32
-                    || !item_id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                {
+                if !is_libsecret_item_id(item_id) {
                     return Err(anyhow!("invalid item id"));
                 }
                 validate_libsecret_timestamp(item.created)?;

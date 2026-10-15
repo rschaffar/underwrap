@@ -211,13 +211,25 @@ async fn item_create_reveal_delete_round_trip() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let created: AdminLibsecretItemCreateResponse = resp.json().await.unwrap();
-    assert_eq!(created.id, "item_1");
+    assert!(underwrap_protocol::resource_blob::is_libsecret_item_id(
+        &created.id
+    ));
+    let stored = daemon.get_resource_blob("test", &rid).unwrap();
+    assert!(
+        underwrap_protocol::resource_blob::LibsecretSection::from_strict_publication_bytes(
+            &stored.libsecret.to_canonical_bytes().unwrap()
+        )
+        .is_ok()
+    );
 
     // Reveal returns the stored secret.
     let resp = daemon
         .admin_request(
             reqwest::Method::GET,
-            &libsecret_path(&rid, "/collections/default/items/item_1/secret"),
+            &libsecret_path(
+                &rid,
+                &format!("/collections/default/items/{}/secret", created.id),
+            ),
         )
         .send()
         .await
@@ -230,7 +242,7 @@ async fn item_create_reveal_delete_round_trip() {
     let resp = daemon
         .admin_request(
             reqwest::Method::DELETE,
-            &libsecret_path(&rid, "/collections/default/items/item_1"),
+            &libsecret_path(&rid, &format!("/collections/default/items/{}", created.id)),
         )
         .send()
         .await
@@ -321,29 +333,37 @@ async fn alias_put_then_delete_round_trip() {
 }
 
 #[tokio::test]
-async fn collection_create_rejects_leading_underscore_id() {
+async fn collection_create_accepts_underscore_and_rejects_punctuation() {
     let daemon = TestDaemon::start(one_wrapper_config()).await.unwrap();
     let rid = create_resource(&daemon, "lib/validation").await;
 
-    let resp = daemon
-        .admin_request(reqwest::Method::POST, &libsecret_path(&rid, "/collections"))
-        .json(&AdminLibsecretCollectionCreateRequest {
-            id: Some("_meta".into()),
-            label: "should fail".into(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    for (id, expected) in [
+        ("_meta", StatusCode::OK),
+        ("a.b", StatusCode::BAD_REQUEST),
+        ("a-b", StatusCode::BAD_REQUEST),
+    ] {
+        let before = daemon.get_resource_blob("test", &rid).unwrap();
+        let resp = daemon
+            .admin_request(reqwest::Method::POST, &libsecret_path(&rid, "/collections"))
+            .json(&AdminLibsecretCollectionCreateRequest {
+                id: Some(id.into()),
+                label: "Collection".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), expected);
+        if expected == StatusCode::BAD_REQUEST {
+            assert!(daemon.get_resource_blob("test", &rid).unwrap() == before);
+        }
+    }
 
     daemon.stop().await.unwrap();
 }
 
 #[tokio::test]
-async fn alias_put_rejects_leading_underscore_name() {
-    // The alias name lives in the URL path; reaching the handler still
-    // counts as an admin attempt, so the validator must reject it
-    // before mutating the blob.
+async fn alias_put_accepts_underscore_and_rejects_punctuation() {
+    // Validate the real URL-selected alias name before mutation.
     let daemon = TestDaemon::start(one_wrapper_config()).await.unwrap();
     let rid = create_resource(&daemon, "lib/aliasvalid").await;
 
@@ -359,21 +379,31 @@ async fn alias_put_rejects_leading_underscore_name() {
         .await
         .unwrap();
 
-    let resp = daemon
-        .admin_request(
-            reqwest::Method::PUT,
-            &libsecret_path(&rid, "/aliases/_reserved"),
-        )
-        .json(&AdminLibsecretAliasUpsertRequest {
-            collection_id: "default".into(),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
+    for (name, expected) in [
+        ("_reserved", StatusCode::OK),
+        ("a.b", StatusCode::BAD_REQUEST),
+        ("a-b", StatusCode::BAD_REQUEST),
+    ] {
+        let before = daemon.get_resource_blob("test", &rid).unwrap();
+        let resp = daemon
+            .admin_request(
+                reqwest::Method::PUT,
+                &libsecret_path(&rid, &format!("/aliases/{name}")),
+            )
+            .json(&AdminLibsecretAliasUpsertRequest {
+                collection_id: "default".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), expected);
+        if expected == StatusCode::BAD_REQUEST {
+            assert!(daemon.get_resource_blob("test", &rid).unwrap() == before);
+        }
+    }
     let tree = get_tree(&daemon, &rid).await;
-    assert!(tree.aliases.is_empty());
+    assert_eq!(tree.aliases.len(), 1);
+    assert_eq!(tree.aliases["_reserved"], "default");
 
     daemon.stop().await.unwrap();
 }
@@ -540,7 +570,6 @@ async fn material_adding_admin_routes_enforce_exact_complete_resource_limit() {
     );
 
     let exact_item_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let oversized_item_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let mut item_candidate = ResourceBlob::empty();
     item_candidate.libsecret.collections.insert(
         "c".into(),
@@ -569,9 +598,9 @@ async fn material_adding_admin_routes_enforce_exact_complete_resource_limit() {
         .unwrap()
         .items
         .remove(exact_item_id);
-    let item_body = |id: &str| AdminLibsecretItemCreateRequest {
-        id: Some(id.into()),
-        label: "item".into(),
+    let item_body = |label: &str| AdminLibsecretItemCreateRequest {
+        id: Some(exact_item_id.into()),
+        label: label.into(),
         content_type: "text/plain".into(),
         attributes: std::collections::BTreeMap::new(),
         secret_b64: String::new(),
@@ -582,7 +611,7 @@ async fn material_adding_admin_routes_enforce_exact_complete_resource_limit() {
             reqwest::Method::POST,
             &libsecret_path(&rid, "/collections/c/items"),
         )
-        .json(&item_body(exact_item_id))
+        .json(&item_body("item"))
         .send()
         .await
         .unwrap();
@@ -594,7 +623,7 @@ async fn material_adding_admin_routes_enforce_exact_complete_resource_limit() {
             reqwest::Method::POST,
             &libsecret_path(&rid, "/collections/c/items"),
         )
-        .json(&item_body(oversized_item_id))
+        .json(&item_body("items"))
         .send()
         .await
         .unwrap();

@@ -322,7 +322,7 @@ async fn admin_resource_delete_reports_blockers_then_removes_clean_resources() {
             &format!("{libsecret_path}/collections/default/items"),
         )
         .json(&serde_json::json!({
-            "id": "item",
+            "id": "0123456789abcdef0123456789abcdef",
             "label": "credential",
             "content_type": "text/plain",
             "attributes": {"service": "example"},
@@ -357,7 +357,7 @@ async fn admin_resource_delete_reports_blockers_then_removes_clean_resources() {
             {
                 "kind": "libsecret_item",
                 "collection_id": "default",
-                "item_id": "item"
+                "item_id": "0123456789abcdef0123456789abcdef"
             }
         ])
     );
@@ -369,7 +369,7 @@ async fn admin_resource_delete_reports_blockers_then_removes_clean_resources() {
 
     for path in [
         format!("{libsecret_path}/aliases/default"),
-        format!("{libsecret_path}/collections/default/items/item"),
+        format!("{libsecret_path}/collections/default/items/0123456789abcdef0123456789abcdef"),
         format!("{libsecret_path}/collections/default"),
     ] {
         let response = daemon

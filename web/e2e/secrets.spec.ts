@@ -208,8 +208,11 @@ test("admin builds a libsecret tree end-to-end (collection + item + alias)", asy
   const colDlg = page.getByRole("dialog", {
     name: /create libsecret collection/i,
   });
-  await colDlg.getByLabel(/^id/i).fill("default");
+  await colDlg.getByLabel(/^id/i).fill("not.valid");
   await colDlg.getByLabel(/^label/i).fill("Default");
+  await colDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(colDlg.getByText("Id must contain only ASCII letters, digits or underscores.")).toBeVisible();
+  await colDlg.getByLabel(/^id/i).fill("default");
   await colDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(colDlg).toBeHidden();
 
@@ -230,10 +233,21 @@ test("admin builds a libsecret tree end-to-end (collection + item + alias)", asy
   await itemDlg
     .getByTestId("libsecret-item-secret-input")
     .fill("ghp_e2e_value_v1");
+  await itemDlg.getByLabel(/^id/i).fill("item_1");
   await itemDlg.getByRole("button", { name: /^create$/i }).click();
+  await expect(itemDlg.getByText("Item id must contain exactly 32 lowercase hexadecimal characters.")).toBeVisible();
+  await itemDlg.getByLabel(/^id/i).fill("");
+  const createdResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith("/collections/default/items"),
+  );
+  await itemDlg.getByRole("button", { name: /^create$/i }).click();
+  const response = await createdResponse;
+  expect(response.status()).toBe(200);
+  const { id: itemId } = await response.json() as { id: string };
+  expect(itemId).toMatch(/^[0-9a-f]{32}$/);
   await expect(itemDlg).toBeHidden();
 
-  const item = tree.getByTestId("libsecret-item-default-item_1");
+  const item = tree.getByTestId(`libsecret-item-default-${itemId}`);
   await expect(item).toBeVisible();
   await expect(item).toHaveText(/GitHub CLI/);
   await expect(item).toHaveText(/text\/plain/);
@@ -254,18 +268,21 @@ test("admin builds a libsecret tree end-to-end (collection + item + alias)", asy
   await revealDlg.getByText("Close", { exact: true }).click();
   await expect(revealDlg).toBeHidden();
 
-  // Set the `default` alias pointing at the collection.
+  // Reject punctuation, then accept a leading underscore alias.
   const aliases = tree.getByTestId("libsecret-aliases");
   await aliases.getByTestId("libsecret-set-alias").click();
   const aliasDlg = page.getByRole("dialog", {
     name: /set libsecret alias/i,
   });
-  await aliasDlg.getByLabel(/alias name/i).fill("default");
+  await aliasDlg.getByLabel(/alias name/i).fill("bad-alias");
+  await aliasDlg.getByRole("button", { name: /^save$/i }).click();
+  await expect(aliasDlg.getByText("Id must contain only ASCII letters, digits or underscores.")).toBeVisible();
+  await aliasDlg.getByLabel(/alias name/i).fill("_default");
   await aliasDlg.getByRole("button", { name: /^save$/i }).click();
   await expect(aliasDlg).toBeHidden();
 
-  const aliasRow = tree.getByTestId("libsecret-alias-default");
-  await expect(aliasRow).toContainText(/default\s*→\s*default/);
+  const aliasRow = tree.getByTestId("libsecret-alias-_default");
+  await expect(aliasRow).toContainText(/_default\s*→\s*default/);
   await expect(aliasRow).not.toContainText(/dangling/i);
 
   // Delete the alias. Collection + item stay.
@@ -273,16 +290,14 @@ test("admin builds a libsecret tree end-to-end (collection + item + alias)", asy
   const delAliasDlg = page.getByRole("dialog", { name: /delete alias/i });
   await delAliasDlg.getByRole("button", { name: /^delete$/i }).click();
   await expect(delAliasDlg).toBeHidden();
-  await expect(aliases).not.toHaveText(/libsecret-alias-default/);
+  await expect(aliasRow).toHaveCount(0);
 
   // Delete the item.
   await item.getByRole("button", { name: /^delete$/i }).click();
   const delItemDlg = page.getByRole("dialog", { name: /delete item/i });
   await delItemDlg.getByRole("button", { name: /^delete$/i }).click();
   await expect(delItemDlg).toBeHidden();
-  await expect(tree.getByTestId("libsecret-item-default-item_1")).toHaveCount(
-    0,
-  );
+  await expect(item).toHaveCount(0);
 
   // Finally, delete the collection itself.
   await collection.getByTestId("libsecret-delete-collection-default").click();
@@ -332,7 +347,7 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
   const createCollectionDlg = page.getByRole("dialog", {
     name: /create libsecret collection/i,
   });
-  await createCollectionDlg.getByLabel(/^id/i).fill("delete-blocker");
+  await createCollectionDlg.getByLabel(/^id/i).fill("delete_blocker");
   await createCollectionDlg.getByLabel(/^label/i).fill("Delete blocker");
   await createCollectionDlg.getByRole("button", { name: /^create$/i }).click();
   await expect(createCollectionDlg).toBeHidden();
@@ -348,7 +363,7 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
   const blockers = delDlg.getByTestId("resource-delete-blockers");
   await expect(blockers).toBeVisible();
   await expect(blockers).toContainText("env: EXAMPLE");
-  await expect(blockers).toContainText("libsecret collection: delete-blocker");
+  await expect(blockers).toContainText("libsecret collection: delete_blocker");
   await delDlg.getByRole("button", { name: /^cancel$/i }).click();
   await expect(delDlg).toBeHidden();
 
@@ -371,11 +386,11 @@ test("admin deletes a resource via the simple confirm dialog after refusal clear
   await expect(delDlg).toBeVisible();
   await expect(blockers).toBeVisible();
   await expect(blockers).not.toContainText("env: EXAMPLE");
-  await expect(blockers).toContainText("libsecret collection: delete-blocker");
+  await expect(blockers).toContainText("libsecret collection: delete_blocker");
   await delDlg.getByRole("button", { name: /^cancel$/i }).click();
   await expect(delDlg).toBeHidden();
 
-  await tree.getByTestId("libsecret-delete-collection-delete-blocker").click();
+  await tree.getByTestId("libsecret-delete-collection-delete_blocker").click();
   const contentDeleteDlg = page.getByRole("dialog", {
     name: /delete collection/i,
   });

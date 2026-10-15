@@ -420,6 +420,7 @@ let
     test "$#" -eq 1
     release_marker="$1"
     ${pkgs.libsecret}/bin/secret-tool lookup service gh account github.com >/dev/null
+    ${pkgs.libsecret}/bin/secret-tool lookup service rf0003 account admin >/dev/null
     ${pkgs.coreutils}/bin/printf \
       'UNDERWRAP_LIBSECRET_BUS_READY DBUS_SESSION_BUS_ADDRESS=%s\n' \
       "$DBUS_SESSION_BUS_ADDRESS"
@@ -427,6 +428,7 @@ let
       ${pkgs.coreutils}/bin/sleep 0.05
     done
     ${pkgs.libsecret}/bin/secret-tool lookup service gh account github.com >/dev/null
+    ${pkgs.libsecret}/bin/secret-tool lookup service rf0003 account admin >/dev/null
     ${pkgs.coreutils}/bin/printf 'UNDERWRAP_LIBSECRET_BUS_STILL_READY\n'
   '';
 in {

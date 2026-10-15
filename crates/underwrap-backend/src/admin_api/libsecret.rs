@@ -21,12 +21,15 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use rand::RngCore;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use underwrap_backend_store::{load_resource_blob, save_resource_blob};
 use underwrap_protocol::message::SecretBytes;
-use underwrap_protocol::resource_blob::{Collection, Item, ResourceBlob};
+use underwrap_protocol::resource_blob::{
+    Collection, Item, ResourceBlob, is_libsecret_item_id, is_libsecret_segment,
+};
 use underwrap_protocol::service::{
     AdminLibsecretAliasDeleteResponse, AdminLibsecretAliasUpsertRequest,
     AdminLibsecretCollectionCreateRequest, AdminLibsecretCollectionCreateResponse,
@@ -46,8 +49,6 @@ use crate::http::responses::{Body, ResourceBody};
 use crate::runtime_state::ListenerState;
 use crate::time::now_epoch_secs;
 
-const MAX_ID_LEN: usize = 128;
-
 pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
     OpenApiRouter::new()
         .routes(routes!(handle_get_tree))
@@ -59,39 +60,39 @@ pub(crate) fn openapi_router() -> OpenApiRouter<Arc<ListenerState>> {
         .routes(routes!(handle_put_alias, handle_delete_alias))
 }
 
-/// Validate a caller-supplied id (collection id, item id, alias name).
-/// The rules — `[A-Za-z0-9._-]+`, max 128 chars, no leading `_` — keep
-/// the id usable as a D-Bus path segment and reserve `_`-prefixed names
-/// for future internal use.
-fn validate_id(kind: &str, id: &str) -> Result<(), AdminError> {
-    if id.is_empty() {
+// Validate only newly created identifiers/references, not the entire stored graph:
+// inspection and deletion must remain available to repair older invalid entries.
+fn validate_segment(kind: &str, id: &str) -> Result<(), AdminError> {
+    if !is_libsecret_segment(id) {
         return Err(AdminError::bad_request(
             "invalid_request",
-            format!("{kind} id must not be empty"),
-        ));
-    }
-    if id.len() > MAX_ID_LEN {
-        return Err(AdminError::bad_request(
-            "invalid_request",
-            format!("{kind} id exceeds {MAX_ID_LEN} characters"),
-        ));
-    }
-    if id.starts_with('_') {
-        return Err(AdminError::bad_request(
-            "invalid_request",
-            format!("{kind} id must not start with '_'"),
-        ));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    {
-        return Err(AdminError::bad_request(
-            "invalid_request",
-            format!("{kind} id contains disallowed characters; allowed: [A-Za-z0-9._-]"),
+            format!("{kind} id must contain 1–128 ASCII letters, digits or underscores"),
         ));
     }
     Ok(())
+}
+
+fn validate_item_id(id: &str) -> Result<(), AdminError> {
+    if !is_libsecret_item_id(id) {
+        return Err(AdminError::bad_request(
+            "invalid_request",
+            "item id must contain exactly 32 lowercase hexadecimal characters",
+        ));
+    }
+    Ok(())
+}
+
+fn new_item_id<T>(existing: &BTreeMap<String, T>) -> Result<String, AdminError> {
+    loop {
+        let mut bytes = [0u8; 16];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut bytes)
+            .into_internal("generating libsecret item id")?;
+        let id = hex::encode(bytes);
+        if !existing.contains_key(&id) {
+            return Ok(id);
+        }
+    }
 }
 
 /// Generate the next free id of the shape `<prefix><n>` where `n` is
@@ -220,7 +221,7 @@ pub(crate) async fn handle_post_collection(
     let outcome = with_blob(&state, &store_id, &resource_id, |blob| {
         let id = match body.id {
             Some(requested) => {
-                validate_id("collection", &requested)?;
+                validate_segment("collection", &requested)?;
                 if blob.libsecret.collections.contains_key(&requested) {
                     return Err(AdminError::conflict(
                         "collection_exists",
@@ -359,9 +360,10 @@ pub(crate) async fn handle_post_item(
                 .collections
                 .get_mut(&cid)
                 .ok_or_else(|| AdminError::not_found(format!("collection '{cid}'")))?;
+            validate_segment("collection", &cid)?;
             let id = match body.id {
                 Some(requested) => {
-                    validate_id("item", &requested)?;
+                    validate_item_id(&requested)?;
                     if collection.items.contains_key(&requested) {
                         return Err(AdminError::conflict(
                             "item_exists",
@@ -370,7 +372,7 @@ pub(crate) async fn handle_post_item(
                     }
                     requested
                 }
-                None => next_auto_id("item_", &collection.items),
+                None => new_item_id(&collection.items)?,
             };
             let now = now_epoch_secs();
             collection.items.insert(
@@ -503,7 +505,7 @@ pub(crate) async fn handle_get_item_secret(
     params(
         ("sid" = String, Path, description = "Store id."),
         ("rid" = String, Path, description = "Resource id."),
-        ("name" = String, Path, description = "Alias name."),
+        ("name" = String, Path, description = "Alias name: 1–128 ASCII letters, digits or underscores, including leading digits/underscores. No normalization.", min_length = 1, max_length = 128, pattern = "^[A-Za-z0-9_]+$"),
     ),
     request_body = AdminLibsecretAliasUpsertRequest,
     responses(
@@ -521,12 +523,13 @@ pub(crate) async fn handle_put_alias(
     Body(body): Body<AdminLibsecretAliasUpsertRequest>,
 ) -> Result<Json<AdminOkResponse>, AdminError> {
     let outcome = (|| -> Result<AdminOkResponse, AdminError> {
-        validate_id("alias", &name)?;
+        validate_segment("alias", &name)?;
         with_blob(&state, &store_id, &resource_id, |blob| {
             let target = body.collection_id;
             if !blob.libsecret.collections.contains_key(&target) {
                 return Err(AdminError::not_found(format!("collection '{target}'")));
             }
+            validate_segment("collection", &target)?;
             let dirty = blob.libsecret.aliases.get(&name) != Some(&target);
             if dirty {
                 blob.libsecret.aliases.insert(name.clone(), target);

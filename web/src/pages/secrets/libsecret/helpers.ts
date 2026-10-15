@@ -1,28 +1,26 @@
 import { z } from "zod";
 
-// Operator-supplied ids are validated by the backend with
-// `[A-Za-z0-9._-]+`, max 128, no leading `_`. Mirror the rule in the
-// client for inline form feedback; failure messages from the backend
-// remain authoritative.
-const ID_PATTERN = /^(?!_)[A-Za-z0-9._-]+$/;
-const ID_MESSAGE = "Id must match [A-Za-z0-9._-]+ and not start with '_'.";
+// Mirror strict publication identifiers for new entries only. Stored legacy
+// identifiers must still be displayable and deletable. Backend checks own admission.
+// Reject punctuation, non-ASCII characters and all whitespace without normalization.
+const INVALID_ID_CHARACTER = /[^A-Za-z0-9_]/;
+const ID_MESSAGE = "Id must contain only ASCII letters, digits or underscores.";
 const ID_MAX = 128;
 const ID_MAX_MESSAGE = "Id must be at most 128 characters.";
 
 /**
- * Zod refinement for libsecret-style ids and alias names. Non-empty,
- * matches the operator-id pattern.
+ * Collection ids and alias names, including leading digits/underscores.
  */
 export function libsecretIdField() {
   return z
     .string()
     .min(1, "Id is required.")
     .max(ID_MAX, ID_MAX_MESSAGE)
-    .refine((s) => ID_PATTERN.test(s), ID_MESSAGE);
+    .refine((s) => !INVALID_ID_CHARACTER.test(s), ID_MESSAGE);
 }
 
 /**
- * Variant used by create-collection / create-item where a blank value
+ * Variant used by create-collection where a blank value
  * means "auto-generate a stable id server-side". Validates the
  * pattern only when the operator typed something.
  */
@@ -31,7 +29,14 @@ export function optionalLibsecretIdField() {
     .string()
     .max(ID_MAX, ID_MAX_MESSAGE)
     .optional()
-    .refine((s) => !s || ID_PATTERN.test(s), ID_MESSAGE);
+    .refine((s) => !s || !INVALID_ID_CHARACTER.test(s), ID_MESSAGE);
+}
+
+export function optionalLibsecretItemIdField() {
+  return z.string().optional().refine(
+    (s) => !s || (s.length === 32 && !/[^0-9a-f]/.test(s)),
+    "Item id must contain exactly 32 lowercase hexadecimal characters.",
+  );
 }
 
 export function libsecretTreeKey(storeId: string, resourceId: string) {
