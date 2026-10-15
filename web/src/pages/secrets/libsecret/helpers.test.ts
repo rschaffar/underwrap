@@ -1,6 +1,45 @@
 import { describe, expect, it } from "vitest";
 
-import { AttributeParseError, parseAttributes } from "./helpers";
+import {
+  AttributeParseError,
+  libsecretIdField,
+  optionalLibsecretIdField,
+  optionalLibsecretItemIdField,
+  parseAttributes,
+} from "./helpers";
+
+describe("libsecret identifiers", () => {
+  it.each(["_", "0", "Ab_09", "a".repeat(128)])("accepts segment %s exactly", (id) => {
+    expect(libsecretIdField().parse(id)).toBe(id);
+    expect(optionalLibsecretIdField().parse(id)).toBe(id);
+  });
+
+  it.each(["a.b", "a-b", ".", "..", "a/b", "a b", "é", "a".repeat(129), " id", "id ", "id\n", "id\r\n"])(
+    "rejects an invalid segment without normalization: %j", (id) => {
+      expect(libsecretIdField().safeParse(id).success).toBe(false);
+      expect(optionalLibsecretIdField().safeParse(id).success).toBe(false);
+    },
+  );
+
+  it("allows only blank or omitted optional ids to select generation", () => {
+    expect(libsecretIdField().safeParse("").success).toBe(false);
+    for (const field of [optionalLibsecretIdField(), optionalLibsecretItemIdField()]) {
+      expect(field.parse("")).toBe("");
+      expect(field.parse(undefined)).toBeUndefined();
+      expect(field.safeParse(" ").success).toBe(false);
+    }
+  });
+
+  it.each(["0".repeat(32), "abcdef0123456789".repeat(2)])("accepts exact item id %s", (id) => {
+    expect(optionalLibsecretItemIdField().parse(id)).toBe(id);
+  });
+
+  it.each(["item_1", "a".repeat(31), "a".repeat(33), "A".repeat(32), "g".repeat(32), "_".repeat(32), "é".repeat(16), "a".repeat(32) + "\n", " " + "a".repeat(32)])(
+    "rejects invalid item id without normalization: %j", (id) => {
+      expect(optionalLibsecretItemIdField().safeParse(id).success).toBe(false);
+    },
+  );
+});
 
 function parseError(input: string): AttributeParseError {
   try {

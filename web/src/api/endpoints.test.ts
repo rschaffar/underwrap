@@ -118,20 +118,20 @@ const endpointCases: EndpointCase[] = [
   {
     name: "creates a libsecret item",
     invoke: () =>
-      postLibsecretItem("store-a", "resource-a", "collection-a", {
+      postLibsecretItem("store-a", "resource-a", "collection_a", {
         attributes: { scope: "test" },
         content_type: "text/plain",
-        id: "item-new",
+        id: "0123456789abcdef0123456789abcdef",
         label: "Item",
         secret_b64: "c3ludGhldGlj",
       }),
     method: "POST",
     pathname:
-      "/v1/admin/stores/store-a/resources/resource-a/libsecret/collections/collection-a/items",
+      "/v1/admin/stores/store-a/resources/resource-a/libsecret/collections/collection_a/items",
     body: {
       attributes: { scope: "test" },
       content_type: "text/plain",
-      id: "item-new",
+      id: "0123456789abcdef0123456789abcdef",
       label: "Item",
       secret_b64: "c3ludGhldGlj",
     },
@@ -140,13 +140,13 @@ const endpointCases: EndpointCase[] = [
     name: "creates a libsecret collection",
     invoke: () =>
       postLibsecretCollection("store-a", "resource-a", {
-        id: "collection-new",
+        id: "collection_new",
         label: "Collection",
       }),
     method: "POST",
     pathname:
       "/v1/admin/stores/store-a/resources/resource-a/libsecret/collections",
-    body: { id: "collection-new", label: "Collection" },
+    body: { id: "collection_new", label: "Collection" },
   },
   {
     name: "deletes a libsecret collection",
@@ -173,12 +173,12 @@ const endpointCases: EndpointCase[] = [
     name: "updates a libsecret alias",
     invoke: () =>
       putLibsecretAlias("store-a", "resource-a", "default", {
-        collection_id: "collection-a",
+        collection_id: "collection_a",
       }),
     method: "PUT",
     pathname:
       "/v1/admin/stores/store-a/resources/resource-a/libsecret/aliases/default",
-    body: { collection_id: "collection-a" },
+    body: { collection_id: "collection_a" },
   },
   {
     name: "deletes a libsecret alias",

@@ -82,6 +82,65 @@ fn flat_slots_and_absent_keys_are_not_confused_with_missing_resources() {
 }
 
 #[test]
+fn libsecret_creation_contract_matches_publication_without_restricting_legacy_reads() {
+    let spec = spec();
+    let schemas = &spec["components"]["schemas"];
+    for (schema, field, pattern, min, max) in [
+        (
+            "AdminLibsecretCollectionCreateRequest",
+            "id",
+            "^[A-Za-z0-9_]+$",
+            1,
+            128,
+        ),
+        (
+            "AdminLibsecretItemCreateRequest",
+            "id",
+            "^[0-9a-f]{32}$",
+            32,
+            32,
+        ),
+        (
+            "AdminLibsecretAliasUpsertRequest",
+            "collection_id",
+            "^[A-Za-z0-9_]+$",
+            1,
+            128,
+        ),
+    ] {
+        let property = &schemas[schema]["properties"][field];
+        assert_eq!(property["pattern"], pattern);
+        assert_eq!(property["minLength"], min);
+        assert_eq!(property["maxLength"], max);
+    }
+    assert!(
+        schemas["AdminLibsecretItemCreateRequest"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("16 random bytes")
+    );
+    assert!(
+        schemas["AdminLibsecretCollectionCreateRequest"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("c<n>")
+    );
+    let alias_path = "/v1/admin/stores/{sid}/resources/{rid}/libsecret/aliases/{name}";
+    for (method, restricted) in [("put", true), ("delete", false)] {
+        let name = operation(&spec, alias_path, method)["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "name")
+            .unwrap();
+        assert_eq!(name["schema"].get("pattern").is_some(), restricted);
+    }
+    for schema in ["AdminLibsecretCollectionView", "AdminLibsecretItemView"] {
+        assert!(schemas[schema]["properties"]["id"].get("pattern").is_none());
+    }
+}
+
+#[test]
 fn mutation_descriptions_preserve_concurrency_and_key_lifetime_limits() {
     let spec = spec();
     let schemas = &spec["components"]["schemas"];

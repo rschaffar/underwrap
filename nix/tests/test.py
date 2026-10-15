@@ -2199,6 +2199,49 @@ def local_libsecret_mode():
     )
     machine.log("PASS: libsecret data stored in backend")
 
+    # RF-0003: default structured admin creation must survive stored-state
+    # loading and generation-zero publication, not merely CRUD validation.
+    before_admin = json.loads(base64.b64decode(
+        admin_get_blob(ADMIN_LOCAL, "local", "test/libsecret-store")
+    ))
+    libsecret_path = f"/v1/admin/stores/local/resources/{libsecret_resource_id}/libsecret"
+    created_collection = admin_api(
+        ADMIN_LOCAL, f"{libsecret_path}/collections", {"label": "Admin-created"}
+    )["id"]
+    created_item = admin_api(
+        ADMIN_LOCAL, f"{libsecret_path}/collections/{created_collection}/items",
+        {"label": "Admin-created", "content_type": "text/plain",
+         "attributes": {"service": "rf0003", "account": "admin"}, "secret_b64": ""},
+    )["id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", created_item), "invalid generated item id"
+    after_admin = json.loads(base64.b64decode(
+        admin_get_blob(ADMIN_LOCAL, "local", "test/libsecret-store")
+    ))
+    for section in ["env", "files"]:
+        assert after_admin[section] == before_admin[section], "admin creation changed unrelated section"
+    for cid, collection in before_admin["libsecret"]["collections"].items():
+        assert after_admin["libsecret"]["collections"][cid] == collection, "admin creation changed existing collection"
+    assert after_admin["libsecret"]["aliases"] == before_admin["libsecret"]["aliases"]
+    assert created_item in after_admin["libsecret"]["collections"][created_collection]["items"]
+    for invalid_id in ["item_1", "A" * 32, "a" * 31, "g" * 32]:
+        admin_api_expect_status(
+            ADMIN_LOCAL, f"{libsecret_path}/collections/{created_collection}/items",
+            {"id": invalid_id, "label": "Rejected", "content_type": "text/plain",
+             "attributes": {}, "secret_b64": ""}, status=400,
+        )
+    for invalid_segment in ["a.b", "a-b"]:
+        admin_api_expect_status(
+            ADMIN_LOCAL, f"{libsecret_path}/collections",
+            {"id": invalid_segment, "label": "Rejected"}, status=400,
+        )
+        admin_api_expect_status(
+            ADMIN_LOCAL, f"{libsecret_path}/aliases/{invalid_segment}",
+            {"collection_id": created_collection}, status=400, method="PUT",
+        )
+    assert json.loads(base64.b64decode(
+        admin_get_blob(ADMIN_LOCAL, "local", "test/libsecret-store")
+    )) == after_admin, "rejected identifiers changed stored state"
+
     # Prove the deployed private filesystem bus is absent from the host mount
     # namespace while the target has just completed a real lookup and remains
     # blocked before a second lookup. Trusted root instrumentation checks host
@@ -2380,6 +2423,11 @@ def local_libsecret_mode():
             f"systemctl reset-failed {quoted_unit} >/dev/null 2>&1 || true"
         )
         machine.execute(f"rm -f -- {quoted_marker}")
+
+    assert json.loads(base64.b64decode(
+        admin_get_blob(ADMIN_LOCAL, "local", "test/libsecret-store")
+    )) == after_admin, "lookup-only wrapper changed stored state"
+    machine.log("PASS: default admin item reaches generation-zero readiness and real lookup")
 
     # Find ALL files on the system containing the secret, outside the backend.
     # Exclude: backend dir (correct storage), /nix/ (test script literals),
@@ -2563,6 +2611,38 @@ def local_directory_credentials():
         "test-dir-env-override-probe",
     ]:
         set_local_unlocked_permission(wrapper)
+
+def local_legacy_libsecret_disabled_projections():
+    # Legacy state remains representable and is ignored by disabled projections.
+    # No wrapper is running while trusted setup replaces/restores each resource.
+    for resource, wrapper in [("test/token", "test-echo"), ("test/dir-a", "test-dir-touch")]:
+        original = base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", resource))
+        candidate = json.loads(original)
+        candidate["libsecret"] = {
+            "aliases": {}, "collections": {"legacy.collection": {
+                "label": "Legacy", "created": 0, "modified": 0,
+                "items": {"item_1": {"label": "Legacy", "content_type": "text/plain",
+                    "created": 0, "modified": 0, "attributes": {}, "secret": ""}},
+            }},
+        }
+        touch_path = ".config/underwrap-dir-a/touch-probe"
+        if wrapper == "test-dir-touch":
+            assert touch_path not in candidate["files"], "files witness needs an absent file"
+        canonical = json.dumps(candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        expected = json.loads(canonical)
+        if wrapper == "test-dir-touch":
+            expected["files"][touch_path] = ""
+        try:
+            install_local_plain_resource_blob(resource, canonical)
+            machine.succeed(su(f"/run/wrappers/bin/underwrap-local {wrapper} >/dev/null"))
+            after = json.loads(base64.b64decode(admin_get_blob(ADMIN_LOCAL, "local", resource)))
+            assert after["libsecret"] == candidate["libsecret"], "disabled libsecret projection changed legacy state"
+            assert after["env"] == candidate["env"], "wrapper changed immutable env"
+            assert after == expected, "wrapper did not persist exactly the intended files change"
+        finally:
+            install_local_plain_resource_blob(resource, original)
+    machine.log("PASS: env/files-only wrappers preserve invalid legacy libsecret identifiers")
+
 
 def journal_cursor():
     """Snapshot the current journal cursor for exact follow-up queries."""
@@ -5250,6 +5330,7 @@ local_proc_isolation_libsecret_mode()
 local_libsecret_mode()
 local_libsecret_two_slot_compatibility()
 local_directory_credentials()
+local_legacy_libsecret_disabled_projections()
 files_staging_provenance()
 local_atomic_writeback()
 pre_exec_writeback_gate()

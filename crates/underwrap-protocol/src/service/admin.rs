@@ -473,10 +473,8 @@ pub struct AdminSecretDeleteResponse {
 /// the admin SPA renders top-level.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminLibsecretTreeResponse {
-    /// Alias name → collection id. Free-form name space at the
-    /// Service level; aliases pointing at non-existent collections
-    /// are not produced by this endpoint (the alias-PUT handler
-    /// enforces target existence).
+    /// Stored alias name → collection id, including legacy invalid names or
+    /// dangling references so operators can inspect and repair them.
     pub aliases: BTreeMap<String, String>,
     /// Collections in id order. Item secret bytes are omitted; the
     /// SPA fetches them on demand via the reveal endpoint.
@@ -508,10 +506,13 @@ pub struct AdminLibsecretItemSecretResponse {
     pub secret_b64: String,
 }
 
-/// `POST .../libsecret/collections`. `id` is optional; when absent the
-/// server derives one from the label.
+/// `POST .../libsecret/collections`. Omitted/null `id` selects the first unused
+/// `c<n>` identifier (starting at c1), independent of the label.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminLibsecretCollectionCreateRequest {
+    /// Explicit ids contain 1–128 ASCII letters, digits or underscores.
+    /// Leading digits/underscores are allowed; no trimming or normalization.
+    #[schema(min_length = 1, max_length = 128, pattern = "^[A-Za-z0-9_]+$")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub label: String,
@@ -533,10 +534,14 @@ pub struct AdminLibsecretCollectionDeleteResponse {
     pub aliases_scrubbed: Vec<String>,
 }
 
-/// `POST .../libsecret/collections/{cid}/items`. `id` is optional; when
-/// absent the server derives one from the label.
+/// `POST .../libsecret/collections/{cid}/items`. Omitted/null `id` generates
+/// 16 random bytes encoded as lowercase hex, retrying occupied ids.
+/// The containing collection must have a valid publication identifier.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminLibsecretItemCreateRequest {
+    /// Explicit ids contain exactly 32 lowercase hexadecimal characters.
+    /// No trimming or normalization; an explicit empty string is invalid.
+    #[schema(min_length = 32, max_length = 32, pattern = "^[0-9a-f]{32}$")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub label: String,
@@ -558,8 +563,11 @@ pub struct AdminLibsecretItemDeleteResponse {
 
 /// `PUT .../libsecret/aliases/{name}`. `collection_id` must name an
 /// existing collection; the handler returns 404 otherwise.
+/// New alias names and their targets must satisfy the publication segment rules.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdminLibsecretAliasUpsertRequest {
+    /// Existing collection id: 1–128 ASCII letters, digits or underscores.
+    #[schema(min_length = 1, max_length = 128, pattern = "^[A-Za-z0-9_]+$")]
     pub collection_id: String,
 }
 

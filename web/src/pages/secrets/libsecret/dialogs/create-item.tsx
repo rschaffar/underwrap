@@ -22,7 +22,7 @@ import { encodeUtf8Base64 } from "@/lib/utf8-base64";
 import {
   AttributeParseError,
   libsecretTreeKey,
-  optionalLibsecretIdField,
+  optionalLibsecretItemIdField,
   parseAttributes,
 } from "../helpers";
 import { postLibsecretItem } from "@/api/client";
@@ -37,7 +37,7 @@ const attributesField = z.string().superRefine((value, context) => {
 });
 
 const itemSchema = z.object({
-  id: optionalLibsecretIdField(),
+  id: optionalLibsecretItemIdField(),
   label: z.string().min(1, "Label is required."),
   content_type: z.string().min(1, "Content type is required."),
   attributes: attributesField,
@@ -115,10 +115,13 @@ export function CreateItemDialog({
                     autoCapitalize="off"
                     autoCorrect="off"
                     spellCheck={false}
-                    placeholder="auto-generated if blank, e.g. item_1"
+                    placeholder="auto-generated if blank"
                     {...field}
                   />
                 </FormControl>
+                <FormDescription>
+                  Leave blank for a random id, or enter exactly 32 lowercase hexadecimal characters.
+                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}

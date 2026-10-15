@@ -14,7 +14,7 @@ vi.mock("@/api/client", async () => {
   return { ...actual, postLibsecretItem: vi.fn() };
 });
 
-function renderDialog() {
+function renderDialog(existingIds: string[] = []) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -24,7 +24,7 @@ function renderDialog() {
         storeId="prod"
         resourceId="r1"
         collectionId="default"
-        existingIds={[]}
+        existingIds={existingIds}
         onClose={() => {}}
       />
     </QueryClientProvider>,
@@ -70,6 +70,36 @@ describe("CreateItemDialog", () => {
       expect(screen.getByRole("dialog")).toBeInTheDocument();
     },
   );
+
+  it.each(["item_1", "a".repeat(31), "a".repeat(33), "A".repeat(32), "g".repeat(32)])(
+    "rejects invalid item id %s before sending a request", async (id) => {
+      renderDialog();
+      fireEvent.change(screen.getByLabelText(/id \(optional\)/i), { target: { value: id } });
+      fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+      expect(await screen.findByText("Item id must contain exactly 32 lowercase hexadecimal characters.")).toBeInTheDocument();
+      expect(postLibsecretItem).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a duplicate valid item id before sending a request", async () => {
+    const id = "a".repeat(32);
+    renderDialog([id]);
+    fireEvent.change(screen.getByLabelText(/id \(optional\)/i), { target: { value: id } });
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    expect(await screen.findByText("An item with that id already exists in this collection.")).toBeInTheDocument();
+    expect(postLibsecretItem).not.toHaveBeenCalled();
+  });
+
+  it("submits an explicit valid item id unchanged", async () => {
+    const id = "abcdef0123456789".repeat(2);
+    renderDialog();
+    fireEvent.change(screen.getByLabelText(/id \(optional\)/i), { target: { value: id } });
+    fireEvent.change(screen.getByLabelText(/^label$/i), { target: { value: "Item" } });
+    fireEvent.change(screen.getByTestId("libsecret-item-secret-input"), { target: { value: "synthetic" } });
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    await waitFor(() => expect(postLibsecretItem).toHaveBeenCalled());
+    expect(vi.mocked(postLibsecretItem).mock.calls[0]?.[3].id).toBe(id);
+  });
 
   it("sends the exact parsed attribute map and Unicode secret bytes", async () => {
     const user = userEvent.setup();

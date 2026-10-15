@@ -300,6 +300,11 @@ For env/files, **Create** rejects a known same-slot key collision, **Rename** pr
 An intentional empty write requires **Store an empty value**; leaving a value field blank alone is not replacement, and Delete remains separate.
 Known-key collision checks prevent accidental overwrite in the displayed inventory, not concurrent changes or last-writer-wins races.
 
+For a new libsecret item, leave its optional id blank for a generated 32-character lowercase hexadecimal id; a custom id must have that exact shape.
+Collection ids and alias names accept 1–128 ASCII letters, digits or underscores, including a leading underscore; use labels for descriptive text.
+Old incompatible identifiers remain visible and existing read/delete routes remain available for repair, but new items or aliases cannot extend an incompatible collection.
+These admission checks do not change the separate [publication size and graph requirements](local-protocol.md#framing-and-state-validation).
+
 Libsecret attributes accept one `key=value` per nonblank line, split at the first delimiter, trim both sides, allow empty values, and keep keys case-sensitive.
 Blank lines and CRLF input are handled without creating extra attributes.
 A missing delimiter, empty trimmed key, or repeated exact trimmed key produces a line-numbered error and sends no request; duplicate errors also identify the original line.

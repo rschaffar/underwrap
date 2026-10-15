@@ -21,7 +21,7 @@ import { libsecretIdField, libsecretTreeKey } from "../helpers";
 
 const aliasSchema = z.object({
   name: libsecretIdField(),
-  collection_id: z.string().min(1, "Pick a collection."),
+  collection_id: libsecretIdField(),
 });
 type AliasValues = z.infer<typeof aliasSchema>;
 

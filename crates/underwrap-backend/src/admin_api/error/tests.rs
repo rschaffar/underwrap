@@ -173,7 +173,13 @@ fn production_internal_constructor_inventory_is_static_and_complete() {
             ],
             "AdminError::from_resource_write(",
         );
-    assert_eq!(generic_paths, 44);
+    assert_eq!(generic_paths, 45);
+    // OS randomness failure uses the same generic response and type-only log;
+    // no generated identifier, resource material or source display is emitted.
+    assert_eq!(
+        occurrences(&generic_adapter_sources, "generating libsecret item id"),
+        1,
+    );
     assert_eq!(
         occurrences(&generic_adapter_sources, "selecting flat resource slot"),
         1,

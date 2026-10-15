@@ -57,6 +57,11 @@ Libsecret readiness needs a strict publication graph and a separately bounded ca
 [Local protocol](local-protocol.md#parsing-and-copies) distinguishes typed parsing, exact canonical-byte checks, copies, and projection validation.
 
 Flat admin entry routes support env and files, not libsecret; structured libsecret routes preserve its graph.
+New structured libsecret identifiers and references use the [strict publication identifier rules](local-protocol.md#framing-and-state-validation).
+Omitted or null item ids generate 16 random bytes encoded as lowercase hex, retrying ids already present in the collection; omitted or null collection ids select the first unused `c<n>` starting at `c1`.
+Explicit ids are not trimmed or normalized, and labels do not determine identifiers.
+Creation rejects incompatible item parents and alias targets without changing the resource, but does not validate every unrelated stored entry or guarantee size/projectability of the complete section.
+Reads and deletion retain legacy identifiers so invalid entries can be inspected and removed incrementally; no load, Checkout, or finalize step silently renames them.
 Each mutation loads and changes the complete aggregate, preserving unrelated sections rather than reconstructing it from a lossy flat view.
 A missing catalog resource produces the canonical value-free `404 not_found` / `unknown resource` response before blob access.
 An existing resource with no active blob begins as empty; a missing flat key has a nullable read and idempotent deletion, not the same missing-parent response.
