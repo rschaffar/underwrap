@@ -140,7 +140,7 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0009](active/RF-0009/README.md) | `W-03` | Medium | `open` | Text reveal and copy drop a leading UTF-8 BOM |
 | [RF-0010](active/RF-0010/README.md) | `W-05` | Medium | `open` | An old form submission can close a reopened draft |
 | [RF-0011](active/RF-0011/README.md) | `N-02` | Medium | `open` | Failed usage reporting hides a known writeback rejection |
-| [RF-0012](active/RF-0012/README.md) | `X-01` | Medium | `open` | Runtime-base paths are not escaped for tmpfiles syntax |
+| [RF-0012](active/RF-0012/README.md) | `X-01` | Medium | `blocked` | Runtime-base paths are not escaped for tmpfiles syntax |
 | [RF-0013](active/RF-0013/README.md) | `X-02` | Medium | `open` | Instance selectors collide with internal generated names |
 | [RF-0014](active/RF-0014/README.md) | `T-01` | Medium | `open` | Packaged-process tests lack failure-path kill and reap ownership |
 | [RF-0015](active/RF-0015/README.md) | `T-02` | Medium | `open` | Parallel fixtures use non-reentrant group lookup storage |

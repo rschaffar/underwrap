@@ -1,26 +1,22 @@
 # RF-0012 — Runtime-base paths are not escaped for tmpfiles syntax
 
-**Priority:** Medium · **State:** open
+**Priority:** Medium · **State:** blocked
 
-**Review aliases:** `X-01` · **Confidence:** High from real-module admission/rule evaluation and synthetic tmpfiles parser witnesses; edge configurations not activated.
+**Review aliases:** `X-01` · **Confidence:** High from actual-module/parser regressions and ordinary/edge-base shipped-chain VM activation.
 
 ## Why it matters
 
 Admitted percent, backslash or quote characters can make tmpfiles provision a different runtime path or reject the rule, breaking deployment or invocation.
 After [RF-0001](../../archived/RF-0001/README.md), files staging also requires the exact provisioned target runtime directory before fork; descriptor checks do not repair tmpfiles escaping.
 
-## Suggested fix
+## Correction and remaining blocker
 
-Round-trip every admitted literal through tmpfiles escaping, or explicitly reject unsupported syntax with a documented assertion.
-
-## Decision and caveat
-
-Open, Medium configuration-generation correctness.
-Preserve configurable runtime bases and existing path restrictions; no fix is implemented or authorized.
+Implemented in `70ae50f07f3fa75e2bf5b68234f1cd20ea702258`: encode tmpfiles syntax without changing admitted literal paths, daemon configuration or the privileged chain.
+Actual-module/parser cases, both full VM suites, focused module/examples, workspace test/format/Clippy and writeback integration passed.
+The broader `nix flake check` failed six unchanged SPA tests, including four timeouts; local `main` selects the identical failing web-test derivation.
+No SPA correction is authorized here, and the failure's cause is unestablished.
+Keep this record active pending aggregate acceptance rather than implying a fully green gate.
 The input is trusted operator configuration, not caller-controlled code.
-Module evaluation and parser dry-runs are not NixOS activation or evidence of root execution.
-
-No correction is authorized or completed by this record.
 The aliases belong to the review of `01214454aee850ebe8ceef5b757b9ae61cca07aa`.
 
 [Technical finding](finding.md) · [Evidence](evidence.md) · [Register](../../README.md)
