@@ -138,7 +138,7 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0007](archived/RF-0007/README.md) | `S-03` | Medium | `archived` (`fixed`) | Deleted D-Bus objects acknowledge setters without changing state |
 | [RF-0008](active/RF-0008/README.md) | `W-02` | Medium | `open` | Accepted dot-only libsecret IDs normalize out of request paths |
 | [RF-0009](archived/RF-0009/README.md) | `W-03` | Medium | `archived` (`fixed`) | Text reveal and copy drop a leading UTF-8 BOM |
-| [RF-0010](active/RF-0010/README.md) | `W-05` | Medium | `in-progress` | An old form submission can close a reopened draft |
+| [RF-0010](active/RF-0010/README.md) | `W-05` | Medium | `blocked` | An old form submission can close a reopened draft |
 | [RF-0011](active/RF-0011/README.md) | `N-02` | Medium | `blocked` | Failed usage reporting hides a known writeback rejection |
 | [RF-0012](active/RF-0012/README.md) | `X-01` | Medium | `blocked` | Runtime-base paths are not escaped for tmpfiles syntax |
 | [RF-0013](active/RF-0013/README.md) | `X-02` | Medium | `open` | Instance selectors collide with internal generated names |

@@ -50,8 +50,15 @@ Continue original-address invalidation and preserve its rejection after unmount.
 Preserve ordinary idle dismissal, request-error retry, and observable invalidation/callback rejection; do not change other findings, already guarded callers, or backend behavior.
 Unmount and browser closure are not remote cancellation.
 
-- [ ] Reconfirm the hook, dialog shell, affected caller/parent paths and existing guarded controls.
-- [ ] Add deferred-request/deferred-invalidation dialog/page regressions, rejection/retry and normal-success controls, and representative browser evidence.
-- [ ] Run pinned-environment SPA tests/build and affected browser/fixture checks; establish relevant baseline failures without weakening gates.
-- [ ] Record actual evidence and limits, archive only after required acceptance, and retain inspected feature commits without integration.
+- [x] Reconfirm the hook, dialog shell, affected caller/parent paths and existing guarded controls.
+- [x] Add deferred-request/deferred-invalidation dialog/page regressions, rejection/retry and normal-success controls, and representative browser evidence.
+- [x] Run pinned-environment SPA tests/build and affected browser/fixture checks; record baseline and failing runs without weakening gates.
+- [x] Record actual evidence and limits and retain inspected feature commits without integration.
+- [ ] Settle the final pinned Nix coverage failure before archival acceptance.
+
+Implementation is committed as `c4aa251eda7dfcfaf254c73e6d0be4b255c74806`.
+The final Nix `web-test` timed out unchanged encrypted-store-creation and Unicode-reveal tests at 5000 ms, with 376 passes; local checks and all configured browser checks pass.
+An earlier Nix coverage pass does not explain or erase that failure.
+The cause remains unestablished, and the separately recorded RF-0012 aggregate blocker is not resolved by this task.
+See [resolution evidence](evidence.md#resolution-evidence) for exact checks, negative controls and remaining limits.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).
