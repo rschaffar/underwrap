@@ -58,7 +58,13 @@ fn encode_record(fields: &[(&str, &str)]) -> Vec<u8> {
 /// or the send failed. Callers should treat the error case as
 /// "journald not available" and fall back to stderr.
 pub fn send_record(fields: &[(&str, &str)]) -> std::io::Result<()> {
-    if !Path::new(JOURNAL_SOCKET).exists() {
+    #[cfg(test)]
+    let test_path = crate::test_support::JOURNAL_SOCKET.with(|path| path.borrow().clone());
+    #[cfg(test)]
+    let path = test_path.as_deref().unwrap_or(Path::new(JOURNAL_SOCKET));
+    #[cfg(not(test))]
+    let path = Path::new(JOURNAL_SOCKET);
+    if !path.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "journald socket not present",
@@ -67,7 +73,7 @@ pub fn send_record(fields: &[(&str, &str)]) -> std::io::Result<()> {
 
     let buf = encode_record(fields);
     let socket = UnixDatagram::unbound()?;
-    socket.send_to(&buf, JOURNAL_SOCKET)?;
+    socket.send_to(&buf, path)?;
     Ok(())
 }
 

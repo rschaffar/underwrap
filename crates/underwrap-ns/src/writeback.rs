@@ -43,12 +43,14 @@ pub enum WritebackOutcome {
     RejectedReadOnly {
         resource_id: String,
         resource_name: String,
+        usage_error: Option<UsageReportFailure>,
     },
     /// Bytes changed and the effective writable flag was already false
     /// at Checkout — no `Checkin` was attempted. The change has been dropped.
     DroppedReadOnly {
         resource_id: String,
         resource_name: String,
+        usage_error: Option<UsageReportFailure>,
     },
     /// Bytes changed but composing the complete canonical resource exceeded
     /// the public size authority. No terminal resource verb was attempted.
@@ -58,6 +60,29 @@ pub enum WritebackOutcome {
         attempted_len: usize,
         maximum_len: usize,
     },
+}
+
+/// Value-free classification: never retain daemon text or a response body,
+/// which can contain arbitrary metadata or even an unexpected Checkout blob.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsageReportFailure {
+    OpenChannel,
+    Send,
+    Receive,
+    Rejected(ResourceErrorCode),
+    UnexpectedResponse,
+}
+
+impl std::fmt::Display for UsageReportFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OpenChannel => formatter.write_str("opening UsageSignal channel failed"),
+            Self::Send => formatter.write_str("sending UsageSignal failed"),
+            Self::Receive => formatter.write_str("reading UsageSignal response failed"),
+            Self::Rejected(code) => write!(formatter, "daemon rejected UsageSignal ({code:?})"),
+            Self::UnexpectedResponse => formatter.write_str("unexpected UsageSignal response"),
+        }
+    }
 }
 
 /// Per-resource input from the run's tmpfs/state side.
@@ -132,28 +157,36 @@ fn dispatch_one(input: &WritebackInput<'_>) -> Result<WritebackOutcome, String> 
     };
 
     if new_canonical == channel.original_canonical {
-        signal_usage(channel.channel_fd, &channel.resource_id)?;
+        signal_usage(channel.channel_fd).map_err(|error| {
+            format!(
+                "usage reporting for '{}': {error}",
+                crate::one_line_display(&channel.resource_id)
+            )
+        })?;
         return Ok(WritebackOutcome::Unchanged);
     }
 
     if !channel.writable {
         // Honor the open-time read-only hint, even if backend settings changed.
         // UsageSignal is still subject to current backend reauthorization.
-        signal_usage(channel.channel_fd, &channel.resource_id)?;
+        let usage_error = signal_usage(channel.channel_fd).err();
         return Ok(WritebackOutcome::DroppedReadOnly {
             resource_id: channel.resource_id.clone(),
             resource_name: channel.resource_name.clone(),
+            usage_error,
         });
     }
 
     match send_checkin(channel.channel_fd, &new_canonical, &channel.resource_id)? {
         CheckinOutcome::Persisted => Ok(WritebackOutcome::Persisted),
         CheckinOutcome::Unauthorized => {
-            // Still record use so the daemon's last_used_at advances.
-            signal_usage(channel.channel_fd, &channel.resource_id)?;
+            // Usage is independently authorized. Its failure cannot undo the
+            // established rejection or prevent its structured diagnostic.
+            let usage_error = signal_usage(channel.channel_fd).err();
             Ok(WritebackOutcome::RejectedReadOnly {
                 resource_id: channel.resource_id.clone(),
                 resource_name: channel.resource_name.clone(),
+                usage_error,
             })
         }
     }
@@ -165,7 +198,12 @@ enum CheckinOutcome {
 }
 
 fn send_checkin(fd: i32, blob: &[u8], resource_id: &str) -> Result<CheckinOutcome, String> {
-    let mut stream = open_stream(fd, resource_id)?;
+    let mut stream = open_stream(fd).map_err(|error| {
+        format!(
+            "opening Checkin channel for '{}': {error}",
+            crate::one_line_display(resource_id)
+        )
+    })?;
     write_wrapper_resource_frame_sync(
         &mut stream,
         &WrapperResourceRequest::Checkin {
@@ -190,32 +228,25 @@ fn send_checkin(fd: i32, blob: &[u8], resource_id: &str) -> Result<CheckinOutcom
     }
 }
 
-fn signal_usage(fd: i32, resource_id: &str) -> Result<(), String> {
-    let mut stream = open_stream(fd, resource_id)?;
+fn signal_usage(fd: i32) -> Result<(), UsageReportFailure> {
+    let mut stream = open_stream(fd).map_err(|_| UsageReportFailure::OpenChannel)?;
     write_wrapper_resource_frame_sync(&mut stream, &WrapperResourceRequest::UsageSignal)
-        .map_err(|e| format!("sending UsageSignal for '{resource_id}': {e}"))?;
-    let resp: WrapperResourceResponse = read_wrapper_resource_frame_sync(&mut stream)
-        .map_err(|e| format!("reading UsageSignal response for '{resource_id}': {e}"))?;
+        .map_err(|_| UsageReportFailure::Send)?;
+    let resp: WrapperResourceResponse =
+        read_wrapper_resource_frame_sync(&mut stream).map_err(|_| UsageReportFailure::Receive)?;
     match resp {
         WrapperResourceResponse::UsageSignalOk => Ok(()),
-        WrapperResourceResponse::Error { code, message } => Err(format!(
-            "daemon rejected UsageSignal for '{resource_id}' ({code:?}): {message}"
-        )),
-        other => Err(format!(
-            "unexpected response to UsageSignal for '{resource_id}': {other:?}"
-        )),
+        WrapperResourceResponse::Error { code, .. } => Err(UsageReportFailure::Rejected(code)),
+        _ => Err(UsageReportFailure::UnexpectedResponse),
     }
 }
 
-fn open_stream(fd: i32, resource_id: &str) -> Result<UnixStream, String> {
+fn open_stream(fd: i32) -> std::io::Result<UnixStream> {
     // SAFETY: `fd` is the live authenticated resource-channel endpoint; dup
     // borrows it and returns either an error or one fresh owned descriptor.
     let dup_fd = unsafe { libc::dup(fd) };
     if dup_fd < 0 {
-        return Err(format!(
-            "dup({fd}) for '{resource_id}' failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(std::io::Error::last_os_error());
     }
     // SAFETY: successful dup returned this nonnegative descriptor with unique
     // ownership, transferred exactly once into UnixStream RAII.

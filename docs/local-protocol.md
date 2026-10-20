@@ -298,6 +298,7 @@ After authorized collection, the host canonicalizes the composed complete resour
 Unchanged state sends UsageSignal.
 Changed state with a read-only Checkout hint is discarded and also sends UsageSignal; changed writable state attempts Checkin.
 An Unauthorized Checkin response triggers a subsequent UsageSignal attempt, which can itself fail current backend policy.
+A failed UsageSignal does not replace an established read-only drop or Unauthorized Checkin rejection: the host reports the original structured reason and a separate value-free usage failure.
 Other Checkin errors remain diagnostic rather than an automatic writeback retry.
 The daemon's sequential request loop is not a single-use channel state machine.
 
