@@ -710,13 +710,40 @@ test("force-delete a non-empty dynamic store after type-to-confirm", async ({
   await expect(deleteBtn).toBeDisabled();
   await delDlg.getByLabel(/force delete/i).check();
   await expect(deleteBtn).toBeEnabled();
+  const deleted = page.waitForResponse((response) =>
+    response.request().method() === "DELETE" &&
+    response.url().includes("/v1/admin/stores/"),
+  );
   await deleteBtn.click();
+  const response = await deleted;
+  expect(response.ok()).toBe(true);
+  const { cleanup_hint: hint } = await response.json() as {
+    cleanup_hint: { data_dir: string; command: string };
+  };
+  expect(hint.command).toBe("rm -rf -- '" + hint.data_dir.replaceAll("'", "'\\''") + "'");
 
-  // The backend returns a cleanup_hint when the data dir is non-empty;
-  // the SPA surfaces it in a follow-up dialog. Dismiss it.
+  // Observe the real response as rendered and copied text, never execute it.
   const storeDeletedDlg = page.getByRole("dialog", { name: /store deleted/i });
   await expect(storeDeletedDlg).toBeVisible();
-  await expect(storeDeletedDlg.getByText(/packed/).first()).toBeVisible();
+  await expect(storeDeletedDlg).toContainText("The store registry record for packed was removed");
+  await expect(storeDeletedDlg).not.toContainText(/YAML/i);
+  await expect(storeDeletedDlg).toContainText(/POSIX shell syntax/);
+  await expect(storeDeletedDlg).toContainText(/follow up manually/);
+  await expect(storeDeletedDlg).toContainText(/retained generations and external backups/i);
+  await expect(storeDeletedDlg).toContainText(/not secure erasure/i);
+  expect(await storeDeletedDlg.locator("code").textContent()).toBe(hint.data_dir);
+  const command = storeDeletedDlg.locator("pre");
+  expect(await command.textContent()).toBe(hint.command);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await command.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+  await page.keyboard.press("Control+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(hint.command);
   await storeDeletedDlg.getByText("Close", { exact: true }).click();
   await expect(page.getByRole("row", { name: /\bpacked\b/ })).toHaveCount(0);
 });

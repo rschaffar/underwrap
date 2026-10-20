@@ -42,11 +42,22 @@ Preserve registry-only deletion and retained-generation warnings; do not delete 
 - Verify both returned guidance and displayed text; ordinary safe paths must still identify the same directory.
 - Retain the option terminator if a command is supplied and confirm that neither expansion nor extra commands run.
 - Preserve retained-data warnings and manual operator choice.
-  No fixed-build check has been executed.
+  Verification is tracked below.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This file is the single implementation scope/evidence owner for the user-authorized joint RF-0005/RF-0020 correction.
+RF-0020 retains its separate acceptance criteria and disposition.
+
+- [x] Preserve registry-only deletion, lifecycle guards, manual cleanup and retained-generation/no-secure-erasure warnings.
+- [x] Anchor admitted relative paths to the backend working directory without normalizing suffix components and encode one literal POSIX-shell operand with `--`, retaining the response shape.
+- [x] Fail before registry removal if exact pathname guidance cannot be resolved or represented; this exceptional-case behavior is explicitly selected by the user.
+- [x] Verify shell parsing with inert argument recording, returned guidance, SPA rendering/copying and registry-only effects.
+- [x] Run pinned-environment backend tests, Rustfmt, denied-warning Clippy, OpenAPI checks, SPA tests/build and selected browser checks.
+- [x] Archive each finding only after its own acceptance and required checks pass; retain verified local commits without integration or cleanup.
+
+Implementation `63a68753da4436e33c040dbc01302ac5e3a7f975` satisfies the [resolution evidence](evidence.md#resolution-evidence).
+Each finding retains its own fixed disposition and scoped evidence limits.
+
+Non-goals: automated cleanup, admitted-root restrictions, lifecycle redesign, new dependencies, or changes to RF-0004, RF-0009 and RF-0012.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

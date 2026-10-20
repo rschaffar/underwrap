@@ -26,8 +26,9 @@ export function CleanupHintDialog({
       title="Store deleted"
       description={
         <>
-          The YAML definition for <strong>{storeName}</strong> was removed. The
-          data directory still contains secrets on disk — follow up manually.
+          The store registry record for <strong>{storeName}</strong> was removed.
+          The data directory was left on disk and may contain secrets — follow up
+          manually.
         </>
       }
     >
@@ -35,11 +36,17 @@ export function CleanupHintDialog({
         <p>
           Data directory left in place at{" "}
           <code className="text-(--color-text)">{hint.data_dir}</code>. Back it
-          up first if needed, then remove it manually:
+          up first if needed, verify the selected path on the backend host, then
+          remove it manually using POSIX shell syntax:
         </p>
         <pre className="overflow-x-auto rounded-md border border-(--color-line) bg-(--color-surface-1) p-3">
           {hint.command}
         </pre>
+        <p>
+          Retained generations and external backups are not removed by store
+          deletion or this command. Handle them separately after reviewing
+          retention and key custody. Removal is not secure erasure.
+        </p>
       </div>
       <DialogFooter>
         <Button onClick={onClose}>Close</Button>

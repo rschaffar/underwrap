@@ -1,8 +1,8 @@
 # RF-0005 — Manual store-cleanup command does not quote its path
 
-**Priority:** Medium · **State:** open
+**Priority:** Medium · **State:** archived · **Resolution:** fixed
 
-**Review aliases:** `L-01` · **Confidence:** High: source-confirmed interpolation and independent harmless shell-tokenization witness; no destructive command or handler execution.
+**Review aliases:** `L-01` · **Confidence:** High: source review, inert shell recording, handler regressions and desktop Chromium rendering/copy checks; no destructive command execution.
 
 ## Why it matters
 
@@ -16,13 +16,12 @@ Keep registry-only deletion and deliberate manual cleanup.
 
 ## Decision and caveat
 
-Open, Medium operator safety.
-No automatic deletion or configuration-policy redesign is authorized.
-The backend does not execute the command.
+Fixed in `63a68753da4436e33c040dbc01302ac5e3a7f975` after the scoped acceptance checks passed.
+Guidance retains manual cleanup and encodes one literal POSIX-shell pathname with an option terminator.
+Registry-only deletion, retained generations and operator path verification remain intentional; no removal command is executed by the backend or shell witnesses.
 Trusted configuration control is not a demonstrated attacker capability.
-The witness replaced rm with a harmless function and removed nothing.
 
-No correction is authorized or completed by this record.
+[RF-0005's checklist](finding.md#work-ownership) owns the joint implementation and verification with RF-0020.
 The aliases belong to the review of `01214454aee850ebe8ceef5b757b9ae61cca07aa`.
 
 [Technical finding](finding.md) · [Evidence](evidence.md) · [Register](../../README.md)

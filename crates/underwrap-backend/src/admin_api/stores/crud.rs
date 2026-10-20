@@ -1,5 +1,7 @@
 //! Store admin CRUD: `list`, `create`, `update`, `delete`.
 
+mod cleanup_hint;
+
 use std::sync::Arc;
 
 use axum::Json;
@@ -9,9 +11,8 @@ use underwrap_backend_store::StorageBackend;
 use underwrap_protocol::config::StoreRecord;
 use underwrap_protocol::service::{
     AdminStoreBackendKind, AdminStoreCreateRequest, AdminStoreCreateResponse,
-    AdminStoreDeleteCleanupHint, AdminStoreDeleteResponse, AdminStoreLifecycleState,
-    AdminStoreListItem, AdminStoreUpdateRequest, AdminStoreUsageSummary, AdminStoresListResponse,
-    ServiceErrorResponse,
+    AdminStoreDeleteResponse, AdminStoreLifecycleState, AdminStoreListItem,
+    AdminStoreUpdateRequest, AdminStoreUsageSummary, AdminStoresListResponse, ServiceErrorResponse,
 };
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -588,6 +589,11 @@ pub(crate) async fn handle_admin_store_delete(
             StoreState::Ready(_) | StoreState::Unlocked(_) | StoreState::Locked => {}
         }
     }
+    // Prepare exact manual guidance before removing registry ownership: a lossy
+    // or unresolved pathname must never become an operator's removal command.
+    let cleanup_hint = non_empty
+        .then(|| cleanup_hint::for_directory(&dir_for_hint))
+        .transpose()?;
     if let Err(e) = delete_store_record(&state.admin().stores_dir, &name) {
         return Err(AdminError::internal_with_source(
             "write_store_registry_failed",
@@ -597,15 +603,6 @@ pub(crate) async fn handle_admin_store_delete(
         ));
     }
     state.shared.stores.write().unwrap().entries.remove(&name);
-    let cleanup_hint = if non_empty {
-        let data_dir = dir_for_hint.display().to_string();
-        Some(AdminStoreDeleteCleanupHint {
-            command: format!("rm -rf {data_dir}"),
-            data_dir,
-        })
-    } else {
-        None
-    };
     let operation = if non_empty {
         Some("force-deleted")
     } else {
