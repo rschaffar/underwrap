@@ -40,11 +40,18 @@ This does not call for durable delivery guarantees, retries, timestamps as persi
 - Exercise Unauthorized Checkin followed by each of those UsageSignal failures.
 - In every case observe exactly one safe namespace rejection event with the established reason, any distinct usage error, no successful persistence and unchanged target exit/signal.
 - Retain successful UsageSignal controls and verify warning suppression does not suppress the structured event.
-  These are required future checks, not executed fix validation.
+  Correction checks and their limits are recorded in [evidence](evidence.md#resolution-evidence).
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This finding owns the user-authorized RF-0011 correction and evidence checklist.
+Scope is namespace post-run rejection/reporting, deterministic sibling regressions, narrow deployed writeback witnesses and maintained diagnostic documentation.
+Backend policy, framing, lifecycle/ACK ownership, target status, retries and other findings are unchanged; feature commits remain isolated and unintegrated.
+
+- [x] Reconfirm both early returns and trace independent usage authorization through daemon/backend transport.
+- [x] Retain the established rejection with a separate value-free usage failure and preserve reporting/status propagation.
+- [x] Exercise both rejection branches with denied/transport-failed usage, success controls, warning suppression, exact requests/events and target exit/signal.
+- [x] Run affected crate suites, Rustfmt, denied-warning workspace Clippy, isolated local-ABI checks, integration and the deployed NixOS VM witness; retain explicit blockers.
+- [x] Update diagnostic owners and this record without changing other findings or integrating the feature.
+- [ ] Obtain aggregate acceptance before archiving: `nix flake check` fails in unchanged SPA tests; no correction or gate weakening is authorized here.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).
