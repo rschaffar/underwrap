@@ -67,7 +67,7 @@ A missing catalog resource produces the canonical value-free `404 not_found` / `
 An existing resource with no active blob begins as empty; a missing flat key has a nullable read and idempotent deletion, not the same missing-parent response.
 
 The browser editor is text-only, although backend storage remains byte-preserving.
-It encodes exact UTF-8 without normalization and distinguishes missing, empty, malformed-base64, and non-UTF-8 values.
+It encodes and decodes exact UTF-8 without normalization, preserves a leading U+FEFF (UTF-8 BOM) on reveal and copy, and distinguishes missing, empty, malformed-base64, and non-UTF-8 values.
 Malformed or non-UTF-8 values are not placed in reveal or clipboard output.
 Browser attribute-textarea validation is an input convenience, not a redefinition of the backend or D-Bus typed map contract; see [Operations](operations.md).
 

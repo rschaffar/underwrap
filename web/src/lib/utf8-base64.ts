@@ -35,7 +35,8 @@ export function decodeBase64Utf8(value: string): DecodeBase64Utf8Result {
   try {
     return {
       ok: true,
-      text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      // A leading BOM is value content, not a transport signature to consume.
+      text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
     };
   } catch {
     return { ok: false, reason: "invalid-utf8" };
