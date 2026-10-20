@@ -672,12 +672,20 @@ let
   # /run is a tmpfs, so tmpfiles recreates these every boot, before the first
   # wrapper invocation. The base is 0755 root-owned; each per-target dir is 0700
   # and self-owned (mode mirrors logind's /run/user/<uid>).
+  # Paths are literal in daemon JSON, but tmpfiles first tokenizes/unescapes
+  # fields and then expands percent specifiers. Encode both layers, without
+  # shell quoting or recursively interpreting a literal backslash sequence.
+  # Whitespace/control characters are already excluded by path validation.
+  tmpfilesLiteralPath = path:
+    builtins.replaceStrings [ "%" ] [ "%%" ]
+      (lib.strings.escapeC [ "\\" "\"" "'" ] path);
+
   targetRuntimeTmpfiles =
     lib.optionals (targetPairs != [])
-      ([ "d ${cfg.targetRuntimeDirBase} 0755 root root -" ]
+      ([ "d ${tmpfilesLiteralPath cfg.targetRuntimeDirBase} 0755 root root -" ]
        ++ map (p:
          let n = targetUserName p.instance p.wrapper; in
-         "d ${appendPathComponent cfg.targetRuntimeDirBase n} 0700 ${n} ${n} -"
+         "d ${tmpfilesLiteralPath (appendPathComponent cfg.targetRuntimeDirBase n)} 0700 ${n} ${n} -"
        ) targetPairs);
 
 in {

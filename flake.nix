@@ -332,6 +332,13 @@
               underwrapModule = self.nixosModules.default;
             };
 
+            # Round-trip admitted literal runtime paths through the actual
+            # module, daemon configuration and inert tmpfiles parser.
+            runtime-tmpfiles-eval = import ./nix/tests/runtime-tmpfiles-eval.nix {
+              inherit nixpkgs system;
+              underwrapModule = self.nixosModules.default;
+            };
+
             # Evaluate the production frontend module across the complete
             # ordinary-swap and zram-generator hardened-posture matrix.
             frontend-swap-posture-eval = import ./nix/tests/swap-posture-eval.nix {
@@ -408,19 +415,19 @@
           mainTestScript = builtins.toFile "underwrap-vm-test.py"
             (builtins.readFile ./nix/tests/test.py);
 
-        in {
-          checks.${system} = (perSystem.checks.${system} or {}) // {
-            vm-test = pkgs.testers.nixosTest {
-              name = "underwrap-vm-test";
+          runtimeCases = import ./nix/tests/runtime-tmpfiles-cases.nix;
+          mkVmTest = name: targetRuntimeDirBase: pkgs.testers.nixosTest {
+              inherit name;
 
               nodes.machine = { pkgs, ... }: import ./nix/tests/node.nix {
-                inherit pkgs;
+                inherit pkgs targetRuntimeDirBase;
                 underwrapPackage = perSystem.packages.${system}.default;
                 nixosModule = self.nixosModules.default;
               };
 
               testScript = ''
                 import os
+                os.environ["UNDERWRAP_TEST_RUNTIME_BASE"] = ${builtins.toJSON targetRuntimeDirBase}
                 os.environ["SPOOF_SCRIPT"] = "${spoofScript}"
                 os.environ["ANCESTOR_ATTACK_SCRIPT"] = "${ancestorAttackScript}"
                 os.environ["PEER_PROBE_SCRIPT"] = "${peerProbeScript}"
@@ -429,6 +436,10 @@
                 exec(compile(open("${mainTestScript}").read(), "${mainTestScript}", "exec"), globals())
               '';
             };
+        in {
+          checks.${system} = (perSystem.checks.${system} or {}) // {
+            vm-test = mkVmTest "underwrap-vm-test" runtimeCases.custom;
+            runtime-tmpfiles-vm-test = mkVmTest "underwrap-runtime-tmpfiles-vm-test" runtimeCases.combined;
           };
         };
 

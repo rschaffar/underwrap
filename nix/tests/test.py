@@ -47,6 +47,7 @@ SPOOF_SCRIPT = os.environ.get("SPOOF_SCRIPT", "/dev/null")
 PEER_PROBE_SCRIPT = os.environ.get("PEER_PROBE_SCRIPT", "/dev/null")
 DIRECT_NS_ATTACK_SCRIPT = os.environ.get("DIRECT_NS_ATTACK_SCRIPT", "/dev/null")
 PYTHON3 = os.environ.get("PYTHON3", "python3")
+TARGET_RUNTIME_BASE = os.environ["UNDERWRAP_TEST_RUNTIME_BASE"]
 
 # Each daemon now runs a single HTTPS listener that serves both the
 # runtime service API (mTLS-authenticated, `/v1/...`) and the admin
@@ -635,12 +636,49 @@ def discovery_without_backend_access():
     machine.log("PASS: public discovery works without aliases or running backends; missing catalog fails explicitly")
 
 
+def runtime_directory_provisioning():
+    """Activated literal paths, exact root/target ownership and no parsed aliases."""
+    for instance in ("local", "tunnel"):
+        configured = machine.succeed(
+            f"jq -r .target_runtime_dir_base /etc/underwrap/daemon/{instance}.yaml"
+        ).strip()
+        assert configured == TARGET_RUNTIME_BASE
+    base = shlex.quote(TARGET_RUNTIME_BASE)
+    assert machine.succeed(f"stat -c '%u:%g:%a' {base}").strip() == "0:0:755"
+    rows = machine.succeed("cat /etc/underwrap/target-uids").splitlines()
+    children = set()
+    for row in rows:
+        _, _, user, group = row.split("\t")
+        child = TARGET_RUNTIME_BASE + "/" + user
+        children.add(child)
+        assert machine.succeed(f"stat -c '%U:%G:%a' {shlex.quote(child)}").strip() == f"{user}:{group}:700"
+    script = f"import json, os; print(json.dumps(sorted(os.listdir({TARGET_RUNTIME_BASE!r}))))"
+    actual = json.loads(machine.succeed(f"python3 -c {shlex.quote(script)}"))
+    assert actual == sorted(path.rsplit("/", 1)[1] for path in children)
+    if TARGET_RUNTIME_BASE.startswith("/run/underwrap-literal/"):
+        # Include intermediate components: percent expansion or backslash
+        # decoding must not leave even an empty differently named ancestor.
+        expected = set(children)
+        ancestor = TARGET_RUNTIME_BASE
+        while ancestor != "/run":
+            expected.add(ancestor)
+            ancestor = ancestor.rsplit("/", 1)[0]
+        script = (
+            "import json, os; "
+            "print(json.dumps(sorted([root for root, dirs, files in os.walk('/run/underwrap-literal')])))"
+        )
+        actual = json.loads(machine.succeed(f"python3 -c {shlex.quote(script)}"))
+        assert actual == sorted(expected), "activation created a differently interpreted path"
+    machine.log("PASS: activated literal runtime base/children and exact root/target ownership/modes")
+
+
 def boot_and_service_checks():
     # ============================================================
     # BOOT + SERVICE CHECKS
     # ============================================================
 
     machine.wait_for_unit("multi-user.target")
+    runtime_directory_provisioning()
 
     machine.fail("systemctl is-enabled --quiet sshd.service")
     machine.fail("systemctl is-active --quiet sshd.service")
@@ -1661,9 +1699,11 @@ def local_target_uid_runtime_dir():
     ).strip()
     # The target printed its XDG_RUNTIME_DIR: it must be the provisioned per-
     # target-uid dir, NOT the caller's /run/user and NOT keyed on the caller uid.
-    assert runtime_dir.startswith("/run/underwrap-test-runtime/underwrap-target-"), (
-        f"FAIL: XDG_RUNTIME_DIR was {runtime_dir!r}, expected the provisioned "
-        f"/run/underwrap-test-runtime/<target-user> dir"
+    target_user = machine.succeed(
+        "awk -F '\\t' '$1 == \"local\" && $2 == \"test-runtime-dir\" {print $3}' /etc/underwrap/target-uids"
+    ).strip()
+    assert runtime_dir == TARGET_RUNTIME_BASE + "/" + target_user, (
+        "XDG_RUNTIME_DIR differs from the literal provisioned path"
     )
     assert "/run/user/" not in runtime_dir, (
         f"FAIL: XDG_RUNTIME_DIR {runtime_dir!r} points into the caller's session tree"
@@ -1671,17 +1711,17 @@ def local_target_uid_runtime_dir():
     # The marker is owned by the dedicated target uid X (an underwrap-target-*
     # system user), proving the target wrote its OWN dir — not the caller's.
     owner = machine.succeed(
-        f"stat -c %U {runtime_dir}/uw-runtime-probe/marker"
+        f"stat -c %U {shlex.quote(runtime_dir + '/uw-runtime-probe/marker')}"
     ).strip()
     assert owner.startswith("underwrap-target-"), (
         f"FAIL: runtime-dir marker owned by {owner!r}, expected the dedicated "
         f"underwrap-target-* uid"
     )
     content = machine.succeed(
-        f"cat {runtime_dir}/uw-runtime-probe/marker"
+        f"cat {shlex.quote(runtime_dir + '/uw-runtime-probe/marker')}"
     ).strip()
     assert content == "runtime_dir_ok", f"FAIL: runtime-dir marker content {content!r}"
-    machine.succeed(f"rm -rf {runtime_dir}/uw-runtime-probe")
+    machine.succeed(f"rm -rf {shlex.quote(runtime_dir + '/uw-runtime-probe')}")
     machine.log(
         "PASS: target used its own provisioned runtime directory "
         "(X-owned), independent of the caller's /run/user"
@@ -2926,7 +2966,7 @@ def local_atomic_writeback():
     # XDG_RUNTIME_DIR is the target's OWN provisioned dir
     # (<base>/<target-user-name>), never the caller-supplied value.
     assert (
-        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in target_env
+        f"XDG_RUNTIME_DIR={TARGET_RUNTIME_BASE}/underwrap-target-" in target_env
     ), target_env
     assert "XDG_CONFIG_HOME=/home/testuser/.config" in target_env, target_env
     assert "XDG_DATA_HOME=/home/testuser/.local/share" in target_env, target_env
@@ -2943,7 +2983,7 @@ def local_atomic_writeback():
     )
     assert "HOME=/tmp/underwrap-home-override" in override_env, override_env
     assert (
-        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in override_env
+        f"XDG_RUNTIME_DIR={TARGET_RUNTIME_BASE}/underwrap-target-" in override_env
     ), override_env
     assert "XDG_CONFIG_HOME=/tmp/underwrap-config-override" in override_env, override_env
     assert "XDG_DATA_HOME=/tmp/underwrap-home-override/.local/share" in override_env, override_env
@@ -3086,7 +3126,7 @@ def files_staging_provenance():
         "awk -F '\\t' '$1 == \"local\" && $2 == \"test-staging-provenance\" {print $3}' /etc/underwrap/target-uids"
     ).strip()
     target_uid = int(machine.succeed(f"id -u {shlex.quote(target_user)}").strip())
-    runtime_attachment = f"/run/underwrap-test-runtime/{target_user}/.underwrap-files"
+    runtime_attachment = f"{TARGET_RUNTIME_BASE}/{target_user}/.underwrap-files"
     assert target_uid not in {0, 1099}, "target identity is not distinct"
 
     def as_caller(command):
@@ -4597,7 +4637,7 @@ def remote_service_lifecycle():
     # The remote-style target gets its own provisioned runtime directory.
     # The forced path is `<targetRuntimeDirBase>/<target-user-name>`, not the caller-supplied value.
     assert (
-        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in output
+        f"XDG_RUNTIME_DIR={TARGET_RUNTIME_BASE}/underwrap-target-" in output
     ), f"expected forced provisioned XDG_RUNTIME_DIR: {output}"
     machine.log("PASS: remote-style resource reached the second backend over direct loopback HTTPS")
 
@@ -4618,7 +4658,7 @@ def remote_service_lifecycle():
     output = machine.succeed(su("XDG_RUNTIME_DIR=/tmp/evil-run /run/wrappers/bin/underwrap-tunnel remote-echo"))
     assert "REMOTE_TOKEN=secret_via_service" in output
     assert (
-        "XDG_RUNTIME_DIR=/run/underwrap-test-runtime/underwrap-target-" in output
+        f"XDG_RUNTIME_DIR={TARGET_RUNTIME_BASE}/underwrap-target-" in output
     )
     machine.log("PASS: remote-style loopback wrapper works after backend service restart")
 
