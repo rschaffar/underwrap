@@ -50,11 +50,20 @@ Shell quoting alone must not be assumed to implement tmpfiles quoting.
 - Preserve ordinary custom-base and `/run/user` rejection controls.
 - Include a files-only wrapper in custom-base activation controls, verifying exact runtime-directory ownership/mode and successful descriptor-based staging at the admitted literal path.
   Early setup rejection for a misprovisioned path is not a substitute for correcting module admission or encoding.
-  These are future acceptance checks, not recorded fix results.
+  Correction verification and the remaining aggregate blocker are recorded in [resolution evidence](evidence.md#resolution-evidence).
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This finding owns the user-authorized RF-0012 correction from local `main` at `c7c3c3d771fedffb1755942e55a219e6c1afb827`.
+Preserve every presently admitted literal pathname, existing lexical restrictions and `/run/user` exclusion by encoding the tmpfiles path field, not by shell quoting or narrowing configuration.
+RF-0013, other parallel findings, dependencies and privileged Rust-chain/topology changes are outside scope.
+The isolated feature is retained after local commits; integration and cleanup are not authorized.
+
+- [x] Encode runtime base and child path fields while retaining literal daemon configuration.
+- [x] Add actual-module ordinary, percent, backslash, quote and combined parser regressions with intentional negative controls.
+- [x] Verify disposable VM activation, exact ownership/modes and absence of interpreted alternatives; run a files-only descriptor-staging wrapper and retain RF-0001/RF-0003 controls.
+- [x] Run focused evaluators, shipped examples, workspace test/format/Clippy, integration and both x86_64-linux VM checks.
+- [ ] Resolve aggregate acceptance before archival: `nix flake check` failed six unchanged SPA tests, including four timeouts.
+  Local `main` selects the same web-test derivation; the root cause is not established, and changing SPA tests is outside this scope.
+
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

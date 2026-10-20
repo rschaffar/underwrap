@@ -1,6 +1,6 @@
 # VM test node: local and remote-style instances on one machine.
 # Both frontend daemons connect directly to separate loopback HTTPS listeners.
-{ pkgs, underwrapPackage, nixosModule, ... }:
+{ pkgs, underwrapPackage, nixosModule, targetRuntimeDirBase, ... }:
 
 let
   testCaPem = pkgs.writeText "underwrap-test-ca.pem" (builtins.readFile ../../testdata/pki/ca.pem);
@@ -599,7 +599,7 @@ in {
     package = underwrapPackage;
     # Each isolated target gets its own provisioned runtime dir under this base
     # (<base>/<target-user-name>). Custom base keeps the test off /run/user.
-    targetRuntimeDirBase = "/run/underwrap-test-runtime";
+    inherit targetRuntimeDirBase;
 
     instances = {
       # Local instance: frontend talks to a local backend socket.

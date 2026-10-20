@@ -105,6 +105,7 @@ The [flake](../flake.nix) declares these independently selectable checks:
 | `examples-nixos-eval` | Both shipped NixOS examples through the real module and package, including their system builds |
 | `frontend-backend-url-eval`, `frontend-security-assertions-eval`, `frontend-swap-posture-eval` | Focused production-module predicates and generated configuration |
 | `wrapper-discovery-eval` | Public metadata allowlist, descriptions/defaults, unchanged execution configuration, helper exposure and portable skill packaging |
+| `runtime-tmpfiles-eval` | Admitted literal runtime bases through the actual module, daemon configuration and tmpfiles parser with inert `--dry-run --create` |
 
 Select one check with the current system, for example:
 
@@ -118,7 +119,13 @@ The production VM check exists only on `x86_64-linux` and is included in that sy
 
 ```bash
 nix build .#checks.x86_64-linux.vm-test
+nix build .#checks.x86_64-linux.runtime-tmpfiles-vm-test
 ```
+
+Both run the complete shipped-chain suite, including files-only descriptor-staging and libsecret startup/lookup regressions.
+The second uses a custom literal base containing percent, backslash and both quote characters; activation checks exact base/child paths, ownership/modes and absence of differently interpreted paths.
+The ordinary custom base remains the first check's control; the assertion evaluator retains exact `/run/user` rejection controls.
+Host parser checks are dry-runs, never root-host activation.
 
 It needs a suitable VM builder with the required virtualization support.
 AArch64 package/check declarations do not establish AArch64 runtime validation.

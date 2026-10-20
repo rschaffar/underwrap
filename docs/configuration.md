@@ -72,6 +72,7 @@ Canonical path syntax rejects whitespace and control characters, empty component
 Absolute `/` is permitted where the option's additional restrictions allow it.
 Canonical relative paths have no leading slash; tilde paths are exactly `~` or canonical `~/relative` paths.
 Checks are lexical: they do not normalize paths, require existence, resolve symlinks, or prove that two different spellings identify different filesystem objects.
+The runtime base is a literal pathname: admitted percent signs, backslashes and quotes are encoded for tmpfiles provisioning, not interpreted as specifiers or escapes.
 
 Canonical absolute paths are required for wrapper `target`, `targetRuntimeDirBase`, optional CA files, and fixed HOME/base-XDG overrides.
 The generated daemon also validates its socket, debug target, runtime base, and client identity paths, including when its internal YAML is used in development.

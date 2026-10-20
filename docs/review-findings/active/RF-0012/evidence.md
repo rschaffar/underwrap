@@ -63,6 +63,59 @@ This follow-up ran no edge-base activation or new invocation test; the original 
 
 ## Resolution evidence
 
-Unresolved.
-Append the disposition, relevant revision, actual checks and remaining limits when authorized work or verification settles this finding.
-Preserve the discovery evidence above rather than replacing it with a retrospective success claim.
+Correction implemented at `70ae50f07f3fa75e2bf5b68234f1cd20ea702258`, based on local `main` at `c7c3c3d771fedffb1755942e55a219e6c1afb827`.
+The tested runtime/module/harness inputs match that correction commit; subsequent finding-record changes do not change them.
+The record remains active and blocked on the aggregate failure below, not on a demonstrated remaining tmpfiles mismatch.
+No integration, remote publication or cleanup was performed.
+
+### Correction and regression evidence
+
+`nix/modules/underwrap.nix::tmpfilesLiteralPath` C-escapes backslashes and both quotes, then doubles percent signs before emitting each complete base/child path field.
+The daemon retains its original literal base; path admission, `/run/user` exclusion, identities and privileged Rust chain are unchanged.
+`nix/tests/runtime-tmpfiles-cases.nix`, `runtime-tmpfiles-eval.nix` and `runtime-tmpfiles-parser.py` retain ten actual-module cases: default, ordinary custom, root, percent specifiers/trailing percent, backslash escapes/trailing backslash, each quote, Unicode, punctuation and the combined path.
+Each forces successful assertions/toplevel evaluation, checks literal daemon JSON, and compares exact parser-selected base/child names using pinned systemd 261.2 with `--dry-run --create --root=… --inline` and synthetic account metadata.
+No host activation occurred.
+
+Before correction, the actual-module regression exited 1 because the backslash rules failed tmpfiles parsing.
+Separately running every baseline-generated case with the retained parser harness reproduced failures for percent, backslash, each quote and combined syntax, while default/custom/root/Unicode/punctuation controls passed.
+After correction all ten passed.
+An initial post-correction test expectation omitted the sandbox-root trailing slash for the `/` case; fixing that test expectation, not production admission, resolved the harness failure.
+
+The ordinary `vm-test` retains `/run/underwrap-test-runtime`.
+`runtime-tmpfiles-vm-test` runs the same complete shipped-chain script with the combined percent/backslash/both-quotes literal base.
+Both passed activated base/child existence and exact root `0755`/target `0700` ownership/modes; the edge VM additionally compared the complete ancestor/child tree to exclude differently interpreted paths.
+The target runtime-path witness compares exact `XDG_RUNTIME_DIR` against the root-owned target table.
+Both suites retained RF-0003's real libsecret startup/lookup regression and all four RF-0001 files-only staging controls: writable changed, writable unchanged, read-only changed and protected-root.
+Those controls observed descriptor-selected tmpfs/noswap staging, distinct UID, bare attachment ownership/mode and exact backend/terminal outcomes at the configured path.
+
+### Executed checks
+
+Commands ran in the isolated x86_64-linux worktree using pinned flake inputs; elapsed durations were not separately measured unless stated.
+All Nix builds used `--no-link --print-out-paths`.
+
+| Command or check selection | Result and scope |
+| --- | --- |
+| `nix build .#checks.x86_64-linux.runtime-tmpfiles-eval` | Exit 0; all ten module/daemon/parser round trips. |
+| `nix build .#checks.x86_64-linux.frontend-security-assertions-eval .#checks.x86_64-linux.frontend-backend-url-eval .#checks.x86_64-linux.frontend-swap-posture-eval .#checks.x86_64-linux.wrapper-discovery-eval .#checks.x86_64-linux.examples-nixos-eval` | Exit 0; focused production predicates, both shipped system builds and discovery. Exact `/run/user` and descendant false assertions and rejected toplevels remain intact. |
+| `nix build .#checks.x86_64-linux.workspace-test .#checks.x86_64-linux.workspace-fmt .#checks.x86_64-linux.workspace-clippy` | Exit 0; workspace tests with packaged prerequisites, Rustfmt and denied-warning Clippy. |
+| `nix build .#checks.x86_64-linux.vm-test .#checks.x86_64-linux.runtime-tmpfiles-vm-test` | Exit 0; both complete scripts reported `ALL TESTS PASSED`, including activation and all four staging provenance controls. |
+| `CARGO_TARGET_DIR="$PWD/target" ./crates/integration-tests/run tests::wrapper_writeback` | Exit 0; 12 passed, 102 filtered, test execution 4.35 seconds. |
+| `nix flake check --all-systems --no-build` | Exit 0; both supported architectures evaluated, not AArch64 execution. |
+| `python3 -m py_compile nix/tests/runtime-tmpfiles-parser.py nix/tests/test.py`, relative documentation-link path validation and `git diff --check` | Exit 0; syntax, local path existence and whitespace checks, not browser link verification. |
+| `nix flake check` | Exit 1 in unchanged `web-test`; six failures and 347 passes, described below. No aggregate pass is claimed. |
+
+A separate read-only patch review found no concrete RF-0012 defect; it is not an independent security audit.
+
+### Aggregate blocker and limits
+
+The full aggregate's web-test derivation is `/nix/store/lp8bbviipqf52q4rfn2qjiq2vv189w02-underwrap-web-test-0.1.0.drv`.
+Read-only evaluation of current local `main` selected that identical derivation, and `git diff --quiet c7c3c3d771fedffb1755942e55a219e6c1afb827 -- web crates Cargo.lock Cargo.toml` confirmed no Rust/SPA input changes in this correction.
+The failed tests were two operator-workflow cases, three store cases and one permission-column case; four timed out at 5000 ms, one observed an unchanged store-selection URL, and one further store reconciliation case failed.
+The SPA test run reported 73.12 seconds.
+These observations do not establish why the tests failed or justify silently retrying, weakening tests or claiming the aggregate passed.
+No SPA implementation or test changes are included; aggregate acceptance remains for follow-up outside this bounded correction.
+
+The dry-run parser uses synthetic account metadata; real provisioning and descriptor-staging evidence comes separately from the two disposable VMs.
+The edge VM activates the combined fixture, while individual edge fixtures are parser/evaluation evidence.
+One pinned x86_64-linux VM kernel does not establish all-kernel/systemd-version or AArch64 runtime support, and the lexical contract remains distinct from symlink/realpath equivalence.
+RF-0013 and other parallel findings are unchanged.
