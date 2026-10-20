@@ -143,6 +143,13 @@ All operators have full administration rights, with a last-user deletion guard r
 
 ### Sessions and browser custody
 
+Admin sessions use sliding inactivity expiry, renewing both the cookie and in-memory deadline on non-5xx responses while the session record is nonempty and still live.
+Authenticated public requests, including `whoami`, and rejected operations inside the session layer count as activity; background polling can therefore keep a session alive.
+Origin rejections happen outside that layer and do not renew; genuine inactivity expires server authority even if the old cookie is explicitly replayed.
+Renewal does not bypass live user resolution or password-hash checks.
+The in-memory store serializes liveness-check/save with deletion, so late response saves cannot recreate deleted or expired records.
+An already admitted request can still complete and emit a stale cookie after logout, but replay does not restore authority; logout does not cancel admitted work.
+A deleted user's nonempty session record may still be renewed by the middleware, but cannot authorize requests because the user no longer resolves.
 Sessions disappear on backend restart.
 A self-service password change persists the new hash before refreshing the submitting session; refresh failure still means the password changed and requires another login.
 Other pre-change sessions, reset-user sessions, and deleted-user sessions are invalidated lazily on their next admin request.

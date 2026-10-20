@@ -276,7 +276,7 @@ pub(crate) fn default_admin_runtime_state() -> ListenerState {
             users_dir: users_dir.clone(),
             bootstrap_file,
             auth_backend: crate::auth::AuthBackend::new(users_dir),
-            session_store: tower_sessions::MemoryStore::default(),
+            session_store: crate::admin_sessions::AdminSessionStore::default(),
             csrf_config: crate::admin_api::csrf::build_csrf_config(cookies_secure),
             session_lifetime_secs: crate::auth::DEFAULT_SESSION_LIFETIME_SECS,
             cookies_secure,

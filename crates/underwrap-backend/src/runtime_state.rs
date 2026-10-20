@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::admin_sessions::AdminSessionStore;
 use axum_csrf::CsrfConfig;
-use tower_sessions::MemoryStore;
 
 use crate::store_registry::StoreRegistry;
 
@@ -73,7 +73,7 @@ pub(crate) struct AdminState {
     /// In-memory session store handed to `tower-sessions`. Held here
     /// so request handlers can address the store directly when
     /// needed.
-    pub(crate) session_store: MemoryStore,
+    pub(crate) session_store: AdminSessionStore,
     /// `axum_csrf` config — cookie name, attributes, HMAC salt. The
     /// CSRF layer reads this; admin handlers also consult it when
     /// emitting fresh tokens. Always built from [`Self::cookies_secure`]

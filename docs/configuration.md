@@ -208,7 +208,7 @@ The tutorial and Operations use `/etc/underwrap-backend/config.yaml` explicitly.
 | `https.tls.key_file` | Required with HTTPS | Operator-managed private server key path |
 | `admin` | Absent | Presence enables the admin API and embedded SPA on the HTTPS listener |
 | `admin.allowed_origins` | `[]` | Additional Origin/Referer check; empty disables this check |
-| `admin.session_lifetime_secs` | `43200` | In-memory session lifetime in seconds |
+| `admin.session_lifetime_secs` | `43200` | Sliding inactivity interval in seconds for the session cookie and in-memory session; [activity semantics](security.md#sessions-and-browser-custody) include authenticated public requests and non-5xx rejected operations inside the session layer |
 | `admin.stores_data_root` | Absent | Data root for newly created stores; absence disables creation, not existing-store management |
 
 Missing registry directories are treated as empty, so use explicit paths and verify ownership before starting a real deployment.
