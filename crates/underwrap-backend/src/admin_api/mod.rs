@@ -47,6 +47,9 @@ pub(crate) mod users;
 pub(crate) mod util;
 pub(crate) mod views;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use error::AdminError;
 
 use std::sync::Arc;
@@ -112,7 +115,13 @@ pub(crate) fn admin_router(state: Arc<ListenerState>) -> Router<Arc<ListenerStat
         .with_same_site(SameSite::Strict)
         .with_secure(state.admin().cookies_secure)
         .with_path("/")
-        .with_expiry(Expiry::OnInactivity(session_lifetime));
+        .with_expiry(Expiry::OnInactivity(session_lifetime))
+        // Reads do not modify auth data. Save and reissue the cookie together
+        // so activity slides both deadlines, not just the browser's Max-Age.
+        // tower-sessions counts nonempty sessions on non-5xx responses,
+        // including public whoami and rejected operations inside this layer.
+        // Empty/expired sessions cannot renew; origin rejection is outermost.
+        .with_always_save(true);
     let auth_layer =
         AuthManagerLayerBuilder::new(state.admin().auth_backend.clone(), session_layer).build();
     let csrf_layer = CsrfLayer::new(state.admin().csrf_config.clone());

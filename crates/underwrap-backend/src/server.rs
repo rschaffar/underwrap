@@ -61,7 +61,7 @@ pub async fn run(config: BackendConfig, shutdown: Option<Arc<Notify>>) -> Result
                 users_dir: users_dir.clone(),
                 bootstrap_file: bootstrap_file.clone(),
                 auth_backend: crate::auth::AuthBackend::new(users_dir.clone()),
-                session_store: tower_sessions::MemoryStore::default(),
+                session_store: crate::admin_sessions::AdminSessionStore::default(),
                 csrf_config: crate::admin_api::csrf::build_csrf_config(cookies_secure),
                 session_lifetime_secs: cfg.session_lifetime_secs,
                 cookies_secure,

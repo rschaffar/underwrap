@@ -1,4 +1,5 @@
 pub(crate) mod admin_api;
+pub(crate) mod admin_sessions;
 pub(crate) mod auth;
 pub mod cli;
 pub mod config;
