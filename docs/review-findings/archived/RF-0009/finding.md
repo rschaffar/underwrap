@@ -39,11 +39,17 @@ No change to arbitrary-byte backend storage is required.
 - Exercise the shared reveal/copy flow for flat and libsecret values, comparing in memory without printing the material.
 - Retain empty-value behavior, chunk-safe encoding, and strict invalid-base64/invalid-UTF-8 failures.
 - Confirm that a read/copy neither mutates storage nor silently transforms successful text.
-  These are future checks, not completed fix evidence.
+  Completed correction checks are recorded in [Evidence](evidence.md#resolution-evidence), separately from the discovery observations.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This file owns the user-authorized RF-0009-only correction based on local `main` at `c7c3c3d771fedffb1755942e55a219e6c1afb827`.
+Scope is the shared frontend decoder and exact reveal/copy regressions; backend storage, binary editing, dependencies, unrelated findings and form lifecycle redesign are excluded.
+The dedicated feature branch and worktree remain unintegrated after verified local commits.
+
+- [x] Add a failing leading-U+FEFF regression with BOM-only, ordinary Unicode, empty and invalid controls.
+- [x] Correct the authoritative decoder while preserving strict rejection and chunk-safe encoding.
+- [x] Verify flat env/files and libsecret reveal and real clipboard equality, with unchanged stored material and no value-bearing diagnostics or captures.
+- [x] Run full Vitest, selected API/library coverage, production build, browser-fixture checks and relevant same-tree real-backend Playwright flows inside the pinned Nix environment.
+- [x] Record evidence and limits, archive after acceptance, and retain inspected feature commits without integration or cleanup.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).
