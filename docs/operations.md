@@ -393,7 +393,12 @@ Resource deletion is blocked by every typed env/file/libsecret entry, alias, col
 Blocker samples contain identifiers rather than values, but identifiers can themselves be sensitive and must not be copied into logs or reports.
 Once unblocked, deletion removes the active empty key before catalog removal; after any error reread both rather than reconstructing a blob based on assumed rollback.
 
-Store deletion removes registry ownership, not its data directory or retained rotation siblings.
+Store deletion removes the store registry record, not YAML configuration, its data directory or retained rotation siblings.
+Force-delete cleanup guidance names the absolute data pathname and supplies a POSIX-shell command with one literal quoted operand and an option terminator.
+Relative record paths are anchored to the backend process working directory without requiring the directory to exist, resolving symlinks, or normalizing `.` and `..` components.
+If that pathname is empty or cannot be resolved or represented exactly as UTF-8 without NUL, deletion fails before removing the registry record rather than returning lossy guidance.
+Verify the selected path on the backend host and decide backup, retention and key custody before manually running any removal command.
+The suggested command covers only that data pathname, not retained generations or external backups, and removal is not secure erasure.
 Mapped clients block deletion; unavailable contents are not known empty, and a locked store requires explicit force where the server permits it.
 Force is not erasure or migration recovery.
 Disabling auto-create and removing unused frontend definitions prevents a later startup registration from recreating assets.

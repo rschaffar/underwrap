@@ -31,11 +31,10 @@ Do not imply that deletion edits source configuration, removes backing data or p
 - Inspect/render a representative cleanup-hint response and verify it names registry removal rather than YAML.
 - Retain the manual-cleanup and retained-generation warnings.
 - Compare the message against the backend's actual unlink-only effect and maintained owner terminology.
-  No behavior change or fixed-build browser check has been performed.
+  Verification follows the shared work owner below.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+The user-authorized joint correction uses [RF-0005's scope/evidence checklist](../RF-0005/finding.md#work-ownership) as its single implementation owner.
+This finding retains its separate wording acceptance criteria and disposition.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

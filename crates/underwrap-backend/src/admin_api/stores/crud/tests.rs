@@ -244,8 +244,27 @@ fn delete_refuses_non_empty_without_force_and_emits_cleanup_hint_with_force() {
     let command = hint["command"].as_str().unwrap();
     let expected = expected_dir.to_string_lossy();
     assert_eq!(data_dir, expected.as_ref());
-    assert!(command.contains(expected.as_ref()));
-    assert!(command.starts_with("rm -rf "));
+    assert_eq!(
+        command,
+        format!("rm -rf -- '{}'", expected.replace('\'', "'\\''"))
+    );
+    assert!(expected_dir.is_dir());
+    assert!(
+        !state
+            .admin()
+            .stores_dir
+            .join(format!("{store_id}.json"))
+            .exists()
+    );
+    assert!(
+        !state
+            .shared
+            .stores
+            .read()
+            .unwrap()
+            .entries
+            .contains_key(&store_id)
+    );
 }
 
 #[test]

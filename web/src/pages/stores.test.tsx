@@ -1364,6 +1364,8 @@ describe("StoresPage", () => {
 
   it("shows the cleanup hint after a force-delete leaves data on disk", async () => {
     const user = userEvent.setup();
+    const dataDir = "/var/lib/uw/space 'quote' \\ $(probe);\nnext";
+    const command = "rm -rf -- '" + dataDir.replaceAll("'", "'\\''") + "'";
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const { url, method } = reqInfo(input);
       if (url.endsWith("/v1/admin/stores") && method === "GET") {
@@ -1376,8 +1378,8 @@ describe("StoresPage", () => {
         return mockJson(200, {
           ok: true,
           cleanup_hint: {
-            data_dir: "/var/lib/uw/scratch",
-            command: "rm -rf /var/lib/uw/scratch",
+            data_dir: dataDir,
+            command,
           },
         });
       }
@@ -1401,10 +1403,14 @@ describe("StoresPage", () => {
     );
 
     const hint = await screen.findByRole("dialog", { name: /store deleted/i });
-    expect(within(hint).getByText("/var/lib/uw/scratch")).toBeInTheDocument();
-    expect(
-      within(hint).getByText("rm -rf /var/lib/uw/scratch"),
-    ).toBeInTheDocument();
+    expect(hint.querySelector("code")?.textContent).toBe(dataDir);
+    expect(hint.querySelector("pre")?.textContent).toBe(command);
+    expect(hint).toHaveTextContent("The store registry record for scratch was removed");
+    expect(hint).not.toHaveTextContent(/YAML/i);
+    expect(hint).toHaveTextContent(/POSIX shell syntax/);
+    expect(hint).toHaveTextContent(/follow up manually/);
+    expect(hint).toHaveTextContent(/retained generations and external backups/i);
+    expect(hint).toHaveTextContent(/not secure erasure/i);
   });
 
   it("locks an unlocked encrypted store via the lock dialog", async () => {
