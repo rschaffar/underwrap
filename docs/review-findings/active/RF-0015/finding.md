@@ -37,11 +37,10 @@ A local lock would need to cover every competing use of shared NSS storage; seri
 - Exercise repeated concurrent group lookups/fixture setup under Cargo parallelism, checking stable correct effective-group results without sensitive output.
 - Cover missing/error/buffer-growth behavior as appropriate to the selected API, and retain ordinary fixture setup controls.
 - Use race/sanitizer evidence where supported, without treating a clean stress run alone as proof of safe FFI ownership.
-  None of these post-correction checks has been executed.
+  Track current verification through the shared work owner and this finding's evidence record.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+The user-authorized bounded fixture task uses [RF-0014's shared scope/evidence checklist](../RF-0014/finding.md#work-ownership).
+This finding retains its own NSS acceptance and archival decision.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

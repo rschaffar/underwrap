@@ -37,6 +37,7 @@ use underwrap_protocol::message::*;
 use underwrap_protocol::policy::{PolicyDocument, WrapperPermission};
 
 mod builders;
+pub(crate) mod packaged_child;
 mod pki;
 mod readiness;
 
@@ -99,6 +100,18 @@ impl BackendThreadOwner {
             handle: Some(handle),
             armed: true,
         }
+    }
+
+    fn ensure_running(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self
+                .handle
+                .as_ref()
+                .expect("backend owner is armed")
+                .is_finished(),
+            "backend thread finished before readiness"
+        );
+        Ok(())
     }
 
     fn into_handle(mut self) -> thread::JoinHandle<Result<()>> {
@@ -273,7 +286,10 @@ impl TestDaemon {
         });
         let backend_owner = BackendThreadOwner::new(Arc::clone(&backend_shutdown), backend_handle);
 
-        wait_for_admin(&service_url, &pki.ca_cert).await?;
+        wait_for_admin(&service_url, &pki.ca_cert, || {
+            backend_owner.ensure_running()
+        })
+        .await?;
         drop(port_reservation);
         let AdminCredentials {
             session_cookie: admin_session_cookie,
@@ -286,7 +302,13 @@ impl TestDaemon {
                 &pki.ca_cert,
             )?)?)
             .build()?;
-        wait_for_service(&service_url, &ready_pki.ca_cert, &ready_pki.client_identity).await?;
+        wait_for_service(
+            &service_url,
+            &ready_pki.ca_cert,
+            &ready_pki.client_identity,
+            || backend_owner.ensure_running(),
+        )
+        .await?;
 
         let config = DaemonConfig {
             backend: BackendServiceConfig {
@@ -299,7 +321,7 @@ impl TestDaemon {
             // The instance group is the test user's primary group so the
             // daemon's `egid == instance gid` gate passes for in-process
             // connections.
-            group: builders::current_group_name(),
+            group: builders::current_group_name()?,
             debug_tool_target: base.join("underwrap-debug-tool"),
             target_runtime_dir_base: "/run/user".to_string(),
             wrappers,

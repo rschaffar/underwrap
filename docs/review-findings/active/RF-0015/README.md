@@ -1,6 +1,6 @@
 # RF-0015 — Parallel fixtures use non-reentrant group lookup storage
 
-**Priority:** Medium · **State:** open
+**Priority:** Medium · **State:** in-progress
 
 **Review aliases:** `T-02` · **Confidence:** High from source/FFI-lifetime analysis and coordinator verification; no race or sanitizer execution.
 
@@ -14,12 +14,12 @@ Use privately owned reentrant NSS output with explicit lifetime/error handling w
 
 ## Decision and caveat
 
-Open, Medium harness memory-safety/reliability.
-No correction or concurrency validation is claimed complete.
+In progress, Medium harness memory-safety/reliability.
+Private-buffer correction and deterministic/concurrent controls are present; required verification and independent archival remain pending.
 This concerns the integration-test helper, not production peer authentication.
 No observed race, wrong-group startup or supported-chain authorization bypass was demonstrated.
 
-No correction is authorized or completed by this record.
+The user authorized this NSS subpart of [RF-0014's bounded shared fixture task](../RF-0014/finding.md#work-ownership).
 The aliases belong to the review of `01214454aee850ebe8ceef5b757b9ae61cca07aa`.
 
 [Technical finding](finding.md) · [Evidence](evidence.md) · [Register](../../README.md)

@@ -258,11 +258,24 @@ Browser cleanup observes exit, waits boundedly after TERM and then KILL, and ret
 The Node support suite simulates these paths; it does not prove OS signal delivery.
 Rust fixtures distinguish daemon abort-on-drop from synchronous backend-thread join and eventual temporary-directory cleanup.
 Await normal shutdown rather than wrapping cancellation-unsafe blocking work in an in-runtime timeout; the invoking process supplies the hard whole-suite bound.
+Packaged Rust fixtures use standard child handles with nonblocking pipe capture and borrowed synchronous/asynchronous output waits.
+Their owner retains shared temporary state immediately after spawn, observes direct-child exit/reap on fallback, and leaks the state reference with a metadata-only diagnostic if reap cannot be confirmed within five seconds.
+Failure witnesses run selected packaged paths in fresh externally supervised processes, bind exit observation to pidfds before injecting failure, and check owner-mediated reap while state still exists plus listener closure and eventual directory release.
+These services do not launch descendants; this owner is not a generic process-tree supervisor.
+Simulated cleanup-observation failures exercise retention/error precedence without intentionally orphaning a process.
 These fixture guarantees are not production shutdown semantics or universal cleanup after runtime termination.
+
+Effective-group fixture selection uses privately owned `getgrgid_r` record/name storage through the owned UTF-8 copy, with checked ERANGE doubling from 16 KiB to 1 MiB.
+Missing, invalid or failed lookup rejects fixture setup rather than selecting a numeric or different identity.
+Concurrent lookup/fixture stress supplements the pointer/lifetime argument, not a sanitizer or race-freedom proof.
 
 The Rust integration backend startup reservation retains an async process-local mutex and CLOEXEC advisory file lock through HTTPS readiness.
 It coordinates cooperating Cargo/nextest processes sharing the same temporary directory and effective UID.
 An unrelated process can still claim the released probe port; this is not a universal kernel reservation.
+Admin and enrolled-runtime HTTPS readiness each use one 60-second elapsed deadline, limiting each request and sleep to the remaining budget and checking backend completion between probes.
+Elapsed stalled-TLS and prompt-success controls run under a separate process deadline; a failed backend is observed without timing out its join.
+The caller keeps the reservation through readiness failure and backend cleanup, then releases it by ordinary scope/drop ownership.
+The readiness budget bounds cancellable probing, not blocking setup, thread joins, normal awaited shutdown or the complete fixture lifetime.
 
 Run numeric-fd close and EOF-sensitive witnesses in fresh single-test processes when parallel reuse or pre-exec inheritance would invalidate observation.
 Keep exact `EBADF`, endpoint ownership, CLOEXEC, and EOF assertions rather than inserting delays or retries.

@@ -1,10 +1,29 @@
 use super::*;
+use crate::harness::packaged_child::{PackagedChild, tests::checkpoint};
 use crate::harness::{reserve_backend_startup, wait_for_service};
 use base64::Engine;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::sync::Arc;
+
+fn isolated_lock_control(name: &str) -> bool {
+    const ISOLATED: &str = "UNDERWRAP_PACKAGED_LOCK_CONTROL_ISOLATED";
+    if std::env::var_os(ISOLATED).is_some()
+        || std::env::var_os("UNDERWRAP_FIXTURE_FAILURE_POINT").is_some()
+    {
+        return false;
+    }
+    // Flock/exit observations must not race unrelated pre-exec copies of the
+    // gate's open file description in Cargo's parallel test process.
+    let mut worker = crate::test_support::ExternalTest::spawn(name, &[(ISOLATED, "1".as_ref())]);
+    assert!(
+        worker.wait().success(),
+        "isolated packaged flock control failed"
+    );
+    true
+}
 
 fn checked_flock(file: &File, operation: libc::c_int) -> std::io::Result<()> {
     // SAFETY: `file` owns a live descriptor for the duration of this call;
@@ -33,28 +52,31 @@ fn provision_operator(
     config_path: &std::path::Path,
     username: &str,
     password: &str,
+    state: &Arc<tempfile::TempDir>,
 ) {
-    let mut child = std::process::Command::new(backend_bin)
-        .args([
-            "--config",
-            config_path.to_str().unwrap(),
-            "admin",
-            "bootstrap-user",
-            "--username",
-            username,
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = PackagedChild::spawn(
+        std::process::Command::new(backend_bin)
+            .args([
+                "--config",
+                config_path.to_str().unwrap(),
+                "admin",
+                "bootstrap-user",
+                "--username",
+                username,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+        state,
+    )
+    .unwrap();
+    checkpoint("provision-acquired", state, &[&child], &[]);
     child
-        .stdin
-        .take()
+        .take_stdin()
         .unwrap()
         .write_all(format!("{password}\n").as_bytes())
         .unwrap();
-    let output = child.wait_with_output().unwrap();
+    let output = child.wait_with_output_sync().unwrap();
     assert!(
         output.status.success(),
         "offline bootstrap-user failed: {}",
@@ -112,7 +134,7 @@ wrappers:
 async fn network_bootstrap_cannot_create_operator() {
     let backend_bin = cargo_bin("underwrap-backend");
 
-    let tempdir = tempfile::TempDir::new().unwrap();
+    let tempdir = Arc::new(tempfile::TempDir::new().unwrap());
     let base = tempdir.path();
     let server_cert = base.join("server.pem");
     let server_key = base.join("server.key");
@@ -145,36 +167,43 @@ async fn network_bootstrap_cannot_create_operator() {
     let backend_config_path = base.join("backend-empty.yaml");
     std::fs::write(&backend_config_path, &backend_config).unwrap();
 
-    let mut backend_child = tokio::process::Command::new(&backend_bin)
-        .args(["--config", backend_config_path.to_str().unwrap()])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut backend_child = PackagedChild::spawn(
+        std::process::Command::new(&backend_bin)
+            .args(["--config", backend_config_path.to_str().unwrap()])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+        &tempdir,
+    )
+    .unwrap();
+    checkpoint("network-acquired", &tempdir, &[&backend_child], &[]);
 
+    wait_for_admin(&admin_url, &ca_cert, || {
+        checkpoint("network-readiness", &tempdir, &[&backend_child], &[]);
+        backend_child.ensure_running()
+    })
+    .await
+    .unwrap();
     let client = reqwest::Client::builder()
         .use_rustls_tls()
+        .timeout(std::time::Duration::from_secs(5))
         .add_root_certificate(
             reqwest::Certificate::from_pem(&std::fs::read(&ca_cert).unwrap()).unwrap(),
         )
         .build()
         .unwrap();
-    let mut bootstrap_required = None;
-    for _ in 0..100 {
-        if let Ok(resp) = client
-            .get(format!("{admin_url}/v1/admin/auth/bootstrap/status"))
-            .send()
-            .await
-            && let Ok(body) = resp.json::<serde_json::Value>().await
-        {
-            bootstrap_required = body.get("bootstrap_required").and_then(|v| v.as_bool());
-            if bootstrap_required.is_some() {
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    let status = client
+        .get(format!("{admin_url}/v1/admin/auth/bootstrap/status"))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let bootstrap_required = status
+        .get("bootstrap_required")
+        .and_then(|value| value.as_bool());
 
+    checkpoint("network-ready", &tempdir, &[&backend_child], &[&admin_url]);
     assert_eq!(bootstrap_required, Some(true));
     drop(port_reservation);
 
@@ -208,6 +237,7 @@ async fn network_bootstrap_cannot_create_operator() {
         .json::<serde_json::Value>()
         .await
         .unwrap();
+    checkpoint("network-use", &tempdir, &[&backend_child], &[&admin_url]);
     assert_eq!(status["bootstrap_required"], true);
 
     let _ = backend_child.start_kill();
@@ -222,8 +252,13 @@ async fn network_bootstrap_cannot_create_operator() {
 
 #[test]
 fn bootstrap_user_processes_serialize_without_touching_other_state() {
+    if isolated_lock_control(
+        "tests::daemon::bootstrap_user_processes_serialize_without_touching_other_state",
+    ) {
+        return;
+    }
     struct BootstrapChildren {
-        children: [Option<std::process::Child>; 2],
+        children: [Option<PackagedChild>; 2],
     }
 
     impl BootstrapChildren {
@@ -248,6 +283,7 @@ fn bootstrap_user_processes_serialize_without_touching_other_state() {
                     if status.is_none() {
                         let child = child.as_mut().unwrap();
                         let pid = child.id();
+                        child.drain_output().unwrap();
                         *status = child.try_wait().unwrap_or_else(|error| {
                             panic!("checking bootstrap child pid {pid} completion: {error}")
                         });
@@ -266,23 +302,17 @@ fn bootstrap_user_processes_serialize_without_touching_other_state() {
 
         fn into_outputs(mut self) -> [std::process::Output; 2] {
             [
-                self.children[0].take().unwrap().wait_with_output().unwrap(),
-                self.children[1].take().unwrap().wait_with_output().unwrap(),
+                self.children[0]
+                    .as_mut()
+                    .unwrap()
+                    .wait_with_output_sync()
+                    .unwrap(),
+                self.children[1]
+                    .as_mut()
+                    .unwrap()
+                    .wait_with_output_sync()
+                    .unwrap(),
             ]
-        }
-    }
-
-    impl Drop for BootstrapChildren {
-        fn drop(&mut self) {
-            for child in self.children.iter_mut().filter_map(Option::as_mut) {
-                match child.try_wait() {
-                    Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => {
-                        let _ = child.kill();
-                    }
-                }
-                let _ = child.wait();
-            }
         }
     }
 
@@ -325,7 +355,7 @@ fn bootstrap_user_processes_serialize_without_touching_other_state() {
     }
 
     let backend_bin = cargo_bin("underwrap-backend");
-    let tempdir = tempfile::TempDir::new().unwrap();
+    let tempdir = Arc::new(tempfile::TempDir::new().unwrap());
     let base = tempdir.path();
     let stores_dir = base.join("stores");
     let clients_dir = base.join("clients");
@@ -359,25 +389,39 @@ fn bootstrap_user_processes_serialize_without_touching_other_state() {
     let mut children = BootstrapChildren::new();
     for (slot, username) in children.children.iter_mut().zip(["alice", "bob"]) {
         *slot = Some(
-            std::process::Command::new(&backend_bin)
-                .args([
-                    "--config",
-                    config_path.to_str().unwrap(),
-                    "admin",
-                    "bootstrap-user",
-                    "--username",
-                    username,
-                ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap(),
+            PackagedChild::spawn(
+                std::process::Command::new(&backend_bin)
+                    .args([
+                        "--config",
+                        config_path.to_str().unwrap(),
+                        "admin",
+                        "bootstrap-user",
+                        "--username",
+                        username,
+                    ])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped()),
+                &tempdir,
+            )
+            .unwrap(),
         );
+        if username == "alice" {
+            checkpoint("bootstrap-first", &tempdir, &[slot.as_ref().unwrap()], &[]);
+        }
     }
+    checkpoint(
+        "bootstrap-second",
+        &tempdir,
+        &[
+            children.children[0].as_ref().unwrap(),
+            children.children[1].as_ref().unwrap(),
+        ],
+        &[],
+    );
     const PASSWORD: &[u8] = b"hunter2-long";
     for child in children.children.iter_mut().filter_map(Option::as_mut) {
-        let mut stdin = child.stdin.take().unwrap();
+        let mut stdin = child.take_stdin().unwrap();
         stdin.write_all(PASSWORD).unwrap();
         stdin.write_all(b"\n").unwrap();
         drop(stdin);
@@ -469,8 +513,12 @@ fn bootstrap_user_processes_serialize_without_touching_other_state() {
 
 #[test]
 fn bootstrap_lock_is_released_when_real_owner_is_killed() {
+    if isolated_lock_control("tests::daemon::bootstrap_lock_is_released_when_real_owner_is_killed")
+    {
+        return;
+    }
     let backend_bin = cargo_bin("underwrap-backend");
-    let tempdir = tempfile::TempDir::new().unwrap();
+    let tempdir = Arc::new(tempfile::TempDir::new().unwrap());
     let base = tempdir.path();
     let config = underwrap_backend::BackendConfig {
         stores_dir: base.join("stores"),
@@ -495,22 +543,25 @@ fn bootstrap_lock_is_released_when_real_owner_is_killed() {
     checked_flock(&gate, libc::LOCK_EX).unwrap();
     let retained_inode = std::fs::metadata(&lock_path).unwrap().ino();
 
-    let mut owner = std::process::Command::new(&backend_bin)
-        .args([
-            "--config",
-            config_path.to_str().unwrap(),
-            "admin",
-            "bootstrap-user",
-            "--username",
-            "interrupted",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut owner = PackagedChild::spawn(
+        std::process::Command::new(&backend_bin)
+            .args([
+                "--config",
+                config_path.to_str().unwrap(),
+                "admin",
+                "bootstrap-user",
+                "--username",
+                "interrupted",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+        &tempdir,
+    )
+    .unwrap();
+    checkpoint("owner-acquired", &tempdir, &[&owner], &[]);
     const OWNER_PASSWORD: &[u8] = b"holder-password";
-    let mut owner_stdin = owner.stdin.take().unwrap();
+    let mut owner_stdin = owner.take_stdin().unwrap();
     owner_stdin.write_all(OWNER_PASSWORD).unwrap();
     owner_stdin.write_all(b"\n").unwrap();
     drop(owner_stdin);
@@ -568,8 +619,9 @@ fn bootstrap_lock_is_released_when_real_owner_is_killed() {
         }
     }
 
+    checkpoint("owner-use", &tempdir, &[&owner], &[]);
     owner.kill().unwrap();
-    let killed = owner.wait_with_output().unwrap();
+    let killed = owner.wait_with_output_sync().unwrap();
     assert!(!killed.status.success());
     for (label, bytes) in [("stdout", killed.stdout), ("stderr", killed.stderr)] {
         assert!(
@@ -592,6 +644,7 @@ fn bootstrap_lock_is_released_when_real_owner_is_killed() {
         &config_path,
         "replacement",
         "replacement-password",
+        &tempdir,
     );
     assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), retained_inode);
     assert_eq!(json_file_count(&config.users_dir), 1);
@@ -603,7 +656,7 @@ async fn underwrapd_binary_start_and_read() {
     let daemon_bin = cargo_bin("underwrapd");
     let backend_bin = cargo_bin("underwrap-backend");
 
-    let tempdir = tempfile::TempDir::new().unwrap();
+    let tempdir = Arc::new(tempfile::TempDir::new().unwrap());
     let base = tempdir.path();
 
     let wrapper_sock = base.join("wrapper-w.sock");
@@ -727,16 +780,30 @@ async fn underwrapd_binary_start_and_read() {
     .unwrap();
     let backend_config_path = base.join("backend.yaml");
     std::fs::write(&backend_config_path, &backend_config).unwrap();
-    provision_operator(&backend_bin, &backend_config_path, "tester", "hunter2-long");
+    provision_operator(
+        &backend_bin,
+        &backend_config_path,
+        "tester",
+        "hunter2-long",
+        &tempdir,
+    );
 
-    let mut backend_child = tokio::process::Command::new(&backend_bin)
-        .args(["--config", backend_config_path.to_str().unwrap()])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut backend_child = PackagedChild::spawn(
+        std::process::Command::new(&backend_bin)
+            .args(["--config", backend_config_path.to_str().unwrap()])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+        &tempdir,
+    )
+    .unwrap();
+    checkpoint("backend-acquired", &tempdir, &[&backend_child], &[]);
 
-    wait_for_admin(&admin_url, &ca_cert).await.unwrap();
+    wait_for_admin(&admin_url, &ca_cert, || {
+        checkpoint("backend-readiness", &tempdir, &[&backend_child], &[]);
+        backend_child.ensure_running()
+    })
+    .await
+    .unwrap();
     drop(port_reservation);
     let crate::harness::AdminCredentials {
         session_cookie: admin_session_cookie,
@@ -754,7 +821,9 @@ async fn underwrapd_binary_start_and_read() {
         .unwrap();
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        wait_for_service(&service_url, &ca_cert, &client_identity),
+        wait_for_service(&service_url, &ca_cert, &client_identity, || {
+            backend_child.ensure_running()
+        }),
     )
     .await
     {
@@ -771,6 +840,12 @@ async fn underwrapd_binary_start_and_read() {
         }
     }
 
+    checkpoint(
+        "backend-ready",
+        &tempdir,
+        &[&backend_child],
+        &[&service_url],
+    );
     let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
         backend: underwrap_protocol::config::BackendServiceConfig {
             url: service_url.clone(),
@@ -779,7 +854,7 @@ async fn underwrapd_binary_start_and_read() {
         },
         instance: "local".to_string(),
         socket: wrapper_sock.clone(),
-        group: crate::harness::current_group_name(),
+        group: crate::harness::current_group_name().unwrap(),
         debug_tool_target: base.join("underwrap-debug-tool"),
         target_runtime_dir_base: "/run/user".to_string(),
         wrappers: {
@@ -794,15 +869,39 @@ async fn underwrapd_binary_start_and_read() {
     let config_path = base.join("config.yaml");
     std::fs::write(&config_path, &config).unwrap();
 
-    let mut child = tokio::process::Command::new(&daemon_bin)
-        .args(["--config", config_path.to_str().unwrap()])
-        .env("RUST_LOG", "info")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let daemon_path = if checkpoint(
+        "second-spawn-failure",
+        &tempdir,
+        &[&backend_child],
+        &[&service_url],
+    ) {
+        "/nonexistent-underwrap-fixture-binary"
+    } else {
+        &daemon_bin
+    };
+    let mut child = PackagedChild::spawn(
+        std::process::Command::new(daemon_path)
+            .args(["--config", config_path.to_str().unwrap()])
+            .env("RUST_LOG", "info")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+        &tempdir,
+    )
+    .unwrap();
+    checkpoint(
+        "daemon-acquired",
+        &tempdir,
+        &[&backend_child, &child],
+        &[&service_url],
+    );
 
     for _ in 0..100 {
+        checkpoint(
+            "daemon-readiness",
+            &tempdir,
+            &[&backend_child, &child],
+            &[&service_url],
+        );
         if wrapper_sock.exists() {
             break;
         }
@@ -822,6 +921,12 @@ async fn underwrapd_binary_start_and_read() {
         );
     }
 
+    checkpoint(
+        "daemon-ready",
+        &tempdir,
+        &[&backend_child, &child],
+        &[&service_url, wrapper_sock.to_str().unwrap()],
+    );
     // Admin writes are unconditional now that per-resource write
     // flags only gate wrapper-side writes — drop the secret in
     // directly.
@@ -882,7 +987,16 @@ async fn underwrapd_binary_start_and_read() {
         }
     };
 
-    assert_eq!(expect_single_env_string(blob), "value");
+    checkpoint(
+        "before-both-cleanup",
+        &tempdir,
+        &[&backend_child, &child],
+        &[&service_url, wrapper_sock.to_str().unwrap()],
+    );
+    assert!(
+        expect_single_env_string(blob) == "value",
+        "packaged read returned unexpected material"
+    );
 
     let child_kill = child.start_kill();
     let backend_kill = backend_child.start_kill();

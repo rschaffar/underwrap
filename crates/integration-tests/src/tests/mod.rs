@@ -328,7 +328,7 @@ async fn daemon_config_error(wrapper_def: underwrap_protocol::config::WrapperDef
         },
         instance: "local".to_string(),
         socket: base.join("instance.sock"),
-        group: crate::harness::current_group_name(),
+        group: crate::harness::current_group_name().unwrap(),
         debug_tool_target: base.join("underwrap-debug-tool"),
         target_runtime_dir_base: "/run/user".to_string(),
         wrappers: HashMap::from([("dir-wrapper".to_string(), wrapper_def)]),
