@@ -45,11 +45,11 @@ No change to arbitrary-byte backend storage is required.
 
 This file owns the user-authorized RF-0009-only correction based on local `main` at `c7c3c3d771fedffb1755942e55a219e6c1afb827`.
 Scope is the shared frontend decoder and exact reveal/copy regressions; backend storage, binary editing, dependencies, unrelated findings and form lifecycle redesign are excluded.
-The dedicated feature branch and worktree remain unintegrated after verified local commits.
+Implementation and verification use a dedicated feature branch and worktree.
 
 - [x] Add a failing leading-U+FEFF regression with BOM-only, ordinary Unicode, empty and invalid controls.
 - [x] Correct the authoritative decoder while preserving strict rejection and chunk-safe encoding.
 - [x] Verify flat env/files and libsecret reveal and real clipboard equality, with unchanged stored material and no value-bearing diagnostics or captures.
 - [x] Run full Vitest, selected API/library coverage, production build, browser-fixture checks and relevant same-tree real-backend Playwright flows inside the pinned Nix environment.
-- [x] Record evidence and limits, archive after acceptance, and retain inspected feature commits without integration or cleanup.
+- [x] Record evidence and limits and archive after acceptance.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

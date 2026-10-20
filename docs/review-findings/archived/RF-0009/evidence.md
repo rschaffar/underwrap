@@ -92,4 +92,17 @@ This directly supports unchanged storage for the exercised flows, not all storag
 The install reported one high-severity advisory, not investigated or changed in this RF-0009-only task.
 Vitest emitted existing jsdom `scrollTo` warnings, and Vite reported a large-chunk warning; neither failed its check.
 No required RF-0009 acceptance check remains unavailable.
-The feature commits, branch, worktree and build/browser artifacts are retained without rebase, integration, cleanup or remote publication.
+Initial completion retained the feature commits, branch, worktree and build/browser artifacts without integration or publication.
+
+### Rebased integration candidate
+
+The user subsequently requested local rebase and merge.
+Rebase onto local `main` at `7260be4feff5c2bc70d958f50e50adf218cad994` completed without conflicts.
+The implementation is now `3cda9e60a13eed508bc9fe0eb3dd73eb0f2cf80b`; the tested rebased candidate is `ddd6e304da74800fd4ded7acdff139315dd6379f`.
+Range comparison confirms the implementation patch is unchanged; the archive commit only incorporates the current register context.
+
+The same pinned-environment commands listed above were rerun on this candidate: full Vitest and selected coverage each passed all 359 tests, coverage remained 97% statements / 84.28% branches / 98.59% functions / 98.9% lines, and production SPA and same-tree backend builds passed.
+All nine browser-fixture support checks and all eight relevant real-backend Chromium flows passed again; the browser run took 27.4 seconds.
+Its output directory was `target/rf-0009/rebased/browser-results`, with the same binary, temporary-directory and no-capture settings.
+The following evidence-only documentation update leaves all tested application and test inputs unchanged and is checked for links, paths and whitespace before integration.
+No cleanup or remote operation is part of the local integration request.
