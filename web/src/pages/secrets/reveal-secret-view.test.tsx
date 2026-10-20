@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { encodeUtf8Base64 } from "@/lib/utf8-base64";
 import { RevealSecretView } from "./reveal-secret-view";
 
 type Response = { material_b64: string | null };
@@ -69,6 +70,20 @@ describe("RevealSecretView", () => {
     await waitFor(() =>
       expect(queryClient.getQueryData(queryKey)).toBeUndefined(),
     );
+  });
+
+  it.each([
+    ["BOM only", "\uFEFF"],
+    ["leading BOM and Unicode", "\uFEFF日本語🔐"],
+  ])("reveals and copies exact code points: %s", async (_label, text) => {
+    renderReveal(encodeUtf8Base64(text));
+    await showSecret();
+
+    const textarea = await screen.findByTestId<HTMLTextAreaElement>("revealed-secret");
+    expect(textarea.value === text).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Copy to clipboard" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]?.[0] === text).toBe(true);
   });
 
   it("renders and copies an empty secret instead of treating it as missing", async () => {

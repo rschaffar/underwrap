@@ -294,7 +294,8 @@ A resource with no env/files entries is not described as wholly empty merely bec
 
 The browser secret editor is text-only and encodes exact UTF-8 without Unicode normalization or intentional line-ending conversion, using chunk-safe transport encoding.
 Missing data, empty bytes, malformed base64, and non-UTF-8 bytes are distinct states.
-Empty text is valid and copyable; malformed or non-UTF-8 values are not revealed or copied, and the UI has no binary editor or download mode.
+Empty text is valid and copyable, and successful reveal/copy preserves a leading U+FEFF (UTF-8 BOM), including a BOM-only value.
+Malformed or non-UTF-8 values are not revealed or copied, and the UI has no binary editor or download mode.
 Backend storage still accepts arbitrary secret bytes.
 For env/files, **Create** rejects a known same-slot key collision, **Rename** preserves material without fetching it, and **Replace value** pins the existing key and requires new material.
 An intentional empty write requires **Store an empty value**; leaving a value field blank alone is not replacement, and Delete remains separate.

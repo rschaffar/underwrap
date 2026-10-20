@@ -371,6 +371,10 @@ One WebKit tablet scenario pins viewport and screen to 768×1024, observes conta
 It establishes neither a cards layout nor broad tablet, orientation, zoom, physical-device, or browser support.
 
 Text/attribute tests pin exact UTF-8 conversion, distinct missing/empty/malformed-base64/non-UTF-8 outcomes, first-delimiter parsing, trimmed exact duplicate detection, line errors, and prototype-safe own keys with no request on invalid input.
+Leading-BOM helper and shared-view regressions include BOM-only values and invalid UTF-8 controls.
+A desktop Chromium real-backend witness compares exact reveal and real clipboard content for env, files and libsecret, including BOM-only, leading-BOM, ordinary Unicode and empty values.
+It compares complete stored resource bytes and file identity/mtime, and observes no admin mutations during reads/copies; traces/screenshots are disabled and equality assertions expose only booleans.
+This is selected Chromium clipboard evidence, not cross-browser behavior or clipboard-erasure assurance.
 Entry-editing tests also distinguish Create, key-preserving Replace, value-preserving Rename, and deliberate empty values.
 The env browser round trip checks known-collision rejection without a replacement PUT, explicit reveal, and exact material preservation through Rename without an automatic value GET.
 These are known-metadata accidental-overwrite guards, not compare-and-swap or concurrent-writer guarantees.
