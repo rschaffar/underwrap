@@ -132,7 +132,7 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0001](archived/RF-0001/README.md) | `N-01` | High | `archived` (`fixed`) | Replaceable staging root can substitute collected files |
 | [RF-0002](archived/RF-0002/README.md) | `B-01` | High (conditional) | `archived` (`fixed`) | Dynamic-debug SPA fallback can disclose an outside symlink target |
 | [RF-0003](archived/RF-0003/README.md) | `F-01`, `A-01`, `S-02`, `W-01` | Medium | `archived` (`fixed`) | Structured admin libsecret identifiers fail initial publication |
-| [RF-0004](active/RF-0004/README.md) | `B-02` | Medium | `open` | Authenticated activity does not renew inactivity expiry |
+| [RF-0004](archived/RF-0004/README.md) | `B-02` | Medium | `archived` (`fixed`) | Authenticated activity does not renew inactivity expiry |
 | [RF-0005](active/RF-0005/README.md) | `L-01` | Medium | `open` | Manual store-cleanup command does not quote its path |
 | [RF-0006](active/RF-0006/README.md) | `S-01` | Medium | `open` | Accepted alias changes leave exported D-Bus routing stale |
 | [RF-0007](active/RF-0007/README.md) | `S-03` | Medium | `open` | Deleted D-Bus objects acknowledge setters without changing state |

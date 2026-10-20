@@ -27,7 +27,7 @@ No unauthorized access, extended session authority or rollback of an already com
 
 This is a concrete policy/workflow mismatch, not a claim that the product promises universal availability.
 Existing hardened cookie attributes and fail-closed expired-session denial remain useful controls.
-The separate CSRF construction and lifetime-comment qualification are retained in [RF-0036](../RF-0036/README.md), not treated as causes of this expiry failure.
+The separate CSRF construction and lifetime-comment qualification are retained in [RF-0036](../../active/RF-0036/README.md), not treated as causes of this expiry failure.
 
 ## Correction and alternatives
 
@@ -49,7 +49,27 @@ Those are separate limit/scheduling decisions, not accepted vulnerabilities, gua
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This file owns the user-authorized RF-0004-only correction from local base `c7c3c3d771fedffb1755942e55a219e6c1afb827`.
+Retain sliding inactivity using the pinned middleware's activity semantics: nonempty sessions renew on non-5xx responses, including authenticated public requests and rejected operations inside the session layer.
+Origin rejections remain outside that layer; expiry and revocation authority must survive.
+The authorized bounded store guard serializes existing MemoryStore operations and permits renewal only for an existing unexpired record, preventing late responses from undoing logout or expiry.
+It adds no tombstones, inventory/admission features or durable state.
+No CSRF redesign, dependencies, other findings, integration or cleanup is authorized.
+
+- [x] Confirm pinned middleware/auth/store behavior and activity boundaries.
+- [x] Reproduce missing renewal through the real HTTP middleware before correction.
+- [x] Enable consistent cookie/store renewal and verify idle replay, cookie attributes and activity boundaries.
+- [x] Recheck logout, password change/reset, deletion and restart revocation.
+- [x] Run required Rust, OpenAPI, SPA/build and browser checks; record limits before disposition.
+
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).
+
+## Resolution
+
+Fixed in `4b81f8756acae36028de0d70968065749c93c6a6`.
+`admin_router` enables `with_always_save(true)`; `admin_sessions::AdminSessionStore` preserves update-only renewal under a shared operation gate.
+The additional protected asset is revoked admin-session authority: a bearer of an old cookie must not recover authority across the HTTP-to-session-store boundary through a delayed save.
+A synchronized HTTP regression demonstrated restoration with unguarded renewal and denial with the guard.
+Only creation admits a new record; missing or expired records cannot be revived by save.
+Current activity semantics and already-admitted request limits belong in [Sessions and browser custody](../../../security.md#sessions-and-browser-custody).
+See [resolution evidence](evidence.md#resolution-evidence) for direct, simulated and source-review checks.

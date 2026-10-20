@@ -26,7 +26,7 @@ Host-only/Secure/HttpOnly/SameSite attributes and HMAC verification are not show
 CSRF uses locked axum_csrf 0.11.0's six-hour default, not `session_lifetime_secs` as `crates/underwrap-backend/src/runtime_state.rs:82-85` suggests.
 This is distinct from the terminology finding and was independently retained during synthesis.
 No bypass or approved cookie-lifetime behavior change follows; it is not a new finding or accepted vulnerability.
-Session inactivity failure is separately [RF-0004](../RF-0004/README.md).
+Session inactivity failure is separately [RF-0004](../../archived/RF-0004/README.md).
 
 ## Correction and alternatives
 
