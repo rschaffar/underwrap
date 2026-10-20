@@ -47,10 +47,10 @@ This file owns the user-authorized bounded integration-fixture isolation task fo
 The task changes only packaged-child ownership, elapsed HTTPS readiness, private effective-GID NSS lookup, narrow callers and focused tests/documentation.
 Production authentication, namespace behavior, browser fixtures, dependencies, Nix and other findings are excluded.
 
-- [ ] Own packaged children immediately, preserve ownership across output waits/cancellation, and retain state on uncertain cleanup.
-- [ ] Exercise isolated acquisition/use/unwind/second-child failures, reap/listener/state ordering, success and cleanup-error controls under an external bound.
-- [ ] Bound both HTTPS probes by elapsed time; check stalled/prompt probes, failed backend observation and reservation release without timing out joins.
-- [ ] Copy effective-GID NSS names from private reentrant storage with bounded growth and deterministic error tests; supplement with concurrency stress.
-- [ ] Run matching-tree prerequisites, affected harness tests, full integration, Rustfmt and denied-warning Clippy; record unavailable gates separately.
-- [ ] Decide each finding's acceptance and archival independently; retain feature commits without integration or cleanup.
+- [x] Own packaged children immediately, preserve ownership across output waits/cancellation, and retain state on uncertain cleanup.
+- [x] Exercise isolated acquisition/use/unwind/second-child failures, reap/listener/state ordering, success and cleanup-error controls under an external bound.
+- [x] Bound both HTTPS probes by elapsed time; check stalled/prompt probes, failed backend observation and reservation release without timing out joins.
+- [x] Copy effective-GID NSS names from private reentrant storage with bounded growth and deterministic error tests; supplement with concurrency stress.
+- [x] Run matching-tree prerequisites, affected harness tests, full integration, Rustfmt and denied-warning Clippy; record unrun gates separately.
+- [x] Decide each finding's acceptance and archival independently; retain feature commits without integration or cleanup.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).
