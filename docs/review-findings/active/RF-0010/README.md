@@ -1,6 +1,6 @@
 # RF-0010 — An old form submission can close a reopened draft
 
-**Priority:** Medium · **State:** open
+**Priority:** Medium · **State:** in-progress
 
 **Review aliases:** `W-05` · **Confidence:** High for the source/control-flow chain; no focused slow-request interaction reproduction.
 
@@ -20,7 +20,8 @@ Preserve the existing full-submission guard and error ownership; no remote-cance
 Requests retain their original address.
 This is not demonstrated cross-store rebinding, exactly-once behavior, or a reproduced application-wide failure.
 
-No correction is authorized or completed by this record.
+RF-0010-only correction is user-authorized; `finding.md` owns scope and evidence.
+Verification is in progress, with no integration or remote publication authorized.
 The aliases belong to the review of `01214454aee850ebe8ceef5b757b9ae61cca07aa`.
 
 [Technical finding](finding.md) · [Evidence](evidence.md) · [Register](../../README.md)

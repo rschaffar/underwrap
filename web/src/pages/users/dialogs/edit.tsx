@@ -39,6 +39,7 @@ export function EditUserDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title={`Edit user: ${user.username}`}
       description="Rename the user. Use the separate “Reset password” action to change a password."
     >
@@ -65,7 +66,7 @@ export function EditUserDialog({
           />
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

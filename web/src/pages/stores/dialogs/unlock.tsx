@@ -48,6 +48,7 @@ export function UnlockStoreDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title={`Unlock store: ${store.name}`}
       description={
         <>
@@ -92,7 +93,7 @@ export function UnlockStoreDialog({
             <Alert data-testid="store-unlock-error">{submitError}</Alert>
           ) : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button

@@ -58,6 +58,7 @@ export function CreateResourceDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title="Create resource"
       description={
         <>
@@ -95,7 +96,7 @@ export function CreateResourceDialog({
           />
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

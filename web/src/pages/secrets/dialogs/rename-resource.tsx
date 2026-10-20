@@ -72,6 +72,7 @@ export function RenameResourceDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title="Rename resource"
       description="Change the operator-facing name. The backend id and every pair/permission/secret reference stay put — this is a metadata flip, not a move."
     >
@@ -103,7 +104,7 @@ export function RenameResourceDialog({
           />
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>
