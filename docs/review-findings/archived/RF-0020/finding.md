@@ -37,4 +37,5 @@ Do not imply that deletion edits source configuration, removes backing data or p
 
 The user-authorized joint correction uses [RF-0005's scope/evidence checklist](../RF-0005/finding.md#work-ownership) as its single implementation owner.
 This finding retains its separate wording acceptance criteria and disposition.
+Implementation `63a68753da4436e33c040dbc01302ac5e3a7f975` satisfies those criteria through the component and real/synthetic desktop Chromium checks in the [resolution evidence](evidence.md#resolution-evidence).
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

@@ -133,7 +133,7 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0002](archived/RF-0002/README.md) | `B-01` | High (conditional) | `archived` (`fixed`) | Dynamic-debug SPA fallback can disclose an outside symlink target |
 | [RF-0003](archived/RF-0003/README.md) | `F-01`, `A-01`, `S-02`, `W-01` | Medium | `archived` (`fixed`) | Structured admin libsecret identifiers fail initial publication |
 | [RF-0004](archived/RF-0004/README.md) | `B-02` | Medium | `archived` (`fixed`) | Authenticated activity does not renew inactivity expiry |
-| [RF-0005](active/RF-0005/README.md) | `L-01` | Medium | `in-progress` | Manual store-cleanup command does not quote its path |
+| [RF-0005](archived/RF-0005/README.md) | `L-01` | Medium | `archived` (`fixed`) | Manual store-cleanup command does not quote its path |
 | [RF-0006](active/RF-0006/README.md) | `S-01` | Medium | `open` | Accepted alias changes leave exported D-Bus routing stale |
 | [RF-0007](active/RF-0007/README.md) | `S-03` | Medium | `open` | Deleted D-Bus objects acknowledge setters without changing state |
 | [RF-0008](active/RF-0008/README.md) | `W-02` | Medium | `open` | Accepted dot-only libsecret IDs normalize out of request paths |
@@ -148,7 +148,7 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0017](active/RF-0017/README.md) | `F-02`, `A-03` | Low | `open` | Canonical-size expansion is reported as an internal finalize failure |
 | [RF-0018](active/RF-0018/README.md) | `A-02` | Low | `open` | Permission-cleanup diagnostics mislabel unavailable store states |
 | [RF-0019](active/RF-0019/README.md) | `D-01` | Low | `open` | A held peer pidfd does not pin numeric procfs lookup |
-| [RF-0020](active/RF-0020/README.md) | `L-03` | Low | `in-progress` | Cleanup dialog says YAML was removed instead of a registry record |
+| [RF-0020](archived/RF-0020/README.md) | `L-03` | Low | `archived` (`fixed`) | Cleanup dialog says YAML was removed instead of a registry record |
 | [RF-0021](active/RF-0021/README.md) | `N-03` | Low | `open` | Post-Armed wording omits the initialized-generation baseline |
 | [RF-0022](active/RF-0022/README.md) | `X-03` | Low | `open` | Selected proc probes confuse access denial with other errors |
 | [RF-0023](active/RF-0023/README.md) | `X-04` | Low | `open` | Per-crate builds and integration runner omit --locked |
