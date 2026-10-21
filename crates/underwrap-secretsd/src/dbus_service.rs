@@ -5,6 +5,7 @@
 //! local Unix socket inside a PID namespace, so DH encryption is unnecessary.
 
 mod collection;
+mod exports;
 mod item;
 mod mutation;
 mod service;
@@ -50,6 +51,22 @@ pub(crate) fn collection_path(col_id: &str) -> Result<ObjectPath<'static>, fdo::
         .map_err(|e| fdo::Error::Failed(format!("invalid path: {e}")))
 }
 
+pub(crate) async fn register_objects(
+    object_server: &zbus::ObjectServer,
+    store: &std::sync::Arc<tokio::sync::RwLock<underwrap_secretsd_store::SecretStore>>,
+    publisher: &crate::publication::SharedPublisher,
+) -> fdo::Result<()> {
+    let initial = exports::Exports::from_store(&*store.read().await);
+    exports::Exports::default()
+        .reconcile(&initial, object_server, store, publisher)
+        .await
+}
+
+pub(crate) fn alias_path(name: &str) -> Result<ObjectPath<'static>, fdo::Error> {
+    ObjectPath::try_from(format!("{BASE_PATH}/aliases/{name}"))
+        .map_err(|_| fdo::Error::Failed("invalid alias path".into()))
+}
+
 pub(crate) fn item_path(col_id: &str, item_id: &str) -> Option<ObjectPath<'static>> {
     ObjectPath::try_from(format!("{BASE_PATH}/collection/{col_id}/{item_id}")).ok()
 }
@@ -70,3 +87,5 @@ pub(crate) fn parse_item_path(path: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wire_tests;

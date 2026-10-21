@@ -152,10 +152,8 @@ fn create_item_source_checks_outer_signatures_in_static_prevalidation_order() {
     for marker in [
         "metadata_trace_enabled()",
         "tracing::info!",
-        "self.store.write()",
-        "mutate_and_publish",
+        "mutate_and_export",
         ".create_item(",
-        "object_server.at",
     ] {
         let marker_position = handler.find(marker).unwrap();
         assert!(
@@ -170,12 +168,30 @@ fn create_item_source_checks_outer_signatures_in_static_prevalidation_order() {
     assert!(
         handler.find("metadata_trace_enabled()").unwrap() < handler.find("tracing::info!").unwrap()
     );
-    let mutation_order = [
-        "self.store.write()",
-        "mutate_and_publish",
-        ".create_item(",
-        "object_server.at",
-    ];
+    let mutation_order = ["mutate_and_export", ".create_item("];
+    // Registration moved into the shared post-ACK reconciler. Preserve the
+    // original fail-before-registration assertion across that call boundary.
+    let mutation = include_str!("../../mutation.rs");
+    let export_mutation = &mutation[mutation.find("async fn mutate_and_export").unwrap()..];
+    assert!(
+        export_mutation
+            .find("mutate_and_publish(&mut live_store")
+            .unwrap()
+            < export_mutation.find(".reconcile(").unwrap()
+    );
+    assert!(
+        export_mutation.find("store.write()").unwrap()
+            < export_mutation
+                .find("mutate_and_publish(&mut live_store")
+                .unwrap()
+    );
+    assert!(
+        export_mutation.find("drop(live_store)").unwrap()
+            < export_mutation.find(".reconcile(").unwrap()
+    );
+    let exports = include_str!("../../exports.rs");
+    assert!(exports.contains("object_server"));
+    assert!(exports.contains(".at("));
     for pair in mutation_order.windows(2) {
         assert!(
             handler.find(pair[0]).unwrap() < handler.find(pair[1]).unwrap(),

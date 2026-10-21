@@ -14,8 +14,8 @@ use crate::metadata_trace_enabled;
 use crate::publication::SharedPublisher;
 
 use super::{
-    CollectionInterface, Secret, SessionInterface, collection_path, empty_path, item_path,
-    mutation::mutate_and_publish, parse_item_path,
+    Secret, SessionInterface, collection_path, empty_path, item_path, mutation::mutate_and_export,
+    parse_item_path,
 };
 
 pub struct SecretService {
@@ -73,7 +73,13 @@ impl SecretService {
         let name = label.as_deref().unwrap_or("");
         validate_path_segment(name).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
 
-        let alias = if alias.is_empty() { None } else { Some(alias) };
+        let alias = if alias.is_empty() {
+            None
+        } else {
+            validate_path_segment(alias)
+                .map_err(|_| fdo::Error::InvalidArgs("invalid alias name".into()))?;
+            Some(alias)
+        };
 
         if metadata_trace_enabled() {
             tracing::info!(
@@ -83,18 +89,11 @@ impl SecretService {
             );
         }
 
-        let (col_id, path) = {
-            let mut store = self.store.write().await;
-            mutate_and_publish(&mut store, &self.publisher, |candidate| {
-                let id = candidate.create_collection(name, alias);
-                let path = collection_path(&id)?;
-                Ok((id, path))
-            })?
-        };
-        let col = CollectionInterface::new(col_id, self.store.clone(), self.publisher.clone());
-        if let Err(e) = object_server.at(&path, col).await {
-            tracing::warn!(%path, error = %e, "registering collection interface failed");
-        }
+        let path = mutate_and_export(&self.store, &self.publisher, object_server, |candidate| {
+            let id = candidate.create_collection(name, alias);
+            collection_path(&id)
+        })
+        .await?;
 
         Ok((path, empty_path()))
     }
@@ -195,7 +194,12 @@ impl SecretService {
         Ok(path)
     }
 
-    async fn set_alias(&self, name: &str, collection: ObjectPath<'_>) -> fdo::Result<()> {
+    async fn set_alias(
+        &self,
+        name: &str,
+        collection: ObjectPath<'_>,
+        #[zbus(object_server)] object_server: &zbus::ObjectServer,
+    ) -> fdo::Result<()> {
         validate_path_segment(name)
             .map_err(|_| fdo::Error::InvalidArgs("invalid alias name".into()))?;
 
@@ -212,13 +216,12 @@ impl SecretService {
             Some(id)
         };
 
-        let mut store = self.store.write().await;
-        if col_id.is_some_and(|id| !store.collections.contains_key(id)) {
-            return Err(fdo::Error::InvalidArgs(
-                "alias target collection does not exist".into(),
-            ));
-        }
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+        mutate_and_export(&self.store, &self.publisher, object_server, |candidate| {
+            if col_id.is_some_and(|id| !candidate.collections.contains_key(id)) {
+                return Err(fdo::Error::InvalidArgs(
+                    "alias target collection does not exist".into(),
+                ));
+            }
             candidate.set_alias(name, col_id);
             if metadata_trace_enabled() {
                 tracing::info!(
@@ -228,7 +231,8 @@ impl SecretService {
                 );
             }
             Ok(())
-        })?;
+        })
+        .await?;
         Ok(())
     }
 

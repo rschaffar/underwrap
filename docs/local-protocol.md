@@ -251,6 +251,14 @@ Later rejected, partial, response-failed, or publisher-death attempts preserve t
 Final nonblocking `EAGAIN` instead proves endpoint retention and suppresses all collection and both terminal verbs without generation fallback.
 ACK means invocation-local host retention, not D-Bus response delivery, backend persistence, or external custody.
 
+Graph-changing methods serialize through export reconciliation.
+They retain the store write lock through candidate preparation, publication, matching ACK and live commit, then release it before changing zbus's registry.
+Property dispatch holds a registry read while awaiting handlers, so retaining the store lock during registry writes would invert lock order.
+Content-only setters use shared interface access and the store lock, not the graph-method gate; they cannot change the reconciled topology.
+A graph method returns success only after reconciliation completes.
+Failure, cancellation or unwinding after accepted commit but before reconciliation completes terminates the invocation-private service with a value-free diagnostic rather than retracting the host-acknowledged generation or continuing with incomplete exports.
+The host's terminal-generation rules above still apply; helper termination does not retract an ACK-written generation.
+
 ## Secret Service input
 
 `underwrap-secretsd` implements `org.freedesktop.secrets` for the trusted target, but each handler input is robustness-untrusted.
@@ -262,6 +270,14 @@ Collection creation and alias operations share the segment rule above, and objec
 Malformed alias/path returns value-free InvalidArgs before locking or publication.
 A set operation checks collection existence under the write lock before candidate publication, so check and mutation see the same accepted state.
 Root clear, missing-alias clear, and setting the existing target remain valid idempotent mutations through publication and ACK.
+
+Alias collection handlers resolve their target from the accepted map under each operation's store lock, rather than retaining the startup collection id.
+Startup and accepted creation through either alias method export callable alias paths.
+Accepted clear removes the alias interface; accepted collection deletion removes its collection interface, descendant item interfaces and dependent alias interfaces.
+Accepted item deletion removes its item interface.
+Mutations through handlers already retained or admitted through obsolete exports reject missing backing objects under the store lock, including SetSecret, Attributes, item Label and collection Label setters, without publishing successful no-op candidates.
+Rejected and transport-failed candidates leave both accepted state and exported routing unchanged.
+During post-commit reconciliation, an obsolete export can reject missing state and a newly created path can remain unavailable until the graph method completes; this is not an atomic D-Bus registry transaction.
 
 `Collection.CreateItem` defaults absent `org.freedesktop.Secret.Item.Label` to empty string and absent `org.freedesktop.Secret.Item.Attributes` to empty map.
 Present properties require exact outer D-Bus types `s` and `a{ss}` respectively; nested variants are not accepted as those types, and unknown properties are ignored.

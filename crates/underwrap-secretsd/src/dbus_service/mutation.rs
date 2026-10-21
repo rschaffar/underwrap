@@ -19,6 +19,36 @@ pub(super) fn mutate_and_publish<T>(
     Ok(result)
 }
 
+/// Graph methods serialize through reconciliation, but release the store write
+/// lock after ACK/live commit and before acquiring zbus's registry write lock.
+/// Properties handlers hold registry reads while awaiting the store: retaining
+/// the store lock here would invert that ordering. Content setters never acquire
+/// the export lock and cannot change the graph being reconciled.
+pub(super) async fn mutate_and_export<T>(
+    store: &std::sync::Arc<tokio::sync::RwLock<SecretStore>>,
+    publisher: &SharedPublisher,
+    object_server: &zbus::ObjectServer,
+    mutate: impl FnOnce(&mut SecretStore) -> fdo::Result<T>,
+) -> fdo::Result<T> {
+    let export_lock = publisher
+        .lock()
+        .map_err(|_| fdo::Error::Failed("publication lock poisoned".into()))?
+        .export_lock();
+    let _export_guard = export_lock.lock().await;
+    let mut live_store = store.write().await;
+    let before = super::exports::Exports::from_store(&live_store);
+    let result = mutate_and_publish(&mut live_store, publisher, mutate)?;
+    let reconciliation = super::exports::ReconcileGuard::new();
+    let after = super::exports::Exports::from_store(&live_store);
+    drop(live_store);
+    reconciliation.finish(
+        before
+            .reconcile(&after, object_server, store, publisher)
+            .await,
+    );
+    Ok(result)
+}
+
 /// Owns a secret-bearing candidate until it is either committed or wiped.
 struct CandidateStore {
     store: Option<SecretStore>,

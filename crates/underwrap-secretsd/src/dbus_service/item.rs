@@ -10,7 +10,10 @@ use zeroize::Zeroize;
 use crate::metadata_trace_enabled;
 use crate::publication::SharedPublisher;
 
-use super::{Secret, empty_path, mutation::mutate_and_publish};
+use super::{
+    Secret, empty_path,
+    mutation::{mutate_and_export, mutate_and_publish},
+};
 
 pub struct ItemInterface {
     id: String,
@@ -33,13 +36,52 @@ impl ItemInterface {
             publisher,
         }
     }
+
+    fn require_item(&self, store: &SecretStore) -> fdo::Result<()> {
+        if !store
+            .collections
+            .get(&self.collection_id)
+            .is_some_and(|collection| collection.items.contains_key(&self.id))
+        {
+            return Err(fdo::Error::UnknownObject("item not found".into()));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn set_attributes(
+        &self,
+        attributes: HashMap<String, String>,
+    ) -> fdo::Result<()> {
+        let mut store = self.store.write().await;
+        self.require_item(&store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_attributes(&self.collection_id, &self.id, attributes.clone());
+            Ok(())
+        })?;
+        if metadata_trace_enabled() {
+            tracing::info!(collection = %self.collection_id, item = %self.id, ?attributes, "secretsd Item.SetAttributes");
+        }
+        Ok(())
+    }
+
+    pub(super) async fn set_label(&self, label: String) -> fdo::Result<()> {
+        let mut store = self.store.write().await;
+        self.require_item(&store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_label(&self.collection_id, &self.id, &label);
+            Ok(())
+        })
+    }
 }
 
 #[interface(name = "org.freedesktop.Secret.Item")]
 impl ItemInterface {
-    async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
-        let mut store = self.store.write().await;
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+    async fn delete(
+        &self,
+        #[zbus(object_server)] object_server: &zbus::ObjectServer,
+    ) -> fdo::Result<ObjectPath<'_>> {
+        mutate_and_export(&self.store, &self.publisher, object_server, |candidate| {
+            self.require_item(candidate)?;
             if let Some(item) = candidate
                 .collections
                 .get_mut(&self.collection_id)
@@ -49,7 +91,8 @@ impl ItemInterface {
             }
             candidate.delete_item(&self.collection_id, &self.id);
             Ok(())
-        })?;
+        })
+        .await?;
         Ok(empty_path())
     }
 
@@ -82,8 +125,9 @@ impl ItemInterface {
         },))
     }
 
-    async fn set_secret(&self, secret: Secret) -> fdo::Result<()> {
+    pub(super) async fn set_secret(&self, secret: Secret) -> fdo::Result<()> {
         let mut store = self.store.write().await;
+        self.require_item(&store)?;
         mutate_and_publish(&mut store, &self.publisher, |candidate| {
             if let Some(item) = candidate
                 .collections
@@ -135,22 +179,15 @@ impl ItemInterface {
         Ok(attributes)
     }
 
-    #[zbus(property)]
-    async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
-        let mut store = self.store.write().await;
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            candidate.set_attributes(&self.collection_id, &self.id, attributes.clone());
-            Ok(())
-        })?;
-        if metadata_trace_enabled() {
-            tracing::info!(
-                collection = %self.collection_id,
-                item = %self.id,
-                ?attributes,
-                "secretsd Item.SetAttributes"
-            );
-        }
-        Ok(())
+    // Keep interior-state setters callable under a shared interface lock: zbus
+    // holds a registry read here, while graph methods can await registry writes.
+    #[zbus(property, name = "Attributes")]
+    async fn set_attributes_property(
+        &self,
+        attributes: HashMap<String, String>,
+    ) -> zbus::Result<()> {
+        // zbus 4's shared-reference property dispatch requires zbus::Result.
+        self.set_attributes(attributes).await.map_err(Into::into)
     }
 
     #[zbus(property)]
@@ -162,14 +199,9 @@ impl ItemInterface {
             .to_string())
     }
 
-    #[zbus(property)]
-    async fn set_label(&mut self, label: String) -> fdo::Result<()> {
-        let mut store = self.store.write().await;
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            candidate.set_label(&self.collection_id, &self.id, &label);
-            Ok(())
-        })?;
-        Ok(())
+    #[zbus(property, name = "Label")]
+    async fn set_label_property(&self, label: String) -> zbus::Result<()> {
+        self.set_label(label).await.map_err(Into::into)
     }
 
     #[zbus(property)]

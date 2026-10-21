@@ -1,5 +1,6 @@
 use super::*;
 use crate::BASE_PATH;
+use crate::dbus_service::ItemInterface;
 use crate::publication::Publisher;
 use crate::section_store::section_from_store;
 use crate::test_support::{
@@ -91,7 +92,15 @@ async fn delete_ack_removes_collection_and_publishes_state() {
     let (service, store, script) = service_with_script(initial, vec![HostResponse::Ack]);
     let collection = CollectionInterface::new("Test".into(), store.clone(), script.publisher());
 
-    let result = collection.delete().await;
+    let object_server = ObjectServerHarness::new().await;
+    crate::dbus_service::register_objects(
+        &object_server.object_server(),
+        &store,
+        &script.publisher(),
+    )
+    .await
+    .unwrap();
+    let result = collection.delete(&object_server.object_server()).await;
     let accepted = store.read().await.clone();
     let published = script.finish();
     drop(service);
@@ -118,7 +127,15 @@ async fn delete_reject_preserves_live_state() {
     let (_service, store, script) = service_with_script(initial, vec![HostResponse::Reject]);
     let collection = CollectionInterface::new("Test".into(), store.clone(), script.publisher());
 
-    let result = collection.delete().await;
+    let object_server = ObjectServerHarness::new().await;
+    crate::dbus_service::register_objects(
+        &object_server.object_server(),
+        &store,
+        &script.publisher(),
+    )
+    .await
+    .unwrap();
+    let result = collection.delete(&object_server.object_server()).await;
     let after = store.read().await.clone();
     let published = script.finish();
 
@@ -228,7 +245,7 @@ async fn collection_label_reject_preserves_live_state() {
     let initial = store_with_collection();
     let before = initial.clone();
     let (_service, store, script) = service_with_script(initial, vec![HostResponse::Reject]);
-    let mut collection = CollectionInterface::new("Test".into(), store.clone(), script.publisher());
+    let collection = CollectionInterface::new("Test".into(), store.clone(), script.publisher());
 
     let result = collection.set_label("rejected_label".into()).await;
     let after = store.read().await.clone();
@@ -369,7 +386,7 @@ fn production_handler_holds_write_lock_and_returns_only_after_exact_ack() {
         .unwrap();
     let shutdown_stream = host.try_clone().unwrap();
     let publisher = Arc::new(Mutex::new(Publisher::from_stream(publisher_stream)));
-    let mut collection = CollectionInterface::new("Test".into(), store.clone(), publisher);
+    let collection = CollectionInterface::new("Test".into(), store.clone(), publisher);
     let (result_tx, result_rx) = std::sync::mpsc::channel();
 
     std::thread::scope(|scope| {

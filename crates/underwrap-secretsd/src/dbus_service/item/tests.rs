@@ -58,7 +58,15 @@ async fn delete_reject_preserves_live_state() {
     let (_service, store, script) = service_with_script(initial, vec![HostResponse::Reject]);
     let item = interface(&item_id, store.clone(), script.publisher());
 
-    let result = item.delete().await;
+    let object_server = crate::test_support::ObjectServerHarness::new().await;
+    crate::dbus_service::register_objects(
+        &object_server.object_server(),
+        &store,
+        &script.publisher(),
+    )
+    .await
+    .unwrap();
+    let result = item.delete(&object_server.object_server()).await;
     let after = store.read().await.clone();
     let published = script.finish();
 
@@ -96,7 +104,7 @@ async fn attributes_reject_preserves_live_state() {
     let (item_id, initial) = store_with_backdated_item();
     let before = initial.clone();
     let (_service, store, script) = service_with_script(initial, vec![HostResponse::Reject]);
-    let mut item = interface(&item_id, store.clone(), script.publisher());
+    let item = interface(&item_id, store.clone(), script.publisher());
     let rejected = HashMap::from([("rejected_key".into(), "rejected_value".into())]);
 
     let result = item.set_attributes(rejected.clone()).await;
@@ -117,7 +125,7 @@ async fn label_reject_preserves_live_state() {
     let (item_id, initial) = store_with_backdated_item();
     let before = initial.clone();
     let (_service, store, script) = service_with_script(initial, vec![HostResponse::Reject]);
-    let mut item = interface(&item_id, store.clone(), script.publisher());
+    let item = interface(&item_id, store.clone(), script.publisher());
 
     let result = item.set_label("rejected_label".into()).await;
     let after = store.read().await.clone();
@@ -203,7 +211,7 @@ async fn attributes_ack_commits_only_published_state() {
     let (item_id, initial) = store_with_backdated_item();
     let before = initial.clone();
     let (_service, store, script) = service_with_script(initial, vec![HostResponse::Ack]);
-    let mut item = interface(&item_id, store.clone(), script.publisher());
+    let item = interface(&item_id, store.clone(), script.publisher());
     let attributes = HashMap::from([("updated_key".into(), "updated_value".into())]);
 
     let result = item.set_attributes(attributes.clone()).await;
@@ -252,7 +260,7 @@ async fn label_ack_commits_only_published_state() {
     let (item_id, initial) = store_with_backdated_item();
     let before = initial.clone();
     let (_service, store, script) = service_with_script(initial, vec![HostResponse::Ack]);
-    let mut item = interface(&item_id, store.clone(), script.publisher());
+    let item = interface(&item_id, store.clone(), script.publisher());
 
     let result = item.set_label("accepted_updated_label".into()).await;
     let getter_modified = item.modified().await.unwrap();
