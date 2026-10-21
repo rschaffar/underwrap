@@ -24,6 +24,8 @@
 //! pre-exec ambiguity remains unchanged.
 
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 #[path = "main/tests.rs"]
 mod tests;
 
@@ -931,8 +933,10 @@ fn report_outcomes(outcomes: &[WritebackOutcome]) {
             WritebackOutcome::DroppedReadOnly {
                 resource_id,
                 resource_name,
+                usage_error,
             } => {
                 emit_audit_event("permission_readonly", resource_id, resource_name, None);
+                report_usage_failure(resource_id, resource_name, usage_error.as_ref());
                 if !suppress_readonly_warning {
                     eprintln!(
                         "underwrap: changes to resource '{}' ({}) were not persisted \
@@ -948,8 +952,10 @@ fn report_outcomes(outcomes: &[WritebackOutcome]) {
             WritebackOutcome::RejectedReadOnly {
                 resource_id,
                 resource_name,
+                usage_error,
             } => {
                 emit_audit_event("server_rejected", resource_id, resource_name, None);
+                report_usage_failure(resource_id, resource_name, usage_error.as_ref());
                 if !suppress_readonly_warning {
                     eprintln!(
                         "underwrap: changes to resource '{}' ({}) were not persisted \
@@ -984,6 +990,20 @@ fn report_outcomes(outcomes: &[WritebackOutcome]) {
                 );
             }
         }
+    }
+}
+
+fn report_usage_failure(
+    resource_id: &str,
+    resource_name: &str,
+    error: Option<&writeback::UsageReportFailure>,
+) {
+    if let Some(error) = error {
+        eprintln!(
+            "underwrap-ns: end-of-run usage reporting for resource '{}' ({}): {error}",
+            one_line_display(resource_name),
+            one_line_display(resource_id),
+        );
     }
 }
 

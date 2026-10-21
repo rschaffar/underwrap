@@ -532,7 +532,9 @@ Their `admin internal failure` or `runtime internal failure` events contain `res
 Detailed backend diagnostics are limited to individually audited source classes with fixed safe public responses, not permission to log arbitrary error chains.
 
 Namespace `writeback_rejected` is a separate native-journal event, with a JSON stderr fallback if the journal socket is unavailable.
-`UNDERWRAP_SUPPRESS_READONLY_WARNING=1` suppresses only the read-only human warning and is consumed before the target; it does not suppress audit or the fallback event.
+An established read-only drop or Unauthorized Checkin rejection retains its reason even when the follow-up UsageSignal fails.
+A separate `end-of-run usage reporting` stderr diagnostic identifies that resource and classifies channel open/send/receive failure, a daemon error code, or an unexpected response without displaying daemon text or response bodies.
+`UNDERWRAP_SUPPRESS_READONLY_WARNING=1` suppresses only the read-only human warning and is consumed before the target; it does not suppress audit, the fallback event or the usage failure diagnostic.
 Resource-too-large stderr diagnostics are unsuppressible and contain safe size metadata, not resource values.
 Avoid copying identifiers containing sensitive operator input, blocker samples, raw HTTP bodies, keys, credentials, browser captures, or resource content into reports.
 

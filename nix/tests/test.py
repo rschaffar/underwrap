@@ -3114,6 +3114,98 @@ def local_atomic_writeback():
         "PASS: scenario 6 — server rejects Checkin after mid-run permission flip; journal records server_rejected"
     )
 
+    # RF-0011: current-policy denial of UsageSignal cannot hide a known drop
+    # or rejected Checkin. Reuse only the files writeback target, not Secret
+    # Service scenarios. The direct Python parent observes actual signal status.
+    wrapper = "test-dir-write-then-sleep"
+    resource_id = _resource_id_for(ADMIN_LOCAL, DIR_A)
+    for writable, seconds, reason, suppressed in [
+        (False, "6111", "permission_readonly", False),
+        (True, "6112", "server_rejected", True),
+    ]:
+        baseline = reset_blob_state()
+        admin_upsert_permission(
+            ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, wrapper, DIR_A,
+            {"kind": "unlocked"}, writable=writable,
+        )
+        unit = f"rf0011-usage-{seconds}.service"
+        status_path = f"/tmp/rf0011-{seconds}.status"
+        stderr_path = f"/tmp/rf0011-{seconds}.stderr"
+        machine.succeed(
+            f"rm -f /tmp/dir-write-then-sleep.ready {status_path} {stderr_path}"
+        )
+        argv = ["/run/wrappers/bin/underwrap-local", wrapper, seconds]
+        program = (
+            "import os,subprocess;"
+            f"os.environ['UNDERWRAP_SUPPRESS_READONLY_WARNING']={'1' if suppressed else '0'!r};"
+            f"err=open({stderr_path!r},'w');"
+            f"r=subprocess.run({argv!r},stdout=subprocess.DEVNULL,stderr=err,timeout=45);"
+            "err.close();"
+            f"open({status_path!r},'w').write(str(r.returncode))"
+        )
+        cursor = journal_cursor()
+        try:
+            # The transient unit owns the parent and entire invocation even if
+            # readiness, policy mutation or an assertion subsequently fails.
+            machine.succeed(
+                f"systemd-run --quiet --unit={unit} --uid=testuser "
+                "--property=Type=exec --property=KillMode=control-group "
+                f"{shlex.quote(PYTHON3)} -c {shlex.quote(program)}"
+            )
+            machine.wait_until_succeeds(
+                "test -e /tmp/dir-write-then-sleep.ready", timeout=10
+            )
+            pid_query = f"pgrep -f '^/nix/store/.*/bin/sleep {seconds}$'"
+            machine.wait_until_succeeds(pid_query, timeout=10)
+            pids = machine.succeed(pid_query).split()
+            assert len(pids) == 1, "RF-0011: expected exactly one ready target"
+            # Lock admission, not just writability: both the rejected Checkin
+            # and the independently authorized no-blob finalize must now deny.
+            admin_upsert_permission(
+                ADMIN_LOCAL, "local", LOCAL_CLIENT_INSTANCE, wrapper, DIR_A,
+                {"kind": "locked"}, writable=False,
+            )
+            machine.succeed(f"kill -KILL {shlex.quote(pids[0])}")
+            machine.wait_until_succeeds(f"test -s {status_path}", timeout=30)
+            observed = machine.succeed(f"cat {status_path}").strip()
+            assert observed == str(-signal.SIGKILL), "RF-0011: target signal changed"
+            after = admin_get_blob(ADMIN_LOCAL, "local", DIR_A)
+            assert after == baseline, "RF-0011: rejected writeback changed backend bytes"
+
+            machine.succeed("journalctl --sync")
+            records = [
+                json.loads(line)
+                for line in machine.succeed(
+                    "journalctl --quiet --no-pager --output=json "
+                    f"--after-cursor={shlex.quote(cursor)} "
+                    "SYSLOG_IDENTIFIER=underwrap-ns AUDIT=writeback_rejected "
+                    f"{shlex.quote('RESOURCE_ID=' + resource_id)}"
+                ).splitlines()
+                if line.strip()
+            ]
+            assert len(records) == 1, "RF-0011: expected one namespace rejection"
+            assert records[0]["REASON"] == reason, "RF-0011: rejection reason changed"
+            assert records[0]["RESOURCE_NAME"] == DIR_A, "RF-0011: wrong resource"
+            stderr = machine.succeed(f"cat {stderr_path}")
+            expected = (
+                f"underwrap-ns: end-of-run usage reporting for resource '{DIR_A}' "
+                f"({resource_id}): daemon rejected UsageSignal (Unauthorized)\n"
+            )
+            if not suppressed:
+                expected += (
+                    f"underwrap: changes to resource '{DIR_A}' ({resource_id}) were not persisted "
+                    "(permission is read-only). Set UNDERWRAP_SUPPRESS_READONLY_WARNING=1 "
+                    "to silence this message.\n"
+                )
+            assert stderr == expected, "RF-0011: missing, duplicate or unsafe diagnostic"
+            assert not underwrapd_terminal_records_since(cursor, wrapper, resource_id), (
+                "RF-0011: unexpected successful Checkin or UsageSignal"
+            )
+        finally:
+            machine.execute(f"systemctl stop {unit}")
+            set_local_unlocked_permission(wrapper)
+        machine.log(f"PASS: RF-0011 {reason} survives denied usage with exact SIGKILL")
+
 
 def files_staging_provenance():
     """Distinct-UID shipped chain ignores preclaimed/replaced legacy staging names."""

@@ -1,3 +1,6 @@
+#[path = "tests/writeback_usage.rs"]
+mod writeback_usage;
+
 use super::*;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
@@ -582,6 +585,7 @@ fn accepted_dispatch_preserves_combined_files_libsecret_and_env_semantics() {
         Some(vec![WritebackOutcome::DroppedReadOnly {
             resource_id: "res_gate_unit".to_string(),
             resource_name: "test/gate-unit".to_string(),
+            usage_error: None,
         }])
     );
 }
