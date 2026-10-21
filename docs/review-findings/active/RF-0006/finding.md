@@ -50,7 +50,13 @@ The stale deleted-object success issue is separate in [RF-0007](../RF-0007/READM
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This file owns the user-authorized joint RF-0006/RF-0007 correction from local main `7260be4feff5c2bc70d958f50e50adf218cad994`.
+Scope is accepted Secret Service routing and exported object lifetimes, not identifier grammar, storage, runtime DTOs, namespace diagnostics or other findings.
+Post-ACK export reconciliation failure terminates the invocation-private helper without retracting the acknowledged generation.
+
+- [x] Resolve aliases from accepted state under the store lock and serialize graph methods through reconciliation without retaining the store lock during registry writes.
+- [x] Reject missing-object mutations under the store lock, including retained handlers, and remove deleted descendants and aliases.
+- [x] Exercise actual D-Bus dispatch for create/retarget/clear/delete, rejected/transport controls, and bounded registry reuse on peer connections and a private bus.
+- [x] Verify post-ACK registration failure and actual pending-reconciliation cancellation stop isolated test processes; retain candidate wiping, publication ordering and deterministic property/registry overlap controls.
+- [ ] Run relevant Secret Service/store/protocol tests, formatting, denied-warning Clippy and applicable integration/VM checks; record limits separately for each finding.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

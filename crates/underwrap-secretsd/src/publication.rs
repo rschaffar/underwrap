@@ -19,6 +19,9 @@ pub type SharedPublisher = Arc<Mutex<Publisher>>;
 pub struct Publisher {
     stream: UnixStream,
     generation: Option<u64>,
+    // One invocation's handlers share this publisher. Serialize graph changes
+    // separately from content setters, which zbus invokes under registry reads.
+    export_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Publisher {
@@ -33,6 +36,7 @@ impl Publisher {
         Ok(Self {
             stream,
             generation: Some(0),
+            export_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -42,7 +46,12 @@ impl Publisher {
         Self {
             stream,
             generation: Some(0),
+            export_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) fn export_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.export_lock.clone()
     }
 
     pub fn publish_section(&mut self, section: &LibsecretSection) -> Result<()> {

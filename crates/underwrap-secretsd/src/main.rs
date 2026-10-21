@@ -161,6 +161,11 @@ async fn main() -> Result<()> {
 
     // Connect to the private D-Bus session bus.
     let connection = zbus::ConnectionBuilder::address(args.bus_address.as_str())?
+        // Builder startup waits for the object-server dispatcher to be listening.
+        .serve_at(
+            BASE_PATH,
+            dbus_service::SecretService::new(store.clone(), publisher.clone()),
+        )?
         .build()
         .await
         .context("connecting to private D-Bus session bus")?;
@@ -170,70 +175,11 @@ async fn main() -> Result<()> {
         connection.unique_name().map(|n| n.as_str()).unwrap_or("?")
     );
 
-    // Register the Secret Service on the bus.
-    let service = dbus_service::SecretService::new(store.clone(), publisher.clone());
-
-    connection
-        .object_server()
-        .at(BASE_PATH, service)
+    // The initial generation is already ACKed. Do not announce readiness with
+    // an incomplete graph; startup errors terminate this private helper.
+    dbus_service::register_objects(&connection.object_server(), &store, &publisher)
         .await
-        .context("registering Secret Service")?;
-
-    // Register collections, items, aliases.
-    {
-        let state = store.read().await;
-        for col_id in state.list_collections() {
-            let col = dbus_service::CollectionInterface::new(
-                col_id.to_string(),
-                store.clone(),
-                publisher.clone(),
-            );
-            let path = format!("{BASE_PATH}/collection/{col_id}");
-            match zbus::zvariant::ObjectPath::try_from(path.clone()) {
-                Ok(path) => {
-                    if let Err(e) = connection.object_server().at(&path, col).await {
-                        tracing::warn!(%path, error = %e, "registering collection failed");
-                    }
-                }
-                Err(e) => tracing::warn!(path, error = %e, "invalid collection object path"),
-            }
-
-            for item_id in state.list_items(col_id) {
-                let item = dbus_service::ItemInterface::new(
-                    item_id.to_string(),
-                    col_id.to_string(),
-                    store.clone(),
-                    publisher.clone(),
-                );
-                let item_path = format!("{BASE_PATH}/collection/{col_id}/{item_id}");
-                match zbus::zvariant::ObjectPath::try_from(item_path.clone()) {
-                    Ok(path) => {
-                        if let Err(e) = connection.object_server().at(&path, item).await {
-                            tracing::warn!(%path, error = %e, "registering item failed");
-                        }
-                    }
-                    Err(e) => tracing::warn!(item_path, error = %e, "invalid item object path"),
-                }
-            }
-        }
-
-        for (alias, col_id) in &state.aliases {
-            let col = dbus_service::CollectionInterface::new(
-                col_id.clone(),
-                store.clone(),
-                publisher.clone(),
-            );
-            let alias_path = format!("{BASE_PATH}/aliases/{alias}");
-            match zbus::zvariant::ObjectPath::try_from(alias_path.clone()) {
-                Ok(path) => {
-                    if let Err(e) = connection.object_server().at(&path, col).await {
-                        tracing::warn!(%path, error = %e, "registering alias failed");
-                    }
-                }
-                Err(e) => tracing::warn!(alias_path, error = %e, "invalid alias object path"),
-            }
-        }
-    }
+        .context("registering Secret Service objects")?;
 
     // Request the well-known name.
     connection

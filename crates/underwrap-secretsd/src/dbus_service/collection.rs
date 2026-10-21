@@ -13,7 +13,10 @@ use zeroize::Zeroize;
 use crate::metadata_trace_enabled;
 use crate::publication::SharedPublisher;
 
-use super::{ItemInterface, Secret, empty_path, item_path, mutation::mutate_and_publish};
+use super::{
+    Secret, empty_path, item_path,
+    mutation::{mutate_and_export, mutate_and_publish},
+};
 
 const ITEM_LABEL_PROPERTY: &str = "org.freedesktop.Secret.Item.Label";
 const ITEM_ATTRIBUTES_PROPERTY: &str = "org.freedesktop.Secret.Item.Attributes";
@@ -49,8 +52,13 @@ fn parse_item_attributes(
         .map_err(|_| fdo::Error::InvalidArgs(ITEM_ATTRIBUTES_TYPE_ERROR.into()))
 }
 
+enum CollectionSelector {
+    Id(String),
+    Alias(String),
+}
+
 pub struct CollectionInterface {
-    id: String,
+    selector: CollectionSelector,
     store: Arc<RwLock<SecretStore>>,
     publisher: SharedPublisher,
 }
@@ -58,26 +66,64 @@ pub struct CollectionInterface {
 impl CollectionInterface {
     pub fn new(id: String, store: Arc<RwLock<SecretStore>>, publisher: SharedPublisher) -> Self {
         Self {
-            id,
+            selector: CollectionSelector::Id(id),
             store,
             publisher,
         }
+    }
+
+    pub fn alias(
+        name: String,
+        store: Arc<RwLock<SecretStore>>,
+        publisher: SharedPublisher,
+    ) -> Self {
+        Self {
+            selector: CollectionSelector::Alias(name),
+            store,
+            publisher,
+        }
+    }
+
+    fn resolve<'a>(&'a self, store: &'a SecretStore) -> fdo::Result<&'a str> {
+        let id = match &self.selector {
+            CollectionSelector::Id(id) => id.as_str(),
+            CollectionSelector::Alias(name) => store
+                .get_alias(name)
+                .ok_or_else(|| fdo::Error::UnknownObject("collection not found".into()))?,
+        };
+        if !store.collections.contains_key(id) {
+            return Err(fdo::Error::UnknownObject("collection not found".into()));
+        }
+        Ok(id)
+    }
+
+    pub(super) async fn set_label(&self, label: String) -> fdo::Result<()> {
+        let mut store = self.store.write().await;
+        let id = self.resolve(&store)?.to_owned();
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_collection_label(&id, &label);
+            Ok(())
+        })
     }
 }
 
 #[interface(name = "org.freedesktop.Secret.Collection")]
 impl CollectionInterface {
-    async fn delete(&self) -> fdo::Result<ObjectPath<'_>> {
-        let mut store = self.store.write().await;
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            if let Some(collection) = candidate.collections.get_mut(&self.id) {
+    pub(super) async fn delete(
+        &self,
+        #[zbus(object_server)] object_server: &zbus::ObjectServer,
+    ) -> fdo::Result<ObjectPath<'_>> {
+        mutate_and_export(&self.store, &self.publisher, object_server, |candidate| {
+            let id = self.resolve(candidate)?.to_owned();
+            if let Some(collection) = candidate.collections.get_mut(&id) {
                 for item in collection.items.values_mut() {
                     item.secret.zeroize();
                 }
             }
-            candidate.delete_collection(&self.id);
+            candidate.delete_collection(&id);
             Ok(())
-        })?;
+        })
+        .await?;
         Ok(empty_path())
     }
 
@@ -86,14 +132,15 @@ impl CollectionInterface {
         attributes: HashMap<String, String>,
     ) -> fdo::Result<Vec<ObjectPath<'_>>> {
         let store = self.store.read().await;
-        let matches = store.search(&self.id, &attributes);
-        let paths: Vec<ObjectPath<'_>> = matches
+        let id = self.resolve(&store)?;
+        let paths: Vec<_> = store
+            .search(id, &attributes)
             .into_iter()
-            .filter_map(|item_id| item_path(&self.id, item_id))
+            .filter_map(|item_id| item_path(id, item_id))
             .collect();
         if metadata_trace_enabled() {
             tracing::info!(
-                collection = %self.id,
+                collection = id,
                 ?attributes,
                 result_count = paths.len(),
                 "secretsd Collection.SearchItems"
@@ -111,14 +158,11 @@ impl CollectionInterface {
     ) -> fdo::Result<(ObjectPath<'_>, ObjectPath<'_>)> {
         let label = parse_item_label(&properties)?;
         let attrs = parse_item_attributes(&properties)?;
-
-        let secret_len = secret.value.len();
-        let content_type = secret.content_type.clone();
-        let (item_id, replaced, item_path) = {
-            let mut store = self.store.write().await;
-            mutate_and_publish(&mut store, &self.publisher, |candidate| {
+        let (id, item_id, replaced, path) =
+            mutate_and_export(&self.store, &self.publisher, object_server, |candidate| {
+                let id = self.resolve(candidate)?.to_owned();
                 if replace
-                    && let Some(collection) = candidate.collections.get_mut(&self.id)
+                    && let Some(collection) = candidate.collections.get_mut(&id)
                     && let Some(item) = collection.items.values_mut().find(|item| {
                         attrs
                             .iter()
@@ -127,9 +171,9 @@ impl CollectionInterface {
                 {
                     item.secret.zeroize();
                 }
-                let (id, replaced) = candidate
+                let (item_id, replaced) = candidate
                     .create_item(
-                        &self.id,
+                        &id,
                         &label,
                         &attrs,
                         &secret.value,
@@ -137,48 +181,35 @@ impl CollectionInterface {
                         replace,
                     )
                     .map_err(|e| fdo::Error::Failed(format!("create_item error: {e}")))?;
-                let path = item_path(&self.id, &id)
+                let path = item_path(&id, &item_id)
                     .ok_or_else(|| fdo::Error::Failed("invalid item path".into()))?;
-                Ok((id, replaced, path))
-            })?
-        };
-
+                Ok((id, item_id, replaced, path))
+            })
+            .await?;
         if metadata_trace_enabled() {
             tracing::info!(
-                collection = %self.id,
-                item = %item_id,
+                collection = id,
+                item = item_id,
                 label,
                 ?attrs,
                 replace,
                 replaced,
-                content_type,
-                secret_len,
+                content_type = secret.content_type,
+                secret_len = secret.value.len(),
                 "secretsd Collection.CreateItem"
             );
         }
-
-        if !replaced {
-            let item = ItemInterface::new(
-                item_id,
-                self.id.clone(),
-                self.store.clone(),
-                self.publisher.clone(),
-            );
-            if let Err(e) = object_server.at(&item_path, item).await {
-                tracing::warn!(path = %item_path, error = %e, "registering item interface failed");
-            }
-        }
-
-        Ok((item_path, empty_path()))
+        Ok((path, empty_path()))
     }
 
     #[zbus(property)]
     async fn items(&self) -> fdo::Result<Vec<ObjectPath<'_>>> {
         let store = self.store.read().await;
+        let id = self.resolve(&store)?;
         Ok(store
-            .list_items(&self.id)
+            .list_items(id)
             .into_iter()
-            .filter_map(|item_id| item_path(&self.id, item_id))
+            .filter_map(|item_id| item_path(id, item_id))
             .collect())
     }
 
@@ -186,36 +217,40 @@ impl CollectionInterface {
     async fn label(&self) -> fdo::Result<String> {
         let store = self.store.read().await;
         Ok(store
-            .get_collection_label(&self.id)
+            .get_collection_label(self.resolve(&store)?)
             .unwrap_or("")
             .to_string())
     }
 
-    #[zbus(property)]
-    async fn set_label(&mut self, label: String) -> fdo::Result<()> {
-        let mut store = self.store.write().await;
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            candidate.set_collection_label(&self.id, &label);
-            Ok(())
-        })?;
-        Ok(())
+    // Interior mutation needs no exclusive interface lock. zbus Properties.Set
+    // holds a registry read while acquiring this handler; an exclusive lock could
+    // wait on a graph method that is itself waiting to reconcile the registry.
+    #[zbus(property, name = "Label")]
+    async fn set_label_property(&self, label: String) -> zbus::Result<()> {
+        // zbus 4's shared-reference property dispatch requires zbus::Result.
+        self.set_label(label).await.map_err(Into::into)
     }
 
     #[zbus(property)]
-    async fn locked(&self) -> bool {
-        false
+    async fn locked(&self) -> fdo::Result<bool> {
+        self.resolve(&*self.store.read().await)?;
+        Ok(false)
     }
 
     #[zbus(property)]
     async fn created(&self) -> fdo::Result<u64> {
         let store = self.store.read().await;
-        Ok(store.get_collection_created(&self.id).unwrap_or(0))
+        Ok(store
+            .get_collection_created(self.resolve(&store)?)
+            .unwrap_or(0))
     }
 
     #[zbus(property)]
     async fn modified(&self) -> fdo::Result<u64> {
         let store = self.store.read().await;
-        Ok(store.get_collection_modified(&self.id).unwrap_or(0))
+        Ok(store
+            .get_collection_modified(self.resolve(&store)?)
+            .unwrap_or(0))
     }
 }
 

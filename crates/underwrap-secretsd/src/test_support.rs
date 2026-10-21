@@ -202,6 +202,127 @@ impl ObjectServerHarness {
     }
 }
 
+/// Real D-Bus messages over a peer connection by default. Set
+/// UNDERWRAP_TEST_DBUS_DAEMON to also run the same witnesses on a private bus.
+/// No brokered values are written to the fixture directory.
+pub(crate) struct WireHarness {
+    pub(crate) server: Connection,
+    pub(crate) client: Connection,
+    bus: Option<TestBus>,
+}
+
+struct TestBus {
+    child: std::process::Child,
+    _directory: tempfile::TempDir,
+}
+
+impl Drop for TestBus {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl WireHarness {
+    pub(crate) async fn new(store: &Arc<RwLock<SecretStore>>, publisher: &SharedPublisher) -> Self {
+        let (server, client, bus) =
+            if let Some(executable) = std::env::var_os("UNDERWRAP_TEST_DBUS_DAEMON") {
+                use std::io::BufRead;
+                let directory = tempfile::tempdir().unwrap();
+                let child = std::process::Command::new(executable)
+                    .args(["--session", "--nofork", "--print-address=1"])
+                    .arg(format!(
+                        "--address=unix:path={}/bus",
+                        directory.path().display()
+                    ))
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("start requested private D-Bus daemon");
+                // Own/reap the child before readiness or connection can fail.
+                let mut bus = TestBus {
+                    child,
+                    _directory: directory,
+                };
+                let mut address = String::new();
+                std::io::BufReader::new(bus.child.stdout.take().unwrap())
+                    .read_line(&mut address)
+                    .unwrap();
+                assert!(
+                    !address.trim().is_empty(),
+                    "private bus must report readiness"
+                );
+                let server = Builder::address(address.trim())
+                    .unwrap()
+                    .serve_at(
+                        crate::BASE_PATH,
+                        SecretService::new(store.clone(), publisher.clone()),
+                    )
+                    .unwrap()
+                    .build()
+                    .await
+                    .unwrap();
+                let client = Builder::address(address.trim())
+                    .unwrap()
+                    .build()
+                    .await
+                    .unwrap();
+                server.request_name(crate::WELL_KNOWN_NAME).await.unwrap();
+                (server, client, Some(bus))
+            } else {
+                let (server, client) = tokio::net::UnixStream::pair().unwrap();
+                let guid = Guid::generate();
+                let (server, client) = tokio::join!(
+                    Builder::authenticated_socket(server, guid.clone())
+                        .unwrap()
+                        .serve_at(
+                            crate::BASE_PATH,
+                            SecretService::new(store.clone(), publisher.clone())
+                        )
+                        .unwrap()
+                        .build(),
+                    Builder::authenticated_socket(client, guid).unwrap().build(),
+                );
+                (server.unwrap(), client.unwrap(), None)
+            };
+        crate::dbus_service::register_objects(&server.object_server(), store, publisher)
+            .await
+            .unwrap();
+
+        Self {
+            server,
+            client,
+            bus,
+        }
+    }
+
+    pub(crate) async fn proxy<'a>(&'a self, path: &'a str, interface: &'a str) -> zbus::Proxy<'a> {
+        zbus::proxy::Builder::new(&self.client)
+            .destination(
+                self.server
+                    .unique_name()
+                    .map(|name| name.as_str())
+                    .unwrap_or(":1.0"),
+            )
+            .unwrap()
+            .path(path)
+            .unwrap()
+            .interface(interface)
+            .unwrap()
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .unwrap()
+    }
+
+    pub(crate) async fn close(self) {
+        let _ = self.client.close().await;
+        let _ = self.server.close().await;
+        drop(self.bus);
+    }
+}
+
 impl Drop for ObjectServerHarness {
     fn drop(&mut self) {
         for stream in self.shutdown.drain(..) {

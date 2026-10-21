@@ -1,8 +1,8 @@
 # RF-0006 — Accepted alias changes leave exported D-Bus routing stale
 
-**Priority:** Medium · **State:** open
+**Priority:** Medium · **State:** in-progress
 
-**Review aliases:** `S-01` · **Confidence:** High: independently confirmed startup binding and mutation source chains; no fresh D-Bus wire reproduction.
+**Review aliases:** `S-01` · **Confidence:** High: source review and actual exported-path regressions on peer sockets and a private bus.
 
 ## Why it matters
 
@@ -15,13 +15,12 @@ Make alias-path routing track the accepted alias map for create, retarget, clear
 
 ## Decision and caveat
 
-Open, Medium state/routing correctness.
-No protocol expansion or implementation is authorized.
+The user-authorized joint correction is owned by [RF-0006's scope/evidence checklist](finding.md#work-ownership).
+Dynamic alias routing and post-ACK export reconciliation are implemented; required validation is in progress.
 The valid published graph is not bypassed.
 Effects are within the invocation's projection, not cross-resource disclosure or a defeat of the trusted-target model.
-Source evidence awaits a real bus regression.
-
-No correction is authorized or completed by this record.
+Matching host ACKs in the wire regressions are simulated, not backend durability evidence.
+Post-ACK export failure stops the private helper without retracting the accepted generation.
 The aliases belong to the review of `01214454aee850ebe8ceef5b757b9ae61cca07aa`.
 
 [Technical finding](finding.md) · [Evidence](evidence.md) · [Register](../../README.md)

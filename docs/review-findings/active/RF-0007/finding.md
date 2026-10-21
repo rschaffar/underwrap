@@ -50,7 +50,6 @@ This is not a ban on valid idempotent operations on existing objects.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+The user-authorized joint correction is owned by [RF-0006's scope/evidence checklist](../RF-0006/finding.md#work-ownership).
+This finding retains its separate acceptance criteria and disposition.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

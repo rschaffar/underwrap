@@ -2,6 +2,18 @@ use super::*;
 use crate::test_support::{HostResponse, ObjectServerHarness, service_with_script};
 use zbus::zvariant::Str;
 
+async fn alias_server(service: &SecretService) -> ObjectServerHarness {
+    let harness = ObjectServerHarness::new().await;
+    crate::dbus_service::register_objects(
+        &harness.object_server(),
+        &service.store,
+        &service.publisher,
+    )
+    .await
+    .unwrap();
+    harness
+}
+
 fn collection_properties(label: &str) -> HashMap<String, OwnedValue> {
     HashMap::from([(
         "org.freedesktop.Secret.Collection.Label".to_string(),
@@ -40,7 +52,9 @@ async fn assert_set_alias_prevalidation(
     let before = initial.clone();
     let (service, store, script) = service_with_script(initial, vec![]);
 
-    let result = service.set_alias(alias, path).await;
+    let result = service
+        .set_alias(alias, path, &alias_server(&service).await.object_server())
+        .await;
     let message = match result {
         Err(fdo::Error::InvalidArgs(message)) => message,
         _ => panic!("SetAlias must return InvalidArgs during prevalidation"),
@@ -68,7 +82,10 @@ async fn assert_set_alias_ack(alias: &str, target: &str) {
     let path = collection_path(target).unwrap();
     let (service, store, script) = service_with_script(initial, vec![HostResponse::Ack]);
 
-    service.set_alias(alias, path).await.unwrap();
+    service
+        .set_alias(alias, path, &alias_server(&service).await.object_server())
+        .await
+        .unwrap();
     let accepted = store.read().await.clone();
     let published = script.finish();
 
@@ -89,7 +106,13 @@ async fn read_and_set_alias_roundtrip_after_ack() {
 
     let default_path = service.read_alias("default").await.unwrap();
     let work_path = collection_path(&work_id).unwrap();
-    let result = service.set_alias("work", work_path).await;
+    let result = service
+        .set_alias(
+            "work",
+            work_path,
+            &alias_server(&service).await.object_server(),
+        )
+        .await;
     let alias_path = service.read_alias("work").await.unwrap();
     let accepted = store.read().await.clone();
     let published = script.finish();
@@ -212,7 +235,14 @@ async fn set_alias_root_clear_is_ack_backed_and_idempotent() {
         }
         let (service, store, script) = service_with_script(initial, vec![HostResponse::Ack]);
 
-        service.set_alias(alias, empty_path()).await.unwrap();
+        service
+            .set_alias(
+                alias,
+                empty_path(),
+                &alias_server(&service).await.object_server(),
+            )
+            .await
+            .unwrap();
         let accepted = store.read().await.clone();
         let published = script.finish();
 
@@ -314,7 +344,11 @@ async fn set_alias_set_reject_preserves_live_state() {
     let (service, store, script) = service_with_script(initial, vec![HostResponse::Reject]);
 
     let result = service
-        .set_alias("work", collection_path("Work").unwrap())
+        .set_alias(
+            "work",
+            collection_path("Work").unwrap(),
+            &alias_server(&service).await.object_server(),
+        )
         .await;
     let after = store.read().await.clone();
     let published = script.finish();
@@ -334,7 +368,13 @@ async fn set_alias_clear_reject_preserves_live_state() {
     let before = initial.clone();
     let (service, store, script) = service_with_script(initial, vec![HostResponse::Reject]);
 
-    let result = service.set_alias("retained", empty_path()).await;
+    let result = service
+        .set_alias(
+            "retained",
+            empty_path(),
+            &alias_server(&service).await.object_server(),
+        )
+        .await;
     let after = store.read().await.clone();
     let published = script.finish();
 
@@ -352,7 +392,11 @@ async fn wrong_generation_preserves_live_state() {
         service_with_script(initial, vec![HostResponse::WrongGeneration]);
 
     let result = service
-        .set_alias("work", collection_path("Work").unwrap())
+        .set_alias(
+            "work",
+            collection_path("Work").unwrap(),
+            &alias_server(&service).await.object_server(),
+        )
         .await;
     let after = store.read().await.clone();
     let published = script.finish();
@@ -369,11 +413,19 @@ async fn rejected_mutation_then_unrelated_ack_publishes_only_later_accepted_chan
     let (service, store, script) =
         service_with_script(initial, vec![HostResponse::Reject, HostResponse::Ack]);
     let rejected = service
-        .set_alias("rejected_alias", collection_path("default").unwrap())
+        .set_alias(
+            "rejected_alias",
+            collection_path("default").unwrap(),
+            &alias_server(&service).await.object_server(),
+        )
         .await;
     let after_reject = store.read().await.clone();
     let accepted = service
-        .set_alias("later_alias", collection_path("default").unwrap())
+        .set_alias(
+            "later_alias",
+            collection_path("default").unwrap(),
+            &alias_server(&service).await.object_server(),
+        )
         .await;
     let final_store = store.read().await.clone();
     let published = script.finish();
