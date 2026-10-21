@@ -46,7 +46,7 @@ This is not a ban on valid idempotent operations on existing objects.
   Existing-item accepted/rejected setter behavior must remain correct.
 - Repeated accepted create/delete must not retain obsolete exported interfaces; inspect registry/dispatch rather than infer from small canonical state.
 - Preserve publication rejection/transport-failure rollback.
-  No fixed-build or new wire regression has run.
+  Correction verification and its limits are recorded in [Evidence](evidence.md#rf-0007-acceptance).
 
 ## Work ownership
 

@@ -46,7 +46,7 @@ The stale deleted-object success issue is separate in [RF-0007](../RF-0007/READM
 - Aliases created by either supported method must expose usable paths consistent with ReadAlias.
 - Accepted collection deletion must remove or invalidate dependent alias routing; rejected changes must preserve previous map and callable behavior.
 - Include ordinary startup alias and rejected-publication controls.
-  These are required future wire/registration checks, not recorded passes.
+  Correction verification and its limits are recorded in [Evidence](evidence.md#rf-0006-acceptance).
 
 ## Work ownership
 
@@ -58,5 +58,5 @@ Post-ACK export reconciliation failure terminates the invocation-private helper 
 - [x] Reject missing-object mutations under the store lock, including retained handlers, and remove deleted descendants and aliases.
 - [x] Exercise actual D-Bus dispatch for create/retarget/clear/delete, rejected/transport controls, and bounded registry reuse on peer connections and a private bus.
 - [x] Verify post-ACK registration failure and actual pending-reconciliation cancellation stop isolated test processes; retain candidate wiping, publication ordering and deterministic property/registry overlap controls.
-- [ ] Run relevant Secret Service/store/protocol tests, formatting, denied-warning Clippy and applicable integration/VM checks; record limits separately for each finding.
+- [x] Run relevant Secret Service/store/protocol tests, formatting, denied-warning workspace Clippy, the full integration runner and final-source shipped-chain VM check; retain separate acceptance and evidence limits for each finding.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

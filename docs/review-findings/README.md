@@ -134,8 +134,8 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0003](archived/RF-0003/README.md) | `F-01`, `A-01`, `S-02`, `W-01` | Medium | `archived` (`fixed`) | Structured admin libsecret identifiers fail initial publication |
 | [RF-0004](archived/RF-0004/README.md) | `B-02` | Medium | `archived` (`fixed`) | Authenticated activity does not renew inactivity expiry |
 | [RF-0005](archived/RF-0005/README.md) | `L-01` | Medium | `archived` (`fixed`) | Manual store-cleanup command does not quote its path |
-| [RF-0006](active/RF-0006/README.md) | `S-01` | Medium | `in-progress` | Accepted alias changes leave exported D-Bus routing stale |
-| [RF-0007](active/RF-0007/README.md) | `S-03` | Medium | `in-progress` | Deleted D-Bus objects acknowledge setters without changing state |
+| [RF-0006](archived/RF-0006/README.md) | `S-01` | Medium | `archived` (`fixed`) | Accepted alias changes leave exported D-Bus routing stale |
+| [RF-0007](archived/RF-0007/README.md) | `S-03` | Medium | `archived` (`fixed`) | Deleted D-Bus objects acknowledge setters without changing state |
 | [RF-0008](active/RF-0008/README.md) | `W-02` | Medium | `open` | Accepted dot-only libsecret IDs normalize out of request paths |
 | [RF-0009](archived/RF-0009/README.md) | `W-03` | Medium | `archived` (`fixed`) | Text reveal and copy drop a leading UTF-8 BOM |
 | [RF-0010](active/RF-0010/README.md) | `W-05` | Medium | `open` | An old form submission can close a reopened draft |
