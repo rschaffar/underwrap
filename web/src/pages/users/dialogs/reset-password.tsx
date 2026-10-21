@@ -46,6 +46,7 @@ export function ResetPasswordDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title={`Reset password: ${user.username}`}
       description="Sets a new password for this user. All of the user's current sessions are revoked server-side as soon as the change lands."
     >
@@ -79,7 +80,7 @@ export function ResetPasswordDialog({
           />
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

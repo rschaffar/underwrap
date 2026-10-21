@@ -57,6 +57,7 @@ export function SetAliasDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title="Set libsecret alias"
       description={
         <>
@@ -109,7 +110,7 @@ export function SetAliasDialog({
           />
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

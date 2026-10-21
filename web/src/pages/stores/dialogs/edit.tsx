@@ -45,6 +45,7 @@ export function EditStoreDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title={`Edit store: ${store.name}`}
       description="Edit operator-facing metadata here. Use the dedicated migration and rotate-key actions for storage lifecycle changes."
     >
@@ -65,7 +66,7 @@ export function EditStoreDialog({
           />
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

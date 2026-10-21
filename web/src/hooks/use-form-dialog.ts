@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useForm,
@@ -31,7 +31,8 @@ export interface UseFormDialogOptions<
   /** Query keys to invalidate after a successful mutation. */
   invalidate?: ReadonlyArray<readonly unknown[]>;
   /**
-   * Called on success after invalidation completes. Receives the
+   * Called on success after invalidation completes, only while the originating
+   * form instance is still mounted. Receives the
    * mutation's return value so multi-step flows (e.g. create-then-
    * reveal-key) can route off the response without redoing the call.
    */
@@ -62,6 +63,13 @@ export function useFormDialog<
 ): UseFormDialogResult<TValues> {
   const qc = useQueryClient();
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [pending, setPending] = useState(false);
   const form = useForm<TValues>({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -84,7 +92,10 @@ export function useFormDialog<
       return;
     }
     if (opts.invalidate) await invalidateAll(qc, opts.invalidate);
-    await opts.onSuccess(result);
+    // Inventory/selection changes can unmount even a non-dismissible dialog.
+    // Still reconcile the original request above, but never close a later draft.
+    // Unmounting does not cancel a submitted backend request.
+    if (mounted.current) await opts.onSuccess(result);
   });
   const onSubmit: ReturnType<typeof form.handleSubmit> = async (event) => {
     event?.preventDefault();

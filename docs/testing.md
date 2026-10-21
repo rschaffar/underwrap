@@ -371,6 +371,14 @@ Real active-query observer regressions require awaited invalidation to reject fa
 The desktop Chromium scenario intercepts one store DELETE with a synthetic structured 503 and checks the retained dialog, inline error, restored button, and unsuppressed diagnostics after a browser macrotask.
 It does not exercise a real backend DELETE rejection or establish application-wide, every-promise, or cross-browser cleanliness.
 
+### Form lifetime
+
+`pages/form-lifecycle.test.tsx` exercises all eleven resource, libsecret, user, store and wrapper/resource-pair form callers under StrictMode with deferred request and invalidation, blocked dismissal/navigation, and fresh-draft controls.
+Real-page tests cover store fallback/removal and libsecret refresh-error recovery during each deferred phase; original-address invalidation continues while the unmounted form's success callback is suppressed.
+Hook tests retain observable invalidation rejection after unmount, alongside mounted request retry and callback-failure ownership.
+The desktop Chromium form-lifecycle scenarios delay a real resource-create request and active refresh, attempt dismissal/navigation/reopening, then check normal completion and a later draft; an intercepted request rejection separately checks inline error and successful retry.
+These are selected frontend ownership witnesses, not backend cancellation, exactly-once mutation, forced-closure protection, or every-browser evidence.
+
 ### Authentication
 
 Logout tolerantly primes a fresh CSRF token with `whoami` GET before the revoking POST, clearing cache and replace-navigating only after success.

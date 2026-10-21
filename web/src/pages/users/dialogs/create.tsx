@@ -51,6 +51,7 @@ export function CreateUserDialog({
     <AdminDialog
       open={open}
       onClose={onClose}
+      nonDismissible={pending}
       title="Create user"
       description="The password is sent over TLS, hashed server-side with Argon2id, and never echoed back."
     >
@@ -104,7 +105,7 @@ export function CreateUserDialog({
           />
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

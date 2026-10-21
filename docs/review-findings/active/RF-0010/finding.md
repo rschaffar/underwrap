@@ -43,7 +43,22 @@ Preserve the distinction between request failures and invalidation/callback fail
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This file is the single work owner for the user-authorized RF-0010 correction.
+Use the existing pending non-dismissal/navigation lock and disable explicit Cancel in the eleven listed form callers.
+Gate the hook's success callback on its originating mounted instance, since authoritative inventory changes and libsecret refresh errors can unmount even a guarded dialog.
+Continue original-address invalidation and preserve its rejection after unmount.
+Preserve ordinary idle dismissal, request-error retry, and observable invalidation/callback rejection; do not change other findings, already guarded callers, or backend behavior.
+Unmount and browser closure are not remote cancellation.
+
+- [x] Reconfirm the hook, dialog shell, affected caller/parent paths and existing guarded controls.
+- [x] Add deferred-request/deferred-invalidation dialog/page regressions, rejection/retry and normal-success controls, and representative browser evidence.
+- [x] Run pinned-environment SPA tests/build and affected browser/fixture checks; record baseline and failing runs without weakening gates.
+- [x] Record actual evidence and limits and retain inspected feature commits without integration.
+- [ ] Settle the final pinned Nix coverage failure before archival acceptance.
+
+Implementation is committed as `c4aa251eda7dfcfaf254c73e6d0be4b255c74806`.
+The final Nix `web-test` timed out unchanged encrypted-store-creation and Unicode-reveal tests at 5000 ms, with 376 passes; local checks and all configured browser checks pass.
+An earlier Nix coverage pass does not explain or erase that failure.
+The cause remains unestablished, and the separately recorded RF-0012 aggregate blocker is not resolved by this task.
+See [resolution evidence](evidence.md#resolution-evidence) for exact checks, negative controls and remaining limits.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

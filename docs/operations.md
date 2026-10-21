@@ -289,6 +289,11 @@ Store selection preserves unrelated URL state and follows browser back/forward n
 Navigation retains store context and highlights the active section, while Stores and Client Instances remain global inventories unless explicitly filtered.
 Store-scoped creation intents do not follow an invalid selection into a different store.
 Wait for the selected store to resolve before editing; URL state is not backend authorization.
+Resource, libsecret, user, store edit/unlock, and wrapper/resource-pair form dialogs disable Cancel and close controls, Escape, outside dismissal, and in-app navigation through validation, request, awaited refresh, and completion.
+Request rejection restores the same draft for correction or retry; idle dismissal and navigation remain available.
+If an inventory change or refresh error removes the form anyway, its later success cannot dismiss a replacement draft, but the submitted backend request is not cancelled.
+Browser unload prompts remain best effort, not protection against forced closure or a remote cancellation protocol.
+
 Metadata filters match resource names/ids, env keys, file paths, wrappers, and runtime client metadata without revealing values or fetching unopened Secret Service trees.
 A resource with no env/files entries is not described as wholly empty merely because its libsecret tree has not been opened.
 

@@ -75,6 +75,7 @@ export function CreatePairDialog({
     <AdminDialog
       open
       onClose={onClose}
+      nonDismissible={pending}
       title="Create wrapper/resource pair"
       description="A wrapper/resource pair is the unit wrapper permissions reference. Each registered pair becomes a row in the table."
     >
@@ -178,7 +179,7 @@ export function CreatePairDialog({
           )}
           {submitError ? <Alert>{submitError}</Alert> : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

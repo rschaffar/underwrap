@@ -120,6 +120,29 @@ describe("useFormDialog", () => {
     expect(view.result.current.submitError).toBeUndefined();
   });
 
+  it("still rejects invalidation failure after its form instance unmounts", async () => {
+    const request = deferred<Result>();
+    const submit = vi.fn(() => request.promise);
+    const view = harness({ submit });
+    const failure = new Error("refresh failed after unmount");
+    const invalidate = vi.spyOn(view.queryClient, "invalidateQueries")
+      .mockRejectedValue(failure);
+    let submission!: Promise<unknown>;
+    act(() => { submission = view.result.current.onSubmit(); });
+    // Observe the rejection before releasing the request, not with a global catch.
+    const observed = expect(submission).rejects.toBe(failure);
+    await act(async () => { await Promise.resolve(); });
+    expect(submit).toHaveBeenCalledOnce();
+    view.unmount();
+    request.resolve({ id: "saved-metadata" });
+    await observed;
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith(
+      { queryKey: ["metadata"] }, { throwOnError: true },
+    );
+    expect(view.onSuccess).not.toHaveBeenCalled();
+    view.queryClient.clear();
+  });
+
   it("releases validation failures without a request and allows correction", async () => {
     const view = harness({ defaultValues: { name: "" } });
     await act(async () => {

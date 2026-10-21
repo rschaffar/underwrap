@@ -1,26 +1,25 @@
 # RF-0010 — An old form submission can close a reopened draft
 
-**Priority:** Medium · **State:** open
+**Priority:** Medium · **State:** blocked
 
-**Review aliases:** `W-05` · **Confidence:** High for the source/control-flow chain; no focused slow-request interaction reproduction.
+**Review aliases:** `W-05` · **Confidence:** High; source inspection, negative controls, dialog/page regressions and representative Chromium evidence.
 
 ## Why it matters
 
-Several dialogs remain dismissible during submission.
-After dismissal and reopening, an earlier successful request can close the new dialog and discard its draft; the first operation may also commit after apparent cancellation.
+Dismissing a pending form previously allowed its eventual success to close a reopened draft.
+Inventory changes and refresh errors can also replace a mounted form independently of dismissal.
 
-## Suggested fix
+## Correction and decision
 
-Give each submission clear dialog-lifetime ownership, preventing dismissal or preventing stale completions from closing a later instance.
+Implemented in `c4aa251eda7dfcfaf254c73e6d0be4b255c74806`.
+Eleven callers use pending dismissal/navigation guards; the shared hook suppresses success callbacks from unmounted instances while preserving original-address invalidation and error ownership.
+No submitted backend request is cancelled.
 
-## Decision and caveat
+Local Vitest, coverage, build and all configured browser checks pass.
+Pinned Nix SPA acceptance remains blocked: the final coverage run timed out unchanged store-creation and reveal tests, despite an earlier pass.
+Do not archive until that evidence is settled; do not weaken gates or alter other findings here.
 
-Open, Medium-priority form-lifetime defect.
-Preserve the existing full-submission guard and error ownership; no remote-cancellation guarantee is selected.
-Requests retain their original address.
-This is not demonstrated cross-store rebinding, exactly-once behavior, or a reproduced application-wide failure.
-
-No correction is authorized or completed by this record.
-The aliases belong to the review of `01214454aee850ebe8ceef5b757b9ae61cca07aa`.
+`finding.md` remains the scope owner.
+Feature commits and worktree are retained without integration or publication.
 
 [Technical finding](finding.md) · [Evidence](evidence.md) · [Register](../../README.md)
