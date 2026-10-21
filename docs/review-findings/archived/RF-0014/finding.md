@@ -39,11 +39,18 @@ Reuse an appropriate existing owner or add equivalent ownership without obscurin
 - Verify identity-bound child exit/reap and listener closure before temporary state is released; distinguish signal attempts from observed exit.
 - Verify primary-error preservation when cleanup fails and a normal-success control.
 - Cover packaged subprocess paths, not only in-process TestDaemon owner tests; retain an external whole-test deadline.
-  No failure injection or fix validation has yet been performed.
+  Track current verification through the shared checklist below and this finding's evidence record.
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+This file owns the user-authorized bounded integration-fixture isolation task for RF-0014, [RF-0026](../RF-0026/finding.md) and [RF-0015](../RF-0015/finding.md).
+The task changes only packaged-child ownership, elapsed HTTPS readiness, private effective-GID NSS lookup, narrow callers and focused tests/documentation.
+Production authentication, namespace behavior, browser fixtures, dependencies, Nix and other findings are excluded.
+
+- [x] Own packaged children immediately, preserve ownership across output waits/cancellation, and retain state on uncertain cleanup.
+- [x] Exercise isolated acquisition/use/unwind/second-child failures, reap/listener/state ordering, success and cleanup-error controls under an external bound.
+- [x] Bound both HTTPS probes by elapsed time; check stalled/prompt probes, failed backend observation and reservation release without timing out joins.
+- [x] Copy effective-GID NSS names from private reentrant storage with bounded growth and deterministic error tests; supplement with concurrency stress.
+- [x] Run matching-tree prerequisites, affected harness tests, full integration, Rustfmt and denied-warning Clippy; record unrun gates separately.
+- [x] Decide each finding's acceptance and archival independently; retain feature commits without integration or cleanup.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

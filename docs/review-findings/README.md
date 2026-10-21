@@ -142,8 +142,8 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0011](active/RF-0011/README.md) | `N-02` | Medium | `open` | Failed usage reporting hides a known writeback rejection |
 | [RF-0012](active/RF-0012/README.md) | `X-01` | Medium | `blocked` | Runtime-base paths are not escaped for tmpfiles syntax |
 | [RF-0013](active/RF-0013/README.md) | `X-02` | Medium | `open` | Instance selectors collide with internal generated names |
-| [RF-0014](active/RF-0014/README.md) | `T-01` | Medium | `open` | Packaged-process tests lack failure-path kill and reap ownership |
-| [RF-0015](active/RF-0015/README.md) | `T-02` | Medium | `open` | Parallel fixtures use non-reentrant group lookup storage |
+| [RF-0014](archived/RF-0014/README.md) | `T-01` | Medium | `archived` (`fixed`) | Packaged-process tests lack failure-path kill and reap ownership |
+| [RF-0015](archived/RF-0015/README.md) | `T-02` | Medium | `archived` (`fixed`) | Parallel fixtures use non-reentrant group lookup storage |
 | [RF-0016](active/RF-0016/README.md) | `T-03` | Medium | `open` | Malformed input cannot distinguish HTTP body-limit enforcement |
 | [RF-0017](active/RF-0017/README.md) | `F-02`, `A-03` | Low | `open` | Canonical-size expansion is reported as an internal finalize failure |
 | [RF-0018](active/RF-0018/README.md) | `A-02` | Low | `open` | Permission-cleanup diagnostics mislabel unavailable store states |
@@ -154,7 +154,7 @@ The register is an actionable-findings migration, not an archive of the full rev
 | [RF-0023](active/RF-0023/README.md) | `X-04` | Low | `open` | Per-crate builds and integration runner omit --locked |
 | [RF-0024](active/RF-0024/README.md) | `X-05` | Low | `open` | Fixture comment describes obsolete executable-keyed identity |
 | [RF-0025](active/RF-0025/README.md) | `T-04` | Low | `open` | Store-parameterized permission helpers seed the default store |
-| [RF-0026](active/RF-0026/README.md) | `T-05` | Low | `open` | Readiness loops can wait about 26 minutes rather than 60 seconds |
+| [RF-0026](archived/RF-0026/README.md) | `T-05` | Low | `archived` (`fixed`) | Readiness loops can wait about 26 minutes rather than 60 seconds |
 | [RF-0027](active/RF-0027/README.md) | `T-06` | Low | `open` | UsageSignal timestamp tests cannot distinguish finalize from open |
 | [RF-0028](active/RF-0028/README.md) | `T-07` | Low | `open` | Body-impersonation test sends no competing body identity |
 | [RF-0029](active/RF-0029/README.md) | `T-08` | Low | `open` | Failing equality assertions can print unwrapped fixture material |

@@ -39,7 +39,6 @@ Do not hide cancellation-unsafe blocking joins inside a Tokio timeout to manufac
 
 ## Work ownership
 
-No correction scope or implementation plan is approved by this import.
-For a small authorized correction, this file can own its scope/evidence checklist.
-For a larger or shared correction, link the single agreed plan here and keep this finding's acceptance criteria distinct.
+The user-authorized bounded fixture task uses [RF-0014's shared scope/evidence checklist](../RF-0014/finding.md#work-ownership).
+This finding retains its own elapsed-readiness acceptance and archival decision.
 Follow the [register convention](../../README.md#planning-and-completion) and [testing matrix](../../../testing.md#choose-checks-by-change).

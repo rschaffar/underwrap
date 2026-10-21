@@ -168,59 +168,92 @@ pub(crate) async fn reserve_backend_startup() -> Result<BackendStartupReservatio
     })
 }
 
-// Total window: 3000 × 20 ms ≈ 60 s. The loop exits as soon as the listener
-// answers, while the generous ceiling accommodates CPU and I/O contention when
-// `cargo test --workspace` starts many fixtures in parallel.
-pub(crate) async fn wait_for_admin(url: &str, ca_cert: &Path) -> Result<()> {
-    let client = admin_client(ca_cert, std::time::Duration::from_millis(500))?;
-    for _ in 0..3000 {
-        if let Ok(response) = client
-            .get(format!("{url}/v1/admin/auth/bootstrap/status"))
-            .send()
-            .await
-            && response.status().is_success()
-        {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    anyhow::bail!("admin API never became ready at {url}")
+const READINESS_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+pub(crate) async fn wait_for_admin(
+    url: &str,
+    ca_cert: &Path,
+    backend_alive: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    wait_for_https(url, ca_cert, None, READINESS_BUDGET, backend_alive).await
 }
 
-// Total window: 3000 × 20 ms ≈ 60 s. See wait_for_admin above; rustls
-// initialisation is the slowest part of backend startup under load.
 pub(crate) async fn wait_for_service(
     url: &str,
     ca_cert: &Path,
     client_identity: &Path,
+    backend_alive: impl FnMut() -> Result<()>,
 ) -> Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let ca_pem = std::fs::read(ca_cert)?;
-    let identity_pem = std::fs::read(client_identity)?;
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .timeout(std::time::Duration::from_millis(500))
-        .add_root_certificate(reqwest::Certificate::from_pem(&ca_pem)?)
-        .identity(reqwest::Identity::from_pem(&identity_pem)?)
-        .build()?;
+    wait_for_https(
+        url,
+        ca_cert,
+        Some(client_identity),
+        READINESS_BUDGET,
+        backend_alive,
+    )
+    .await
+}
 
-    // Probe the new resource-vocabulary runtime API. An empty
-    // wrappers register is a stateless round-trip that confirms the
-    // backend is listening AND the cert is authorized.
-    let probe = underwrap_protocol::service::RuntimeWrapperRegisterRequest { wrappers: vec![] };
-    for _ in 0..3000 {
-        if let Ok(response) = client
-            .post(format!("{url}/v1/wrappers"))
-            .json(&probe)
-            .send()
-            .await
-            && response.status().is_success()
-        {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+async fn wait_for_https(
+    url: &str,
+    ca_cert: &Path,
+    client_identity: Option<&Path>,
+    budget: std::time::Duration,
+    mut backend_alive: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + budget;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut builder = reqwest::Client::builder()
+        .use_rustls_tls()
+        .timeout(PROBE_TIMEOUT)
+        .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(ca_cert)?)?);
+    if let Some(identity) = client_identity {
+        builder = builder.identity(reqwest::Identity::from_pem(&std::fs::read(identity)?)?);
     }
-    anyhow::bail!("service never became ready at {url}")
+    let client = builder.build()?;
+    let label = if client_identity.is_some() {
+        "runtime"
+    } else {
+        "admin"
+    };
+    let mut last = "no completed probe".to_string();
+    loop {
+        backend_alive().context("backend exited during HTTPS readiness")?;
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            anyhow::bail!("{label} API not ready at {url} within {budget:?}; last probe: {last}");
+        }
+        let request = if client_identity.is_some() {
+            // Empty registration confirms both HTTPS and enrolled identity.
+            client.post(format!("{url}/v1/wrappers")).json(
+                &underwrap_protocol::service::RuntimeWrapperRegisterRequest { wrappers: vec![] },
+            )
+        } else {
+            client.get(format!("{url}/v1/admin/auth/bootstrap/status"))
+        }
+        .timeout((deadline - now).min(PROBE_TIMEOUT));
+        match tokio::time::timeout_at(deadline, request.send()).await {
+            Ok(Ok(response)) if response.status().is_success() => {
+                backend_alive().context("backend exited during HTTPS readiness")?;
+                return Ok(());
+            }
+            Ok(Ok(response)) => last = format!("HTTP {}", response.status()),
+            Ok(Err(error)) => {
+                last = if error.is_timeout() {
+                    "request timeout"
+                } else {
+                    "transport error"
+                }
+                .into()
+            }
+            Err(_) => last = "elapsed deadline".into(),
+        }
+        backend_alive().context("backend exited during HTTPS readiness")?;
+        tokio::time::sleep_until((tokio::time::Instant::now() + PROBE_INTERVAL).min(deadline))
+            .await;
+    }
 }
 
 pub(super) async fn wait_for_path(path: &Path) -> Result<()> {
