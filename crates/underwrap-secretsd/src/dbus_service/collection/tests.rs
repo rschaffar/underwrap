@@ -14,7 +14,7 @@ use std::time::Duration;
 use underwrap_protocol::libsecret_publication::{
     REQUEST_HEADER_LEN, ResponseKind, decode_request_header, encode_response,
 };
-use zbus::zvariant::{Dict, Signature, Type};
+use zbus::{Dict, Signature, Type};
 
 mod property_validation;
 
@@ -24,10 +24,10 @@ fn store_with_collection() -> SecretStore {
     store
 }
 
-fn item_properties(label: &str) -> HashMap<String, Value<'static>> {
+fn item_properties(label: &str) -> HashMap<String, Variant<'static>> {
     HashMap::from([(
         "org.freedesktop.Secret.Item.Label".to_string(),
-        Value::from(label.to_string()),
+        Variant::from(label.to_string()),
     )])
 }
 
@@ -41,43 +41,43 @@ fn secret(value: &[u8]) -> Secret {
 }
 
 fn dict_value(
-    key_signature: Signature<'static>,
-    value_signature: Signature<'static>,
-    entries: Vec<(Value<'static>, Value<'static>)>,
-) -> Value<'static> {
+    key_signature: &Signature,
+    value_signature: &Signature,
+    entries: Vec<(Variant<'static>, Variant<'static>)>,
+) -> Variant<'static> {
     let mut dict = Dict::new(key_signature, value_signature);
     for (key, value) in entries {
         dict.append(key, value).unwrap();
     }
-    Value::Dict(dict)
+    Variant::Dict(dict)
 }
 
-fn string_dict(entries: &[(&str, &str)]) -> Value<'static> {
+fn string_dict(entries: &[(&str, &str)]) -> Variant<'static> {
     dict_value(
-        <String as Type>::signature(),
-        <String as Type>::signature(),
+        <String as Type>::SIGNATURE,
+        <String as Type>::SIGNATURE,
         entries
             .iter()
             .map(|(key, value)| {
                 (
-                    Value::from((*key).to_string()),
-                    Value::from((*value).to_string()),
+                    Variant::from((*key).to_string()),
+                    Variant::from((*value).to_string()),
                 )
             })
             .collect(),
     )
 }
 
-fn string_variant_dict(entries: &[(&str, &str)]) -> Value<'static> {
+fn string_variant_dict(entries: &[(&str, &str)]) -> Variant<'static> {
     dict_value(
-        <String as Type>::signature(),
-        <Value<'static> as Type>::signature(),
+        <String as Type>::SIGNATURE,
+        <Variant<'static> as Type>::SIGNATURE,
         entries
             .iter()
             .map(|(key, value)| {
                 (
-                    Value::from((*key).to_string()),
-                    Value::Value(Box::new(Value::from((*value).to_string()))),
+                    Variant::from((*key).to_string()),
+                    Variant::Variant(Box::new(Variant::from((*value).to_string()))),
                 )
             })
             .collect(),

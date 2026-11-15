@@ -160,12 +160,12 @@ async fn main() -> Result<()> {
         .context("publishing initial libsecret generation")?;
 
     // Connect to the private D-Bus session bus.
-    let connection = zbus::ConnectionBuilder::address(args.bus_address.as_str())?
+    let connection = zbus::connection::Builder::address(args.bus_address.as_str())
         // Builder startup waits for the object-server dispatcher to be listening.
         .serve_at(
             BASE_PATH,
             dbus_service::SecretService::new(store.clone(), publisher.clone()),
-        )?
+        )
         .build()
         .await
         .context("connecting to private D-Bus session bus")?;
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
 
     // The initial generation is already ACKed. Do not announce readiness with
     // an incomplete graph; startup errors terminate this private helper.
-    dbus_service::register_objects(&connection.object_server(), &store, &publisher)
+    dbus_service::register_objects(connection.object_server(), &store, &publisher)
         .await
         .context("registering Secret Service objects")?;
 

@@ -4,16 +4,15 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 use underwrap_secretsd_store::SecretStore;
-use zbus::{
-    Proxy,
-    zvariant::{OwnedObjectPath, OwnedValue, Str},
-};
+use zbus::{OwnedObjectPath, OwnedVariant, Proxy, Str};
 
 use super::{CollectionInterface, ItemInterface, Secret, alias_path, collection_path};
 use crate::{
     BASE_PATH,
     test_support::{HostResponse, ScriptedPublisher, WireHarness},
 };
+
+mod contract;
 
 const SERVICE: &str = "org.freedesktop.Secret.Service";
 const COLLECTION: &str = "org.freedesktop.Secret.Collection";
@@ -40,7 +39,7 @@ async fn set_alias(service: &Proxy<'_>, name: &str, collection: &str) -> zbus::R
 async fn create_collection(service: &Proxy<'_>, name: &str, alias: &str) -> OwnedObjectPath {
     let properties = HashMap::from([(
         "org.freedesktop.Secret.Collection.Label",
-        OwnedValue::from(Str::from(name)),
+        OwnedVariant::from(Str::from(name)),
     )]);
     let (path, prompt): (OwnedObjectPath, OwnedObjectPath) = service
         .call("CreateCollection", &(properties, alias))
@@ -51,7 +50,7 @@ async fn create_collection(service: &Proxy<'_>, name: &str, alias: &str) -> Owne
 }
 
 async fn create_item(collection: &Proxy<'_>) -> OwnedObjectPath {
-    let properties: HashMap<String, OwnedValue> = HashMap::new();
+    let properties: HashMap<String, OwnedVariant> = HashMap::new();
     let (path, prompt): (OwnedObjectPath, OwnedObjectPath) = collection
         .call("CreateItem", &(properties, secret(), false))
         .await

@@ -2,10 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use zbus::{
-    fdo, interface,
-    zvariant::{ObjectPath, Value},
-};
+use zbus::{ObjectPath, Variant, fdo, interface};
 
 use underwrap_secretsd_store::SecretStore;
 use zeroize::Zeroize;
@@ -24,7 +21,7 @@ const ITEM_LABEL_TYPE_ERROR: &str = "org.freedesktop.Secret.Item.Label must have
 const ITEM_ATTRIBUTES_TYPE_ERROR: &str =
     "org.freedesktop.Secret.Item.Attributes must have D-Bus type a{ss}";
 
-fn parse_item_label(properties: &HashMap<String, Value<'_>>) -> fdo::Result<String> {
+fn parse_item_label(properties: &HashMap<String, Variant<'_>>) -> fdo::Result<String> {
     let Some(label) = properties.get(ITEM_LABEL_PROPERTY) else {
         return Ok(String::new());
     };
@@ -37,7 +34,7 @@ fn parse_item_label(properties: &HashMap<String, Value<'_>>) -> fdo::Result<Stri
 }
 
 fn parse_item_attributes(
-    properties: &HashMap<String, Value<'_>>,
+    properties: &HashMap<String, Variant<'_>>,
 ) -> fdo::Result<HashMap<String, String>> {
     let Some(attributes) = properties.get(ITEM_ATTRIBUTES_PROPERTY) else {
         return Ok(HashMap::new());
@@ -46,7 +43,7 @@ fn parse_item_attributes(
         return Err(fdo::Error::InvalidArgs(ITEM_ATTRIBUTES_TYPE_ERROR.into()));
     }
     let dict = attributes
-        .downcast_ref::<zbus::zvariant::Dict>()
+        .downcast_ref::<zbus::Dict>()
         .map_err(|_| fdo::Error::InvalidArgs(ITEM_ATTRIBUTES_TYPE_ERROR.into()))?;
     HashMap::<String, String>::try_from(dict)
         .map_err(|_| fdo::Error::InvalidArgs(ITEM_ATTRIBUTES_TYPE_ERROR.into()))
@@ -96,15 +93,6 @@ impl CollectionInterface {
         }
         Ok(id)
     }
-
-    pub(super) async fn set_label(&self, label: String) -> fdo::Result<()> {
-        let mut store = self.store.write().await;
-        let id = self.resolve(&store)?.to_owned();
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            candidate.set_collection_label(&id, &label);
-            Ok(())
-        })
-    }
 }
 
 #[interface(name = "org.freedesktop.Secret.Collection")]
@@ -151,7 +139,7 @@ impl CollectionInterface {
 
     async fn create_item(
         &self,
-        properties: HashMap<String, Value<'_>>,
+        properties: HashMap<String, Variant<'_>>,
         secret: Secret,
         replace: bool,
         #[zbus(object_server)] object_server: &zbus::ObjectServer,
@@ -225,10 +213,14 @@ impl CollectionInterface {
     // Interior mutation needs no exclusive interface lock. zbus Properties.Set
     // holds a registry read while acquiring this handler; an exclusive lock could
     // wait on a graph method that is itself waiting to reconcile the registry.
-    #[zbus(property, name = "Label")]
-    async fn set_label_property(&self, label: String) -> zbus::Result<()> {
-        // zbus 4's shared-reference property dispatch requires zbus::Result.
-        self.set_label(label).await.map_err(Into::into)
+    #[zbus(property)]
+    pub(super) async fn set_label(&self, label: String) -> fdo::Result<()> {
+        let mut store = self.store.write().await;
+        let id = self.resolve(&store)?.to_owned();
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_collection_label(&id, &label);
+            Ok(())
+        })
     }
 
     #[zbus(property)]

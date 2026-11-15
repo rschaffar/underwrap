@@ -14,16 +14,13 @@ pub use collection::CollectionInterface;
 pub use item::ItemInterface;
 pub use service::SecretService;
 
-use zbus::{
-    fdo, interface,
-    zvariant::{ObjectPath, OwnedObjectPath},
-};
+use zbus::{ObjectPath, OwnedObjectPath, fdo, interface};
 use zeroize::Zeroize;
 
 use crate::BASE_PATH;
 
 /// Secret type for the D-Bus protocol.
-#[derive(Debug, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, zbus::Type)]
 pub struct Secret {
     pub session: OwnedObjectPath,
     pub parameters: Vec<u8>,

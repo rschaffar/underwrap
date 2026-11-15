@@ -2,10 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use zbus::{
-    fdo, interface,
-    zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value},
-};
+use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant, fdo, interface};
 
 use underwrap_secretsd_store::SecretStore;
 
@@ -34,9 +31,9 @@ impl SecretService {
     async fn open_session(
         &self,
         algorithm: &str,
-        _input: OwnedValue,
+        _input: OwnedVariant,
         #[zbus(object_server)] object_server: &zbus::ObjectServer,
-    ) -> fdo::Result<(Value<'_>, ObjectPath<'_>)> {
+    ) -> fdo::Result<(Variant<'_>, ObjectPath<'_>)> {
         if algorithm != "plain" {
             return Err(fdo::Error::NotSupported(
                 "only 'plain' algorithm is supported".into(),
@@ -56,7 +53,7 @@ impl SecretService {
 
     async fn create_collection(
         &self,
-        properties: HashMap<String, OwnedValue>,
+        properties: HashMap<String, OwnedVariant>,
         alias: &str,
         #[zbus(object_server)] object_server: &zbus::ObjectServer,
     ) -> fdo::Result<(ObjectPath<'_>, ObjectPath<'_>)> {

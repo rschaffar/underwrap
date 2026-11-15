@@ -148,6 +148,7 @@ pub(crate) fn service_with_script(
 
 pub(crate) struct ObjectServerHarness {
     server: Option<Connection>,
+    peer: Option<Connection>,
     shutdown: Vec<UnixStream>,
 }
 
@@ -160,14 +161,17 @@ impl ObjectServerHarness {
             server_stream.try_clone().unwrap(),
             peer_stream.try_clone().unwrap(),
         ];
-        let server_stream = tokio::net::UnixStream::from_std(server_stream).unwrap();
-        let server = Builder::authenticated_socket(server_stream, Guid::generate())
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
+        let (server, peer) = tokio::try_join!(
+            Builder::unix_stream(server_stream)
+                .server(Guid::generate())
+                .p2p()
+                .build(),
+            Builder::unix_stream(peer_stream).p2p().build(),
+        )
+        .unwrap();
         Self {
             server: Some(server),
+            peer: Some(peer),
             shutdown,
         }
     }
@@ -198,7 +202,9 @@ impl ObjectServerHarness {
             let _ = stream.shutdown(Shutdown::Both);
         }
         let server = self.server.take().unwrap();
+        let peer = self.peer.take().unwrap();
         let _ = server.close().await;
+        let _ = peer.close().await;
     }
 }
 
@@ -254,39 +260,32 @@ impl WireHarness {
                     "private bus must report readiness"
                 );
                 let server = Builder::address(address.trim())
-                    .unwrap()
                     .serve_at(
                         crate::BASE_PATH,
                         SecretService::new(store.clone(), publisher.clone()),
                     )
-                    .unwrap()
                     .build()
                     .await
                     .unwrap();
-                let client = Builder::address(address.trim())
-                    .unwrap()
-                    .build()
-                    .await
-                    .unwrap();
+                let client = Builder::address(address.trim()).build().await.unwrap();
                 server.request_name(crate::WELL_KNOWN_NAME).await.unwrap();
                 (server, client, Some(bus))
             } else {
-                let (server, client) = tokio::net::UnixStream::pair().unwrap();
-                let guid = Guid::generate();
+                let (server, client) = UnixStream::pair().unwrap();
                 let (server, client) = tokio::join!(
-                    Builder::authenticated_socket(server, guid.clone())
-                        .unwrap()
+                    Builder::unix_stream(server)
+                        .server(Guid::generate())
+                        .p2p()
                         .serve_at(
                             crate::BASE_PATH,
                             SecretService::new(store.clone(), publisher.clone())
                         )
-                        .unwrap()
                         .build(),
-                    Builder::authenticated_socket(client, guid).unwrap().build(),
+                    Builder::unix_stream(client).p2p().build(),
                 );
                 (server.unwrap(), client.unwrap(), None)
             };
-        crate::dbus_service::register_objects(&server.object_server(), store, publisher)
+        crate::dbus_service::register_objects(server.object_server(), store, publisher)
             .await
             .unwrap();
 
@@ -305,11 +304,8 @@ impl WireHarness {
                     .map(|name| name.as_str())
                     .unwrap_or(":1.0"),
             )
-            .unwrap()
             .path(path)
-            .unwrap()
             .interface(interface)
-            .unwrap()
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await
