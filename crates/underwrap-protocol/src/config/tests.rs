@@ -20,7 +20,7 @@ fn with_header(body: &str) -> String {
 
 #[test]
 fn minimal_config() {
-    let config: DaemonConfig = serde_yaml::from_str(INSTANCE_HEADER).unwrap();
+    let config: DaemonConfig = serde_saphyr::from_str(INSTANCE_HEADER).unwrap();
     assert!(config.wrappers.is_empty());
     assert_eq!(config.instance, "local");
     assert_eq!(config.socket, PathBuf::from("/run/underwrap/local.sock"));
@@ -52,7 +52,7 @@ wrappers:
         - .local/share/gws
 "#,
     );
-    let config: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+    let config: DaemonConfig = serde_saphyr::from_str(&yaml).unwrap();
     assert_eq!(config.wrappers.len(), 2);
     let gh = &config.wrappers["gh-authorized"];
     assert_eq!(gh.target, PathBuf::from("/usr/bin/gh"));
@@ -86,7 +86,7 @@ wrappers:
     variable: GH_TOKEN
 "#,
     );
-    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
+    let err = serde_saphyr::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("unknown field `variable`"));
 }
 
@@ -103,7 +103,7 @@ wrappers:
     socket: /run/x.sock
 "#,
     );
-    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
+    let err = serde_saphyr::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("unknown field `socket`"));
 }
 
@@ -119,7 +119,7 @@ wrappers:
         env: true
 "#,
     );
-    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
+    let err = serde_saphyr::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("unknown field `resources`"));
 }
 
@@ -133,7 +133,7 @@ wrappers:
     env: true
 "#,
     );
-    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
+    let err = serde_saphyr::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("missing field `resource`"));
 }
 
@@ -148,7 +148,7 @@ wrappers:
     files: {}
 "#,
     );
-    let err = serde_yaml::from_str::<DaemonConfig>(&yaml).unwrap_err();
+    let err = serde_saphyr::from_str::<DaemonConfig>(&yaml).unwrap_err();
     assert!(err.to_string().contains("missing field `paths`"));
 }
 
@@ -163,7 +163,7 @@ wrappers:
     env: true
 "#,
     );
-    let config: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+    let config: DaemonConfig = serde_saphyr::from_str(&yaml).unwrap();
     let err = config.validate().unwrap_err();
     assert!(err.contains("reserved"), "unexpected error: {err}");
 }
@@ -211,7 +211,7 @@ wrappers:
     resource: github/token
 "#,
     );
-    let config: DaemonConfig = serde_yaml::from_str(&yaml).unwrap();
+    let config: DaemonConfig = serde_saphyr::from_str(&yaml).unwrap();
     let err = config.validate().unwrap_err();
     assert!(
         err.contains("no projection slot"),
@@ -243,7 +243,7 @@ wrappers:
       - "~/.config"
 "#,
     );
-    serde_yaml::from_str(&yaml).unwrap()
+    serde_saphyr::from_str(&yaml).unwrap()
 }
 
 fn rename_probe(config: &mut DaemonConfig, name: String) {
@@ -513,7 +513,7 @@ fn shipped_daemon_config_example_parses() {
     let yaml = std::fs::read_to_string(&example).unwrap_or_else(|error| {
         panic!("cannot read shipped example {}: {error}", example.display())
     });
-    let _: DaemonConfig = serde_yaml::from_str(&yaml).unwrap_or_else(|e| {
+    let _: DaemonConfig = serde_saphyr::from_str(&yaml).unwrap_or_else(|e| {
         panic!("examples/daemon-config.yaml does not parse against DaemonConfig: {e}")
     });
 }

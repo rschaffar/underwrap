@@ -221,7 +221,13 @@ fn parse_instance_config_text(text: &str) -> Result<InstanceConfig> {
         secretsd_binary: Option<String>,
     }
 
-    let f: InstanceFile = serde_yaml::from_str(text)?;
+    let f: InstanceFile = serde_saphyr::from_str_with_options(
+        text,
+        serde_saphyr::options! {
+            duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+            merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        },
+    )?;
     if !std::path::Path::new(&f.socket).is_absolute() {
         bail!(
             "instance socket must be an absolute path, got: {:?}",

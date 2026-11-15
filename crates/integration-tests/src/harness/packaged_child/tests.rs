@@ -217,7 +217,7 @@ fn output_wait_cancellation_keeps_owner_and_cleanup_uncertainty_keeps_state() {
         admin: None,
     };
     let config_path = path.join("backend.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    std::fs::write(&config_path, serde_saphyr::to_string(&config).unwrap()).unwrap();
     let mut command = Command::new(
         std::env::var_os("CARGO_BIN_EXE_underwrap-backend").expect("packaged backend prerequisite"),
     );

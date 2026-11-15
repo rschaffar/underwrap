@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "tests/yaml.rs"]
+mod yaml;
+
 fn args(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }

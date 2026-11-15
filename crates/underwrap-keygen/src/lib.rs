@@ -259,25 +259,31 @@ fn derive_instance_owner_with(
     Ok(Some((uid, gid)))
 }
 
+// Keygen needs only the backend section, not a valid complete daemon config.
+// Keep BackendServiceConfig's strict schema while traversing ignored outer fields.
+#[derive(serde::Deserialize)]
+struct BackendConfigEnvelope {
+    backend: Option<BackendServiceConfig>,
+}
+
 fn resolve_targets_with(cli: &Cli, resolver: &mut impl AccountResolver) -> Result<ResolvedTargets> {
     if let Some(path) = cli.instance_config.as_deref() {
         let yaml = std::fs::read_to_string(path)
             .with_context(|| format!("reading instance config '{}'", path.display()))?;
-        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml)
-            .with_context(|| format!("parsing instance config '{}'", path.display()))?;
-        let backend_value = doc.get("backend").cloned().with_context(|| {
+        let doc: BackendConfigEnvelope = serde_saphyr::from_str_with_options(
+            &yaml,
+            serde_saphyr::options! {
+                duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+                merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+            },
+        )
+        .with_context(|| format!("parsing instance config '{}'", path.display()))?;
+        let backend = doc.backend.with_context(|| {
             format!(
                 "instance config '{}' has no backend section",
                 path.display()
             )
         })?;
-        let backend: BackendServiceConfig =
-            serde_yaml::from_value(backend_value).with_context(|| {
-                format!(
-                    "parsing backend section of instance config '{}'",
-                    path.display()
-                )
-            })?;
         let client_identity_out = backend.client_identity_file.with_context(|| {
             format!(
                 "instance config '{}' has no backend.client_identity_file",

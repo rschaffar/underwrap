@@ -78,7 +78,7 @@ cargo tree --locked -p underwrap-ns -e normal,build --depth 2
 ```
 
 The isolated feature tree must select `local-abi` without protocol `default` or `full`.
-Its protocol-owned Tokio, Utoipa, Serde YAML, and libc edges are absent; the namespace package retains its direct libc dependency.
+Its protocol-owned Tokio, Utoipa, YAML parser (a protocol dev-dependency only), and libc edges are absent; the namespace package retains its direct libc dependency.
 When inspecting dep-info for module-compilation evidence, use a fresh `CARGO_TARGET_DIR` and check that protocol `config`, `control`, `entities`, `policy`, `service`, and `scm_rights` sources are absent.
 This reduces isolated compile and review coupling, not the runtime trusted computing base, binary size, or exploitability set.
 Cargo can unify features when a build includes a full-profile consumer.
