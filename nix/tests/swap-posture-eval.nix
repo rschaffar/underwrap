@@ -382,7 +382,7 @@ let
         map (entry: entry.message) (lib.filter (entry: !entry.assertion) underwrapAssertions)
       );
       falseAssertionCount = lib.length (lib.filter (entry: !entry.assertion) evaluated.config.assertions);
-      toplevel = builtins.tryEval evaluated.config.system.build.toplevel;
+      toplevel = builtins.tryEval evaluated.config.system.build.toplevel.drvPath;
       finalGenerator = evaluated.config.services.zram-generator;
       ensure =
         label: condition: if condition then true else throw "swap posture matrix row ${row.name}: ${label}";

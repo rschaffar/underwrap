@@ -192,11 +192,11 @@ The committed npm lock and Nix inputs define the selected frontend matrix, not e
 
 | Layer | Selected compatibility baseline |
 | --- | --- |
-| Build tools | Node 24.20.0, npm 11.19.0 |
-| SPA | React/React DOM 19.3.0; Vite 8.3.1; React plugin 6.1.1; Tailwind and Vite plugin 4.3.3 |
+| Build tools | Node 24.22.2, npm 11.19.1 |
+| SPA | React/React DOM 19.3.0; Vite 8.3.8; React plugin 6.1.1; Tailwind and Vite plugin 4.3.3 |
 | Type checking | TypeScript 5.9.3; openapi-typescript 7 requires a `^5.x` peer |
-| Unit tests | Vitest/coverage-v8 4.1.11; jsdom 30.1.1; Testing Library versions selected by the lock |
-| Browser tests | Exact `@playwright/test` 1.63.0 paired with nixpkgs driver 1.63.0; driver Node 22.23.3 via `PLAYWRIGHT_NODEJS_PATH` |
+| Unit tests | Vitest/coverage-v8 4.1.12; jsdom 30.1.1; Testing Library versions selected by the lock |
+| Browser tests | Exact `@playwright/test` 1.64.1 paired with nixpkgs driver 1.64.1; driver Node 22.23.5 via `PLAYWRIGHT_NODEJS_PATH` |
 | API tools | Utoipa 6.0.0; utoipa-axum 0.3.0; OpenAPI 3.1.0; openapi-typescript 7.13.0; openapi-fetch 0.17.0 |
 
 Playwright's exact package pin prevents npm from selecting protocol code incompatible with the pinned browser driver.
@@ -320,7 +320,8 @@ See [Local protocol](local-protocol.md) and [Backend](backend.md) for those cont
 The live private-bus test requires readiness and a real lookup before host probes, continued target liveness across them, and a second lookup afterward.
 Trusted root's host-namespace pathname absence is distinct from the original caller's metadata/connect `EACCES` through the bare mode-`0000` mountpoint.
 Neither observation covers abstract sockets, root compromise, or an untrusted configured target.
-Nix negative evaluation requires the exact intended false assertion and failed forced system toplevel, not an unrelated failure; typed option checks do not attest activation, external drop-ins, or live swap devices.
+Nix negative evaluation requires the exact intended false assertion and failed forced system toplevel derivation path, not an unrelated failure; evaluating only the lazy toplevel attribute set does not force NixOS assertions.
+Typed option checks do not attest activation, external drop-ins, or live swap devices.
 
 Journal hygiene covers selected successful paths and four backend/daemon unit journals plus native `underwrap-ns` records.
 The test derives plaintext, standard/URL-safe base64 with/without padding, lowercase hex, canonical raw/JSON-escaped text, encoded complete-resource forms, and the env-entry signature in memory, discarding target output and reporting only safe representation labels on failure.

@@ -31,7 +31,7 @@ let
     let
       evaluated = evaluate base;
       config = evaluated.config;
-      toplevel = builtins.tryEval config.system.build.toplevel;
+      toplevel = builtins.tryEval config.system.build.toplevel.drvPath;
     in
     assert lib.assertMsg (lib.all (entry: entry.assertion) config.assertions)
       "runtime tmpfiles ${name}: admitted literal failed an assertion";

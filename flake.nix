@@ -76,7 +76,7 @@
             src = ./web;
             # If this hash drifts the fetch fails with the offending hash
             # printed; copy it back into this file.
-            hash = "sha256-cDLJ40j8s4WX3jNEVNNoKzW7tZsnHd7yJSJ8/ZMnPmg=";
+            hash = "sha256-9NkCW4EVSMpEL47SKKqrClBK80rT2eBCEZSondjLLuc=";
           };
 
           # The build/test npm hooks generate API bindings before their main step.
@@ -298,8 +298,9 @@
                   (entry: entry.message == expectedMessage)
                   (throw "missing instance-specific backend URL assertion")
                   valid.config.assertions;
-                invalidToplevel = builtins.tryEval invalid.config.system.build.toplevel;
-                validToplevel = builtins.tryEval valid.config.system.build.toplevel;
+                # Force derivation construction; the toplevel attribute set is lazy.
+                invalidToplevel = builtins.tryEval invalid.config.system.build.toplevel.drvPath;
+                validToplevel = builtins.tryEval valid.config.system.build.toplevel.drvPath;
                 daemonConfig = valid.config.environment.etc."underwrap/daemon/probe.yaml".source;
               in
               assert !invalidAssertion.assertion;
