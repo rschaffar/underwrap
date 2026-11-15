@@ -660,7 +660,8 @@ let
   baselineUnderwrapAssertions = underwrapAssertionsOf baseline;
   baselineExpectedMessages = expectedAssertionMessages baseline.config.boot.kernelPackages.kernel.version;
   baselineActualMessages = sorted (map (entry: entry.message) baselineUnderwrapAssertions);
-  baselineToplevel = builtins.tryEval baseline.config.system.build.toplevel;
+  # Force derivation construction, not only the lazy toplevel attribute set.
+  baselineToplevel = builtins.tryEval baseline.config.system.build.toplevel.drvPath;
   checkedBaseline =
     assert ensure "baseline expected assertion inventory does not contain exactly 18 messages"
       (lib.length baselineExpectedMessages == 18);
@@ -677,7 +678,7 @@ let
   checkValidRow = row:
     let
       evaluated = evaluate (completeConfig row.underwrap { });
-      toplevel = builtins.tryEval evaluated.config.system.build.toplevel;
+      toplevel = builtins.tryEval evaluated.config.system.build.toplevel.drvPath;
     in
     assert checkedBaseline;
     assert ensure "valid row ${row.name}: underwrap assertion is false"
@@ -708,7 +709,7 @@ let
       );
       expectedMessage =
         if row.messageFor != null then row.messageFor evaluated else row.message;
-      toplevel = builtins.tryEval evaluated.config.system.build.toplevel;
+      toplevel = builtins.tryEval evaluated.config.system.build.toplevel.drvPath;
     in
     assert checkedBaseline;
     assert ensure "positive boundary row count differs" (lib.length checkedValidRows == 7);

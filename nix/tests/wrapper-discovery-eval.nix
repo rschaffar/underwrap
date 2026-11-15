@@ -71,7 +71,7 @@ let
     (throw "missing public Underwrap helper package")
     described.config.environment.systemPackages;
 in
-assert (builtins.tryEval described.config.system.build.toplevel).success;
+assert (builtins.tryEval described.config.system.build.toplevel.drvPath).success;
 assert catalog == {
   schema_version = 1;
   instances = [ "empty" "info" "other" "work" ];
