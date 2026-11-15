@@ -38,7 +38,7 @@ async fn rejected_alias_and_delete_changes_preserve_callable_graph_and_state() {
     }
     let properties = HashMap::from([(
         "org.freedesktop.Secret.Collection.Label",
-        OwnedValue::from(Str::from("rejected")),
+        OwnedVariant::from(Str::from("rejected")),
     )]);
     assert!(
         service

@@ -41,7 +41,8 @@ impl Exports {
         // Graph methods are serialized, while content setters can finish under
         // registry reads. Never hold the store lock while acquiring the registry.
         // Old exports re-resolve accepted state; removal cannot revoke retained refs.
-        // zbus removes a node with its children: unregister descendants first.
+        // Unregister descendants first; zbus prunes nodes and empty ancestors
+        // only after their remaining interfaces and children are gone.
         for export in self
             .0
             .iter()
@@ -71,41 +72,36 @@ impl Exports {
             // the requested interface was removed.
             removed.map_err(|_| export_error())?;
         }
+        // at returns the supplied interface on collision; only None establishes
+        // a new registration, preserving collision-as-failure semantics.
         for export in next.0.difference(&self.0) {
             let registered = match export {
-                Export::Collection(id) => {
-                    object_server
-                        .at(
-                            collection_path(id)?,
-                            CollectionInterface::new(id.clone(), store.clone(), publisher.clone()),
-                        )
-                        .await
-                }
-                Export::Alias(name) => {
-                    object_server
-                        .at(
-                            alias_path(name)?,
-                            CollectionInterface::alias(
-                                name.clone(),
-                                store.clone(),
-                                publisher.clone(),
-                            ),
-                        )
-                        .await
-                }
-                Export::Item(collection, id) => {
-                    object_server
-                        .at(
-                            item_path(collection, id).ok_or_else(export_error)?,
-                            ItemInterface::new(
-                                id.clone(),
-                                collection.clone(),
-                                store.clone(),
-                                publisher.clone(),
-                            ),
-                        )
-                        .await
-                }
+                Export::Collection(id) => object_server
+                    .at(
+                        collection_path(id)?,
+                        CollectionInterface::new(id.clone(), store.clone(), publisher.clone()),
+                    )
+                    .await
+                    .map(|existing| existing.is_none()),
+                Export::Alias(name) => object_server
+                    .at(
+                        alias_path(name)?,
+                        CollectionInterface::alias(name.clone(), store.clone(), publisher.clone()),
+                    )
+                    .await
+                    .map(|existing| existing.is_none()),
+                Export::Item(collection, id) => object_server
+                    .at(
+                        item_path(collection, id).ok_or_else(export_error)?,
+                        ItemInterface::new(
+                            id.clone(),
+                            collection.clone(),
+                            store.clone(),
+                            publisher.clone(),
+                        ),
+                    )
+                    .await
+                    .map(|existing| existing.is_none()),
             }
             .map_err(|_| export_error())?;
             if !registered {

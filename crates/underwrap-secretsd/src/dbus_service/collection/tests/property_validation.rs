@@ -57,7 +57,7 @@ fn item_property_parsers_accept_absent_and_exact_types() {
     for label in ["", "nonempty-label"] {
         let properties = HashMap::from([(
             ITEM_LABEL_PROPERTY.to_string(),
-            Value::from(label.to_string()),
+            Variant::from(label.to_string()),
         )]);
         assert_eq!(parse_item_label(&properties).unwrap(), label);
     }
@@ -82,9 +82,9 @@ fn item_property_parsers_accept_absent_and_exact_types() {
 #[test]
 fn item_property_parsers_reject_wrong_outer_and_dictionary_types() {
     let wrong_labels = [
-        Value::from(7u32),
+        Variant::from(7u32),
         string_dict(&[("container", "value")]),
-        Value::Value(Box::new(Value::from("nested-label".to_string()))),
+        Variant::Variant(Box::new(Variant::from("nested-label".to_string()))),
     ];
     for label in wrong_labels {
         let properties = HashMap::from([(ITEM_LABEL_PROPERTY.to_string(), label)]);
@@ -95,17 +95,17 @@ fn item_property_parsers_reject_wrong_outer_and_dictionary_types() {
     }
 
     let wrong_attributes = [
-        Value::from("not-a-dictionary".to_string()),
-        Value::Value(Box::new(string_dict(&[("nested", "dictionary")]))),
+        Variant::from("not-a-dictionary".to_string()),
+        Variant::Variant(Box::new(string_dict(&[("nested", "dictionary")]))),
         dict_value(
-            <u32 as Type>::signature(),
-            <String as Type>::signature(),
-            vec![(Value::from(1u32), Value::from("value".to_string()))],
+            <u32 as Type>::SIGNATURE,
+            <String as Type>::SIGNATURE,
+            vec![(Variant::from(1u32), Variant::from("value".to_string()))],
         ),
         dict_value(
-            <String as Type>::signature(),
-            <u32 as Type>::signature(),
-            vec![(Value::from("key".to_string()), Value::from(1u32))],
+            <String as Type>::SIGNATURE,
+            <u32 as Type>::SIGNATURE,
+            vec![(Variant::from("key".to_string()), Variant::from(1u32))],
         ),
         string_variant_dict(&[("key", "string-payload")]),
     ];
@@ -214,14 +214,14 @@ fn malformed_properties(
     row: MalformedProperties,
     property_sentinel: &str,
     attribute_sentinel: &str,
-) -> (HashMap<String, Value<'static>>, &'static str) {
-    let label = Value::from(property_sentinel.to_string());
+) -> (HashMap<String, Variant<'static>>, &'static str) {
+    let label = Variant::from(property_sentinel.to_string());
     let valid_attributes = string_dict(&[("match", "value"), ("sentinel", attribute_sentinel)]);
     let entries = match row {
         MalformedProperties::WrongLabel => [
             (
                 ITEM_LABEL_PROPERTY.to_string(),
-                Value::Value(Box::new(label)),
+                Variant::Variant(Box::new(label)),
             ),
             (ITEM_ATTRIBUTES_PROPERTY.to_string(), valid_attributes),
         ],
@@ -229,7 +229,7 @@ fn malformed_properties(
             (ITEM_LABEL_PROPERTY.to_string(), label),
             (
                 ITEM_ATTRIBUTES_PROPERTY.to_string(),
-                Value::from(attribute_sentinel.to_string()),
+                Variant::from(attribute_sentinel.to_string()),
             ),
         ],
         MalformedProperties::VariantAttributes => [
@@ -246,7 +246,7 @@ fn malformed_properties(
             ),
             (
                 ITEM_ATTRIBUTES_PROPERTY.to_string(),
-                Value::Value(Box::new(string_dict(&[("sentinel", attribute_sentinel)]))),
+                Variant::Variant(Box::new(string_dict(&[("sentinel", attribute_sentinel)]))),
             ),
         ],
     };
@@ -379,7 +379,7 @@ async fn malformed_item_property_precedes_missing_collection_lookup() {
     let properties = HashMap::from([
         (
             ITEM_LABEL_PROPERTY.to_string(),
-            Value::Value(Box::new(Value::from(property_sentinel.to_string()))),
+            Variant::Variant(Box::new(Variant::from(property_sentinel.to_string()))),
         ),
         (
             ITEM_ATTRIBUTES_PROPERTY.to_string(),

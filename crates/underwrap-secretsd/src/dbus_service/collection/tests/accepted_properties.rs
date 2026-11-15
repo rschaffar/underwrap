@@ -35,7 +35,7 @@ async fn accepted_optional_item_properties_publish_exact_defaults_and_metadata()
             AcceptedNewProperties::AttributesAbsent => (
                 HashMap::from([(
                     ITEM_LABEL_PROPERTY.to_string(),
-                    Value::from("label-only".to_string()),
+                    Variant::from("label-only".to_string()),
                 )]),
                 "label-only",
                 HashMap::new(),
@@ -43,7 +43,7 @@ async fn accepted_optional_item_properties_publish_exact_defaults_and_metadata()
             AcceptedNewProperties::UnknownIgnored => (
                 HashMap::from([(
                     "org.example.Unknown".to_string(),
-                    Value::Value(Box::new(Value::from("ignored".to_string()))),
+                    Variant::Variant(Box::new(Variant::from("ignored".to_string()))),
                 )]),
                 "",
                 HashMap::new(),
@@ -197,7 +197,7 @@ async fn nonmatching_attributes_create_and_register_new_item_without_changing_ol
     let properties = HashMap::from([
         (
             ITEM_LABEL_PROPERTY.to_string(),
-            Value::from("new-label".to_string()),
+            Variant::from("new-label".to_string()),
         ),
         (
             ITEM_ATTRIBUTES_PROPERTY.to_string(),

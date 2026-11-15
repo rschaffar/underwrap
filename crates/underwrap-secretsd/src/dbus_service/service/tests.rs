@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::{HostResponse, ObjectServerHarness, service_with_script};
-use zbus::zvariant::Str;
+use zbus::Str;
 
 async fn alias_server(service: &SecretService) -> ObjectServerHarness {
     let harness = ObjectServerHarness::new().await;
@@ -14,10 +14,10 @@ async fn alias_server(service: &SecretService) -> ObjectServerHarness {
     harness
 }
 
-fn collection_properties(label: &str) -> HashMap<String, OwnedValue> {
+fn collection_properties(label: &str) -> HashMap<String, OwnedVariant> {
     HashMap::from([(
         "org.freedesktop.Secret.Collection.Label".to_string(),
-        OwnedValue::from(Str::from(label)),
+        OwnedVariant::from(Str::from(label)),
     )])
 }
 

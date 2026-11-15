@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use zbus::{fdo, interface, zvariant::ObjectPath};
+use zbus::{ObjectPath, fdo, interface};
 
 use underwrap_secretsd_store::SecretStore;
 use zeroize::Zeroize;
@@ -46,31 +46,6 @@ impl ItemInterface {
             return Err(fdo::Error::UnknownObject("item not found".into()));
         }
         Ok(())
-    }
-
-    pub(super) async fn set_attributes(
-        &self,
-        attributes: HashMap<String, String>,
-    ) -> fdo::Result<()> {
-        let mut store = self.store.write().await;
-        self.require_item(&store)?;
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            candidate.set_attributes(&self.collection_id, &self.id, attributes.clone());
-            Ok(())
-        })?;
-        if metadata_trace_enabled() {
-            tracing::info!(collection = %self.collection_id, item = %self.id, ?attributes, "secretsd Item.SetAttributes");
-        }
-        Ok(())
-    }
-
-    pub(super) async fn set_label(&self, label: String) -> fdo::Result<()> {
-        let mut store = self.store.write().await;
-        self.require_item(&store)?;
-        mutate_and_publish(&mut store, &self.publisher, |candidate| {
-            candidate.set_label(&self.collection_id, &self.id, &label);
-            Ok(())
-        })
     }
 }
 
@@ -181,13 +156,21 @@ impl ItemInterface {
 
     // Keep interior-state setters callable under a shared interface lock: zbus
     // holds a registry read here, while graph methods can await registry writes.
-    #[zbus(property, name = "Attributes")]
-    async fn set_attributes_property(
+    #[zbus(property)]
+    pub(super) async fn set_attributes(
         &self,
         attributes: HashMap<String, String>,
-    ) -> zbus::Result<()> {
-        // zbus 4's shared-reference property dispatch requires zbus::Result.
-        self.set_attributes(attributes).await.map_err(Into::into)
+    ) -> fdo::Result<()> {
+        let mut store = self.store.write().await;
+        self.require_item(&store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_attributes(&self.collection_id, &self.id, attributes.clone());
+            Ok(())
+        })?;
+        if metadata_trace_enabled() {
+            tracing::info!(collection = %self.collection_id, item = %self.id, ?attributes, "secretsd Item.SetAttributes");
+        }
+        Ok(())
     }
 
     #[zbus(property)]
@@ -199,9 +182,14 @@ impl ItemInterface {
             .to_string())
     }
 
-    #[zbus(property, name = "Label")]
-    async fn set_label_property(&self, label: String) -> zbus::Result<()> {
-        self.set_label(label).await.map_err(Into::into)
+    #[zbus(property)]
+    pub(super) async fn set_label(&self, label: String) -> fdo::Result<()> {
+        let mut store = self.store.write().await;
+        self.require_item(&store)?;
+        mutate_and_publish(&mut store, &self.publisher, |candidate| {
+            candidate.set_label(&self.collection_id, &self.id, &label);
+            Ok(())
+        })
     }
 
     #[zbus(property)]

@@ -11,7 +11,7 @@ struct RegistryReader {
 impl RegistryReader {
     #[zbus(property)]
     async fn label(&self) -> String {
-        // zbus 4.4 retains the registry read lock throughout Properties.Get.
+        // Properties.Get retains the registry read lock throughout the handler.
         self.entered.notify_one();
         self.release.notified().await;
         self.store.read().await.collections["default"].label.clone()
@@ -80,11 +80,8 @@ async fn overlap_property_and_graph_change(cancel: bool) {
     let property = tokio::spawn(async move {
         let reader: Proxy<'_> = zbus::proxy::Builder::new(&client)
             .destination(destination)
-            .unwrap()
             .path("/registry_reader")
-            .unwrap()
             .interface("org.underwrap.Test.RegistryReader")
-            .unwrap()
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await
@@ -102,7 +99,7 @@ async fn overlap_property_and_graph_change(cancel: bool) {
             super::super::mutation::mutate_and_export(
                 &store,
                 &publisher,
-                &server.object_server(),
+                server.object_server(),
                 |candidate| {
                     candidate.create_collection("pending", None);
                     prepared.notify_one();
@@ -130,7 +127,7 @@ async fn overlap_property_and_graph_change(cancel: bool) {
     let mut next = Box::pin(super::super::mutation::mutate_and_export(
         &store,
         &publisher,
-        &server,
+        server,
         |candidate| {
             candidate.set_alias("later", Some("pending"));
             Ok(())
@@ -146,7 +143,6 @@ async fn overlap_property_and_graph_change(cancel: bool) {
     assert_eq!(property.await.unwrap(), "content_label");
     mutation.await.unwrap();
     next.await.unwrap();
-    drop(server);
     assert_eq!(
         bus.proxy(collection_path("pending").unwrap().as_str(), COLLECTION)
             .await
