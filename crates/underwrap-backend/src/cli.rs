@@ -14,7 +14,14 @@ use anyhow::{Context, Result};
 use crate::{BackendConfig, time, users};
 
 pub fn parse_backend_config(config_text: &str) -> Result<BackendConfig> {
-    serde_yaml::from_str(config_text).context("parsing config")
+    serde_saphyr::from_str_with_options(
+        config_text,
+        serde_saphyr::options! {
+            duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+            merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        },
+    )
+    .context("parsing config")
 }
 
 /// The held descriptor owns an advisory bootstrap lock on a stable inode.

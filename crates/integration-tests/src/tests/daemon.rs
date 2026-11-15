@@ -112,7 +112,7 @@ wrappers:
     resource: github/gh
     libsecret: true
 "#;
-    let config: underwrap_protocol::config::DaemonConfig = serde_yaml::from_str(text).unwrap();
+    let config: underwrap_protocol::config::DaemonConfig = serde_saphyr::from_str(text).unwrap();
 
     assert_eq!(config.wrappers.len(), 3);
     assert!(config.wrappers.contains_key("gh-authorized"));
@@ -145,7 +145,7 @@ async fn network_bootstrap_cannot_create_operator() {
     let port_reservation = reserve_backend_startup().await.unwrap();
     let https_port = port_reservation.port();
     let admin_url = format!("https://127.0.0.1:{https_port}");
-    let backend_config = serde_yaml::to_string(&underwrap_backend::BackendConfig {
+    let backend_config = serde_saphyr::to_string(&underwrap_backend::BackendConfig {
         stores_dir: base.join("stores"),
         clients_dir: base.join("clients"),
         users_dir: base.join("users"),
@@ -372,7 +372,7 @@ fn bootstrap_user_processes_serialize_without_touching_other_state() {
         admin: None,
     };
     let config_path = base.join("backend.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    std::fs::write(&config_path, serde_saphyr::to_string(&config).unwrap()).unwrap();
 
     let lock_path = base.join("bootstrap.json.lock");
     let gate = OpenOptions::new()
@@ -529,7 +529,7 @@ fn bootstrap_lock_is_released_when_real_owner_is_killed() {
         admin: None,
     };
     let config_path = base.join("backend.yaml");
-    std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
+    std::fs::write(&config_path, serde_saphyr::to_string(&config).unwrap()).unwrap();
 
     let lock_path = base.join("bootstrap.json.lock");
     let gate = OpenOptions::new()
@@ -759,7 +759,7 @@ async fn underwrapd_binary_start_and_read() {
     let https_port = port_reservation.port();
     let service_url = format!("https://127.0.0.1:{https_port}");
     let admin_url = service_url.clone();
-    let backend_config = serde_yaml::to_string(&underwrap_backend::BackendConfig {
+    let backend_config = serde_saphyr::to_string(&underwrap_backend::BackendConfig {
         stores_dir,
         clients_dir,
         users_dir: base.join("users"),
@@ -846,7 +846,7 @@ async fn underwrapd_binary_start_and_read() {
         &[&backend_child],
         &[&service_url],
     );
-    let config = serde_yaml::to_string(&underwrap_protocol::config::DaemonConfig {
+    let config = serde_saphyr::to_string(&underwrap_protocol::config::DaemonConfig {
         backend: underwrap_protocol::config::BackendServiceConfig {
             url: service_url.clone(),
             ca_file: Some(ca_cert.clone()),

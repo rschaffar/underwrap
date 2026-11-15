@@ -1,6 +1,9 @@
 use super::*;
 use clap::Parser;
 
+#[path = "tests/yaml.rs"]
+mod yaml;
+
 #[test]
 fn cli_parses_config_flag() {
     let cli = Cli::parse_from(["underwrapd", "--config", "/tmp/test-config.yaml"]);

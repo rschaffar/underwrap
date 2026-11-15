@@ -1,4 +1,6 @@
 use super::*;
+
+mod config;
 use clap::Parser;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -21,7 +23,7 @@ fn instance_config_cli(identity: &str) -> (tempfile::TempDir, Cli) {
         ("client_identity_file", identity.to_string()),
     ]);
     let document = BTreeMap::from([("backend", backend)]);
-    std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(&config, serde_saphyr::to_string(&document).unwrap()).unwrap();
     let cli = Cli {
         client_identity_out: None,
         instance_config: Some(config),

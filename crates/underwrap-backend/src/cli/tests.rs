@@ -27,6 +27,8 @@ fn snapshot_file(path: &Path) -> FileSnapshot {
 }
 
 use super::*;
+
+mod yaml;
 use crate::users;
 
 #[test]
