@@ -193,9 +193,9 @@ The committed npm lock and Nix inputs define the selected frontend matrix, not e
 | Layer | Selected compatibility baseline |
 | --- | --- |
 | Build tools | Node 24.22.2, npm 11.19.1 |
-| SPA | React/React DOM 19.3.0; Vite 8.3.8; React plugin 6.1.1; Tailwind and Vite plugin 4.3.3 |
+| SPA | React/React DOM 19.3.1; Vite 8.3.8; React plugin 6.3.0; Tailwind and Vite plugin 4.3.5 |
 | Type checking | TypeScript 5.9.3; openapi-typescript 7 requires a `^5.x` peer |
-| Unit tests | Vitest/coverage-v8 4.1.12; jsdom 30.1.1; Testing Library versions selected by the lock |
+| Unit tests | Vitest/coverage-v8 4.1.12; jsdom 30.1.3; Testing Library versions selected by the lock |
 | Browser tests | Exact `@playwright/test` 1.64.1 paired with nixpkgs driver 1.64.1; driver Node 22.23.5 via `PLAYWRIGHT_NODEJS_PATH` |
 | API tools | Utoipa 6.0.0; utoipa-axum 0.3.0; OpenAPI 3.1.0; openapi-typescript 7.13.0; openapi-fetch 0.17.0 |
 
